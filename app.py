@@ -65,6 +65,21 @@ INSTRUMENTS = {
         "quicklook_dir": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/cloud_radar"),
         "latest_image": Path("/home/aurora/aurora_cloud_dashboard/last24h_cloudradar.png"),
     },
+    "Scanning Microwave Radiometer": {
+        "zarr_env": "HATPRO_ZARR_PATH",
+        "zarr_default": "/mnt/data/ass/hatprog5/hatpro.zarr",
+        "chunk_spec": {"time": 600},
+        "consolidated": True,
+        "height_load_max": 10_000,
+        "top_range_default": 10_000,
+        "vars": {
+            "T_PROF": {"label": "Temperature Profile (K)", "clim": (210.0, 310.0), "log": False, "colorscale": "Inferno"},
+        },
+        "default_top": "T_PROF",
+        "default_bottom": "T_PROF",
+        "quicklook_dir": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/hatpro"),
+        "latest_image": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/hatpro/latest.png"),
+    },
 }
 
 DEFAULT_WINDOW = timedelta(hours=24)
@@ -78,12 +93,12 @@ _BASE_DS: dict[str, xr.Dataset | None] = {}
 CURRENT_INSTRUMENT = "Ceilometer"
 
 
-def _cfg():
-    return INSTRUMENTS[CURRENT_INSTRUMENT]
+def _cfg(inst: str | None = None):
+    return INSTRUMENTS[inst or CURRENT_INSTRUMENT]
 
 
-def _zarr_path():
-    cfg = _cfg()
+def _zarr_path(inst: str | None = None):
+    cfg = _cfg(inst)
     return os.environ.get(cfg["zarr_env"], cfg["zarr_default"])
 
 
@@ -97,13 +112,14 @@ def _ensure_utc(dt):
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _get_base_dataset():
+def _get_base_dataset(inst: str | None = None):
     """Open the Zarr store (memoized per instrument) with configured chunks and consolidation."""
-    inst = CURRENT_INSTRUMENT
+    inst = inst or CURRENT_INSTRUMENT
     if inst in _BASE_DS and _BASE_DS[inst] is not None:
         return _BASE_DS[inst]
-    cfg = _cfg()
-    zarr_path = _zarr_path()
+    cfg = _cfg(inst)
+    zarr_path = _zarr_path(inst)
+    print(f"[base-ds] open {inst} -> {zarr_path}")
     try:
         ds = xr.open_zarr(zarr_path, chunks=cfg["chunk_spec"], consolidated=cfg["consolidated"])
     except Exception:
@@ -112,9 +128,9 @@ def _get_base_dataset():
     return ds
 
 
-def _refresh_base_dataset():
+def _refresh_base_dataset(inst: str | None = None):
     """Drop the cached dataset so the next access reopens the Zarr (captures new data)."""
-    inst = CURRENT_INSTRUMENT
+    inst = inst or CURRENT_INSTRUMENT
     _BASE_DS[inst] = None
 
 
@@ -128,9 +144,9 @@ def _median_filter_nan(arr, k=3):
     return np.nanmedian(windows, axis=(-2, -1))
 
 
-def _dataset_time_bounds():
+def _dataset_time_bounds(inst: str | None = None):
     """Compute earliest and latest timestamps in the dataset (or None/None)."""
-    ds = _get_base_dataset()
+    ds = _get_base_dataset(inst)
     if ds is None or "time" not in ds:
         return None, None
     times = np.asarray(ds["time"].values)
@@ -163,9 +179,9 @@ def _coarsen_targets(duration: timedelta | None, height_span: float | None):
     return time_subsample, time_target, height_target
 
 
-def open_window(t0, t1, bottom_m=None, top_m=None):
+def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None):
     """Slice the base dataset, adapt coarsening to window span, and filter height."""
-    cfg = _cfg()
+    cfg = _cfg(instrument)
     t0 = _ensure_utc(t0)
     t1 = _ensure_utc(t1)
     if t0 is None or t1 is None or t0 >= t1:
@@ -177,7 +193,7 @@ def open_window(t0, t1, bottom_m=None, top_m=None):
         t = top_m if top_m is not None else cfg["height_load_max"]
         height_span = max(t - b, 0.0)
     time_subsample, time_target, height_target = _coarsen_targets(duration, height_span)
-    base = _get_base_dataset()
+    base = _get_base_dataset(instrument)
     if base is None:
         return xr.Dataset()
     try:
@@ -254,6 +270,12 @@ beta_vmin = pn.widgets.FloatInput(name="Var1 min", value=_cfg()["vars"][var1_sel
 beta_vmax = pn.widgets.FloatInput(name="Var1 max", value=_cfg()["vars"][var1_select.value]["clim"][1], step=0.1)
 ldr_vmin = pn.widgets.FloatInput(name="Var2 min", value=_cfg()["vars"][var2_select.value]["clim"][0], step=0.1)
 ldr_vmax = pn.widgets.FloatInput(name="Var2 max", value=_cfg()["vars"][var2_select.value]["clim"][1], step=0.1)
+lwp_ymin = pn.widgets.FloatInput(name="LWP min (g/m²)", value=0.0, step=10.0, visible=False)
+lwp_ymax = pn.widgets.FloatInput(name="LWP max (g/m²)", value=400.0, step=10.0, visible=False)
+iwv_ymin = pn.widgets.FloatInput(name="IWV min (kg/m²)", value=0.0, step=1.0, visible=False)
+iwv_ymax = pn.widgets.FloatInput(name="IWV max (kg/m²)", value=40.0, step=1.0, visible=False)
+irr_ymin = pn.widgets.FloatInput(name="IRR / SURF_T min (°C)", value=-20.0, step=1.0, visible=False)
+irr_ymax = pn.widgets.FloatInput(name="IRR / SURF_T max (°C)", value=10.0, step=1.0, visible=False)
 prev_btn = pn.widgets.Button(name="Previous Day", button_type="default")
 next_btn = pn.widgets.Button(name="Next Day/Current Day", button_type="default")
 live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="primary", value=True)
@@ -272,8 +294,8 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
     global CURRENT_INSTRUMENT, _instrument_guard
     _instrument_guard = True
     CURRENT_INSTRUMENT = inst
-    _refresh_base_dataset()
-    cfg = _cfg()
+    _refresh_base_dataset(inst)
+    cfg = _cfg(inst)
     with hold():
         vars_cfg = cfg["vars"]
         var1_name = cfg["default_top"]
@@ -307,12 +329,37 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         calendar_instrument.value = inst
 
         if reset_time:
-            tmin, tmax = _dataset_time_bounds()
+            tmin, tmax = _dataset_time_bounds(inst)
             end = tmax or datetime.utcnow()
             start = end - DEFAULT_WINDOW
             range_start.value = start
             range_end.value = end
             _set_live(True)
+
+        # Instrument-specific UI trimming
+        is_hatpro = inst == "Scanning Microwave Radiometer"
+        var1_select.visible = not is_hatpro
+        var2_select.visible = not is_hatpro
+        ldr_vmin.visible = not is_hatpro
+        ldr_vmax.visible = not is_hatpro
+        beta_vmin.visible = True
+        beta_vmax.visible = True
+        if is_hatpro:
+            beta_vmin.name = "T_PROF min (K)"
+            beta_vmax.name = "T_PROF max (K)"
+            _set_input(beta_vmin, var1["clim"][0], var1["clim"][1])
+            _set_input(beta_vmax, var1["clim"][1], var1["clim"][0])
+            # Show and reset timeseries y-range controls
+            lwp_ymin.visible = lwp_ymax.visible = True
+            iwv_ymin.visible = iwv_ymax.visible = True
+            irr_ymin.visible = irr_ymax.visible = True
+            lwp_ymin.value, lwp_ymax.value = 0.0, 400.0
+            iwv_ymin.value, iwv_ymax.value = 0.0, 60.0
+            irr_ymin.value, irr_ymax.value = -20.0, 60.0
+        else:
+            lwp_ymin.visible = lwp_ymax.visible = False
+            iwv_ymin.visible = iwv_ymax.visible = False
+            irr_ymin.visible = irr_ymax.visible = False
 
         _refresh_ql_options(preserve_current=False)
         # Force quicklook pane refresh even if selection string didn't change
@@ -330,6 +377,12 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.value,
         ldr_vmin.value,
         ldr_vmax.value,
+        lwp_ymin.value,
+        lwp_ymax.value,
+        iwv_ymin.value,
+        iwv_ymax.value,
+        irr_ymin.value,
+        irr_ymax.value,
         instrument_select.value,
     )
 
@@ -489,6 +542,203 @@ range_end.param.watch(_on_manual_time_change, "value")
 plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width")
 
 
+def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax):
+    """Custom renderer for HATPRO radiometer: split LWP/IWV and IRR; T_PROF heatmap."""
+    print(f"[hatpro] render window {start} -> {end}")
+    bottom = max(float(bottom_val), 0.0)
+    top = max(float(top_val), bottom + 100.0)
+    ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument="Scanning Microwave Radiometer")
+    cfg = _cfg("Scanning Microwave Radiometer")
+    times = pd.to_datetime(ds["time"].values) if "time" in ds else None
+    if times is None or len(times) == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(color="#222", size=16),
+        )
+        fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
+        plot_pane.object = fig
+        return
+
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        specs=[[{"secondary_y": True}], [{"secondary_y": True}], [{}]],
+        row_heights=[0.25, 0.25, 0.5],
+        subplot_titles=("LWP / IWV", "IRR / SURF_T", cfg["vars"]["T_PROF"]["label"]),
+    )
+    # Color the subplot titles to match their traces.
+    if len(fig.layout.annotations) >= 1:
+        fig.layout.annotations[0].update(text='<span style="color:#1f77b4">LWP</span> / <span style="color:#2ca02c">IWV</span>', font=dict(size=14))
+    if len(fig.layout.annotations) >= 2:
+        fig.layout.annotations[1].update(
+            text='<span style="color:#d62728">IRR</span> / <span style="color:#9467bd">SURF_T</span>',
+            font=dict(size=14),
+        )
+    if len(fig.layout.annotations) >= 3:
+        fig.layout.annotations[2].update(font=dict(size=14))
+
+    # Row 1: LWP (left), IWV (right, kg/m²)
+    if "LWP" in ds:
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=np.asarray(ds["LWP"]),
+                mode="lines",
+                name="LWP (g/m²)",
+                line=dict(color="#1f77b4", width=2),
+            ),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+    if "IWV" in ds:
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=np.asarray(ds["IWV"]),
+                mode="lines",
+                name="IWV (kg/m²)",
+                line=dict(color="#2ca02c", width=2, dash="dot"),
+            ),
+            row=1,
+            col=1,
+            secondary_y=True,
+        )
+
+    # Row 2: IRR only
+    if "IRR_Map" in ds:
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=np.asarray(ds["IRR_Map"]),
+                mode="lines",
+                name="IRR (°C)",
+                line=dict(color="#d62728", width=2),
+            ),
+            row=2,
+            col=1,
+        )
+    if "SURF_T" in ds:
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=np.asarray(ds["SURF_T"]) - 273.15,  # convert K to °C for display
+                mode="lines",
+                name="SURF_T (°C)",
+                line=dict(color="#9467bd", width=2, dash="dot"),
+            ),
+            row=2,
+            col=1,
+        )
+
+    # Row 3: Temperature profile heatmap + contours
+    if "T_PROF" in ds:
+        heights = ds["range"].values if "range" in ds else np.arange(ds["T_PROF"].shape[1])
+        temps = np.array(ds["T_PROF"].transpose("range", "time"))
+        vmin, vmax = cfg["vars"]["T_PROF"]["clim"]
+        fig.add_trace(
+            go.Heatmap(
+                x=times,
+                y=heights,
+                z=temps,
+                zmin=vmin,
+                zmax=vmax,
+                coloraxis="coloraxis",
+                showscale=True,
+            ),
+            row=3,
+            col=1,
+        )
+        fig.add_trace(
+            go.Contour(
+                x=times,
+                y=heights,
+                z=temps,
+                showscale=False,
+                contours=dict(coloring="none", showlabels=True, labelfont=dict(color="white", size=10)),
+                line=dict(color="white", width=1),
+                hoverinfo="skip",
+            ),
+            row=3,
+            col=1,
+        )
+
+    tickvals = []
+    ticktext = []
+    noon_annots = []
+    if start and end:
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        duration = end_ts - start_ts
+        freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
+        hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
+        for t in hours:
+            tickvals.append(t.to_pydatetime())
+            ticktext.append(t.strftime("%H:%M"))
+            if t.hour == 12:
+                noon_annots.append(
+                    dict(
+                        x=t.to_pydatetime(),
+                        y=-0.06,
+                        xref="x",
+                        yref="paper",
+                        text=t.strftime("%Y-%m-%d"),
+                        showarrow=False,
+                        xanchor="center",
+                        yanchor="top",
+                        font=dict(size=14, color="#222"),
+                    )
+                )
+
+    # x-axes
+    for row in (1, 2, 3):
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            tickangle=-45,
+            showgrid=True,
+            gridcolor="#dddddd",
+            linecolor="#222222",
+            tickfont=dict(color="#222222", size=12),
+            title_font=dict(color="#222222", size=12),
+            row=row,
+            col=1,
+        )
+    fig.update_xaxes(title_text="Date and Time (UTC)", title_standoff=40, row=3, col=1)
+
+    # y-axes
+    fig.update_yaxes(title_text="LWP (g/m²)", range=[float(lymin), float(lymax)], row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="IWV (kg/m²)", range=[float(iymin), float(iymax)], row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="IRR / SURF_T (°C)", range=[float(rymin), float(rymax)], row=2, col=1)
+    fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=3, col=1, showgrid=True, gridcolor="#dddddd", linecolor="#222222")
+
+    fig.update_layout(
+        showlegend=False,
+        height=max(700, int(pn.state.viewport_height * 0.8)) if hasattr(pn.state, "viewport_height") else 900,
+        margin=dict(l=60, r=80, t=30, b=110),
+        coloraxis=dict(
+            colorscale=cfg["vars"]["T_PROF"]["colorscale"],
+            cmin=cfg["vars"]["T_PROF"]["clim"][0],
+            cmax=cfg["vars"]["T_PROF"]["clim"][1],
+            colorbar=dict(title=dict(text="T (K)", side="right"), x=1.02, y=0.18, len=0.3, tickfont=dict(color="#222222", size=9)),
+        ),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color="#222222", size=13),
+        annotations=tuple(list(fig.layout.annotations) + noon_annots),
+    )
+    plot_pane.object = fig
+
+
 @pn.depends(
     range_start.param.value,
     range_end.param.value,
@@ -500,13 +750,27 @@ plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_wid
     beta_vmax.param.value,
     ldr_vmin.param.value,
     ldr_vmax.param.value,
+    lwp_ymin.param.value,
+    lwp_ymax.param.value,
+    iwv_ymin.param.value,
+    iwv_ymax.param.value,
+    irr_ymin.param.value,
+    irr_ymax.param.value,
     instrument_select.param.value,
     watch=True,
 )
-def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax, lmin, lmax, instrument):
+def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax, lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument):
     """Render both heatmaps for the current window and control values."""
     if _instrument_guard:
         # Skip expensive re-renders while we batch instrument switch updates.
+        return
+    # Ensure global instrument matches the dropdown to avoid stale cache use.
+    global CURRENT_INSTRUMENT
+    if instrument != CURRENT_INSTRUMENT:
+        CURRENT_INSTRUMENT = instrument
+    print(f"[update-view] instrument param={instrument} current={CURRENT_INSTRUMENT}")
+    if instrument == "Scanning Microwave Radiometer":
+        _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
         return
     bottom = max(float(bottom_val), 0.0)
     top = max(float(top_val), bottom + 100.0)
@@ -740,6 +1004,12 @@ _update_view(
     beta_vmax.value,
     ldr_vmin.value,
     ldr_vmax.value,
+    lwp_ymin.value,
+    lwp_ymax.value,
+    iwv_ymin.value,
+    iwv_ymax.value,
+    irr_ymin.value,
+    irr_ymax.value,
     instrument_select.value,
 )
 
@@ -874,6 +1144,7 @@ controls = pn.Card(
         pn.Row(var1_select, var2_select, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(bottom_range_m, top_range_m, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(beta_vmin, beta_vmax, ldr_vmin, ldr_vmax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(lwp_ymin, lwp_ymax, iwv_ymin, iwv_ymax, irr_ymin, irr_ymax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(prev_btn, next_btn, sizing_mode="stretch_width", margin=(5, 0, 0, 0), css_classes=["mobile-stack"]),
         sizing_mode="stretch_width",
     ),
