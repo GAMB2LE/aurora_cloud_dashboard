@@ -175,9 +175,8 @@ def append_new_files(
         if ds_new is None:
             continue
         ds_new = ds_new.sortby(append_dim)
-        ds_new = ds_new.where(
-            ds_new[append_dim] > last_time.to_datetime64(), drop=True
-        )
+        new_time_mask = (ds_new[append_dim] > last_time.to_datetime64()).values
+        ds_new = ds_new.isel({append_dim: new_time_mask})
         if ds_new.sizes.get(append_dim, 0) == 0:
             print(
                 "Batch contains no samples newer than the existing Zarr; "
