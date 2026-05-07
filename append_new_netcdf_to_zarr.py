@@ -103,8 +103,8 @@ def append_new_files(
     if append_dim not in ds_existing:
         raise ValueError(f"Append dimension '{append_dim}' not found in Zarr store.")
 
-    last_time = pd.to_datetime(ds_existing[append_dim].max().values).to_pydatetime()
-    print(f"Latest {append_dim} in Zarr: {last_time}")
+    last_time = pd.Timestamp(ds_existing[append_dim].max().values)
+    print(f"Latest {append_dim} in Zarr: {last_time.isoformat()}")
 
     start_cutoff = last_time
     if max_backfill_days is not None:
@@ -124,7 +124,7 @@ def append_new_files(
         if ts is None:
             print(f"Skipping file without parsable timestamp: {f}")
             continue
-        if ts > start_cutoff:
+        if pd.Timestamp(ts) > start_cutoff:
             new_files.append((ts, f))
 
     if not new_files:
@@ -175,6 +175,16 @@ def append_new_files(
         if ds_new is None:
             continue
         ds_new = ds_new.sortby(append_dim)
+        ds_new = ds_new.where(
+            ds_new[append_dim] > last_time.to_datetime64(), drop=True
+        )
+        if ds_new.sizes.get(append_dim, 0) == 0:
+            print(
+                "Batch contains no samples newer than the existing Zarr; "
+                "skipping batch."
+            )
+            ds_new.close()
+            continue
         ds_new.to_zarr(zarr_path, mode="a", append_dim=append_dim)
         ds_new.close()
     print("Append complete.")
