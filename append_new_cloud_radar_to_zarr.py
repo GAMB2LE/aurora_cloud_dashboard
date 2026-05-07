@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
@@ -34,15 +34,15 @@ def _parse_timestamp(path: Path) -> datetime | None:
         return None
 
 
-def _list_new_files(root: Path, after: datetime) -> List[Path]:
-    files: List[Path] = []
+def _list_files_after(root: Path, after: datetime | None = None) -> List[Path]:
+    files: List[tuple[datetime, Path]] = []
     for p in root.rglob("*.NC"):
         if not p.name.upper().endswith("LV1.NC"):
             continue
         ts = _parse_timestamp(p)
         if ts is None:
             continue
-        if ts > after:
+        if after is None or ts > after:
             files.append((ts, p))
     files.sort(key=lambda x: x[0])
     return [p for _, p in files]
@@ -98,9 +98,63 @@ def _load_nc(path: Path) -> xr.Dataset:
     return ds.sortby("time")
 
 
-def append_new(root: Path, zarr_path: Path, chunks: dict | str | None = None):
+def _deduplicate_time(ds: xr.Dataset) -> xr.Dataset:
+    if "time" not in ds.coords:
+        return ds
+    times = np.asarray(ds["time"].values)
+    _, unique_idx = np.unique(times, return_index=True)
+    if len(unique_idx) != len(times):
+        print(f"Dropping {len(times) - len(unique_idx)} duplicate time samples")
+        ds = ds.isel(time=np.sort(unique_idx))
+    return ds
+
+
+def _load_files(files: List[Path], chunks: dict | str | None = None) -> xr.Dataset:
+    datasets = []
+    for f in files:
+        print(f"  {f.name}")
+        try:
+            ds = _load_nc(f)
+        except Exception as exc:
+            print(f"Skipping unreadable radar file {f}: {exc}")
+            continue
+        datasets.append(ds)
+    if not datasets:
+        return xr.Dataset()
+    combined = xr.concat(datasets, dim="time").sortby("time")
+    combined = _deduplicate_time(combined)
+    if chunks:
+        combined = combined.chunk(chunks)
+    return combined
+
+
+def append_new(
+    root: Path,
+    zarr_path: Path,
+    chunks: dict | str | None = None,
+    max_backfill_days: int | None = 11,
+    lookback_hours: int = 6,
+):
     if not zarr_path.exists():
-        raise FileNotFoundError(f"Zarr store not found: {zarr_path}")
+        start_cutoff = None
+        if max_backfill_days is not None:
+            start_cutoff = datetime.now(timezone.utc) - timedelta(days=max_backfill_days)
+            print(f"Zarr store not found; bootstrapping from files newer than {start_cutoff}.")
+        else:
+            print("Zarr store not found; bootstrapping from all matching files.")
+        files = _list_files_after(root, start_cutoff)
+        if not files:
+            print("No radar .LV1.NC files available to bootstrap.")
+            return
+        print(f"Bootstrapping radar Zarr from {len(files)} files")
+        combined = _load_files(files, chunks=chunks)
+        if combined.sizes.get("time", 0) == 0:
+            print("No readable radar samples available to bootstrap.")
+            return
+        zarr_path.parent.mkdir(parents=True, exist_ok=True)
+        combined.to_zarr(zarr_path, mode="w", consolidated=True)
+        print("Bootstrap complete.")
+        return
 
     base = xr.open_zarr(zarr_path, chunks={})
     if "time" not in base:
@@ -108,21 +162,22 @@ def append_new(root: Path, zarr_path: Path, chunks: dict | str | None = None):
     last_time = pd.to_datetime(base["time"].max().values).to_pydatetime().replace(tzinfo=timezone.utc)
     print(f"Latest time in Zarr: {last_time}")
 
-    files = _list_new_files(root, last_time)
+    scan_after = last_time - timedelta(hours=max(lookback_hours, 0))
+    files = _list_files_after(root, scan_after)
     if not files:
         print("No new .NC files to append.")
         return
 
-    print(f"Appending {len(files)} files")
-    datasets = []
-    for f in files:
-        print(f"  {f.name}")
-        ds = _load_nc(f)
-        datasets.append(ds)
-
-    combined = xr.concat(datasets, dim="time").sortby("time")
-    if chunks:
-        combined = combined.chunk(chunks)
+    print(f"Scanning {len(files)} candidate files")
+    combined = _load_files(files, chunks=chunks)
+    if combined.sizes.get("time", 0) == 0:
+        print("Candidate files contain no readable radar samples.")
+        return
+    new_time_mask = (combined["time"] > np.datetime64(last_time.replace(tzinfo=None))).values
+    combined = combined.isel(time=new_time_mask)
+    if combined.sizes.get("time", 0) == 0:
+        print("Candidate files contain no samples newer than the existing Zarr.")
+        return
     # Ensure chunk alignment with existing store; disable strict chunk safety to avoid overlap errors.
     combined.to_zarr(zarr_path, mode="a", append_dim="time", safe_chunks=False)
     print("Append complete.")
@@ -133,10 +188,18 @@ def main():
     parser.add_argument("--root", type=Path, default=ROOT_DEFAULT)
     parser.add_argument("--zarr", type=Path, default=ZARR_DEFAULT)
     parser.add_argument("--chunk-time", type=int, default=400)
+    parser.add_argument("--max-backfill-days", type=int, default=11)
+    parser.add_argument("--lookback-hours", type=int, default=6)
     args = parser.parse_args()
 
     chunks = {"time": args.chunk_time} if args.chunk_time else None
-    append_new(args.root, args.zarr, chunks=chunks)
+    append_new(
+        args.root,
+        args.zarr,
+        chunks=chunks,
+        max_backfill_days=args.max_backfill_days,
+        lookback_hours=args.lookback_hours,
+    )
 
 
 if __name__ == "__main__":

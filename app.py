@@ -73,6 +73,46 @@ INSTRUMENTS = {
         "quicklook_dir": _path_from_env("CLOUD_RADAR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "cloud_radar"),
         "latest_image": _path_from_env("CLOUD_RADAR_LATEST_IMAGE", APP_DIR / "last24h_cloudradar.png"),
     },
+    "vaisalamet": {
+        "zarr_env": "VAISALAMET_ZARR_PATH",
+        "zarr_default": "/data/aurora/products/vaisalamet/vaisalamet.zarr",
+        "chunk_spec": {"time": 1200},
+        "consolidated": True,
+        "height_load_max": 1,
+        "top_range_default": 1,
+        "vars": {
+            "all": {
+                "label": "All Variables",
+                "clim": (0.0, 1.0),
+                "log": False,
+                "colorscale": "Viridis",
+            },
+        },
+        "default_top": "all",
+        "default_bottom": "all",
+        "quicklook_dir": _path_from_env("VAISALAMET_QUICKLOOK_DIR", QUICKLOOK_ROOT / "vaisalamet"),
+        "latest_image": _path_from_env("VAISALAMET_LATEST_IMAGE", QUICKLOOK_ROOT / "vaisalamet" / "latest.png"),
+    },
+    "asfs-logger": {
+        "zarr_env": "ASFS_LOGGER_ZARR_PATH",
+        "zarr_default": "/data/aurora/products/asfs_logger/asfs_logger.zarr",
+        "chunk_spec": {"time": 1200},
+        "consolidated": True,
+        "height_load_max": 1,
+        "top_range_default": 1,
+        "vars": {
+            "all": {
+                "label": "All Variables",
+                "clim": (0.0, 1.0),
+                "log": False,
+                "colorscale": "Viridis",
+            },
+        },
+        "default_top": "all",
+        "default_bottom": "all",
+        "quicklook_dir": _path_from_env("ASFS_LOGGER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "asfs_logger"),
+        "latest_image": _path_from_env("ASFS_LOGGER_LATEST_IMAGE", QUICKLOOK_ROOT / "asfs_logger" / "latest.png"),
+    },
     "Scanning Microwave Radiometer": {
         "zarr_env": "HATPRO_ZARR_PATH",
         "zarr_default": "/mnt/data/ass/hatprog5/hatpro.zarr",
@@ -218,13 +258,15 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
         ds = base.isel(time=idx)
     except Exception:
         ds = base
-    try:
-        ds = ds.sel({"range": slice(0, cfg["height_load_max"])})
-    except Exception:
-        ds = ds.where(ds["range"] <= cfg["height_load_max"], drop=True)
+    has_range = "range" in ds.coords or "range" in ds.dims
+    if has_range:
+        try:
+            ds = ds.sel({"range": slice(0, cfg["height_load_max"])})
+        except Exception:
+            ds = ds.where(ds["range"] <= cfg["height_load_max"], drop=True)
     # If the user narrowed the plotted range, trim the data before coarsening so
     # we keep more vertical detail within the zoomed band.
-    if bottom_m is not None or top_m is not None:
+    if has_range and (bottom_m is not None or top_m is not None):
         low = max(bottom_m or 0.0, 0.0)
         high = min(top_m or cfg["height_load_max"], cfg["height_load_max"])
         try:
@@ -267,6 +309,21 @@ def _make_plot(ds, var, clim, logz, coloraxis):
         showscale=False,
     )
     return trace
+
+
+def _numeric_time_vars(ds: xr.Dataset) -> list[str]:
+    """Return numeric one-dimensional data variables aligned to time."""
+    names: list[str] = []
+    for name, da in ds.data_vars.items():
+        if da.dims != ("time",):
+            continue
+        if np.issubdtype(da.dtype, np.number):
+            names.append(name)
+    return names
+
+
+def _is_stacked_timeseries_instrument(inst: str) -> bool:
+    return inst in {"vaisalamet", "asfs-logger"}
 
 
 # Widgets / controls (Panel wires these into the view updater)
@@ -351,12 +408,15 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
 
         # Instrument-specific UI trimming
         is_hatpro = inst == "Scanning Microwave Radiometer"
-        var1_select.visible = not is_hatpro
-        var2_select.visible = not is_hatpro
-        ldr_vmin.visible = not is_hatpro
-        ldr_vmax.visible = not is_hatpro
-        beta_vmin.visible = True
-        beta_vmax.visible = True
+        is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
+        var1_select.visible = not (is_hatpro or is_stacked_timeseries)
+        var2_select.visible = not (is_hatpro or is_stacked_timeseries)
+        bottom_range_m.visible = not is_stacked_timeseries
+        top_range_m.visible = not is_stacked_timeseries
+        ldr_vmin.visible = not (is_hatpro or is_stacked_timeseries)
+        ldr_vmax.visible = not (is_hatpro or is_stacked_timeseries)
+        beta_vmin.visible = not is_stacked_timeseries
+        beta_vmax.visible = not is_stacked_timeseries
         if is_hatpro:
             beta_vmin.name = "T_PROF min (K)"
             beta_vmax.name = "T_PROF max (K)"
@@ -752,6 +812,120 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
     plot_pane.object = fig
 
 
+def _update_stacked_timeseries_view(instrument: str, start, end):
+    """Render a 1D logger dataset as stacked time series, one row per variable."""
+    print(f"[{instrument}] render window {start} -> {end}")
+    ds = open_window(start, end, instrument=instrument)
+    bg = "white"
+    fg = "#222222"
+    grid = "#dddddd"
+    times = pd.to_datetime(ds["time"].values) if "time" in ds else None
+    names = _numeric_time_vars(ds) if ds is not None else []
+    if times is None or len(times) == 0 or not names:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(color=fg, size=16),
+        )
+        fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
+        plot_pane.object = fig
+        return
+
+    max_rows = len(names)
+    tickvals = []
+    ticktext = []
+    noon_annots = []
+    if start and end:
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        duration = end_ts - start_ts
+        freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
+        hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
+        for t in hours:
+            tickvals.append(t.to_pydatetime())
+            ticktext.append(t.strftime("%H:%M"))
+            if t.hour == 12:
+                noon_annots.append(
+                    dict(
+                        x=t.to_pydatetime(),
+                        y=-0.08,
+                        xref="x",
+                        yref="paper",
+                        text=t.strftime("%Y-%m-%d"),
+                        showarrow=False,
+                        xanchor="center",
+                        yanchor="top",
+                        font=dict(size=14, color=fg),
+                    )
+                )
+
+    fig = make_subplots(
+        rows=max_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=min(0.02, 0.6 / max(max_rows - 1, 1)),
+    )
+    colors = ["#0b7285", "#c92a2a", "#2b8a3e", "#5f3dc4", "#e67700", "#087f5b", "#364fc7", "#a61e4d"]
+    for idx, name in enumerate(names, start=1):
+        values = np.asarray(ds[name].values, dtype=np.float64)
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=values,
+                mode="lines",
+                name=name,
+                line=dict(color=colors[(idx - 1) % len(colors)], width=1.4),
+                hovertemplate=f"Time=%{{x}}<br>{name}=%{{y:.6g}}<extra></extra>",
+                connectgaps=False,
+            ),
+            row=idx,
+            col=1,
+        )
+        fig.update_yaxes(
+            title_text=name,
+            showgrid=True,
+            gridcolor=grid,
+            linecolor=fg,
+            tickfont=dict(color=fg, size=9),
+            title_font=dict(color=fg, size=9),
+            row=idx,
+            col=1,
+        )
+
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=tickvals,
+        ticktext=ticktext,
+        tickangle=-45,
+        showgrid=True,
+        gridcolor=grid,
+        linecolor=fg,
+        tickfont=dict(color=fg, size=12),
+        title_font=dict(color=fg, size=12),
+    )
+    fig.update_xaxes(
+        title_text="Date and Time (UTC)",
+        title_standoff=50,
+        row=max_rows,
+        col=1,
+    )
+    fig.update_layout(
+        showlegend=False,
+        height=max(650, min(4200, 76 * len(names) + 120)),
+        margin=dict(l=115, r=35, t=30, b=95),
+        paper_bgcolor=bg,
+        plot_bgcolor=bg,
+        font=dict(color=fg, size=13),
+        annotations=tuple(noon_annots),
+    )
+    plot_pane.object = fig
+
+
 @pn.depends(
     range_start.param.value,
     range_end.param.value,
@@ -785,9 +959,12 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
     if instrument == "Scanning Microwave Radiometer":
         _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
         return
+    if _is_stacked_timeseries_instrument(instrument):
+        _update_stacked_timeseries_view(instrument, start, end)
+        return
     bottom = max(float(bottom_val), 0.0)
     top = max(float(top_val), bottom + 100.0)
-    ds = open_window(start, end, bottom_m=bottom, top_m=top)
+    ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument=instrument)
     cfg = _cfg()
     vars_cfg = cfg["vars"]
     var1 = vars_cfg.get(var1_name)
@@ -983,10 +1160,13 @@ def _on_relayout(event):
     end = _parse_relayout_time(x1) if x1 is not None else None
     if start is not None and end is not None and start > end:
         start, end = end, start
-    y0 = data.get("yaxis.range[0]") or data.get("yaxis2.range[0]")
-    y1 = data.get("yaxis.range[1]") or data.get("yaxis2.range[1]")
-    if y0 is not None and y1 is not None and y0 > y1:
-        y0, y1 = y1, y0
+    y0 = None
+    y1 = None
+    if not _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT):
+        y0 = data.get("yaxis.range[0]") or data.get("yaxis2.range[0]")
+        y1 = data.get("yaxis.range[1]") or data.get("yaxis2.range[1]")
+        if y0 is not None and y1 is not None and y0 > y1:
+            y0, y1 = y1, y0
     if start is None and end is None and y0 is None and y1 is None:
         return
     _relayout_guard = True
@@ -1041,7 +1221,19 @@ def _quicklook_options():
     date_labels = []
     if quick_dir.exists():
         for png in sorted(quick_dir.glob("*.png")):
-            label = png.stem.split("_")[-1] if "cloud_radar_" in png.stem else png.stem.replace("ceilometer_", "")
+            if png.name == latest.name:
+                continue
+            stem = png.stem
+            if stem.startswith("cloud_radar_"):
+                label = stem.removeprefix("cloud_radar_")
+            elif stem.startswith("ceilometer_"):
+                label = stem.removeprefix("ceilometer_")
+            elif stem.startswith("vaisalamet_"):
+                label = stem.removeprefix("vaisalamet_")
+            elif stem.startswith("asfs_logger_"):
+                label = stem.removeprefix("asfs_logger_")
+            else:
+                label = stem
             date_labels.append((label, str(png)))
     for label, path in date_labels:
         opts[label] = path
