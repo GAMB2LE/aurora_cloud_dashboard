@@ -17,6 +17,7 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+from wxcam_catalog import catalog_time_bounds, daily_latest_records, latest_record, latest_record_before, latest_record_in_window
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
@@ -133,6 +134,36 @@ INSTRUMENTS = {
         "quicklook_dir": _path_from_env("POWER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "power"),
         "latest_image": _path_from_env("POWER_LATEST_IMAGE", QUICKLOOK_ROOT / "power" / "latest.png"),
     },
+    "wxcam": {
+        "zarr_env": "WXCAM_ZARR_PATH",
+        "zarr_default": "/data/aurora/products/wxcam/wxcam.zarr",
+        "catalog_env": "WXCAM_CATALOG_PATH",
+        "catalog_default": "/data/aurora/products/wxcam/wxcam_catalog.sqlite",
+        "chunk_spec": {"time": 1},
+        "consolidated": True,
+        "height_load_max": 1,
+        "top_range_default": 1,
+        "vars": {
+            "FISH HDR": {
+                "label": "FISH HDR",
+                "image_type": "fish_hdr",
+                "clim": (0.0, 1.0),
+                "log": False,
+                "colorscale": "Viridis",
+            },
+            "PANO HDR": {
+                "label": "PANO HDR",
+                "image_type": "pano_hdr",
+                "clim": (0.0, 1.0),
+                "log": False,
+                "colorscale": "Viridis",
+            },
+        },
+        "default_top": "FISH HDR",
+        "default_bottom": "PANO HDR",
+        "quicklook_dir": _path_from_env("WXCAM_QUICKLOOK_DIR", QUICKLOOK_ROOT / "wxcam"),
+        "latest_image": _path_from_env("WXCAM_LATEST_IMAGE", QUICKLOOK_ROOT / "wxcam" / "latest.jpg"),
+    },
     "Scanning Microwave Radiometer": {
         "zarr_env": "HATPRO_ZARR_PATH",
         "zarr_default": "/mnt/data/ass/hatprog5/hatpro.zarr",
@@ -168,6 +199,11 @@ def _cfg(inst: str | None = None):
 def _zarr_path(inst: str | None = None):
     cfg = _cfg(inst)
     return os.environ.get(cfg["zarr_env"], cfg["zarr_default"])
+
+
+def _wxcam_catalog_path(inst: str | None = None) -> Path:
+    cfg = _cfg(inst)
+    return Path(os.environ.get(cfg["catalog_env"], cfg["catalog_default"]))
 
 
 def _ensure_utc(dt):
@@ -219,6 +255,9 @@ def _median_filter_nan(arr, k=3):
 
 def _dataset_time_bounds(inst: str | None = None):
     """Compute earliest and latest timestamps in the dataset (or None/None)."""
+    inst = inst or CURRENT_INSTRUMENT
+    if inst == "wxcam":
+        return catalog_time_bounds(_wxcam_catalog_path(inst))
     ds = _get_base_dataset(inst)
     if ds is None or "time" not in ds:
         return None, None
@@ -346,6 +385,10 @@ def _is_stacked_timeseries_instrument(inst: str) -> bool:
     return inst in {"vaisalamet", "asfs-logger", "power"}
 
 
+def _is_wxcam_instrument(inst: str) -> bool:
+    return inst == "wxcam"
+
+
 # Widgets / controls (Panel wires these into the view updater)
 tmin, tmax = _dataset_time_bounds()
 default_end = tmax or datetime.utcnow()
@@ -371,6 +414,7 @@ next_btn = pn.widgets.Button(name="Next Day/Current Day", button_type="default")
 live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="primary", value=True)
 instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=list(INSTRUMENTS.keys()))
 calendar_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=list(INSTRUMENTS.keys()))
+calendar_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
 
 _live_guard = False
 _instrument_guard = False
@@ -394,6 +438,8 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         var2_select.options = list(vars_cfg.keys())
         var1_select.value = var1_name
         var2_select.value = var2_name
+        var1_select.name = "Top var"
+        var2_select.name = "Bottom var"
         var1 = vars_cfg[var1_name]
         var2 = vars_cfg[var2_name]
         beta_vmin.name = f"{var1['label']} min"
@@ -429,14 +475,23 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         # Instrument-specific UI trimming
         is_hatpro = inst == "Scanning Microwave Radiometer"
         is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
-        var1_select.visible = not (is_hatpro or is_stacked_timeseries)
-        var2_select.visible = not (is_hatpro or is_stacked_timeseries)
-        bottom_range_m.visible = not is_stacked_timeseries
-        top_range_m.visible = not is_stacked_timeseries
-        ldr_vmin.visible = not (is_hatpro or is_stacked_timeseries)
-        ldr_vmax.visible = not (is_hatpro or is_stacked_timeseries)
-        beta_vmin.visible = not is_stacked_timeseries
-        beta_vmax.visible = not is_stacked_timeseries
+        is_wxcam = _is_wxcam_instrument(inst)
+        var1_select.visible = not is_hatpro and not is_stacked_timeseries
+        var2_select.visible = not is_hatpro and not is_stacked_timeseries
+        bottom_range_m.visible = not is_stacked_timeseries and not is_wxcam
+        top_range_m.visible = not is_stacked_timeseries and not is_wxcam
+        ldr_vmin.visible = not (is_hatpro or is_stacked_timeseries or is_wxcam)
+        ldr_vmax.visible = not (is_hatpro or is_stacked_timeseries or is_wxcam)
+        beta_vmin.visible = not (is_stacked_timeseries or is_wxcam)
+        beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
+        calendar_image_type.visible = is_wxcam
+        if is_wxcam:
+            var1_select.name = "Top image type"
+            var2_select.name = "Bottom image type"
+            calendar_image_type.options = list(vars_cfg.keys())
+            calendar_image_type.value = var1_name
+        else:
+            calendar_image_type.options = []
         if is_hatpro:
             beta_vmin.name = "T_PROF min (K)"
             beta_vmax.name = "T_PROF max (K)"
@@ -542,6 +597,10 @@ def _on_var_change(event):
     """Update limit widgets when variable selection changes."""
     cfg = _cfg()
     vars_cfg = cfg["vars"]
+    if _is_wxcam_instrument(CURRENT_INSTRUMENT):
+        if calendar_image_type.value != var1_select.value:
+            calendar_image_type.value = var1_select.value
+        return
     var1 = vars_cfg.get(var1_select.value, None)
     var2 = vars_cfg.get(var2_select.value, None)
     if var1:
@@ -556,6 +615,16 @@ def _on_var_change(event):
 
 var1_select.param.watch(_on_var_change, "value")
 var2_select.param.watch(_on_var_change, "value")
+
+
+def _on_calendar_image_type_change(event):
+    if not _is_wxcam_instrument(CURRENT_INSTRUMENT):
+        return
+    _refresh_ql_options(preserve_current=False)
+    ql_date.param.trigger("value")
+
+
+calendar_image_type.param.watch(_on_calendar_image_type_change, "value")
 
 def _auto_refresh():
     """Periodic refresh when live mode is on."""
@@ -633,6 +702,66 @@ range_end.param.watch(_on_manual_time_change, "value")
 # Persistent plot pane so we can listen for zoom/pan events (relayout).
 # Use stretch_width so height stays predictable on mobile.
 plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width")
+interactive_content = pn.Column(plot_pane, sizing_mode="stretch_both")
+
+
+def _show_plot(fig: go.Figure) -> None:
+    plot_pane.object = fig
+    interactive_content[:] = [plot_pane]
+
+
+def _image_type_from_selection(selection: str) -> str:
+    cfg = _cfg("wxcam")
+    return cfg["vars"][selection]["image_type"]
+
+
+def _image_pane(path: str):
+    return pn.pane.Image(path, sizing_mode="stretch_width")
+
+
+def _wxcam_panel(label: str, record, source_note: str):
+    heading = pn.pane.Markdown(f"**{label}**")
+    if record is None:
+        return pn.Column(
+            heading,
+            pn.pane.Markdown(f"No image available for {label.lower()} in the selected window."),
+            sizing_mode="stretch_width",
+        )
+    details = pn.pane.Markdown(
+        "\n".join(
+            [
+                f"`{record['time_utc']}` UTC",
+                f"{record['width']} x {record['height']} pixels",
+                f"{record['size_bytes'] / (1024 * 1024):.1f} MiB",
+                source_note,
+                f"`{record['raw_path']}`",
+            ]
+        )
+    )
+    return pn.Column(
+        heading,
+        details,
+        _image_pane(record["raw_path"]),
+        sizing_mode="stretch_width",
+    )
+
+
+def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
+    start = _ensure_utc(start)
+    end = _ensure_utc(end)
+    print(f"[wxcam] render window {start} -> {end}")
+    catalog_path = _wxcam_catalog_path("wxcam")
+    sections = []
+    for selection, slot in ((top_name, "Top"), (bottom_name, "Bottom")):
+        image_type = _image_type_from_selection(selection)
+        record = latest_record_in_window(catalog_path, image_type, start, end)
+        source_note = "Latest image in selected window."
+        if record is None and end is not None:
+            record = latest_record_before(catalog_path, image_type, end)
+            if record is not None:
+                source_note = "Latest image before the end of the selected window."
+        sections.append(_wxcam_panel(f"{slot}: {selection}", record, source_note))
+    interactive_content[:] = sections
 
 
 def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax):
@@ -655,7 +784,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
             font=dict(color="#222", size=16),
         )
         fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
-        plot_pane.object = fig
+        _show_plot(fig)
         return
 
     fig = make_subplots(
@@ -829,7 +958,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
         font=dict(color="#222222", size=13),
         annotations=tuple(list(fig.layout.annotations) + noon_annots),
     )
-    plot_pane.object = fig
+    _show_plot(fig)
 
 
 def _update_stacked_timeseries_view(instrument: str, start, end):
@@ -853,7 +982,7 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
             font=dict(color=fg, size=16),
         )
         fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-        plot_pane.object = fig
+        _show_plot(fig)
         return
 
     max_rows = len(names)
@@ -943,7 +1072,7 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
         font=dict(color=fg, size=13),
         annotations=tuple(noon_annots),
     )
-    plot_pane.object = fig
+    _show_plot(fig)
 
 
 @pn.depends(
@@ -979,6 +1108,9 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
     if instrument == "Scanning Microwave Radiometer":
         _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
         return
+    if _is_wxcam_instrument(instrument):
+        _update_wxcam_view(start, end, var1_name, var2_name)
+        return
     if _is_stacked_timeseries_instrument(instrument):
         _update_stacked_timeseries_view(instrument, start, end)
         return
@@ -1005,7 +1137,7 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
             font=dict(color=fg, size=16),
         )
         fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-        plot_pane.object = fig
+        _show_plot(fig)
         return
     # Colorbar configs
     if var1 and var1.get("log"):
@@ -1157,7 +1289,7 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
         font=dict(color=fg, size=13),
         annotations=tuple(list(fig.layout.annotations) + noon_annots),
     )
-    plot_pane.object = fig
+    _show_plot(fig)
 
 
 def _parse_relayout_time(val):
@@ -1182,7 +1314,7 @@ def _on_relayout(event):
         start, end = end, start
     y0 = None
     y1 = None
-    if not _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT):
+    if not _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT) and not _is_wxcam_instrument(CURRENT_INSTRUMENT):
         y0 = data.get("yaxis.range[0]") or data.get("yaxis2.range[0]")
         y1 = data.get("yaxis.range[1]") or data.get("yaxis2.range[1]")
         if y0 is not None and y1 is not None and y0 > y1:
@@ -1234,6 +1366,20 @@ _update_view(
 def _quicklook_options():
     """Build a mapping of label -> image path for available quicklook PNGs."""
     cfg = _cfg()
+    if _is_wxcam_instrument(CURRENT_INSTRUMENT):
+        image_label = calendar_image_type.value or _cfg("wxcam")["default_top"]
+        image_type = _cfg("wxcam")["vars"].get(image_label, {}).get("image_type")
+        if not image_type:
+            return {"No images available": None}
+        catalog_path = _wxcam_catalog_path("wxcam")
+        opts = {}
+        for row in daily_latest_records(catalog_path, image_type):
+            label = str(row["day_utc"]).replace("-", "")
+            opts[label] = str(row["raw_path"])
+        latest = latest_record(catalog_path, image_type)
+        if latest is not None:
+            opts["Today (latest)"] = str(latest["raw_path"])
+        return opts or {"No images available": None}
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -1331,7 +1477,7 @@ def _quicklook_image(selected):
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options().get(selected)
     if path and Path(path).exists():
-        return pn.pane.PNG(path, sizing_mode="stretch_width", height=2500)
+        return _image_pane(path)
     return pn.pane.Markdown("No image available for this selection.")
 
 
@@ -1391,14 +1537,14 @@ template = pn.template.MaterialTemplate(
     main_max_width="1800px",  # wide but keeps a valid string
 )
 
-interactive_tab = pn.Column(controls, plot_pane, sizing_mode="stretch_both")
+interactive_tab = pn.Column(controls, interactive_content, sizing_mode="stretch_both")
 tabs = pn.Tabs(
     ("Interactive", interactive_tab),
     (
         "Calendar",
         pn.Column(
             pn.Card(
-                pn.Row(calendar_instrument, sizing_mode="stretch_width"),
+                pn.Row(calendar_instrument, calendar_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
                 pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
                 title="",
                 collapsible=False,
