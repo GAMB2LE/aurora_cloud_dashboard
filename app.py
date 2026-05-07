@@ -113,6 +113,26 @@ INSTRUMENTS = {
         "quicklook_dir": _path_from_env("ASFS_LOGGER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "asfs_logger"),
         "latest_image": _path_from_env("ASFS_LOGGER_LATEST_IMAGE", QUICKLOOK_ROOT / "asfs_logger" / "latest.png"),
     },
+    "power": {
+        "zarr_env": "POWER_ZARR_PATH",
+        "zarr_default": "/data/aurora/products/power/power.zarr",
+        "chunk_spec": {"time": 1200},
+        "consolidated": True,
+        "height_load_max": 1,
+        "top_range_default": 1,
+        "vars": {
+            "all": {
+                "label": "All Variables",
+                "clim": (0.0, 1.0),
+                "log": False,
+                "colorscale": "Viridis",
+            },
+        },
+        "default_top": "all",
+        "default_bottom": "all",
+        "quicklook_dir": _path_from_env("POWER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "power"),
+        "latest_image": _path_from_env("POWER_LATEST_IMAGE", QUICKLOOK_ROOT / "power" / "latest.png"),
+    },
     "Scanning Microwave Radiometer": {
         "zarr_env": "HATPRO_ZARR_PATH",
         "zarr_default": "/mnt/data/ass/hatprog5/hatpro.zarr",
@@ -323,7 +343,7 @@ def _numeric_time_vars(ds: xr.Dataset) -> list[str]:
 
 
 def _is_stacked_timeseries_instrument(inst: str) -> bool:
-    return inst in {"vaisalamet", "asfs-logger"}
+    return inst in {"vaisalamet", "asfs-logger", "power"}
 
 
 # Widgets / controls (Panel wires these into the view updater)
@@ -1232,6 +1252,8 @@ def _quicklook_options():
                 label = stem.removeprefix("vaisalamet_")
             elif stem.startswith("asfs_logger_"):
                 label = stem.removeprefix("asfs_logger_")
+            elif stem.startswith("power_"):
+                label = stem.removeprefix("power_")
             else:
                 label = stem
             date_labels.append((label, str(png)))
