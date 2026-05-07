@@ -18,11 +18,15 @@ WXCAM_IMAGE_TYPES: dict[str, dict[str, str]] = {
         "label": "FISH HDR",
         "stream": "FISH",
         "glob": "HDR_*.jpg",
+        "width": "3120",
+        "height": "3040",
     },
     "pano_hdr": {
         "label": "PANO HDR",
         "stream": "PANO",
         "glob": "HDR_*_PANO.jpg",
+        "width": "2880",
+        "height": "750",
     },
 }
 
@@ -53,6 +57,11 @@ def wxcam_label(image_type: str) -> str:
 
 def wxcam_stream(image_type: str) -> str:
     return WXCAM_IMAGE_TYPES[image_type]["stream"]
+
+
+def wxcam_shape(image_type: str) -> tuple[int, int]:
+    spec = WXCAM_IMAGE_TYPES[image_type]
+    return int(spec["width"]), int(spec["height"])
 
 
 def open_catalog(path: Path) -> sqlite3.Connection:
@@ -111,6 +120,15 @@ def iter_raw_images(root: Path, image_type: str | None = None) -> Iterable[tuple
                 yield current_type, path
 
 
+def image_type_from_relative_path(relative_path: str) -> str:
+    rel = relative_path.strip("/")
+    if rel.startswith("FISH/"):
+        return "fish_hdr"
+    if rel.startswith("PANO/"):
+        return "pano_hdr"
+    raise ValueError(f"Could not infer wxcam image type from {relative_path}")
+
+
 def build_record(root: Path, image_type: str, path: Path) -> WxcamRecord:
     timestamp = parse_timestamp(path)
     if timestamp is None:
@@ -138,6 +156,34 @@ def build_record(root: Path, image_type: str, path: Path) -> WxcamRecord:
         height=height,
         size_bytes=stat_result.st_size,
         mtime_ns=stat_result.st_mtime_ns,
+        indexed_at=indexed_at,
+    )
+
+
+def build_bootstrap_record(root: Path, relative_path: str, size_bytes: int, mtime_ns: int) -> WxcamRecord:
+    rel_path = Path(relative_path)
+    image_type = image_type_from_relative_path(relative_path)
+    timestamp = parse_timestamp(rel_path)
+    if timestamp is None:
+        raise ValueError(f"Could not parse wxcam timestamp from {relative_path}")
+    width, height = wxcam_shape(image_type)
+    local_path = (root / rel_path).resolve()
+    indexed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    time_epoch_ns = calendar.timegm(timestamp.utctimetuple()) * 1_000_000_000
+    return WxcamRecord(
+        image_type=image_type,
+        stream=wxcam_stream(image_type),
+        label=wxcam_label(image_type),
+        time_utc=timestamp.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds"),
+        time_epoch_ns=time_epoch_ns,
+        day_utc=timestamp.strftime("%Y-%m-%d"),
+        raw_path=str(local_path),
+        relative_path=rel_path.as_posix(),
+        filename=rel_path.name,
+        width=width,
+        height=height,
+        size_bytes=int(size_bytes),
+        mtime_ns=int(mtime_ns),
         indexed_at=indexed_at,
     )
 

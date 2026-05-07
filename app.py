@@ -7,6 +7,7 @@
 # - Lightweight coarsening and subsampling to keep plots responsive.
 
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone, time
 from pathlib import Path
 
@@ -204,6 +205,14 @@ def _zarr_path(inst: str | None = None):
 def _wxcam_catalog_path(inst: str | None = None) -> Path:
     cfg = _cfg(inst)
     return Path(os.environ.get(cfg["catalog_env"], cfg["catalog_default"]))
+
+
+def _wxcam_source_config() -> tuple[str, str, str]:
+    return (
+        os.environ.get("WXCAM_SOURCE_USER", "aurora"),
+        os.environ.get("WXCAM_SOURCE_HOST", "100.124.55.22"),
+        os.environ.get("WXCAM_SOURCE_PATH", "/home/aurora/data/wxcam"),
+    )
 
 
 def _ensure_utc(dt):
@@ -719,6 +728,35 @@ def _image_pane(path: str):
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
+def _ensure_wxcam_image_local(record):
+    local_path = Path(str(record["raw_path"]))
+    if local_path.exists():
+        return local_path
+    relative_path = str(record["relative_path"])
+    source_user, source_host, source_root = _wxcam_source_config()
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["RSYNC_RSH"] = (
+        "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none "
+        "-o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new "
+        "-o UserKnownHostsFile=/home/aurora/.ssh/known_hosts"
+    )
+    remote = f"{source_user}@{source_host}:{source_root.rstrip('/')}/{relative_path}"
+    try:
+        subprocess.run(
+            ["rsync", "-a", remote, str(local_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+        )
+    except Exception as exc:
+        print(f"[wxcam] on-demand fetch failed for {relative_path}: {exc}")
+        return None
+    return local_path if local_path.exists() else None
+
+
 def _wxcam_panel(label: str, record, source_note: str):
     heading = pn.pane.Markdown(f"**{label}**")
     if record is None:
@@ -738,10 +776,18 @@ def _wxcam_panel(label: str, record, source_note: str):
             ]
         )
     )
+    local_path = _ensure_wxcam_image_local(record)
+    if local_path is None:
+        return pn.Column(
+            heading,
+            details,
+            pn.pane.Markdown("Image is cataloged, but the local cache fetch did not complete."),
+            sizing_mode="stretch_width",
+        )
     return pn.Column(
         heading,
         details,
-        _image_pane(record["raw_path"]),
+        _image_pane(str(local_path)),
         sizing_mode="stretch_width",
     )
 
