@@ -17,7 +17,7 @@ import os
 import pandas as pd
 import xarray as xr
 
-from netcdf_to_zarr import choose_engine, extract_datetime_from_name
+from netcdf_to_zarr import choose_engine, extract_datetime_from_name, make_zarr_from_netcdf
 
 
 def _filter_readable(files, engine):
@@ -72,10 +72,32 @@ def append_new_files(
     max_backfill_days=11,
     batch_size=200,
 ):
-    if not os.path.isdir(zarr_path):
-        raise FileNotFoundError(f"Zarr store not found: {zarr_path}")
-
     engine = choose_engine(engine)
+
+    file_pattern = os.path.join(input_dir, pattern)
+    all_files = sorted(glob.glob(file_pattern))
+    if not all_files:
+        print(f"No files found matching pattern: {file_pattern}")
+        return
+
+    if not os.path.isdir(zarr_path):
+        start_date = None
+        if max_backfill_days is not None:
+            start_date = (
+                pd.Timestamp.utcnow().replace(tzinfo=None) - pd.Timedelta(days=max_backfill_days)
+            ).date()
+            print(f"Zarr store not found; bootstrapping from files on/after {start_date}.")
+        else:
+            print("Zarr store not found; bootstrapping from all matching files.")
+        make_zarr_from_netcdf(
+            input_dir=input_dir,
+            pattern=pattern,
+            output_zarr=zarr_path,
+            chunks=chunks,
+            engine=engine,
+            start_date=start_date,
+        )
+        return
 
     ds_existing = xr.open_zarr(zarr_path, chunks={})
     if append_dim not in ds_existing:
@@ -95,12 +117,6 @@ def append_new_files(
                 f"Limiting backfill to files on/after {start_cutoff} "
                 f"(max_backfill_days={max_backfill_days})"
             )
-
-    file_pattern = os.path.join(input_dir, pattern)
-    all_files = sorted(glob.glob(file_pattern))
-    if not all_files:
-        print(f"No files found matching pattern: {file_pattern}")
-        return
 
     new_files = []
     for f in all_files:
@@ -165,10 +181,12 @@ def append_new_files(
 
 
 if __name__ == "__main__":
-    # EDIT THESE VALUES FOR YOUR SETUP
-    INPUT_DIR = "/mnt/data/cl61"
+    INPUT_DIR = os.environ.get("CEILOMETER_DIR", "/mnt/data/cl61")
     PATTERN = "gamb2le_depolarisation_lidar_ceilometer_aurora_*.nc"
-    ZARR_PATH = "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr"
+    ZARR_PATH = os.environ.get(
+        "CEILOMETER_ZARR_PATH",
+        "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
+    )
 
     # Chunking: "auto" or None generally avoids misaligned chunk warnings.
     CHUNKS = "auto"

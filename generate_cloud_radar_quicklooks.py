@@ -7,6 +7,7 @@ Panels (top→bottom): ZE_dBZ, MeanVel, SpecWidth, SLDR, RHV, SRCX, Skew, Kurt.
 from __future__ import annotations
 
 from datetime import timedelta
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -15,8 +16,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-ZARR_PATH = Path("/mnt/data/ass/rpgfmcw94/cloud_radar.zarr")
-QUICKLOOK_DIR = Path("/home/aurora/aurora_cloud_dashboard/quicklooks/cloud_radar")
+APP_DIR = Path(__file__).resolve().parent
+QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
+ZARR_PATH = Path(os.environ.get("CLOUD_RADAR_ZARR_PATH", "/mnt/data/ass/rpgfmcw94/cloud_radar.zarr"))
+QUICKLOOK_DIR = Path(os.environ.get("CLOUD_RADAR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "cloud_radar"))
 
 ZE_VMIN, ZE_VMAX = -30.0, 10.0
 VEL_VMIN, VEL_VMAX = -5.0, 5.0

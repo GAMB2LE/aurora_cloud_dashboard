@@ -20,6 +20,14 @@ import xarray as xr
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
+APP_DIR = Path(__file__).resolve().parent
+QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
+
+
+def _path_from_env(env_name: str, default: Path) -> Path:
+    return Path(os.environ.get(env_name, default))
+
+
 # --- Configuration ---
 INSTRUMENTS = {
     "Ceilometer": {
@@ -35,8 +43,8 @@ INSTRUMENTS = {
         },
         "default_top": "beta_att",
         "default_bottom": "linear_depol_ratio",
-        "quicklook_dir": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/ceilometer"),
-        "latest_image": Path("/home/aurora/aurora_cloud_dashboard/last24h.png"),
+        "quicklook_dir": _path_from_env("CEILOMETER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "ceilometer"),
+        "latest_image": _path_from_env("CEILOMETER_LATEST_IMAGE", APP_DIR / "last24h.png"),
     },
     "Cloud Radar": {
         "zarr_env": "CLOUD_RADAR_ZARR_PATH",
@@ -62,8 +70,8 @@ INSTRUMENTS = {
         },
         "default_top": "ZE_dBZ",
         "default_bottom": "MeanVel",
-        "quicklook_dir": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/cloud_radar"),
-        "latest_image": Path("/home/aurora/aurora_cloud_dashboard/last24h_cloudradar.png"),
+        "quicklook_dir": _path_from_env("CLOUD_RADAR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "cloud_radar"),
+        "latest_image": _path_from_env("CLOUD_RADAR_LATEST_IMAGE", APP_DIR / "last24h_cloudradar.png"),
     },
     "Scanning Microwave Radiometer": {
         "zarr_env": "HATPRO_ZARR_PATH",
@@ -77,8 +85,8 @@ INSTRUMENTS = {
         },
         "default_top": "T_PROF",
         "default_bottom": "T_PROF",
-        "quicklook_dir": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/hatpro"),
-        "latest_image": Path("/home/aurora/aurora_cloud_dashboard/quicklooks/hatpro/latest.png"),
+        "quicklook_dir": _path_from_env("HATPRO_QUICKLOOK_DIR", QUICKLOOK_ROOT / "hatpro"),
+        "latest_image": _path_from_env("HATPRO_LATEST_IMAGE", QUICKLOOK_ROOT / "hatpro" / "latest.png"),
     },
 }
 
@@ -122,8 +130,13 @@ def _get_base_dataset(inst: str | None = None):
     print(f"[base-ds] open {inst} -> {zarr_path}")
     try:
         ds = xr.open_zarr(zarr_path, chunks=cfg["chunk_spec"], consolidated=cfg["consolidated"])
-    except Exception:
-        ds = xr.open_zarr(zarr_path, chunks="auto", consolidated=False)
+    except Exception as first_exc:
+        try:
+            ds = xr.open_zarr(zarr_path, chunks="auto", consolidated=False)
+        except Exception as second_exc:
+            print(f"[base-ds] unavailable for {inst}: {first_exc}; fallback failed: {second_exc}")
+            _BASE_DS[inst] = None
+            return None
     _BASE_DS[inst] = ds
     return ds
 

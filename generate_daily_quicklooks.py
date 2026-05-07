@@ -11,6 +11,7 @@ Skip any PNG that already exists.
 """
 
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -21,8 +22,15 @@ import pandas as pd
 import xarray as xr
 
 # --- Paths and constants ---
-ZARR_PATH = Path("/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr")
-QUICKLOOK_DIR = Path("/home/aurora/aurora_cloud_dashboard/quicklooks/ceilometer")
+APP_DIR = Path(__file__).resolve().parent
+QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
+ZARR_PATH = Path(
+    os.environ.get(
+        "CEILOMETER_ZARR_PATH",
+        "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
+    )
+)
+QUICKLOOK_DIR = Path(os.environ.get("CEILOMETER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "ceilometer"))
 BETA_CMAP = "cividis"
 BETA_VMIN = 1e-7
 BETA_VMAX = 1e-3

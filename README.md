@@ -21,7 +21,19 @@ Lightweight Panel/Plotly dashboard to view ceilometer and cloud‑radar data fro
 - Quicklooks: `quicklooks/ceilometer/`, `quicklooks/cloud_radar/`
 - Latest 24h PNGs: `last24h.png`, `last24h_cloudradar.png`
 
-You can override Zarr paths with env vars: `CEILOMETER_ZARR_PATH`, `CLOUD_RADAR_ZARR_PATH`.
+You can override deployed paths with env vars:
+
+- `CEILOMETER_DIR`
+- `CEILOMETER_ZARR_PATH`
+- `CLOUD_RADAR_ZARR_PATH`
+- `HATPRO_ZARR_PATH`
+- `AURORA_QUICKLOOK_ROOT`
+- `CEILOMETER_QUICKLOOK_DIR`
+- `CEILOMETER_LATEST_IMAGE`
+- `CLOUD_RADAR_QUICKLOOK_DIR`
+- `CLOUD_RADAR_LATEST_IMAGE`
+- `HATPRO_QUICKLOOK_DIR`
+- `HATPRO_LATEST_IMAGE`
 
 ## Running locally
 ```bash
