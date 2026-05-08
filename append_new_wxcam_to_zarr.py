@@ -183,7 +183,6 @@ def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size
                     mode="a",
                     append_dim="time",
                     safe_chunks=False,
-                    encoding=encoding,
                 )
             else:
                 ds.to_zarr(
