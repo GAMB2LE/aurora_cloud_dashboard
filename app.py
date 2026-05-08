@@ -7,7 +7,9 @@
 # - Lightweight coarsening and subsampling to keep plots responsive.
 
 import os
+from base64 import b64encode
 from datetime import datetime, timedelta, timezone, time
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -904,6 +906,18 @@ def _media_pane(path: str):
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
+@lru_cache(maxsize=8)
+def _cached_video_data_uri(path_str: str, size_bytes: int, mtime_ns: int) -> str:
+    video_bytes = Path(path_str).read_bytes()
+    encoded = b64encode(video_bytes).decode("utf-8")
+    return f"data:video/mp4;base64,{encoded}"
+
+
+def _video_data_uri(path: Path) -> str:
+    stat_result = path.stat()
+    return _cached_video_data_uri(str(path), stat_result.st_size, stat_result.st_mtime_ns)
+
+
 def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
     interactive_content[:] = [
         pn.pane.Markdown(
@@ -1624,7 +1638,7 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection):
         mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
         title = f"{selection} | {selected} | {video_path.name}"
         return pn.Column(
-            WxcamVideoPlayer(src=str(video_path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
+            WxcamVideoPlayer(src=_video_data_uri(video_path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
             sizing_mode="stretch_width",
         )
     # Use the latest map in case files changed since last refresh.
