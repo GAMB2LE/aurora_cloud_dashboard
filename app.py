@@ -1816,25 +1816,44 @@ def _build_wxcam_hour_tile(
         preview = pn.pane.HTML(
             f"<div class='wxcam-hour-tile__placeholder'>{hour_label}</div>",
             sizing_mode="stretch_width",
+            margin=0,
         )
-        button = pn.widgets.Button(name=f"{hour_label} missing", disabled=True, sizing_mode="stretch_width")
-        return pn.Column(preview, button, css_classes=["wxcam-hour-tile"], sizing_mode="stretch_width")
+        button = pn.widgets.Button(name=f"{hour_label}", disabled=True, sizing_mode="stretch_width", margin=0)
+        return pn.Column(
+            preview,
+            button,
+            css_classes=["wxcam-hour-tile"],
+            sizing_mode="stretch_width",
+            margin=0,
+        )
 
     thumb_path = _wxcam_hourly_thumbnail_path(image_type, day_token, str(row["filename"]))
     if thumb_path.exists():
-        preview = pn.pane.Image(str(thumb_path), sizing_mode="stretch_width")
+        preview = pn.pane.HTML(
+            f"<img class='wxcam-hour-tile__img' src='{thumb_path.as_posix()}' alt='{hour_label}'>",
+            sizing_mode="stretch_width",
+            margin=0,
+        )
     else:
         preview = pn.pane.HTML(
             f"<div class='wxcam-hour-tile__placeholder'>{hour_label}</div>",
             sizing_mode="stretch_width",
+            margin=0,
         )
     button = pn.widgets.Button(
         name=hour_label,
         button_type="primary" if str(row["raw_path"]) == selected_hour_path else "default",
         sizing_mode="stretch_width",
+        margin=0,
     )
     button.on_click(lambda _event, path=str(row["raw_path"]): setattr(wxcam_calendar_state, "selected_hour_path", path))
-    return pn.Column(preview, button, css_classes=["wxcam-hour-tile"], sizing_mode="stretch_width")
+    return pn.Column(
+        preview,
+        button,
+        css_classes=["wxcam-hour-tile"],
+        sizing_mode="stretch_width",
+        margin=0,
+    )
 
 
 def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour_path: str):
@@ -1981,36 +2000,39 @@ body, .bk {
     max-height: 68vh;
 }
 .wxcam-hour-tile {
-    gap: 2px;
-    padding: 2px;
+    gap: 1px;
+    padding: 1px;
     border: 1px solid #cbd5e1;
-    border-radius: 3px;
+    border-radius: 2px;
     background: #ffffff;
 }
-.wxcam-hour-tile img {
+.wxcam-hour-tile > .bk {
+    margin: 0 !important;
+}
+.wxcam-hour-tile__img {
     display: block;
     width: auto;
     max-width: 100%;
-    max-height: 56px;
+    max-height: 44px;
     margin: 0 auto;
-    border-radius: 3px;
+    border-radius: 2px;
     background: #0f172a;
 }
 .wxcam-hour-tile button {
-    padding: 2px 5px !important;
-    min-height: 22px;
-    font-size: 11px !important;
+    padding: 1px 4px !important;
+    min-height: 18px;
+    font-size: 10px !important;
     line-height: 1.1 !important;
 }
 .wxcam-hour-tile__placeholder {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 44px;
-    border-radius: 3px;
+    min-height: 28px;
+    border-radius: 2px;
     background: #e2e8f0;
     color: #475569;
-    font-size: 11px;
+    font-size: 10px;
 }
 .wxcam-player--wide .wxcam-player__frame video {
     max-width: min(100%, 1400px);
