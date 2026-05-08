@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Append new wxcam images into per-stream Zarr groups from the catalog frontier forward."""
+"""Append new wxcam images into per-stream Zarr groups from the image catalog frontier forward."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _save_state(state_path: Path, state: dict[str, int]) -> None:
 
 def _initialize_state(catalog_path: Path, zarr_path: Path, state_path: Path) -> dict[str, int]:
     _ensure_store(zarr_path)
-    frontier = catalog_frontier(catalog_path)
+    frontier = catalog_frontier(catalog_path, media_kind="image")
     state = {image_type: int(frontier.get(image_type, 0)) for image_type in WXCAM_IMAGE_TYPES}
     _save_state(state_path, state)
     print("Initialized wxcam pixel-Zarr state at the current catalog frontier; historical images remain catalog-only.")
@@ -154,7 +154,7 @@ def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size
     changed = False
     for image_type in WXCAM_IMAGE_TYPES:
         last_ns = int(state.get(image_type, 0))
-        rows = records_after(catalog_path, image_type, last_ns)
+        rows = records_after(catalog_path, image_type, last_ns, media_kind="image")
         if not rows:
             print(f"No new wxcam catalog records for {image_type}.")
             continue

@@ -18,7 +18,15 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
-from wxcam_catalog import catalog_time_bounds, daily_latest_records, latest_record, latest_record_before, latest_record_in_window
+from wxcam_catalog import (
+    available_days,
+    catalog_time_bounds,
+    latest_record_before,
+    latest_record_in_window,
+    preferred_daily_record,
+    preferred_latest_record,
+    relative_path_from_local_path,
+)
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
@@ -724,15 +732,18 @@ def _image_type_from_selection(selection: str) -> str:
     return cfg["vars"][selection]["image_type"]
 
 
-def _image_pane(path: str):
+def _media_pane(path: str):
+    suffix = Path(path).suffix.lower()
+    if suffix == ".mp4":
+        return pn.pane.Video(path, sizing_mode="stretch_width", autoplay=False, loop=False, muted=True)
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
-def _ensure_wxcam_image_local(record):
+def _ensure_wxcam_media_local(record):
     local_path = Path(str(record["raw_path"]))
     if local_path.exists():
         return local_path
-    relative_path = str(record["relative_path"])
+    relative_path = str(record["relative_path"]) if "relative_path" in record.keys() else relative_path_from_local_path(str(record["raw_path"]))
     source_user, source_host, source_root = _wxcam_source_config()
     local_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -752,7 +763,7 @@ def _ensure_wxcam_image_local(record):
             env=env,
         )
     except Exception as exc:
-        print(f"[wxcam] on-demand fetch failed for {relative_path}: {exc}")
+        print(f"[wxcam] on-demand media fetch failed for {relative_path}: {exc}")
         return None
     return local_path if local_path.exists() else None
 
@@ -769,6 +780,7 @@ def _wxcam_panel(label: str, record, source_note: str):
         "\n".join(
             [
                 f"`{record['time_utc']}` UTC",
+                f"{str(record['media_kind']).upper()} ({record['mime_type']})",
                 f"{record['width']} x {record['height']} pixels",
                 f"{record['size_bytes'] / (1024 * 1024):.1f} MiB",
                 source_note,
@@ -776,18 +788,18 @@ def _wxcam_panel(label: str, record, source_note: str):
             ]
         )
     )
-    local_path = _ensure_wxcam_image_local(record)
+    local_path = _ensure_wxcam_media_local(record)
     if local_path is None:
         return pn.Column(
             heading,
             details,
-            pn.pane.Markdown("Image is cataloged, but the local cache fetch did not complete."),
+            pn.pane.Markdown("Media is cataloged, but the local cache fetch did not complete."),
             sizing_mode="stretch_width",
         )
     return pn.Column(
         heading,
         details,
-        _image_pane(str(local_path)),
+        _media_pane(str(local_path)),
         sizing_mode="stretch_width",
     )
 
@@ -800,10 +812,10 @@ def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
     sections = []
     for selection, slot in ((top_name, "Top"), (bottom_name, "Bottom")):
         image_type = _image_type_from_selection(selection)
-        record = latest_record_in_window(catalog_path, image_type, start, end)
+        record = latest_record_in_window(catalog_path, image_type, start, end, media_kind="image")
         source_note = "Latest image in selected window."
         if record is None and end is not None:
-            record = latest_record_before(catalog_path, image_type, end)
+            record = latest_record_before(catalog_path, image_type, end, media_kind="image")
             if record is not None:
                 source_note = "Latest image before the end of the selected window."
         sections.append(_wxcam_panel(f"{slot}: {selection}", record, source_note))
@@ -1410,22 +1422,22 @@ _update_view(
 # -------- Calendar quicklooks --------
 
 def _quicklook_options():
-    """Build a mapping of label -> image path for available quicklook PNGs."""
+    """Build a mapping of label -> quicklook asset token/path."""
     cfg = _cfg()
     if _is_wxcam_instrument(CURRENT_INSTRUMENT):
         image_label = calendar_image_type.value or _cfg("wxcam")["default_top"]
         image_type = _cfg("wxcam")["vars"].get(image_label, {}).get("image_type")
         if not image_type:
-            return {"No images available": None}
+            return {"No media available": None}
         catalog_path = _wxcam_catalog_path("wxcam")
         opts = {}
-        for row in daily_latest_records(catalog_path, image_type):
-            label = str(row["day_utc"]).replace("-", "")
-            opts[label] = str(row["raw_path"])
-        latest = latest_record(catalog_path, image_type)
+        for day_utc in available_days(catalog_path, image_type):
+            label = str(day_utc).replace("-", "")
+            opts[label] = str(day_utc)
+        latest = preferred_latest_record(catalog_path, image_type)
         if latest is not None:
-            opts["Today (latest)"] = str(latest["raw_path"])
-        return opts or {"No images available": None}
+            opts["Today (latest)"] = "__latest__"
+        return opts or {"No media available": None}
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -1519,11 +1531,33 @@ _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
 
 @pn.depends(ql_date.param.value)
 def _quicklook_image(selected):
-    """Show the selected quicklook image (or a message if missing)."""
+    """Show the selected quicklook asset (or a message if missing)."""
+    if _is_wxcam_instrument(CURRENT_INSTRUMENT):
+        image_label = calendar_image_type.value or _cfg("wxcam")["default_top"]
+        image_type = _cfg("wxcam")["vars"].get(image_label, {}).get("image_type")
+        if not image_type:
+            return pn.pane.Markdown("No media available for this selection.")
+        token = _quicklook_options().get(selected)
+        if token is None:
+            return pn.pane.Markdown("No media available for this selection.")
+        catalog_path = _wxcam_catalog_path("wxcam")
+        if token == "__latest__":
+            record = preferred_latest_record(catalog_path, image_type)
+        else:
+            record = preferred_daily_record(catalog_path, image_type, token)
+        if record is None:
+            return pn.pane.Markdown("No media available for this selection.")
+        local_path = _ensure_wxcam_media_local(record)
+        if local_path is None:
+            return pn.pane.Markdown("Media is cataloged, but the local cache fetch did not complete.")
+        details = pn.pane.Markdown(
+            f"`{record['time_utc']}` UTC | {str(record['media_kind']).upper()} | `{record['filename']}`"
+        )
+        return pn.Column(details, _media_pane(str(local_path)), sizing_mode="stretch_width")
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options().get(selected)
     if path and Path(path).exists():
-        return _image_pane(path)
+        return _media_pane(path)
     return pn.pane.Markdown("No image available for this selection.")
 
 

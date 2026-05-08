@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared catalog helpers for Aurora wxcam image products."""
+"""Shared catalog helpers for Aurora wxcam image and video products."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from PIL import Image
 
@@ -17,25 +17,30 @@ WXCAM_IMAGE_TYPES: dict[str, dict[str, str]] = {
     "fish_hdr": {
         "label": "FISH HDR",
         "stream": "FISH",
-        "glob": "HDR_*.jpg",
+        "image_glob": "HDR_*.jpg",
+        "video_glob": "HDR_*.mp4",
         "width": "3120",
         "height": "3040",
     },
     "pano_hdr": {
         "label": "PANO HDR",
         "stream": "PANO",
-        "glob": "HDR_*_PANO.jpg",
+        "image_glob": "HDR_*_PANO.jpg",
+        "video_glob": "HDR_*_PANO.mp4",
         "width": "2880",
         "height": "750",
     },
 }
 
-_TIMESTAMP_REGEX = re.compile(r"^HDR_(\d{8})_(\d{6})(?:_PANO)?\.jpg$")
+_TIMESTAMP_REGEX = re.compile(r"^HDR_(\d{8})_(\d{6})(?:_PANO)?\.(jpg|mp4)$", re.IGNORECASE)
+_LOCAL_MEDIA_ROOT = Path("/project/aurora/raw/wxcam")
 
 
 @dataclass(frozen=True)
 class WxcamRecord:
     image_type: str
+    media_kind: str
+    mime_type: str
     stream: str
     label: str
     time_utc: str
@@ -64,6 +69,23 @@ def wxcam_shape(image_type: str) -> tuple[int, int]:
     return int(spec["width"]), int(spec["height"])
 
 
+def media_kind_from_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".jpg":
+        return "image"
+    if suffix == ".mp4":
+        return "video"
+    raise ValueError(f"Unsupported wxcam media type for {path}")
+
+
+def mime_type_from_media_kind(media_kind: str) -> str:
+    if media_kind == "image":
+        return "image/jpeg"
+    if media_kind == "video":
+        return "video/mp4"
+    raise ValueError(f"Unsupported wxcam media kind {media_kind}")
+
+
 def open_catalog(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -78,6 +100,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS images (
             raw_path TEXT PRIMARY KEY,
             image_type TEXT NOT NULL,
+            media_kind TEXT NOT NULL DEFAULT 'image',
+            mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
             stream TEXT NOT NULL,
             label TEXT NOT NULL,
             time_utc TEXT NOT NULL,
@@ -91,17 +115,34 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             mtime_ns INTEGER NOT NULL,
             indexed_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_images_type_time ON images (image_type, time_epoch_ns);
-        CREATE INDEX IF NOT EXISTS idx_images_type_day ON images (image_type, day_utc);
         """
     )
+
+    columns = {
+        row["name"]: row
+        for row in conn.execute("PRAGMA table_info(images)").fetchall()
+    }
+    if "media_kind" not in columns:
+        conn.execute("ALTER TABLE images ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'image'")
+    if "mime_type" not in columns:
+        conn.execute("ALTER TABLE images ADD COLUMN mime_type TEXT NOT NULL DEFAULT 'image/jpeg'")
+
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_images_type_time ON images (image_type, time_epoch_ns);
+        CREATE INDEX IF NOT EXISTS idx_images_type_day ON images (image_type, day_utc);
+        CREATE INDEX IF NOT EXISTS idx_images_type_media_time ON images (image_type, media_kind, time_epoch_ns);
+        CREATE INDEX IF NOT EXISTS idx_images_type_media_day ON images (image_type, media_kind, day_utc);
+        """
+    )
+    conn.commit()
 
 
 def parse_timestamp(path: Path) -> datetime | None:
     match = _TIMESTAMP_REGEX.match(path.name)
     if not match:
         return None
-    date_part, time_part = match.groups()
+    date_part, time_part, _ext = match.groups()
     try:
         dt = datetime.strptime(f"{date_part}{time_part}", "%Y%m%d%H%M%S")
     except ValueError:
@@ -115,9 +156,11 @@ def iter_raw_images(root: Path, image_type: str | None = None) -> Iterable[tuple
         stream_root = root / spec["stream"]
         if not stream_root.exists():
             continue
-        for path in sorted(stream_root.rglob(spec["glob"])):
-            if path.is_file():
-                yield current_type, path
+        patterns = [spec["image_glob"], spec["video_glob"]]
+        for pattern in patterns:
+            for path in sorted(stream_root.rglob(pattern)):
+                if path.is_file():
+                    yield current_type, path
 
 
 def image_type_from_relative_path(relative_path: str) -> str:
@@ -134,8 +177,12 @@ def build_record(root: Path, image_type: str, path: Path) -> WxcamRecord:
     if timestamp is None:
         raise ValueError(f"Could not parse wxcam timestamp from {path.name}")
 
-    with Image.open(path) as image:
-        width, height = image.size
+    media_kind = media_kind_from_path(path)
+    if media_kind == "image":
+        with Image.open(path) as image:
+            width, height = image.size
+    else:
+        width, height = wxcam_shape(image_type)
 
     stat_result = path.stat()
     absolute_path = str(path.resolve())
@@ -144,6 +191,8 @@ def build_record(root: Path, image_type: str, path: Path) -> WxcamRecord:
     indexed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return WxcamRecord(
         image_type=image_type,
+        media_kind=media_kind,
+        mime_type=mime_type_from_media_kind(media_kind),
         stream=wxcam_stream(image_type),
         label=wxcam_label(image_type),
         time_utc=timestamp.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds"),
@@ -166,12 +215,15 @@ def build_bootstrap_record(root: Path, relative_path: str, size_bytes: int, mtim
     timestamp = parse_timestamp(rel_path)
     if timestamp is None:
         raise ValueError(f"Could not parse wxcam timestamp from {relative_path}")
+    media_kind = media_kind_from_path(rel_path)
     width, height = wxcam_shape(image_type)
     local_path = (root / rel_path).resolve()
     indexed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     time_epoch_ns = calendar.timegm(timestamp.utctimetuple()) * 1_000_000_000
     return WxcamRecord(
         image_type=image_type,
+        media_kind=media_kind,
+        mime_type=mime_type_from_media_kind(media_kind),
         stream=wxcam_stream(image_type),
         label=wxcam_label(image_type),
         time_utc=timestamp.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds"),
@@ -192,14 +244,16 @@ def upsert_record(conn: sqlite3.Connection, record: WxcamRecord) -> None:
     conn.execute(
         """
         INSERT INTO images (
-            raw_path, image_type, stream, label, time_utc, time_epoch_ns, day_utc,
-            relative_path, filename, width, height, size_bytes, mtime_ns, indexed_at
+            raw_path, image_type, media_kind, mime_type, stream, label, time_utc, time_epoch_ns,
+            day_utc, relative_path, filename, width, height, size_bytes, mtime_ns, indexed_at
         ) VALUES (
-            :raw_path, :image_type, :stream, :label, :time_utc, :time_epoch_ns, :day_utc,
-            :relative_path, :filename, :width, :height, :size_bytes, :mtime_ns, :indexed_at
+            :raw_path, :image_type, :media_kind, :mime_type, :stream, :label, :time_utc, :time_epoch_ns,
+            :day_utc, :relative_path, :filename, :width, :height, :size_bytes, :mtime_ns, :indexed_at
         )
         ON CONFLICT(raw_path) DO UPDATE SET
             image_type=excluded.image_type,
+            media_kind=excluded.media_kind,
+            mime_type=excluded.mime_type,
             stream=excluded.stream,
             label=excluded.label,
             time_utc=excluded.time_utc,
@@ -237,7 +291,24 @@ def catalog_time_bounds(path: Path) -> tuple[datetime | None, datetime | None]:
     return ns_to_datetime(int(row["min_ns"])), ns_to_datetime(int(row["max_ns"]))
 
 
-def latest_record(path: Path, image_type: str) -> sqlite3.Row | None:
+def available_days(path: Path, image_type: str) -> list[str]:
+    if not path.exists():
+        return []
+    with open_catalog(path) as conn:
+        ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT DISTINCT day_utc
+            FROM images
+            WHERE image_type = ?
+            ORDER BY day_utc
+            """,
+            (image_type,),
+        ).fetchall()
+    return [str(row["day_utc"]) for row in rows]
+
+
+def latest_record(path: Path, image_type: str, media_kind: str = "image") -> sqlite3.Row | None:
     if not path.exists():
         return None
     with open_catalog(path) as conn:
@@ -246,36 +317,42 @@ def latest_record(path: Path, image_type: str) -> sqlite3.Row | None:
             """
             SELECT *
             FROM images
-            WHERE image_type = ?
+            WHERE image_type = ? AND media_kind = ?
             ORDER BY time_epoch_ns DESC
             LIMIT 1
             """,
-            (image_type,),
+            (image_type, media_kind),
         ).fetchone()
 
 
-def latest_record_before(path: Path, image_type: str, end: datetime | None) -> sqlite3.Row | None:
+def latest_record_before(path: Path, image_type: str, end: datetime | None, media_kind: str = "image") -> sqlite3.Row | None:
     if end is None or not path.exists():
-        return latest_record(path, image_type)
+        return latest_record(path, image_type, media_kind=media_kind)
     with open_catalog(path) as conn:
         ensure_schema(conn)
         return conn.execute(
             """
             SELECT *
             FROM images
-            WHERE image_type = ? AND time_epoch_ns <= ?
+            WHERE image_type = ? AND media_kind = ? AND time_epoch_ns <= ?
             ORDER BY time_epoch_ns DESC
             LIMIT 1
             """,
-            (image_type, datetime_to_ns(end)),
+            (image_type, media_kind, datetime_to_ns(end)),
         ).fetchone()
 
 
-def latest_record_in_window(path: Path, image_type: str, start: datetime | None, end: datetime | None) -> sqlite3.Row | None:
+def latest_record_in_window(
+    path: Path,
+    image_type: str,
+    start: datetime | None,
+    end: datetime | None,
+    media_kind: str = "image",
+) -> sqlite3.Row | None:
     if not path.exists():
         return None
     if start is None or end is None:
-        return latest_record(path, image_type)
+        return latest_record(path, image_type, media_kind=media_kind)
     with open_catalog(path) as conn:
         ensure_schema(conn)
         row = conn.execute(
@@ -283,17 +360,18 @@ def latest_record_in_window(path: Path, image_type: str, start: datetime | None,
             SELECT *
             FROM images
             WHERE image_type = ?
+              AND media_kind = ?
               AND time_epoch_ns >= ?
               AND time_epoch_ns <= ?
             ORDER BY time_epoch_ns DESC
             LIMIT 1
             """,
-            (image_type, datetime_to_ns(start), datetime_to_ns(end)),
+            (image_type, media_kind, datetime_to_ns(start), datetime_to_ns(end)),
         ).fetchone()
     return row
 
 
-def daily_latest_records(path: Path, image_type: str) -> list[sqlite3.Row]:
+def daily_latest_records(path: Path, image_type: str, media_kind: str = "image") -> list[sqlite3.Row]:
     if not path.exists():
         return []
     with open_catalog(path) as conn:
@@ -305,20 +383,73 @@ def daily_latest_records(path: Path, image_type: str) -> list[sqlite3.Row]:
             JOIN (
                 SELECT day_utc, MAX(time_epoch_ns) AS max_ns
                 FROM images
-                WHERE image_type = ?
+                WHERE image_type = ? AND media_kind = ?
                 GROUP BY day_utc
             ) AS latest
               ON i.day_utc = latest.day_utc
              AND i.time_epoch_ns = latest.max_ns
-            WHERE i.image_type = ?
+            WHERE i.image_type = ? AND i.media_kind = ?
             ORDER BY i.day_utc
             """,
-            (image_type, image_type),
+            (image_type, media_kind, image_type, media_kind),
         ).fetchall()
     return rows
 
 
-def catalog_frontier(path: Path) -> dict[str, int]:
+def _select_preferred(rows: Sequence[sqlite3.Row], media_kinds: Sequence[str]) -> sqlite3.Row | None:
+    latest_by_kind: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        kind = str(row["media_kind"])
+        if kind not in latest_by_kind:
+            latest_by_kind[kind] = row
+    for kind in media_kinds:
+        if kind in latest_by_kind:
+            return latest_by_kind[kind]
+    return rows[0] if rows else None
+
+
+def preferred_latest_record(path: Path, image_type: str, media_kinds: Sequence[str] = ("video", "image")) -> sqlite3.Row | None:
+    if not path.exists():
+        return None
+    placeholders = ",".join("?" for _ in media_kinds)
+    with open_catalog(path) as conn:
+        ensure_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM images
+            WHERE image_type = ? AND media_kind IN ({placeholders})
+            ORDER BY time_epoch_ns DESC
+            """,
+            (image_type, *media_kinds),
+        ).fetchall()
+    return _select_preferred(rows, media_kinds)
+
+
+def preferred_daily_record(
+    path: Path,
+    image_type: str,
+    day_utc: str,
+    media_kinds: Sequence[str] = ("video", "image"),
+) -> sqlite3.Row | None:
+    if not path.exists():
+        return None
+    placeholders = ",".join("?" for _ in media_kinds)
+    with open_catalog(path) as conn:
+        ensure_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM images
+            WHERE image_type = ? AND day_utc = ? AND media_kind IN ({placeholders})
+            ORDER BY time_epoch_ns DESC
+            """,
+            (image_type, day_utc, *media_kinds),
+        ).fetchall()
+    return _select_preferred(rows, media_kinds)
+
+
+def catalog_frontier(path: Path, media_kind: str = "image") -> dict[str, int]:
     if not path.exists():
         return {}
     with open_catalog(path) as conn:
@@ -327,13 +458,15 @@ def catalog_frontier(path: Path) -> dict[str, int]:
             """
             SELECT image_type, MAX(time_epoch_ns) AS max_ns
             FROM images
+            WHERE media_kind = ?
             GROUP BY image_type
-            """
+            """,
+            (media_kind,),
         ).fetchall()
     return {row["image_type"]: int(row["max_ns"]) for row in rows if row["max_ns"] is not None}
 
 
-def records_after(path: Path, image_type: str, time_epoch_ns: int) -> list[sqlite3.Row]:
+def records_after(path: Path, image_type: str, time_epoch_ns: int, media_kind: str = "image") -> list[sqlite3.Row]:
     if not path.exists():
         return []
     with open_catalog(path) as conn:
@@ -342,12 +475,16 @@ def records_after(path: Path, image_type: str, time_epoch_ns: int) -> list[sqlit
             """
             SELECT *
             FROM images
-            WHERE image_type = ? AND time_epoch_ns > ?
+            WHERE image_type = ? AND media_kind = ? AND time_epoch_ns > ?
             ORDER BY time_epoch_ns ASC
             """,
-            (image_type, int(time_epoch_ns)),
+            (image_type, media_kind, int(time_epoch_ns)),
         ).fetchall()
     return rows
+
+
+def relative_path_from_local_path(raw_path: str) -> str:
+    return Path(raw_path).resolve().relative_to(_LOCAL_MEDIA_ROOT.resolve()).as_posix()
 
 
 def ns_to_datetime(value: int) -> datetime:

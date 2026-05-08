@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Index Aurora wxcam HDR images into a lightweight SQLite catalog."""
+"""Index Aurora wxcam HDR images and videos into a lightweight SQLite catalog."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ def _bootstrap_from_remote(
     fish_pattern: str,
     pano_pattern: str,
 ) -> int:
+    fish_video_pattern = fish_pattern.removesuffix(".jpg") + ".mp4"
+    pano_video_pattern = pano_pattern.removesuffix(".jpg") + ".mp4"
     ssh_cmd = [
         "ssh",
         "-o",
@@ -43,15 +45,21 @@ def _bootstrap_from_remote(
         source_path,
         fish_pattern,
         pano_pattern,
+        fish_video_pattern,
+        pano_video_pattern,
     ]
     remote_script = """\
 set -euo pipefail
 source_path="$1"
 fish_pattern="$2"
 pano_pattern="$3"
+fish_video_pattern="$4"
+pano_video_pattern="$5"
 cd "$source_path"
 find FISH -type f -name "$fish_pattern" -printf '%p\\t%s\\t%T@\\0'
+find FISH -type f -name "$fish_video_pattern" -printf '%p\\t%s\\t%T@\\0'
 find PANO -type f -name "$pano_pattern" -printf '%p\\t%s\\t%T@\\0'
+find PANO -type f -name "$pano_video_pattern" -printf '%p\\t%s\\t%T@\\0'
 """
     inserted = 0
     process = subprocess.Popen(
@@ -152,7 +160,7 @@ def index_catalog(
             try:
                 record = build_record(root, image_type, path)
             except Exception as exc:
-                print(f"Skipping unreadable wxcam image {path}: {exc}")
+                print(f"Skipping unreadable wxcam media {path}: {exc}")
                 continue
             upsert_record(conn, record)
             if absolute_path in known:
@@ -170,7 +178,7 @@ def index_catalog(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Index Aurora wxcam HDR images into SQLite.")
+    parser = argparse.ArgumentParser(description="Index Aurora wxcam HDR images and videos into SQLite.")
     parser.add_argument("--root", type=Path, default=ROOT_DEFAULT)
     parser.add_argument("--catalog", type=Path, default=CATALOG_DEFAULT)
     parser.add_argument("--bootstrap-source-user", default=None)
