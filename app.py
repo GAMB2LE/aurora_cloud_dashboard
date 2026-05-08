@@ -19,13 +19,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
 from wxcam_catalog import (
-    available_days,
     catalog_time_bounds,
-    latest_record_before,
-    latest_record_in_window,
-    preferred_daily_record,
-    preferred_latest_record,
-    relative_path_from_local_path,
 )
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
@@ -213,6 +207,10 @@ def _zarr_path(inst: str | None = None):
 def _wxcam_catalog_path(inst: str | None = None) -> Path:
     cfg = _cfg(inst)
     return Path(os.environ.get(cfg["catalog_env"], cfg["catalog_default"]))
+
+
+def _wxcam_daily_video_root() -> Path:
+    return Path(os.environ.get("WXCAM_DAILY_VIDEO_DIR", "/data/aurora/products/wxcam/daily_videos"))
 
 
 def _wxcam_source_config() -> tuple[str, str, str]:
@@ -493,8 +491,8 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         is_hatpro = inst == "Scanning Microwave Radiometer"
         is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
         is_wxcam = _is_wxcam_instrument(inst)
-        var1_select.visible = not is_hatpro and not is_stacked_timeseries
-        var2_select.visible = not is_hatpro and not is_stacked_timeseries
+        var1_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
+        var2_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
         bottom_range_m.visible = not is_stacked_timeseries and not is_wxcam
         top_range_m.visible = not is_stacked_timeseries and not is_wxcam
         ldr_vmin.visible = not (is_hatpro or is_stacked_timeseries or is_wxcam)
@@ -503,8 +501,6 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         calendar_image_type.visible = is_wxcam
         if is_wxcam:
-            var1_select.name = "Top image type"
-            var2_select.name = "Bottom image type"
             calendar_image_type.options = list(vars_cfg.keys())
             calendar_image_type.value = var1_name
         else:
@@ -732,6 +728,31 @@ def _image_type_from_selection(selection: str) -> str:
     return cfg["vars"][selection]["image_type"]
 
 
+def _wxcam_daily_video_dir(image_type: str) -> Path:
+    return _wxcam_daily_video_root() / image_type
+
+
+def _wxcam_today_token() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _wxcam_daily_video_options(selection: str) -> dict[str, str | None]:
+    image_type = _image_type_from_selection(selection)
+    day_dir = _wxcam_daily_video_dir(image_type)
+    if not day_dir.exists():
+        return {"No videos available": None}
+    today_token = _wxcam_today_token()
+    opts: dict[str, str | None] = {}
+    for video_path in sorted(day_dir.glob("*.mp4")):
+        if video_path.stem == today_token:
+            continue
+        opts[video_path.stem] = str(video_path)
+    today_path = day_dir / f"{today_token}.mp4"
+    if today_path.exists():
+        opts["Today (latest)"] = str(today_path)
+    return opts or {"No videos available": None}
+
+
 def _media_pane(path: str):
     suffix = Path(path).suffix.lower()
     if suffix == ".mp4":
@@ -739,87 +760,12 @@ def _media_pane(path: str):
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
-def _ensure_wxcam_media_local(record):
-    local_path = Path(str(record["raw_path"]))
-    if local_path.exists():
-        return local_path
-    relative_path = str(record["relative_path"]) if "relative_path" in record.keys() else relative_path_from_local_path(str(record["raw_path"]))
-    source_user, source_host, source_root = _wxcam_source_config()
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["RSYNC_RSH"] = (
-        "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none "
-        "-o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new "
-        "-o UserKnownHostsFile=/home/aurora/.ssh/known_hosts"
-    )
-    remote = f"{source_user}@{source_host}:{source_root.rstrip('/')}/{relative_path}"
-    try:
-        subprocess.run(
-            ["rsync", "-a", remote, str(local_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            env=env,
-        )
-    except Exception as exc:
-        print(f"[wxcam] on-demand media fetch failed for {relative_path}: {exc}")
-        return None
-    return local_path if local_path.exists() else None
-
-
-def _wxcam_panel(label: str, record, source_note: str):
-    heading = pn.pane.Markdown(f"**{label}**")
-    if record is None:
-        return pn.Column(
-            heading,
-            pn.pane.Markdown(f"No image available for {label.lower()} in the selected window."),
-            sizing_mode="stretch_width",
-        )
-    details = pn.pane.Markdown(
-        "\n".join(
-            [
-                f"`{record['time_utc']}` UTC",
-                f"{str(record['media_kind']).upper()} ({record['mime_type']})",
-                f"{record['width']} x {record['height']} pixels",
-                f"{record['size_bytes'] / (1024 * 1024):.1f} MiB",
-                source_note,
-                f"`{record['raw_path']}`",
-            ]
-        )
-    )
-    local_path = _ensure_wxcam_media_local(record)
-    if local_path is None:
-        return pn.Column(
-            heading,
-            details,
-            pn.pane.Markdown("Media is cataloged, but the local cache fetch did not complete."),
-            sizing_mode="stretch_width",
-        )
-    return pn.Column(
-        heading,
-        details,
-        _media_pane(str(local_path)),
-        sizing_mode="stretch_width",
-    )
-
-
 def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
-    start = _ensure_utc(start)
-    end = _ensure_utc(end)
-    print(f"[wxcam] render window {start} -> {end}")
-    catalog_path = _wxcam_catalog_path("wxcam")
-    sections = []
-    for selection, slot in ((top_name, "Top"), (bottom_name, "Bottom")):
-        image_type = _image_type_from_selection(selection)
-        record = latest_record_in_window(catalog_path, image_type, start, end, media_kind="image")
-        source_note = "Latest image in selected window."
-        if record is None and end is not None:
-            record = latest_record_before(catalog_path, image_type, end, media_kind="image")
-            if record is not None:
-                source_note = "Latest image before the end of the selected window."
-        sections.append(_wxcam_panel(f"{slot}: {selection}", record, source_note))
-    interactive_content[:] = sections
+    interactive_content[:] = [
+        pn.pane.Markdown(
+            "wxcam media is available on the **Calendar** tab. The interactive tab is disabled for this instrument."
+        )
+    ]
 
 
 def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax):
@@ -1425,19 +1371,7 @@ def _quicklook_options():
     """Build a mapping of label -> quicklook asset token/path."""
     cfg = _cfg()
     if _is_wxcam_instrument(CURRENT_INSTRUMENT):
-        image_label = calendar_image_type.value or _cfg("wxcam")["default_top"]
-        image_type = _cfg("wxcam")["vars"].get(image_label, {}).get("image_type")
-        if not image_type:
-            return {"No media available": None}
-        catalog_path = _wxcam_catalog_path("wxcam")
-        opts = {}
-        for day_utc in available_days(catalog_path, image_type):
-            label = str(day_utc).replace("-", "")
-            opts[label] = str(day_utc)
-        latest = preferred_latest_record(catalog_path, image_type)
-        if latest is not None:
-            opts["Today (latest)"] = "__latest__"
-        return opts or {"No media available": None}
+        return _wxcam_daily_video_options(calendar_image_type.value or _cfg("wxcam")["default_top"])
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -1533,27 +1467,16 @@ _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
 def _quicklook_image(selected):
     """Show the selected quicklook asset (or a message if missing)."""
     if _is_wxcam_instrument(CURRENT_INSTRUMENT):
-        image_label = calendar_image_type.value or _cfg("wxcam")["default_top"]
-        image_type = _cfg("wxcam")["vars"].get(image_label, {}).get("image_type")
-        if not image_type:
+        path = _quicklook_options().get(selected)
+        if not path:
             return pn.pane.Markdown("No media available for this selection.")
-        token = _quicklook_options().get(selected)
-        if token is None:
+        video_path = Path(path)
+        if not video_path.exists():
             return pn.pane.Markdown("No media available for this selection.")
-        catalog_path = _wxcam_catalog_path("wxcam")
-        if token == "__latest__":
-            record = preferred_latest_record(catalog_path, image_type)
-        else:
-            record = preferred_daily_record(catalog_path, image_type, token)
-        if record is None:
-            return pn.pane.Markdown("No media available for this selection.")
-        local_path = _ensure_wxcam_media_local(record)
-        if local_path is None:
-            return pn.pane.Markdown("Media is cataloged, but the local cache fetch did not complete.")
         details = pn.pane.Markdown(
-            f"`{record['time_utc']}` UTC | {str(record['media_kind']).upper()} | `{record['filename']}`"
+            f"`{video_path.name}`"
         )
-        return pn.Column(details, _media_pane(str(local_path)), sizing_mode="stretch_width")
+        return pn.Column(details, _media_pane(str(video_path)), sizing_mode="stretch_width")
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options().get(selected)
     if path and Path(path).exists():
