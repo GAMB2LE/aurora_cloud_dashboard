@@ -1,60 +1,101 @@
 # Aurora Cloud Dashboard
 
-Lightweight Panel/Plotly dashboard to view ceilometer and cloud‑radar data from Zarr stores, plus helper scripts to build/append Zarr, generate quicklooks, and plot status.
+Panel dashboard and data-product scripts for the Aurora observing stack.
 
-## What's here
-- `app.py` — Panel app with tabs for **Interactive** plots and **Calendar** quicklooks. Supports instrument switcher (Ceilometer / Cloud Radar), time window, range limits, color limits, day navigation, and live 24 h mode.
-- Radar/ceilometer utilities:
-  - `netcdf_to_zarr.py`, `append_new_netcdf_to_zarr.py` — build/append ceilometer Zarr from NetCDF.
-  - `cloud_radar_to_zarr.py`, `append_new_cloud_radar_to_zarr.py` — build/append radar Zarr (stitches C1+C2 along range).
-  - `plot_cloud_radar_last24h.py`, `plot_ceilometer_zarr_last24h.py` — produce last‑24h PNGs for the dashboard.
-  - `generate_cloud_radar_quicklooks.py`, `generate_daily_quicklooks.py` — daily PNGs for calendar tab.
-  - `consolidate_zarr_metadata.py`, `plot_status_timeseries.py`.
-- Service units (user systemd) in `~/.config/systemd/user/`:
-  - `ceilometer.service` — runs `panel serve app.py`.
-  - `cloud_radar_append.service` + `.timer` — append new radar NetCDF files into the Zarr.
-  - `cloud_radar_quicklooks.service` + `.timer` — refresh radar quicklook PNGs and last‑24h image.
+## Instruments
 
-## Data locations
-- Ceilometer Zarr (default): `/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr`
-- Radar Zarr (default): `/mnt/data/ass/rpgfmcw94/cloud_radar.zarr`
-- Quicklooks: `quicklooks/ceilometer/`, `quicklooks/cloud_radar/`
-- Latest 24h PNGs: `last24h.png`, `last24h_cloudradar.png`
+- `Ceilometer` - CL61 backscatter/depolarization Zarr with interactive height-time plots and calendar quicklooks.
+- `Cloud Radar` - RPG FMCW 94 GHz Zarr with interactive height-time plots and calendar quicklooks.
+- `vaisalamet` - stacked 1D time-series plots for all retained variables, plus daily quicklooks.
+- `asfs-logger` - stacked 1D time-series plots for all retained variables, plus daily quicklooks.
+- `power` - stacked 1D time-series plots for all retained non-wind variables, plus daily quicklooks.
+- `wxcam` - interactive daily HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog. The Calendar tab is intentionally blank for wxcam.
 
-You can override deployed paths with env vars:
+`asfs-fast-sonic` is processed into its own Zarr store for downstream analysis, but it is not exposed in the dashboard UI.
 
-- `CEILOMETER_DIR`
-- `CEILOMETER_ZARR_PATH`
-- `CLOUD_RADAR_ZARR_PATH`
-- `HATPRO_ZARR_PATH`
-- `AURORA_QUICKLOOK_ROOT`
-- `CEILOMETER_QUICKLOOK_DIR`
-- `CEILOMETER_LATEST_IMAGE`
-- `CLOUD_RADAR_QUICKLOOK_DIR`
-- `CLOUD_RADAR_LATEST_IMAGE`
-- `HATPRO_QUICKLOOK_DIR`
-- `HATPRO_LATEST_IMAGE`
+## Core files
 
-## Running locally
+- `app.py` - main Panel application.
+- `wxcam_catalog.py` - shared helpers for the wxcam SQLite catalog.
+- `index_wxcam_catalog.py` - indexes local wxcam HDR images and videos, with optional remote bootstrap metadata.
+- `build_wxcam_daily_videos.py` - builds daily wxcam MP4 products from hourly clips.
+- `append_new_wxcam_to_zarr.py` - forward append path for wxcam pixel Zarr groups. The service exists, but the timer is currently disabled.
+- `append_new_*_to_zarr.py` - appenders for the numeric instruments.
+- `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
+
+## Deployed paths
+
+Primary paths come from `/etc/aurora-dashboard.env`.
+
+- Dashboard app: `/opt/aurora-cloud-dashboard`
+- Raw data root: `/project/aurora/raw`
+- Product root: `/data/aurora/products`
+- Quicklook root: `/data/aurora/products/quicklooks`
+
+Important products:
+
+- CL61 Zarr: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr`
+- Radar Zarr: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
+- Vaisala met Zarr: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
+- ASFS logger Zarr: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
+- ASFS fast-sonic Zarr: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
+- Power Zarr: `/data/aurora/products/power/power.zarr`
+- Wxcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
+- Wxcam daily videos: `/data/aurora/products/wxcam/daily_videos`
+
+## Services
+
+Systemd services are installed system-wide under `/etc/systemd/system/`.
+
+- Dashboard:
+  - `aurora-dashboard.service`
+- CL61:
+  - `aurora-cl61-source-sync.timer`
+  - `aurora-ceilometer-append.timer`
+  - `aurora-ceilometer-last24h.timer`
+  - `aurora-ceilometer-quicklooks.timer`
+- Radar:
+  - `aurora-radar-source-sync.timer`
+  - `aurora-radar-append.timer`
+  - `aurora-radar-quicklooks.timer`
+- Vaisala met:
+  - `aurora-vaisalamet-source-sync.timer`
+  - `aurora-vaisalamet-append.timer`
+  - `aurora-vaisalamet-quicklooks.timer`
+- ASFS logger:
+  - `aurora-asfs-logger-source-sync.timer`
+  - `aurora-asfs-logger-append.timer`
+  - `aurora-asfs-logger-quicklooks.timer`
+- ASFS fast-sonic:
+  - `aurora-asfs-fast-sonic-source-sync.timer`
+  - `aurora-asfs-fast-sonic-append.timer`
+- Power:
+  - `aurora-power-source-sync.timer`
+  - `aurora-power-append.timer`
+  - `aurora-power-quicklooks.timer`
+- Wxcam:
+  - `aurora-wxcam-source-sync.timer`
+  - `aurora-wxcam-catalog.timer`
+  - `aurora-wxcam-daily-videos.timer`
+  - `aurora-wxcam-append.timer` (installed, currently disabled)
+
+Useful commands:
+
 ```bash
-cd /home/aurora/aurora_cloud_dashboard
-source aurora_cloud/bin/activate
-panel serve app.py --address 0.0.0.0 --port 5006 --allow-websocket-origin=<host>
+sudo systemctl status aurora-dashboard.service
+sudo systemctl list-timers --all | rg '^.*aurora-'
+sudo journalctl -u aurora-dashboard.service -f
 ```
 
-## Managing services (run as user `aurora`)
-- Status: `systemctl --user status ceilometer.service`
-- Restart dashboard: `systemctl --user restart ceilometer.service`
-- Append radar files now: `systemctl --user start cloud_radar_append.service`
-- Regenerate radar quicklooks now: `systemctl --user start cloud_radar_quicklooks.service`
-- View logs: `journalctl --user -u <service> -f`
+## Running locally
 
-## Typical workflows
-- Build radar Zarr from raw LV1 files (initial): `./cloud_radar_to_zarr.py --start 2026-02-23T13:00:00Z`
-- Append latest radar files (manual): `./append_new_cloud_radar_to_zarr.py`
-- Regenerate last‑24h radar PNG: `./plot_cloud_radar_last24h.py /mnt/data/ass/rpgfmcw94/cloud_radar.zarr last24h_cloudradar.png`
+```bash
+cd /opt/aurora-cloud-dashboard
+source venv/bin/activate
+panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<host>
+```
 
 ## Notes
-- Radar variables stitched: ZE_dBZ, ZE45_dBZ, MeanVel, ZDR, SRCX, SpecWidth, SLDR, Skew, RHV, PhiDP, Kurt, KDP, DiffAtt (C1+C2 along range).
-- Interactive plot defaults: 9 km range cap, configurable color limits per variable; plot height scales with viewport on desktop and is constrained on mobile.
-- Calendar quicklooks use the same panels/limits as the radar 24 h plot.
+
+- Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
+- Wxcam uses the Interactive tab as its primary browser and player. The Calendar tab intentionally stays empty for wxcam to avoid duplicating controls and playback state.

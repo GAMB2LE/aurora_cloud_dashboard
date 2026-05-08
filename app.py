@@ -340,6 +340,8 @@ TIME_SUBSAMPLE = 2  # slice time to lighten payloads
 TIME_TARGET = 300  # target max time samples for plotting
 HEIGHT_TARGET = 200  # target max height samples for plotting
 DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
+# A small future tolerance keeps normal clock skew harmless while protecting
+# the dashboard from bogus outlier timestamps that can blank the latest window.
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
 
 _BASE_DS: dict[str, xr.Dataset | None] = {}
@@ -1001,6 +1003,8 @@ def _refresh_wxcam_latest_if_needed():
     if CURRENT_INSTRUMENT != "wxcam":
         return
     if wxcam_date.value == "Today (latest)":
+        # Refresh the current-day video option map slowly enough that playback
+        # is stable while still letting new daily products appear automatically.
         global _wxcam_ql_options
         _wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
         wxcam_date.param.trigger("value")
@@ -1020,6 +1024,9 @@ def _wxcam_interactive_media(selected, selection):
     return _build_wxcam_video_view(video_path, selection or _cfg("wxcam")["default_top"], selected)
 
 
+# wxcam now uses the Interactive tab as its primary browser/player so the
+# controls and playback state live in one place instead of competing with the
+# calendar quicklook flow used by the other instruments.
 wxcam_interactive_browser = pn.Column(
     pn.Card(
         pn.Row(wxcam_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
@@ -1743,6 +1750,8 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection):
     """Show the selected quicklook asset (or a message if missing)."""
     instrument = calendar_inst or CURRENT_INSTRUMENT
     if _is_wxcam_instrument(instrument):
+        # wxcam intentionally leaves the Calendar viewer blank; the full player
+        # and date navigation live on the Interactive tab.
         return pn.Spacer(height=0)
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options(instrument).get(selected)
