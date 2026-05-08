@@ -436,7 +436,10 @@ def _dataset_time_bounds(inst: str | None = None):
         return None, None
     valid = _valid_time_mask(times)
     times = times[valid]
-    return pd.to_datetime(times.min()).to_pydatetime(), pd.to_datetime(times.max()).to_pydatetime()
+    return (
+        pd.Timestamp(times.min()).to_pydatetime(warn=False),
+        pd.Timestamp(times.max()).to_pydatetime(warn=False),
+    )
 
 
 def _coarsen_targets(duration: timedelta | None, height_span: float | None):
@@ -1578,7 +1581,7 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
 def _parse_relayout_time(val):
     """Parse plotly relayout timestamps safely."""
     try:
-        return pd.to_datetime(val).to_pydatetime()
+        return pd.Timestamp(pd.to_datetime(val)).to_pydatetime(warn=False)
     except Exception:
         return None
 
