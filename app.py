@@ -1725,6 +1725,9 @@ def _refresh_ql_options(preserve_current: bool = True):
         return
     if preserve_current and current in opts:
         ql_date.value = current
+    elif _is_wxcam_instrument(calendar_instrument.value):
+        historical = [label for label in opts if label != "Today (latest)"]
+        ql_date.value = historical[-1] if historical else opts[-1]
     else:
         ql_date.value = opts[-1]
 
