@@ -1792,7 +1792,7 @@ def _sync_wxcam_calendar_hour(*_events):
         wxcam_calendar_state.selected_hour_path = ""
         return
     if wxcam_calendar_state.selected_hour_path not in available_paths:
-        wxcam_calendar_state.selected_hour_path = available_paths[-1]
+        wxcam_calendar_state.selected_hour_path = ""
 
 
 calendar_instrument.param.watch(_sync_wxcam_calendar_hour, "value")
@@ -1850,10 +1850,12 @@ def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour
         _build_wxcam_hour_tile(image_type, day_token, hour_index, rows_by_hour.get(hour_index), selected_hour_path)
         for hour_index in range(24)
     ]
-    selected_row = next((row for row in rows if str(row["raw_path"]) == selected_hour_path), rows[-1])
+    grid = pn.GridBox(*tiles, ncols=8, sizing_mode="stretch_width")
+    selected_row = next((row for row in rows if str(row["raw_path"]) == selected_hour_path), None)
+    if selected_row is None:
+        return pn.Column(grid, sizing_mode="stretch_width")
     selected_hour_label = str(selected_row["time_utc"])[11:16] + " UTC"
     viewer = _build_wxcam_video_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
-    grid = pn.GridBox(*tiles, ncols=8, sizing_mode="stretch_width")
     return pn.Column(grid, viewer, sizing_mode="stretch_width")
 
 
@@ -1979,23 +1981,31 @@ body, .bk {
     max-height: 68vh;
 }
 .wxcam-hour-tile {
-    gap: 6px;
-    padding: 6px;
+    gap: 4px;
+    padding: 3px;
     border: 1px solid #cbd5e1;
-    border-radius: 6px;
+    border-radius: 4px;
     background: #ffffff;
 }
 .wxcam-hour-tile img {
     display: block;
-    width: 100%;
+    width: auto;
+    max-width: 100%;
+    max-height: 72px;
+    margin: 0 auto;
     border-radius: 4px;
     background: #0f172a;
+}
+.wxcam-hour-tile button {
+    padding: 3px 6px !important;
+    min-height: 26px;
+    font-size: 12px !important;
 }
 .wxcam-hour-tile__placeholder {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 92px;
+    min-height: 64px;
     border-radius: 4px;
     background: #e2e8f0;
     color: #475569;
