@@ -39,15 +39,16 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
       </div>
       <div id="control_row" class="wxcam-player__controls">
         <button id="play_btn" type="button" onclick="${script('toggle_play')}">Play</button>
-        <button id="back_btn" type="button" onclick="${script('jump_back')}">-10s</button>
-        <button id="forward_btn" type="button" onclick="${script('jump_forward')}">+10s</button>
+        <button id="back_btn" type="button" onclick="${script('jump_back')}">-0.5s</button>
+        <button id="forward_btn" type="button" onclick="${script('jump_forward')}">+0.5s</button>
         <label id="speed_wrap" class="wxcam-player__inline-label">
           <span>Speed</span>
           <select id="speed_select" onchange="${script('change_speed')}">
+            <option value="0.1">0.1x</option>
+            <option value="0.25">0.25x</option>
             <option value="0.5">0.5x</option>
+            <option value="0.75">0.75x</option>
             <option value="1" selected>1x</option>
-            <option value="2">2x</option>
-            <option value="4">4x</option>
           </select>
         </label>
         <label id="loop_wrap" class="wxcam-player__inline-label wxcam-player__checkbox">
@@ -96,13 +97,13 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
           }
         """,
         "jump_back": """
-          const nextTime = Math.max(0, (video_el.currentTime || 0) - 10);
+          const nextTime = Math.max(0, (video_el.currentTime || 0) - 0.5);
           video_el.currentTime = nextTime;
           view.run_script('sync_time');
         """,
         "jump_forward": """
           const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
-          const candidateTime = (video_el.currentTime || 0) + 10;
+          const candidateTime = (video_el.currentTime || 0) + 0.5;
           const nextTime = durationSeconds > 0 ? Math.min(durationSeconds, candidateTime) : candidateTime;
           video_el.currentTime = nextTime;
           view.run_script('sync_time');
