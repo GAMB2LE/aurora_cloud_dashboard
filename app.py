@@ -2049,10 +2049,10 @@ body, .bk {
     font-size: 10px;
 }
 .wxcam-hour-tile--fish .wxcam-hour-tile__img {
-    max-height: 132px;
+    max-height: 198px;
 }
 .wxcam-hour-tile--fish .wxcam-hour-tile__placeholder {
-    min-height: 84px;
+    min-height: 126px;
 }
 .wxcam-player--wide .wxcam-player__frame video {
     max-width: min(100%, 1400px);
