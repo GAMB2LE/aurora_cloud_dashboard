@@ -22,6 +22,7 @@ from plotly.subplots import make_subplots
 import xarray as xr
 from wxcam_catalog import (
     catalog_time_bounds,
+    records_for_day,
 )
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
@@ -366,6 +367,10 @@ def _wxcam_daily_video_root() -> Path:
     return Path(os.environ.get("WXCAM_DAILY_VIDEO_DIR", "/data/aurora/products/wxcam/daily_videos"))
 
 
+def _wxcam_hourly_thumbnail_root() -> Path:
+    return Path(os.environ.get("WXCAM_HOURLY_THUMB_DIR", "/data/aurora/products/wxcam/hourly_thumbnails"))
+
+
 def _ensure_utc(dt):
     """Return a naive UTC datetime (or None) for consistent comparisons."""
     if dt is None:
@@ -664,7 +669,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
-        calendar_image_type.visible = False
+        calendar_image_type.visible = is_wxcam
         if is_wxcam:
             calendar_image_type.options = list(vars_cfg.keys())
             calendar_image_type.value = var1_name
@@ -928,6 +933,16 @@ def _wxcam_daily_video_options(selection: str) -> dict[str, str | None]:
     return opts or {"No videos available": None}
 
 
+def _wxcam_day_token_to_utc(day_token: str) -> str | None:
+    if len(day_token) != 8 or not day_token.isdigit():
+        return None
+    return f"{day_token[:4]}-{day_token[4:6]}-{day_token[6:8]}"
+
+
+def _wxcam_hourly_thumbnail_path(image_type: str, day_token: str, video_name: str) -> Path:
+    return _wxcam_hourly_thumbnail_root() / image_type / day_token / f"{Path(video_name).stem}.jpg"
+
+
 def _media_pane(path: str):
     suffix = Path(path).suffix.lower()
     if suffix == ".mp4":
@@ -1000,6 +1015,13 @@ def _shift_wxcam_ql(delta: int):
 
 wxcam_prev.on_click(lambda _e: _shift_wxcam_ql(-1))
 wxcam_next.on_click(lambda _e: _shift_wxcam_ql(1))
+
+
+class WxcamCalendarState(param.Parameterized):
+    selected_hour_path = param.String(default="")
+
+
+wxcam_calendar_state = WxcamCalendarState()
 
 
 def _refresh_wxcam_latest_if_needed():
@@ -1732,8 +1754,6 @@ ql_next.on_click(lambda _e: _shift_ql(1))
 # Periodically refresh the "Today (latest)" selection to pick up new PNGs.
 def _refresh_latest_if_needed():
     """If viewing the latest image, reload the mapping and redraw without changing selection."""
-    if _is_wxcam_instrument(calendar_instrument.value):
-        return
     if ql_date.value == "Today (latest)":
         # Update the cached map so _quicklook_image sees fresh file paths,
         # but do not touch the selector options to avoid snapping UI.
@@ -1748,14 +1768,109 @@ _ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=300
 _refresh_ql_options(preserve_current=True)
 _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
 
-@pn.depends(ql_date.param.value, calendar_instrument.param.value, calendar_image_type.param.value)
-def _quicklook_image(selected, calendar_inst, wxcam_selection):
+
+def _sync_wxcam_calendar_hour(*_events):
+    if not _is_wxcam_instrument(calendar_instrument.value):
+        wxcam_calendar_state.selected_hour_path = ""
+        return
+    selected_day = ql_date.value
+    selection = calendar_image_type.value or _cfg("wxcam")["default_top"]
+    if selected_day == "Today (latest)":
+        wxcam_calendar_state.selected_hour_path = ""
+        return
+    day_utc = _wxcam_day_token_to_utc(selected_day or "")
+    if not day_utc:
+        wxcam_calendar_state.selected_hour_path = ""
+        return
+    image_type = _image_type_from_selection(selection)
+    rows = records_for_day(_wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="video")
+    available_paths = [str(row["raw_path"]) for row in rows]
+    if not available_paths:
+        wxcam_calendar_state.selected_hour_path = ""
+        return
+    if wxcam_calendar_state.selected_hour_path not in available_paths:
+        wxcam_calendar_state.selected_hour_path = available_paths[-1]
+
+
+calendar_instrument.param.watch(_sync_wxcam_calendar_hour, "value")
+calendar_image_type.param.watch(_sync_wxcam_calendar_hour, "value")
+ql_date.param.watch(_sync_wxcam_calendar_hour, "value")
+
+
+def _build_wxcam_hour_tile(
+    image_type: str,
+    day_token: str,
+    hour_index: int,
+    row,
+    selected_hour_path: str,
+):
+    hour_label = f"{hour_index:02d}:00"
+    if row is None:
+        preview = pn.pane.HTML(
+            f"<div class='wxcam-hour-tile__placeholder'>{hour_label}</div>",
+            sizing_mode="stretch_width",
+        )
+        button = pn.widgets.Button(name=f"{hour_label} missing", disabled=True, sizing_mode="stretch_width")
+        return pn.Column(preview, button, css_classes=["wxcam-hour-tile"], sizing_mode="stretch_width")
+
+    thumb_path = _wxcam_hourly_thumbnail_path(image_type, day_token, str(row["filename"]))
+    if thumb_path.exists():
+        preview = pn.pane.Image(str(thumb_path), sizing_mode="stretch_width")
+    else:
+        preview = pn.pane.HTML(
+            f"<div class='wxcam-hour-tile__placeholder'>{hour_label}</div>",
+            sizing_mode="stretch_width",
+        )
+    button = pn.widgets.Button(
+        name=hour_label,
+        button_type="primary" if str(row["raw_path"]) == selected_hour_path else "default",
+        sizing_mode="stretch_width",
+    )
+    button.on_click(lambda _event, path=str(row["raw_path"]): setattr(wxcam_calendar_state, "selected_hour_path", path))
+    return pn.Column(preview, button, css_classes=["wxcam-hour-tile"], sizing_mode="stretch_width")
+
+
+def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour_path: str):
+    day_utc = _wxcam_day_token_to_utc(day_token)
+    if not day_utc:
+        return pn.pane.Markdown("No hourly clips available for this selection.")
+    image_type = _image_type_from_selection(selection)
+    rows = records_for_day(_wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="video")
+    if not rows:
+        return pn.pane.Markdown("No hourly clips available for this selection.")
+
+    rows_by_hour = {
+        int(str(row["time_utc"])[11:13]): row
+        for row in rows
+    }
+    tiles = [
+        _build_wxcam_hour_tile(image_type, day_token, hour_index, rows_by_hour.get(hour_index), selected_hour_path)
+        for hour_index in range(24)
+    ]
+    selected_row = next((row for row in rows if str(row["raw_path"]) == selected_hour_path), rows[-1])
+    selected_hour_label = str(selected_row["time_utc"])[11:16] + " UTC"
+    viewer = _build_wxcam_video_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
+    grid = pn.GridBox(*tiles, ncols=8, sizing_mode="stretch_width")
+    return pn.Column(grid, viewer, sizing_mode="stretch_width")
+
+
+@pn.depends(
+    ql_date.param.value,
+    calendar_instrument.param.value,
+    calendar_image_type.param.value,
+    wxcam_calendar_state.param.selected_hour_path,
+)
+def _quicklook_image(selected, calendar_inst, wxcam_selection, selected_hour_path):
     """Show the selected quicklook asset (or a message if missing)."""
     instrument = calendar_inst or CURRENT_INSTRUMENT
     if _is_wxcam_instrument(instrument):
-        # wxcam intentionally leaves the Calendar viewer blank; the full player
-        # and date navigation live on the Interactive tab.
-        return pn.Spacer(height=0)
+        selection = wxcam_selection or _cfg("wxcam")["default_top"]
+        if selected == "Today (latest)":
+            path = _wxcam_daily_video_options(selection).get(selected)
+            if path and Path(path).exists():
+                return _build_wxcam_video_view(Path(path), selection, selected)
+            return pn.pane.Markdown("No video available for this selection.")
+        return _build_wxcam_calendar_day_view(selection, selected or "", selected_hour_path)
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options(instrument).get(selected)
     if path and Path(path).exists():
@@ -1859,6 +1974,29 @@ body, .bk {
     width: 100%;
     height: auto;
     max-height: 68vh;
+}
+.wxcam-hour-tile {
+    gap: 6px;
+    padding: 6px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #ffffff;
+}
+.wxcam-hour-tile img {
+    display: block;
+    width: 100%;
+    border-radius: 4px;
+    background: #0f172a;
+}
+.wxcam-hour-tile__placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 92px;
+    border-radius: 4px;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 13px;
 }
 .wxcam-player--wide .wxcam-player__frame video {
     max-width: min(100%, 1400px);

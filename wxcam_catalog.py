@@ -449,6 +449,23 @@ def preferred_daily_record(
     return _select_preferred(rows, media_kinds)
 
 
+def records_for_day(path: Path, image_type: str, day_utc: str, media_kind: str = "video") -> list[sqlite3.Row]:
+    if not path.exists():
+        return []
+    with open_catalog(path) as conn:
+        ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM images
+            WHERE image_type = ? AND day_utc = ? AND media_kind = ?
+            ORDER BY time_epoch_ns ASC
+            """,
+            (image_type, day_utc, media_kind),
+        ).fetchall()
+    return rows
+
+
 def catalog_frontier(path: Path, media_kind: str = "image") -> dict[str, int]:
     if not path.exists():
         return {}
