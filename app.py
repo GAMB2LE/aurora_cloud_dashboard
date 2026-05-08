@@ -340,6 +340,7 @@ TIME_SUBSAMPLE = 2  # slice time to lighten payloads
 TIME_TARGET = 300  # target max time samples for plotting
 HEIGHT_TARGET = 200  # target max height samples for plotting
 DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
+FUTURE_TIME_TOLERANCE = timedelta(days=2)
 
 _BASE_DS: dict[str, xr.Dataset | None] = {}
 CURRENT_INSTRUMENT = "Ceilometer"
@@ -400,6 +401,16 @@ def _refresh_base_dataset(inst: str | None = None):
     _BASE_DS[inst] = None
 
 
+def _valid_time_mask(times: np.ndarray) -> np.ndarray:
+    """Mask out NaT and clearly bogus future timestamps while preserving original indices."""
+    if times.size == 0:
+        return np.zeros(times.shape, dtype=bool)
+    valid = ~np.isnat(times)
+    cutoff = np.datetime64(_ensure_utc(datetime.now(timezone.utc) + FUTURE_TIME_TOLERANCE))
+    valid &= times <= cutoff
+    return valid if np.any(valid) else ~np.isnat(times)
+
+
 def _median_filter_nan(arr, k=3):
     """Simple nan-aware median filter with square window k x k."""
     if arr.ndim != 2 or k < 2:
@@ -421,6 +432,8 @@ def _dataset_time_bounds(inst: str | None = None):
     times = np.asarray(ds["time"].values)
     if times.size == 0:
         return None, None
+    valid = _valid_time_mask(times)
+    times = times[valid]
     return pd.to_datetime(times.min()).to_pydatetime(), pd.to_datetime(times.max()).to_pydatetime()
 
 
@@ -467,7 +480,7 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
         return xr.Dataset()
     try:
         tvals = base["time"].values
-        mask = (tvals >= np.datetime64(t0)) & (tvals <= np.datetime64(t1))
+        mask = _valid_time_mask(tvals) & (tvals >= np.datetime64(t0)) & (tvals <= np.datetime64(t1))
         if not np.any(mask):
             return xr.Dataset()
         idx = np.nonzero(mask)[0]
