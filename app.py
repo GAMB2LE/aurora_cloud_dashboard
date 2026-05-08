@@ -7,13 +7,13 @@
 # - Lightweight coarsening and subsampling to keep plots responsive.
 
 import os
-import subprocess
 from datetime import datetime, timedelta, timezone, time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import panel as pn
+import param
 from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -23,6 +23,153 @@ from wxcam_catalog import (
 )
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
+
+
+class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
+    src = param.String(default="")
+    title = param.String(default="")
+    mode_class = param.String(default="wxcam-player--wide")
+
+    _template = """
+    <div id="player_shell" class="wxcam-player ${mode_class}">
+      <div id="meta_row" class="wxcam-player__meta">
+        <div id="title_text" class="wxcam-player__title">${title}</div>
+      </div>
+      <div id="control_row" class="wxcam-player__controls">
+        <button id="play_btn" type="button" onclick="${script('toggle_play')}">Play</button>
+        <button id="back_btn" type="button" onclick="${script('jump_back')}">-10s</button>
+        <button id="forward_btn" type="button" onclick="${script('jump_forward')}">+10s</button>
+        <label id="speed_wrap" class="wxcam-player__inline-label">
+          <span>Speed</span>
+          <select id="speed_select" onchange="${script('change_speed')}">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+        </label>
+        <label id="loop_wrap" class="wxcam-player__inline-label wxcam-player__checkbox">
+          <input id="loop_toggle" type="checkbox" onchange="${script('toggle_loop')}"></input>
+          <span>Loop</span>
+        </label>
+      </div>
+      <div id="seek_row" class="wxcam-player__seek">
+        <span id="current_time" class="wxcam-player__time">00:00</span>
+        <input id="seek_slider" type="range" min="0" max="1000" value="0" step="1" oninput="${script('seek')}"></input>
+        <span id="duration" class="wxcam-player__time">00:00</span>
+      </div>
+      <div id="video_frame" class="wxcam-player__frame">
+        <video
+          id="video_el"
+          src="${src}"
+          controls
+          preload="metadata"
+          playsinline
+          onloadedmetadata="${script('sync_metadata')}"
+          ontimeupdate="${script('sync_time')}"
+          onplay="${script('sync_play_state')}"
+          onpause="${script('sync_play_state')}"
+          onended="${script('sync_play_state')}"
+          onratechange="${script('sync_speed_state')}"
+        ></video>
+      </div>
+    </div>
+    """
+
+    _scripts = {
+        "src": """
+          video_el.pause();
+          video_el.load();
+          seek_slider.value = 0;
+          current_time.textContent = "00:00";
+          duration.textContent = "00:00";
+          play_btn.textContent = "Play";
+          speed_select.value = "1";
+        """,
+        "toggle_play": """
+          if (video_el.paused) {
+            video_el.play();
+          } else {
+            video_el.pause();
+          }
+        """,
+        "jump_back": """
+          const nextTime = Math.max(0, (video_el.currentTime || 0) - 10);
+          video_el.currentTime = nextTime;
+          view.run_script('sync_time');
+        """,
+        "jump_forward": """
+          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
+          const candidateTime = (video_el.currentTime || 0) + 10;
+          const nextTime = durationSeconds > 0 ? Math.min(durationSeconds, candidateTime) : candidateTime;
+          video_el.currentTime = nextTime;
+          view.run_script('sync_time');
+        """,
+        "change_speed": """
+          video_el.playbackRate = Number(speed_select.value || 1);
+          view.run_script('sync_speed_state');
+        """,
+        "toggle_loop": """
+          video_el.loop = loop_toggle.checked;
+        """,
+        "seek": """
+          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
+          if (!durationSeconds) {
+            return;
+          }
+          video_el.currentTime = (Number(seek_slider.value || 0) / 1000) * durationSeconds;
+          view.run_script('sync_time');
+        """,
+        "sync_metadata": """
+          const formatTime = (seconds) => {
+            if (!Number.isFinite(seconds) || seconds < 0) {
+              return "00:00";
+            }
+            const total = Math.floor(seconds);
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const secs = total % 60;
+            if (hours > 0) {
+              return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            }
+            return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+          };
+          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
+          current_time.textContent = formatTime(video_el.currentTime || 0);
+          duration.textContent = formatTime(durationSeconds);
+          seek_slider.value = 0;
+          video_el.loop = loop_toggle.checked;
+          video_el.playbackRate = Number(speed_select.value || 1);
+          view.run_script('sync_play_state');
+          view.run_script('sync_speed_state');
+        """,
+        "sync_time": """
+          const formatTime = (seconds) => {
+            if (!Number.isFinite(seconds) || seconds < 0) {
+              return "00:00";
+            }
+            const total = Math.floor(seconds);
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const secs = total % 60;
+            if (hours > 0) {
+              return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            }
+            return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+          };
+          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
+          const currentSeconds = Number(video_el.currentTime || 0);
+          current_time.textContent = formatTime(currentSeconds);
+          duration.textContent = formatTime(durationSeconds);
+          seek_slider.value = durationSeconds > 0 ? Math.round((currentSeconds / durationSeconds) * 1000) : 0;
+        """,
+        "sync_play_state": """
+          play_btn.textContent = video_el.paused ? "Play" : "Pause";
+        """,
+        "sync_speed_state": """
+          speed_select.value = String(video_el.playbackRate || 1);
+        """,
+    }
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
@@ -211,14 +358,6 @@ def _wxcam_catalog_path(inst: str | None = None) -> Path:
 
 def _wxcam_daily_video_root() -> Path:
     return Path(os.environ.get("WXCAM_DAILY_VIDEO_DIR", "/data/aurora/products/wxcam/daily_videos"))
-
-
-def _wxcam_source_config() -> tuple[str, str, str]:
-    return (
-        os.environ.get("WXCAM_SOURCE_USER", "aurora"),
-        os.environ.get("WXCAM_SOURCE_HOST", "100.124.55.22"),
-        os.environ.get("WXCAM_SOURCE_PATH", "/home/aurora/data/wxcam"),
-    )
 
 
 def _ensure_utc(dt):
@@ -491,6 +630,9 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         is_hatpro = inst == "Scanning Microwave Radiometer"
         is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
         is_wxcam = _is_wxcam_instrument(inst)
+        range_start.visible = not is_wxcam
+        range_end.visible = not is_wxcam
+        live_toggle.visible = not is_wxcam
         var1_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
         var2_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
         bottom_range_m.visible = not is_stacked_timeseries and not is_wxcam
@@ -499,6 +641,8 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         ldr_vmax.visible = not (is_hatpro or is_stacked_timeseries or is_wxcam)
         beta_vmin.visible = not (is_stacked_timeseries or is_wxcam)
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
+        prev_btn.visible = not is_wxcam
+        next_btn.visible = not is_wxcam
         calendar_image_type.visible = is_wxcam
         if is_wxcam:
             calendar_image_type.options = list(vars_cfg.keys())
@@ -1473,10 +1617,13 @@ def _quicklook_image(selected):
         video_path = Path(path)
         if not video_path.exists():
             return pn.pane.Markdown("No media available for this selection.")
-        details = pn.pane.Markdown(
-            f"`{video_path.name}`"
+        image_type = _image_type_from_selection(calendar_image_type.value or _cfg("wxcam")["default_top"])
+        mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
+        title = f"{calendar_image_type.value or _cfg('wxcam')['default_top']} | {selected} | {video_path.name}"
+        return pn.Column(
+            WxcamVideoPlayer(src=str(video_path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
+            sizing_mode="stretch_width",
         )
-        return pn.Column(details, _media_pane(str(video_path)), sizing_mode="stretch_width")
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options().get(selected)
     if path and Path(path).exists():
@@ -1505,11 +1652,110 @@ body, .bk {
 .small-card .bk-card-body {
     padding: 6px 8px;
 }
+.wxcam-player {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+.wxcam-player__meta {
+    display: flex;
+    justify-content: center;
+}
+.wxcam-player__title {
+    font-size: 14px;
+    color: #1f2933;
+    text-align: center;
+    word-break: break-word;
+}
+.wxcam-player__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+}
+.wxcam-player__controls button,
+.wxcam-player__controls select {
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #0f172a;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 14px;
+}
+.wxcam-player__controls button {
+    cursor: pointer;
+}
+.wxcam-player__inline-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    color: #334155;
+}
+.wxcam-player__checkbox input {
+    margin: 0;
+}
+.wxcam-player__seek {
+    display: grid;
+    grid-template-columns: 60px minmax(0, 1fr) 60px;
+    gap: 10px;
+    align-items: center;
+    width: 100%;
+}
+.wxcam-player__seek input[type="range"] {
+    width: 100%;
+}
+.wxcam-player__time {
+    font-size: 13px;
+    color: #475569;
+    text-align: center;
+}
+.wxcam-player__frame {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    border-radius: 8px;
+    overflow: hidden;
+    padding: 8px;
+}
+.wxcam-player__frame video {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 68vh;
+}
+.wxcam-player--wide .wxcam-player__frame video {
+    max-width: min(100%, 1400px);
+    object-fit: contain;
+}
+.wxcam-player--vertical .wxcam-player__frame {
+    min-height: min(60vh, 720px);
+}
+.wxcam-player--vertical .wxcam-player__frame video {
+    width: auto;
+    max-width: 100%;
+    max-height: calc(100vh - 320px);
+    object-fit: contain;
+}
 @media (max-width: 768px) {
     body, .bk { font-size: 14px; }
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
     .bk.pn-row { gap: 8px; }
+    .wxcam-player__seek {
+        grid-template-columns: 52px minmax(0, 1fr) 52px;
+        gap: 8px;
+    }
+    .wxcam-player--vertical .wxcam-player__frame {
+        min-height: 50vh;
+    }
+    .wxcam-player--vertical .wxcam-player__frame video {
+        max-height: calc(100vh - 260px);
+    }
 }
 """
 
