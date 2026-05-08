@@ -1738,19 +1738,6 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection):
     return pn.pane.Markdown("No image available for this selection.")
 
 
-@pn.depends(calendar_instrument.param.value)
-def _calendar_controls(calendar_inst):
-    if _is_wxcam_instrument(calendar_inst or CURRENT_INSTRUMENT):
-        return pn.Spacer(height=0)
-    return pn.Card(
-        pn.Row(calendar_instrument, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
-        title="",
-        collapsible=False,
-        sizing_mode="stretch_width",
-    )
-
-
 ACCENT = "#0b7285"  # header/accent color
 css = """
 # Global font override for a clean, consistent look.
@@ -1912,7 +1899,13 @@ tabs = pn.Tabs(
     (
         "Calendar",
         pn.Column(
-            _calendar_controls,
+            pn.Card(
+                pn.Row(calendar_instrument, calendar_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+                pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
+                title="",
+                collapsible=False,
+                sizing_mode="stretch_width",
+            ),
             _quicklook_image,
             sizing_mode="stretch_both",
         ),
