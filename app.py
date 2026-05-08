@@ -1981,35 +1981,36 @@ body, .bk {
     max-height: 68vh;
 }
 .wxcam-hour-tile {
-    gap: 4px;
-    padding: 3px;
+    gap: 2px;
+    padding: 2px;
     border: 1px solid #cbd5e1;
-    border-radius: 4px;
+    border-radius: 3px;
     background: #ffffff;
 }
 .wxcam-hour-tile img {
     display: block;
     width: auto;
     max-width: 100%;
-    max-height: 72px;
+    max-height: 56px;
     margin: 0 auto;
-    border-radius: 4px;
+    border-radius: 3px;
     background: #0f172a;
 }
 .wxcam-hour-tile button {
-    padding: 3px 6px !important;
-    min-height: 26px;
-    font-size: 12px !important;
+    padding: 2px 5px !important;
+    min-height: 22px;
+    font-size: 11px !important;
+    line-height: 1.1 !important;
 }
 .wxcam-hour-tile__placeholder {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 64px;
-    border-radius: 4px;
+    min-height: 44px;
+    border-radius: 3px;
     background: #e2e8f0;
     color: #475569;
-    font-size: 13px;
+    font-size: 11px;
 }
 .wxcam-player--wide .wxcam-player__frame video {
     max-width: min(100%, 1400px);
