@@ -1823,6 +1823,9 @@ def _build_wxcam_hour_tile(
     selected_hour_path: str,
 ):
     hour_label = f"{hour_index:02d}:00"
+    tile_classes = ["wxcam-hour-tile"]
+    if image_type == "fish_hdr":
+        tile_classes.append("wxcam-hour-tile--fish")
     if row is None:
         preview = pn.pane.HTML(
             f"<div class='wxcam-hour-tile__placeholder'>{hour_label}</div>",
@@ -1833,7 +1836,7 @@ def _build_wxcam_hour_tile(
         return pn.Column(
             preview,
             button,
-            css_classes=["wxcam-hour-tile"],
+            css_classes=tile_classes,
             sizing_mode="stretch_width",
             margin=0,
         )
@@ -1861,7 +1864,7 @@ def _build_wxcam_hour_tile(
     return pn.Column(
         preview,
         button,
-        css_classes=["wxcam-hour-tile"],
+        css_classes=tile_classes,
         sizing_mode="stretch_width",
         margin=0,
     )
@@ -2044,6 +2047,12 @@ body, .bk {
     background: #e2e8f0;
     color: #475569;
     font-size: 10px;
+}
+.wxcam-hour-tile--fish .wxcam-hour-tile__img {
+    max-height: 132px;
+}
+.wxcam-hour-tile--fish .wxcam-hour-tile__placeholder {
+    min-height: 84px;
 }
 .wxcam-player--wide .wxcam-player__frame video {
     max-width: min(100%, 1400px);
