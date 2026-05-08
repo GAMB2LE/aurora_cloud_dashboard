@@ -939,6 +939,12 @@ def _wxcam_day_token_to_utc(day_token: str) -> str | None:
     return f"{day_token[:4]}-{day_token[4:6]}-{day_token[6:8]}"
 
 
+def _wxcam_calendar_day_token(selected_day: str | None) -> str | None:
+    if selected_day == "Today (latest)":
+        return _wxcam_today_token()
+    return selected_day
+
+
 def _wxcam_hourly_thumbnail_path(image_type: str, day_token: str, video_name: str) -> Path:
     return _wxcam_hourly_thumbnail_root() / image_type / day_token / f"{Path(video_name).stem}.jpg"
 
@@ -1778,10 +1784,8 @@ def _sync_wxcam_calendar_hour(*_events):
         return
     selected_day = ql_date.value
     selection = calendar_image_type.value or _cfg("wxcam")["default_top"]
-    if selected_day == "Today (latest)":
-        wxcam_calendar_state.selected_hour_path = ""
-        return
-    day_utc = _wxcam_day_token_to_utc(selected_day or "")
+    day_token = _wxcam_calendar_day_token(selected_day)
+    day_utc = _wxcam_day_token_to_utc(day_token or "")
     if not day_utc:
         wxcam_calendar_state.selected_hour_path = ""
         return
@@ -1870,12 +1874,8 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection, selected_hour_pat
     instrument = calendar_inst or CURRENT_INSTRUMENT
     if _is_wxcam_instrument(instrument):
         selection = wxcam_selection or _cfg("wxcam")["default_top"]
-        if selected == "Today (latest)":
-            path = _wxcam_daily_video_options(selection).get(selected)
-            if path and Path(path).exists():
-                return _build_wxcam_video_view(Path(path), selection, selected)
-            return pn.pane.Markdown("No video available for this selection.")
-        return _build_wxcam_calendar_day_view(selection, selected or "", selected_hour_path)
+        day_token = _wxcam_calendar_day_token(selected)
+        return _build_wxcam_calendar_day_view(selection, day_token or "", selected_hour_path)
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options(instrument).get(selected)
     if path and Path(path).exists():
