@@ -646,10 +646,13 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
-        calendar_image_type.visible = is_wxcam
+        calendar_image_type.visible = False
         if is_wxcam:
             calendar_image_type.options = list(vars_cfg.keys())
             calendar_image_type.value = var1_name
+            wxcam_image_type.options = list(vars_cfg.keys())
+            wxcam_image_type.value = var1_name
+            _refresh_wxcam_ql_options(preserve_current=False)
         else:
             calendar_image_type.options = []
         if is_hatpro:
@@ -786,6 +789,13 @@ def _on_calendar_image_type_change(event):
 
 calendar_image_type.param.watch(_on_calendar_image_type_change, "value")
 
+
+def _on_wxcam_image_type_change(event):
+    if not _is_wxcam_instrument(CURRENT_INSTRUMENT):
+        return
+    _refresh_wxcam_ql_options(preserve_current=False)
+    wxcam_date.param.trigger("value")
+
 def _auto_refresh():
     """Periodic refresh when live mode is on."""
     if live_toggle.value:
@@ -919,12 +929,102 @@ def _video_data_uri(path: Path) -> str:
     return _cached_video_data_uri(str(path), stat_result.st_size, stat_result.st_mtime_ns)
 
 
+def _build_wxcam_video_view(path: Path, selection: str, selected_label: str):
+    image_type = _image_type_from_selection(selection)
+    mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
+    title = f"{selection} | {selected_label} | {path.name}"
+    return pn.Column(
+        WxcamVideoPlayer(src=_video_data_uri(path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
+        sizing_mode="stretch_width",
+    )
+
+
+wxcam_image_type = pn.widgets.Select(
+    name="Image type",
+    options=list(_cfg("wxcam")["vars"].keys()),
+    value=_cfg("wxcam")["default_top"],
+)
+_wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value)
+wxcam_date = pn.widgets.Select(name="Date", options=list(_wxcam_ql_options.keys()))
+if _wxcam_ql_options:
+    wxcam_date.value = list(_wxcam_ql_options.keys())[-1]
+wxcam_prev = pn.widgets.Button(name="<<", button_type="default")
+wxcam_next = pn.widgets.Button(name=">>", button_type="default")
+
+
+def _refresh_wxcam_ql_options(preserve_current: bool = True):
+    global _wxcam_ql_options
+    current = wxcam_date.value if preserve_current else None
+    _wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
+    opts = list(_wxcam_ql_options.keys())
+    wxcam_date.options = opts
+    if not opts:
+        wxcam_date.value = None
+        return
+    if preserve_current and current in opts:
+        wxcam_date.value = current
+    else:
+        wxcam_date.value = opts[-1]
+
+
+def _shift_wxcam_ql(delta: int):
+    _refresh_wxcam_ql_options(preserve_current=True)
+    opts = list(wxcam_date.options)
+    if not opts or wxcam_date.value not in opts:
+        return
+    idx = opts.index(wxcam_date.value)
+    new_idx = max(0, min(len(opts) - 1, idx + delta))
+    if new_idx != idx:
+        wxcam_date.value = opts[new_idx]
+    else:
+        wxcam_date.param.trigger("value")
+
+
+wxcam_prev.on_click(lambda _e: _shift_wxcam_ql(-1))
+wxcam_next.on_click(lambda _e: _shift_wxcam_ql(1))
+
+
+def _refresh_wxcam_latest_if_needed():
+    if CURRENT_INSTRUMENT != "wxcam":
+        return
+    if wxcam_date.value == "Today (latest)":
+        global _wxcam_ql_options
+        _wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
+        wxcam_date.param.trigger("value")
+
+
+_wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
+
+
+@pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
+def _wxcam_interactive_media(selected, selection):
+    path = _wxcam_daily_video_options(selection or _cfg("wxcam")["default_top"]).get(selected)
+    if not path:
+        return pn.pane.Markdown("No media available for this selection.")
+    video_path = Path(path)
+    if not video_path.exists():
+        return pn.pane.Markdown("No media available for this selection.")
+    return _build_wxcam_video_view(video_path, selection or _cfg("wxcam")["default_top"], selected)
+
+
+wxcam_interactive_browser = pn.Column(
+    pn.Card(
+        pn.Row(wxcam_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(wxcam_prev, wxcam_date, wxcam_next, sizing_mode="stretch_width"),
+        title="",
+        collapsible=False,
+        sizing_mode="stretch_width",
+    ),
+    _wxcam_interactive_media,
+    sizing_mode="stretch_width",
+)
+
+
+wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
+
+
 def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
-    interactive_content[:] = [
-        pn.pane.Markdown(
-            "wxcam media is available on the **Calendar** tab. The interactive tab is disabled for this instrument."
-        )
-    ]
+    interactive_content[:] = [wxcam_interactive_browser]
 
 
 def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax):
@@ -1609,6 +1709,8 @@ ql_next.on_click(lambda _e: _shift_ql(1))
 # Periodically refresh the "Today (latest)" selection to pick up new PNGs.
 def _refresh_latest_if_needed():
     """If viewing the latest image, reload the mapping and redraw without changing selection."""
+    if _is_wxcam_instrument(calendar_instrument.value):
+        return
     if ql_date.value == "Today (latest)":
         # Update the cached map so _quicklook_image sees fresh file paths,
         # but do not touch the selector options to avoid snapping UI.
@@ -1628,25 +1730,25 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection):
     """Show the selected quicklook asset (or a message if missing)."""
     instrument = calendar_inst or CURRENT_INSTRUMENT
     if _is_wxcam_instrument(instrument):
-        selection = wxcam_selection or _cfg("wxcam")["default_top"]
-        path = _quicklook_options(instrument, selection).get(selected)
-        if not path:
-            return pn.pane.Markdown("No media available for this selection.")
-        video_path = Path(path)
-        if not video_path.exists():
-            return pn.pane.Markdown("No media available for this selection.")
-        image_type = _image_type_from_selection(selection)
-        mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
-        title = f"{selection} | {selected} | {video_path.name}"
-        return pn.Column(
-            WxcamVideoPlayer(src=_video_data_uri(video_path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
-            sizing_mode="stretch_width",
-        )
+        return pn.Spacer(height=0)
     # Use the latest map in case files changed since last refresh.
     path = _quicklook_options(instrument).get(selected)
     if path and Path(path).exists():
         return _media_pane(path)
     return pn.pane.Markdown("No image available for this selection.")
+
+
+@pn.depends(calendar_instrument.param.value)
+def _calendar_controls(calendar_inst):
+    if _is_wxcam_instrument(calendar_inst or CURRENT_INSTRUMENT):
+        return pn.Spacer(height=0)
+    return pn.Card(
+        pn.Row(calendar_instrument, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
+        title="",
+        collapsible=False,
+        sizing_mode="stretch_width",
+    )
 
 
 ACCENT = "#0b7285"  # header/accent color
@@ -1810,13 +1912,7 @@ tabs = pn.Tabs(
     (
         "Calendar",
         pn.Column(
-            pn.Card(
-                pn.Row(calendar_instrument, calendar_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-                pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
-                title="",
-                collapsible=False,
-                sizing_mode="stretch_width",
-            ),
+            _calendar_controls,
             _quicklook_image,
             sizing_mode="stretch_both",
         ),
