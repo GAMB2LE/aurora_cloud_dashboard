@@ -33,7 +33,7 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
     _template = """
     <div id="player_shell" class="wxcam-player ${mode_class}">
       <div id="meta_row" class="wxcam-player__meta">
-        <div id="title_text" class="wxcam-player__title">${title}</div>
+        <div id="title_text" class="wxcam-player__title">{{ title }}</div>
       </div>
       <div id="control_row" class="wxcam-player__controls">
         <button id="play_btn" type="button" onclick="${script('toggle_play')}">Play</button>
@@ -1511,11 +1511,12 @@ _update_view(
 
 # -------- Calendar quicklooks --------
 
-def _quicklook_options():
+def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = None):
     """Build a mapping of label -> quicklook asset token/path."""
-    cfg = _cfg()
-    if _is_wxcam_instrument(CURRENT_INSTRUMENT):
-        return _wxcam_daily_video_options(calendar_image_type.value or _cfg("wxcam")["default_top"])
+    inst = inst or CURRENT_INSTRUMENT
+    cfg = _cfg(inst)
+    if _is_wxcam_instrument(inst):
+        return _wxcam_daily_video_options(wxcam_selection or _cfg("wxcam")["default_top"])
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -1556,7 +1557,7 @@ def _refresh_ql_options(preserve_current: bool = True):
     """Refresh available quicklook options, optionally preserving current selection."""
     global _ql_options
     current = ql_date.value if preserve_current else None
-    _ql_options = _quicklook_options()
+    _ql_options = _quicklook_options(calendar_instrument.value, calendar_image_type.value)
     opts = list(_ql_options.keys())
     ql_date.options = opts
     if not opts:
@@ -1597,7 +1598,7 @@ def _refresh_latest_if_needed():
         # Update the cached map so _quicklook_image sees fresh file paths,
         # but do not touch the selector options to avoid snapping UI.
         global _ql_options
-        _ql_options = _quicklook_options()
+        _ql_options = _quicklook_options(calendar_instrument.value, calendar_image_type.value)
         ql_date.param.trigger("value")
 
 
@@ -1607,25 +1608,27 @@ _ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=15_
 _refresh_ql_options(preserve_current=True)
 _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
 
-@pn.depends(ql_date.param.value)
-def _quicklook_image(selected):
+@pn.depends(ql_date.param.value, calendar_instrument.param.value, calendar_image_type.param.value)
+def _quicklook_image(selected, calendar_inst, wxcam_selection):
     """Show the selected quicklook asset (or a message if missing)."""
-    if _is_wxcam_instrument(CURRENT_INSTRUMENT):
-        path = _quicklook_options().get(selected)
+    instrument = calendar_inst or CURRENT_INSTRUMENT
+    if _is_wxcam_instrument(instrument):
+        selection = wxcam_selection or _cfg("wxcam")["default_top"]
+        path = _quicklook_options(instrument, selection).get(selected)
         if not path:
             return pn.pane.Markdown("No media available for this selection.")
         video_path = Path(path)
         if not video_path.exists():
             return pn.pane.Markdown("No media available for this selection.")
-        image_type = _image_type_from_selection(calendar_image_type.value or _cfg("wxcam")["default_top"])
+        image_type = _image_type_from_selection(selection)
         mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
-        title = f"{calendar_image_type.value or _cfg('wxcam')['default_top']} | {selected} | {video_path.name}"
+        title = f"{selection} | {selected} | {video_path.name}"
         return pn.Column(
             WxcamVideoPlayer(src=str(video_path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
             sizing_mode="stretch_width",
         )
     # Use the latest map in case files changed since last refresh.
-    path = _quicklook_options().get(selected)
+    path = _quicklook_options(instrument).get(selected)
     if path and Path(path).exists():
         return _media_pane(path)
     return pn.pane.Markdown("No image available for this selection.")
