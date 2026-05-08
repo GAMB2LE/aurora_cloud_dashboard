@@ -39,8 +39,8 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
       </div>
       <div id="control_row" class="wxcam-player__controls">
         <button id="play_btn" type="button" onclick="${script('toggle_play')}">Play</button>
-        <button id="back_btn" type="button" onclick="${script('jump_back')}">-0.5s</button>
-        <button id="forward_btn" type="button" onclick="${script('jump_forward')}">+0.5s</button>
+        <button id="back_btn" type="button" onclick="${script('jump_back')}">-0.1s</button>
+        <button id="forward_btn" type="button" onclick="${script('jump_forward')}">+0.1s</button>
         <label id="speed_wrap" class="wxcam-player__inline-label">
           <span>Speed</span>
           <select id="speed_select" onchange="${script('change_speed')}">
@@ -97,13 +97,13 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
           }
         """,
         "jump_back": """
-          const nextTime = Math.max(0, (video_el.currentTime || 0) - 0.5);
+          const nextTime = Math.max(0, (video_el.currentTime || 0) - 0.1);
           video_el.currentTime = nextTime;
           view.run_script('sync_time');
         """,
         "jump_forward": """
           const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
-          const candidateTime = (video_el.currentTime || 0) + 0.5;
+          const candidateTime = (video_el.currentTime || 0) + 0.1;
           const nextTime = durationSeconds > 0 ? Math.min(durationSeconds, candidateTime) : candidateTime;
           video_el.currentTime = nextTime;
           view.run_script('sync_time');
@@ -1617,7 +1617,7 @@ def _refresh_latest_if_needed():
         ql_date.param.trigger("value")
 
 
-_ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=15_000, start=True)
+_ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=300_000, start=True)
 
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
