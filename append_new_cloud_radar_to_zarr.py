@@ -21,6 +21,7 @@ ROOT_DEFAULT = Path("/mnt/data/ass/rpgfmcw94")
 ZARR_DEFAULT = Path("/mnt/data/ass/rpgfmcw94/cloud_radar.zarr")
 TIME_ZERO = np.datetime64("2001-01-01T00:00:00")
 NC_REGEX = re.compile(r"_(\d{6})_(\d{6})")  # yymmdd_hhmmss
+FUTURE_TIME_TOLERANCE = timedelta(days=2)
 
 
 def _parse_timestamp(path: Path) -> datetime | None:
@@ -128,6 +129,22 @@ def _load_files(files: List[Path], chunks: dict | str | None = None) -> xr.Datas
     return combined
 
 
+def _latest_valid_time(base: xr.Dataset) -> datetime:
+    times = np.asarray(base["time"].values)
+    if times.size == 0:
+        raise ValueError("Zarr store has no time samples")
+    valid = ~np.isnat(times)
+    cutoff = np.datetime64((datetime.now(timezone.utc) + FUTURE_TIME_TOLERANCE).replace(tzinfo=None))
+    future_mask = valid & (times > cutoff)
+    if np.any(future_mask):
+        print(f"Ignoring {int(np.count_nonzero(future_mask))} bogus future radar timestamps when computing append frontier.")
+    valid &= times <= cutoff
+    if not np.any(valid):
+        valid = ~np.isnat(times)
+    latest = pd.Timestamp(times[valid].max()).to_pydatetime(warn=False)
+    return latest.replace(tzinfo=timezone.utc)
+
+
 def append_new(
     root: Path,
     zarr_path: Path,
@@ -159,7 +176,7 @@ def append_new(
     base = xr.open_zarr(zarr_path, chunks={})
     if "time" not in base:
         raise KeyError("Zarr store missing time coordinate")
-    last_time = pd.to_datetime(base["time"].max().values).to_pydatetime().replace(tzinfo=timezone.utc)
+    last_time = _latest_valid_time(base)
     print(f"Latest time in Zarr: {last_time}")
 
     scan_after = last_time - timedelta(hours=max(lookback_hours, 0))
