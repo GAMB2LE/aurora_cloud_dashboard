@@ -2025,7 +2025,7 @@ body, .bk {
     display: block;
     width: auto;
     max-width: 100%;
-    max-height: 44px;
+    max-height: 88px;
     margin: 0 auto;
     border-radius: 2px;
     background: #0f172a;
@@ -2040,7 +2040,7 @@ body, .bk {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 28px;
+    min-height: 56px;
     border-radius: 2px;
     background: #e2e8f0;
     color: #475569;
