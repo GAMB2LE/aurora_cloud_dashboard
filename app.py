@@ -968,6 +968,18 @@ def _video_data_uri(path: Path) -> str:
     return _cached_video_data_uri(str(path), stat_result.st_size, stat_result.st_mtime_ns)
 
 
+@lru_cache(maxsize=256)
+def _cached_image_data_uri(path_str: str, size_bytes: int, mtime_ns: int) -> str:
+    image_bytes = Path(path_str).read_bytes()
+    encoded = b64encode(image_bytes).decode("utf-8")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _image_data_uri(path: Path) -> str:
+    stat_result = path.stat()
+    return _cached_image_data_uri(str(path), stat_result.st_size, stat_result.st_mtime_ns)
+
+
 def _build_wxcam_video_view(path: Path, selection: str, selected_label: str):
     image_type = _image_type_from_selection(selection)
     mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
@@ -1830,7 +1842,7 @@ def _build_wxcam_hour_tile(
     thumb_path = _wxcam_hourly_thumbnail_path(image_type, day_token, str(row["filename"]))
     if thumb_path.exists():
         preview = pn.pane.HTML(
-            f"<img class='wxcam-hour-tile__img' src='{thumb_path.as_posix()}' alt='{hour_label}'>",
+            f"<img class='wxcam-hour-tile__img' src='{_image_data_uri(thumb_path)}' alt='{hour_label}'>",
             sizing_mode="stretch_width",
             margin=0,
         )
