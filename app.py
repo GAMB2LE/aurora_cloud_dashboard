@@ -3883,8 +3883,8 @@ interactive_copy = pn.widgets.Button(name="Copy link", button_type="default", wi
 science_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 hk_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 interactive_download = pn.widgets.Button(name="Download PNG", button_type="default", width=130)
-science_download = pn.widgets.FileDownload(name="Download PNG", button_type="default", auto=False, embed=False, width=130)
-hk_download = pn.widgets.FileDownload(name="Download PNG", button_type="default", auto=False, embed=False, width=130)
+science_download = pn.widgets.FileDownload(name="", label="Download PNG", button_type="default", auto=False, embed=False, width=130)
+hk_download = pn.widgets.FileDownload(name="", label="Download PNG", button_type="default", auto=False, embed=False, width=130)
 
 
 for button, widget in (
@@ -3983,11 +3983,13 @@ def _refresh_share_and_download_state(*_events) -> None:
     science_path = _science_download_path()
     science_download.file = science_path
     science_download.filename = science_path.name if science_path else "science_quicklook.png"
+    science_download.label = "Download PNG"
     science_download.disabled = science_path is None
 
     hk_path = _hk_download_path()
     hk_download.file = hk_path
     hk_download.filename = hk_path.name if hk_path else "housekeeping_quicklook.png"
+    hk_download.label = "Download PNG"
     hk_download.disabled = hk_path is None
 
 
@@ -4210,8 +4212,22 @@ body, .bk {
     color: #6b7280;
 }
 .action-row {
-    align-items: center;
-    gap: 8px;
+    align-items: flex-end;
+    gap: 10px;
+}
+.action-row > .bk {
+    margin: 0 !important;
+}
+.action-row .bk-input-group {
+    min-width: 320px;
+}
+.action-row .bk-btn,
+.action-row button.bk-btn {
+    min-height: 38px;
+}
+.action-row .bk-panel-models-widgets-FileDownload,
+.action-row .bk-panel-models-widgets-Button {
+    flex: 0 0 auto;
 }
 .site-footer {
     margin-top: 8px;
