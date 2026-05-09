@@ -11,6 +11,8 @@ import os
 import glob
 import re
 from datetime import datetime, date
+import numpy as np
+import pandas as pd
 import xarray as xr
 
 
@@ -60,6 +62,27 @@ def choose_engine(preferred="h5netcdf"):
             print("h5netcdf not installed; falling back to netcdf4 engine.")
             return "netcdf4"
     return preferred
+
+
+def _sort_and_deduplicate_time(ds, time_dim="time"):
+    if time_dim not in ds.coords:
+        return ds
+    ds = ds.sortby(time_dim)
+    times = np.asarray(ds[time_dim].values)
+    _, unique_idx = np.unique(times, return_index=True)
+    if len(unique_idx) != len(times):
+        ds = ds.isel({time_dim: np.sort(unique_idx)})
+    return ds
+
+
+def _filter_time_floor(ds, time_floor=None, time_dim="time"):
+    if time_floor is None or time_dim not in ds.coords:
+        return ds
+    floor = pd.Timestamp(time_floor).to_datetime64()
+    keep = np.asarray(ds[time_dim].values) >= floor
+    if keep.all():
+        return ds
+    return ds.isel({time_dim: keep})
 
 
 def make_zarr_from_netcdf(
@@ -126,7 +149,8 @@ def make_zarr_from_netcdf(
 
     ds = xr.open_mfdataset(
         selected_files,
-        combine="by_coords",
+        combine="nested",
+        concat_dim="time",
         data_vars="minimal",
         coords="minimal",
         compat="override",
@@ -134,6 +158,9 @@ def make_zarr_from_netcdf(
         engine=chosen_engine,
         parallel=False,
     )
+    ds = _sort_and_deduplicate_time(ds, time_dim="time")
+    if start_date is not None:
+        ds = _filter_time_floor(ds, time_floor=pd.Timestamp(start_date))
 
     print("Dataset opened.")
     print("Dimensions:", dict(ds.dims))

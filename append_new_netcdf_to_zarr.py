@@ -14,10 +14,27 @@ Filenames are expected to contain a timestamp like YYYYMMDD_HHMMSS, e.g.:
 import glob
 import os
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
-from netcdf_to_zarr import choose_engine, extract_datetime_from_name, make_zarr_from_netcdf
+from netcdf_to_zarr import (
+    choose_engine,
+    extract_datetime_from_name,
+    make_zarr_from_netcdf,
+    _filter_time_floor,
+)
+
+
+def _sort_and_deduplicate(ds, dim):
+    if dim not in ds.coords:
+        return ds
+    ds = ds.sortby(dim)
+    values = np.asarray(ds[dim].values)
+    _, unique_idx = np.unique(values, return_index=True)
+    if len(unique_idx) != len(values):
+        ds = ds.isel({dim: np.sort(unique_idx)})
+    return ds
 
 
 def _filter_readable(files, engine):
@@ -62,6 +79,20 @@ def _drop_bad_files(files, engine):
     return good, skipped
 
 
+def _infer_append_chunk(ds, dim):
+    for name in list(ds.data_vars) + list(ds.coords):
+        var = ds[name]
+        if dim not in var.dims:
+            continue
+        chunks = var.encoding.get("chunks")
+        if not chunks:
+            continue
+        axis = var.dims.index(dim)
+        if axis < len(chunks) and chunks[axis]:
+            return int(chunks[axis])
+    return None
+
+
 def append_new_files(
     input_dir,
     pattern,
@@ -104,6 +135,7 @@ def append_new_files(
         raise ValueError(f"Append dimension '{append_dim}' not found in Zarr store.")
 
     last_time = pd.Timestamp(ds_existing[append_dim].max().values)
+    append_chunk = _infer_append_chunk(ds_existing, append_dim)
     print(f"Latest {append_dim} in Zarr: {last_time.isoformat()}")
 
     start_cutoff = last_time
@@ -156,7 +188,8 @@ def append_new_files(
             try:
                 ds_new = xr.open_mfdataset(
                     batch_files,
-                    combine="by_coords",
+                    combine="nested",
+                    concat_dim=append_dim,
                     data_vars="minimal",
                     coords="minimal",
                     compat="override",
@@ -174,7 +207,10 @@ def append_new_files(
                     break
         if ds_new is None:
             continue
-        ds_new = ds_new.sortby(append_dim)
+        ds_new = _sort_and_deduplicate(ds_new, append_dim)
+        ds_new = _filter_time_floor(ds_new, time_floor=start_cutoff, time_dim=append_dim)
+        if append_chunk is not None:
+            ds_new = ds_new.chunk({append_dim: append_chunk})
         new_time_mask = (ds_new[append_dim] > last_time.to_datetime64()).values
         ds_new = ds_new.isel({append_dim: new_time_mask})
         if ds_new.sizes.get(append_dim, 0) == 0:
@@ -184,7 +220,12 @@ def append_new_files(
             )
             ds_new.close()
             continue
-        ds_new.to_zarr(zarr_path, mode="a", append_dim=append_dim)
+        ds_new.to_zarr(
+            zarr_path,
+            mode="a",
+            append_dim=append_dim,
+            safe_chunks=False,
+        )
         ds_new.close()
     print("Append complete.")
 
@@ -197,8 +238,8 @@ if __name__ == "__main__":
         "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
     )
 
-    # Chunking: "auto" or None generally avoids misaligned chunk warnings.
-    CHUNKS = "auto"
+    # Ceilometer files naturally arrive as 30-profile chunks.
+    CHUNKS = {"time": 30}
 
     ENGINE = "h5netcdf"
     APPEND_DIM = "time"
