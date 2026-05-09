@@ -66,19 +66,21 @@ COLOR = {
 }
 
 
-SUMMARY_INSTRUMENTS = ("vaisalamet", "asfs-logger", "asfs-fast-sonic", "power")
+SUMMARY_INSTRUMENTS = ("vaisalamet", "asfs-logger", "asfs-fast-sonic", "power", "ops-monitor")
 
 DISPLAY_NAMES = {
     "vaisalamet": "Meteorology",
     "asfs-logger": "Radiation",
     "asfs-fast-sonic": "ASFS Fast Sonic",
     "power": "Aurora Power Supply",
+    "ops-monitor": "Operations",
 }
 
 HOUSEKEEPING_LABELS = {
     "vaisalamet": "HK_Met",
     "asfs-logger": "HK_ASFS",
     "power": "HK_APS",
+    "ops-monitor": "HK_Operations",
 }
 
 QUICKLOOK_PREFIX = {
@@ -86,6 +88,7 @@ QUICKLOOK_PREFIX = {
     "asfs-logger": "asfs_logger",
     "asfs-fast-sonic": "asfs_fast_sonic",
     "power": "power",
+    "ops-monitor": "ops_monitor",
 }
 
 LEGACY_ALIAS_PREFIX = {
@@ -299,6 +302,7 @@ SUMMARY_SOURCE_INSTRUMENTS = {
     "asfs-logger": ("asfs-logger",),
     "asfs-fast-sonic": ("asfs-fast-sonic",),
     "power": ("power",),
+    "ops-monitor": ("ops-monitor",),
 }
 
 SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
@@ -436,6 +440,103 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"]),
                 TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"], axis="right"),
                 TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"], axis="right"),
+            ),
+        ),
+    ),
+    "ops-monitor": (
+        PanelSpec(
+            "source_disk_use",
+            "Source Disk Use",
+            "Used [%]",
+            None,
+            (
+                TraceSpec("host_celine_source_used_pct", "CL61 Source", COLOR["teal"]),
+                TraceSpec("host_ass_data_used_pct", "Shared Data Source", COLOR["blue"]),
+                TraceSpec("host_ass_root_used_pct", "Shared Source Root", COLOR["slate"]),
+                TraceSpec("host_aps_source_used_pct", "Power Source", COLOR["brown"]),
+            ),
+        ),
+        PanelSpec(
+            "aurora_storage",
+            "Aurora / Archive Storage",
+            "Used [%]",
+            None,
+            (
+                TraceSpec("aurora_project_used_pct", "Aurora Raw (/project)", COLOR["teal"]),
+                TraceSpec("aurora_data_used_pct", "Aurora Products (/data)", COLOR["purple"]),
+                TraceSpec("aurora_root_used_pct", "Aurora Root (/)", COLOR["olive"]),
+                TraceSpec("gws_storage_used_pct", "JASMIN GWS", COLOR["green"]),
+            ),
+        ),
+        PanelSpec(
+            "local_coverage",
+            "Local Mirror Coverage",
+            "Coverage [%]",
+            None,
+            (
+                TraceSpec("cl61_local_coverage_pct", "CL61", COLOR["teal"]),
+                TraceSpec("radar_local_coverage_pct", "Radar", COLOR["blue"]),
+                TraceSpec("vaisalamet_local_coverage_pct", "Meteorology", COLOR["green"]),
+                TraceSpec("asfs_logger_local_coverage_pct", "Radiation", COLOR["purple"]),
+                TraceSpec("asfs_fast_sonic_local_coverage_pct", "ASFS Fast Sonic", COLOR["magenta"]),
+                TraceSpec("power_local_coverage_pct", "Aurora Power Supply", COLOR["brown"]),
+                TraceSpec("wxcam_local_coverage_pct", "WXcam", COLOR["olive"]),
+            ),
+        ),
+        PanelSpec(
+            "local_lag",
+            "Local Mirror Lag",
+            "Lag [min]",
+            None,
+            (
+                TraceSpec("cl61_local_lag_min", "CL61", COLOR["teal"]),
+                TraceSpec("radar_local_lag_min", "Radar", COLOR["blue"]),
+                TraceSpec("vaisalamet_local_lag_min", "Meteorology", COLOR["green"]),
+                TraceSpec("asfs_logger_local_lag_min", "Radiation", COLOR["purple"]),
+                TraceSpec("asfs_fast_sonic_local_lag_min", "ASFS Fast Sonic", COLOR["magenta"]),
+                TraceSpec("power_local_lag_min", "Aurora Power Supply", COLOR["brown"]),
+                TraceSpec("wxcam_local_lag_min", "WXcam", COLOR["olive"]),
+            ),
+        ),
+        PanelSpec(
+            "gws_coverage",
+            "JASMIN Mirror Coverage",
+            "Coverage [%]",
+            None,
+            (
+                TraceSpec("cl61_gws_coverage_pct", "CL61", COLOR["teal"]),
+                TraceSpec("radar_gws_coverage_pct", "Radar", COLOR["blue"]),
+                TraceSpec("vaisalamet_gws_coverage_pct", "Meteorology", COLOR["green"]),
+                TraceSpec("asfs_logger_gws_coverage_pct", "Radiation", COLOR["purple"]),
+                TraceSpec("asfs_fast_sonic_gws_coverage_pct", "ASFS Fast Sonic", COLOR["magenta"]),
+                TraceSpec("power_gws_coverage_pct", "Aurora Power Supply", COLOR["brown"]),
+                TraceSpec("wxcam_gws_coverage_pct", "WXcam", COLOR["olive"]),
+            ),
+        ),
+        PanelSpec(
+            "prune_gates",
+            "Prune / Product Gates",
+            "Stream Count",
+            "State",
+            (
+                TraceSpec("streams_product_gate_ok_count", "Product Gates OK", COLOR["teal"]),
+                TraceSpec("streams_prune_ready_count", "Prune Ready", COLOR["blue"]),
+                TraceSpec("streams_local_issue_count", "Local Mirror Issues", COLOR["brown"]),
+                TraceSpec("streams_gws_issue_count", "JASMIN Mirror Issues", COLOR["red"]),
+                TraceSpec("gws_available_state", "JASMIN Available", COLOR["green"], axis="right", step=True),
+            ),
+        ),
+        PanelSpec(
+            "service_health",
+            "Service Health",
+            "Failure Count",
+            "State",
+            (
+                TraceSpec("source_host_probe_fail_count", "Source Host Probe Failures", COLOR["red"]),
+                TraceSpec("failed_source_sync_unit_count", "Source Sync Failures", COLOR["brown"]),
+                TraceSpec("failed_processing_unit_count", "Processing Failures", COLOR["purple"]),
+                TraceSpec("failed_transfer_unit_count", "Transfer Failures", COLOR["magenta"]),
+                TraceSpec("mirror_verify_timer_active_state", "Mirror Verify Timer", COLOR["teal"], axis="right", step=True),
             ),
         ),
     ),
@@ -591,13 +692,40 @@ def calendar_product_paths(quicklook_dir: Path, instrument: str, token: str) -> 
 def human_label(name: str) -> str:
     if name in HUMAN_LABELS:
         return HUMAN_LABELS[name]
-    return name.replace("_", " ")
+    tokens = [token for token in name.split("_") if token]
+    if tokens and tokens[-1] in {"pct", "gb", "count", "min", "state", "bytes"}:
+        tokens = tokens[:-1]
+    token_map = {
+        "ac": "AC",
+        "aps": "APS",
+        "asfs": "ASFS",
+        "cl61": "CL61",
+        "gws": "GWS",
+        "hk": "HK",
+        "radar": "Radar",
+        "utc": "UTC",
+        "wxcam": "WXcam",
+    }
+    parts = [token_map.get(token.lower(), token.replace("-", " ").title()) for token in tokens]
+    return " ".join(parts) if parts else name.replace("_", " ")
 
 
 def human_unit(name: str) -> str | None:
     if name in HUMAN_UNITS:
         return HUMAN_UNITS[name]
     lower = name.lower()
+    if lower.endswith("_pct"):
+        return "%"
+    if lower.endswith("_gb"):
+        return "GB"
+    if lower.endswith("_min"):
+        return "min"
+    if lower.endswith("_count"):
+        return "count"
+    if lower.endswith("_state"):
+        return "state"
+    if lower.endswith("_bytes"):
+        return "B"
     if "volt" in lower:
         return "V"
     if "watt" in lower:
@@ -641,6 +769,10 @@ def human_axis_label(name: str) -> str:
 
 def display_scale(name: str) -> float:
     return DISPLAY_SCALE.get(name, 1.0)
+
+
+def summary_trace_vars(instrument: str) -> set[str]:
+    return {trace.var for panel in SUMMARY_LAYOUTS.get(instrument, ()) for trace in panel.traces}
 
 
 def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> xr.Dataset:
@@ -753,10 +885,11 @@ def plot_housekeeping_timeseries(
     title: str,
     output: Path,
     max_time_samples: int = MAX_TIME_SAMPLES,
+    exclude_vars: set[str] | None = None,
 ) -> list[str]:
     ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
-    names = numeric_time_vars(ds)
+    names = [name for name in numeric_time_vars(ds) if not exclude_vars or name not in exclude_vars]
     if len(times) == 0 or not names:
         raise ValueError(f"No numeric {instrument} time-series variables available")
 
