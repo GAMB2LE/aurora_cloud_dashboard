@@ -291,20 +291,31 @@ def catalog_time_bounds(path: Path) -> tuple[datetime | None, datetime | None]:
     return ns_to_datetime(int(row["min_ns"])), ns_to_datetime(int(row["max_ns"]))
 
 
-def available_days(path: Path, image_type: str) -> list[str]:
+def available_days(path: Path, image_type: str, media_kind: str | None = None) -> list[str]:
     if not path.exists():
         return []
     with open_catalog(path) as conn:
         ensure_schema(conn)
-        rows = conn.execute(
-            """
-            SELECT DISTINCT day_utc
-            FROM images
-            WHERE image_type = ?
-            ORDER BY day_utc
-            """,
-            (image_type,),
-        ).fetchall()
+        if media_kind is None:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT day_utc
+                FROM images
+                WHERE image_type = ?
+                ORDER BY day_utc
+                """,
+                (image_type,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT day_utc
+                FROM images
+                WHERE image_type = ? AND media_kind = ?
+                ORDER BY day_utc
+                """,
+                (image_type, media_kind),
+            ).fetchall()
     return [str(row["day_utc"]) for row in rows]
 
 
@@ -464,6 +475,39 @@ def records_for_day(path: Path, image_type: str, day_utc: str, media_kind: str =
             (image_type, day_utc, media_kind),
         ).fetchall()
     return rows
+
+
+def representative_hourly_records(
+    path: Path,
+    image_type: str,
+    day_utc: str,
+    media_kind: str = "image",
+    target_minute: int = 30,
+) -> dict[int, sqlite3.Row]:
+    rows = records_for_day(path, image_type, day_utc, media_kind=media_kind)
+    if not rows:
+        return {}
+
+    target_seconds = int(target_minute) * 60
+    chosen: dict[int, sqlite3.Row] = {}
+    scores: dict[int, tuple[int, int, int]] = {}
+
+    for row in rows:
+        time_utc = str(row["time_utc"])
+        hour = int(time_utc[11:13])
+        minute = int(time_utc[14:16])
+        second = int(time_utc[17:19])
+        seconds_after_hour = minute * 60 + second
+        score = (
+            abs(seconds_after_hour - target_seconds),
+            seconds_after_hour,
+            int(row["time_epoch_ns"]),
+        )
+        if hour not in chosen or score < scores[hour]:
+            chosen[hour] = row
+            scores[hour] = score
+
+    return chosen
 
 
 def catalog_frontier(path: Path, media_kind: str = "image") -> dict[str, int]:

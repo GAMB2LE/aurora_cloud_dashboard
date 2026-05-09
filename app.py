@@ -10,6 +10,7 @@ import os
 from base64 import b64encode
 from datetime import datetime, timedelta, timezone, time
 from functools import lru_cache
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +22,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
 from wxcam_catalog import (
+    available_days,
     catalog_time_bounds,
     records_for_day,
+    representative_hourly_records,
 )
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
@@ -335,6 +338,11 @@ INSTRUMENTS = {
     },
 }
 
+INSTRUMENT_OPTIONS = {
+    ("WXcam" if name == "wxcam" else name): name
+    for name in INSTRUMENTS.keys()
+}
+
 DEFAULT_WINDOW = timedelta(hours=24)
 LIVE_REFRESH_MS = 60_000  # how often to snap to latest when live is on (ms)
 TIME_SUBSAMPLE = 2  # slice time to lighten payloads
@@ -592,8 +600,8 @@ irr_ymax = pn.widgets.FloatInput(name="IRR / SURF_T max (°C)", value=10.0, step
 prev_btn = pn.widgets.Button(name="Previous Day", button_type="default")
 next_btn = pn.widgets.Button(name="Next Day/Current Day", button_type="default")
 live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="primary", value=True)
-instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=list(INSTRUMENTS.keys()))
-calendar_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=list(INSTRUMENTS.keys()))
+instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
+calendar_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 calendar_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
 
 _live_guard = False
@@ -908,29 +916,45 @@ def _image_type_from_selection(selection: str) -> str:
     return cfg["vars"][selection]["image_type"]
 
 
-def _wxcam_daily_video_dir(image_type: str) -> Path:
-    return _wxcam_daily_video_root() / image_type
-
-
 def _wxcam_today_token() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
-def _wxcam_daily_video_options(selection: str) -> dict[str, str | None]:
+def _wxcam_daily_video_dir(image_type: str) -> Path:
+    return _wxcam_daily_video_root() / image_type
+
+
+def _wxcam_interactive_video_options(selection: str) -> dict[str, str | None]:
     image_type = _image_type_from_selection(selection)
     day_dir = _wxcam_daily_video_dir(image_type)
     if not day_dir.exists():
         return {"No videos available": None}
-    today_token = _wxcam_today_token()
     opts: dict[str, str | None] = {}
     for video_path in sorted(day_dir.glob("*.mp4")):
-        if video_path.stem == today_token:
+        if video_path.name == "latest.mp4":
             continue
         opts[video_path.stem] = str(video_path)
-    today_path = day_dir / f"{today_token}.mp4"
-    if today_path.exists():
-        opts["Today (latest)"] = str(today_path)
+    latest_path = day_dir / "latest.mp4"
+    if latest_path.exists():
+        opts["Today (latest)"] = str(latest_path)
     return opts or {"No videos available": None}
+
+
+def _wxcam_calendar_options(selection: str) -> dict[str, str | None]:
+    image_type = _image_type_from_selection(selection)
+    day_values = available_days(_wxcam_catalog_path("wxcam"), image_type, media_kind="image")
+    if not day_values:
+        return {"No images available": None}
+    today_token = _wxcam_today_token()
+    opts: dict[str, str | None] = {}
+    for day_utc in day_values:
+        day_token = day_utc.replace("-", "")
+        if day_token == today_token:
+            continue
+        opts[day_token] = day_token
+    if any(day_utc.replace("-", "") == today_token for day_utc in day_values):
+        opts["Today (latest)"] = today_token
+    return opts or {"No images available": None}
 
 
 def _wxcam_day_token_to_utc(day_token: str) -> str | None:
@@ -945,8 +969,21 @@ def _wxcam_calendar_day_token(selected_day: str | None) -> str | None:
     return selected_day
 
 
-def _wxcam_hourly_thumbnail_path(image_type: str, day_token: str, video_name: str) -> Path:
-    return _wxcam_hourly_thumbnail_root() / image_type / day_token / f"{Path(video_name).stem}.jpg"
+def _wxcam_hourly_image_rows(selection: str, day_token: str | None) -> dict[int, object]:
+    day_utc = _wxcam_day_token_to_utc(day_token or "")
+    if not day_utc:
+        return {}
+    image_type = _image_type_from_selection(selection)
+    return representative_hourly_records(
+        _wxcam_catalog_path("wxcam"),
+        image_type,
+        day_utc,
+        media_kind="image",
+    )
+
+
+def _wxcam_hourly_thumbnail_path(image_type: str, day_token: str, source_name: str) -> Path:
+    return _wxcam_hourly_thumbnail_root() / image_type / day_token / f"{Path(source_name).stem}.jpg"
 
 
 def _media_pane(path: str):
@@ -990,12 +1027,32 @@ def _build_wxcam_video_view(path: Path, selection: str, selected_label: str):
     )
 
 
+def _build_wxcam_image_view(path: Path, selection: str, selected_label: str):
+    image_type = _image_type_from_selection(selection)
+    mode_class = "wxcam-still--vertical" if image_type == "fish_hdr" else "wxcam-still--wide"
+    title = escape(f"{selection} | {selected_label} | {path.name}")
+    alt = escape(f"{selection} {selected_label}")
+    return pn.Column(
+        pn.pane.HTML(
+            (
+                f"<div class='wxcam-still {mode_class}'>"
+                f"<div class='wxcam-player__meta'><div class='wxcam-player__title'>{title}</div></div>"
+                f"<div class='wxcam-still__frame'><img src='{_image_data_uri(path)}' alt='{alt}'></div>"
+                f"</div>"
+            ),
+            sizing_mode="stretch_width",
+            margin=0,
+        ),
+        sizing_mode="stretch_width",
+    )
+
+
 wxcam_image_type = pn.widgets.Select(
     name="Image type",
     options=list(_cfg("wxcam")["vars"].keys()),
     value=_cfg("wxcam")["default_top"],
 )
-_wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value)
+_wxcam_ql_options = _wxcam_interactive_video_options(wxcam_image_type.value)
 wxcam_date = pn.widgets.Select(name="Date", options=list(_wxcam_ql_options.keys()))
 if _wxcam_ql_options:
     wxcam_date.value = list(_wxcam_ql_options.keys())[-1]
@@ -1006,7 +1063,7 @@ wxcam_next = pn.widgets.Button(name=">>", button_type="default")
 def _refresh_wxcam_ql_options(preserve_current: bool = True):
     global _wxcam_ql_options
     current = wxcam_date.value if preserve_current else None
-    _wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
+    _wxcam_ql_options = _wxcam_interactive_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
     opts = list(_wxcam_ql_options.keys())
     wxcam_date.options = opts
     if not opts:
@@ -1035,21 +1092,21 @@ wxcam_prev.on_click(lambda _e: _shift_wxcam_ql(-1))
 wxcam_next.on_click(lambda _e: _shift_wxcam_ql(1))
 
 
-class WxcamCalendarState(param.Parameterized):
+class WxcamSelectionState(param.Parameterized):
     selected_hour_path = param.String(default="")
 
 
-wxcam_calendar_state = WxcamCalendarState()
+wxcam_calendar_state = WxcamSelectionState()
 
 
 def _refresh_wxcam_latest_if_needed():
     if CURRENT_INSTRUMENT != "wxcam":
         return
     if wxcam_date.value == "Today (latest)":
-        # Refresh the current-day video option map slowly enough that playback
-        # is stable while still letting new daily products appear automatically.
+        # Refresh the rolling latest-video option map slowly enough that
+        # playback stays stable while new stitched products appear.
         global _wxcam_ql_options
-        _wxcam_ql_options = _wxcam_daily_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
+        _wxcam_ql_options = _wxcam_interactive_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
         wxcam_date.param.trigger("value")
 
 
@@ -1058,7 +1115,7 @@ _wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed
 
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
 def _wxcam_interactive_media(selected, selection):
-    path = _wxcam_daily_video_options(selection or _cfg("wxcam")["default_top"]).get(selected)
+    path = _wxcam_interactive_video_options(selection or _cfg("wxcam")["default_top"]).get(selected)
     if not path:
         return pn.pane.Markdown("No media available for this selection.")
     video_path = Path(path)
@@ -1694,7 +1751,7 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
     inst = inst or CURRENT_INSTRUMENT
     cfg = _cfg(inst)
     if _is_wxcam_instrument(inst):
-        return _wxcam_daily_video_options(wxcam_selection or _cfg("wxcam")["default_top"])
+        return _wxcam_calendar_options(wxcam_selection or _cfg("wxcam")["default_top"])
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -1775,8 +1832,8 @@ ql_next.on_click(lambda _e: _shift_ql(1))
 def _refresh_latest_if_needed():
     """If viewing the latest image, reload the mapping and redraw without changing selection."""
     if ql_date.value == "Today (latest)":
-        # Update the cached map so _quicklook_image sees fresh file paths,
-        # but do not touch the selector options to avoid snapping UI.
+        # Update the cached option map, but do not touch the selector options
+        # to avoid snapping the current calendar state while browsing.
         global _ql_options
         _ql_options = _quicklook_options(calendar_instrument.value, calendar_image_type.value)
         ql_date.param.trigger("value")
@@ -1801,8 +1858,13 @@ def _sync_wxcam_calendar_hour(*_events):
         wxcam_calendar_state.selected_hour_path = ""
         return
     image_type = _image_type_from_selection(selection)
-    rows = records_for_day(_wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="video")
-    available_paths = [str(row["raw_path"]) for row in rows]
+    rows_by_hour = representative_hourly_records(
+        _wxcam_catalog_path("wxcam"),
+        image_type,
+        day_utc,
+        media_kind="image",
+    )
+    available_paths = [str(row["raw_path"]) for row in rows_by_hour.values()]
     if not available_paths:
         wxcam_calendar_state.selected_hour_path = ""
         return
@@ -1873,26 +1935,26 @@ def _build_wxcam_hour_tile(
 def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour_path: str):
     day_utc = _wxcam_day_token_to_utc(day_token)
     if not day_utc:
-        return pn.pane.Markdown("No hourly clips available for this selection.")
+        return pn.pane.Markdown("No hourly images available for this selection.")
     image_type = _image_type_from_selection(selection)
-    rows = records_for_day(_wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="video")
-    if not rows:
-        return pn.pane.Markdown("No hourly clips available for this selection.")
-
-    rows_by_hour = {
-        int(str(row["time_utc"])[11:13]): row
-        for row in rows
-    }
+    rows_by_hour = representative_hourly_records(
+        _wxcam_catalog_path("wxcam"),
+        image_type,
+        day_utc,
+        media_kind="image",
+    )
+    if not rows_by_hour:
+        return pn.pane.Markdown("No hourly images available for this selection.")
     tiles = [
         _build_wxcam_hour_tile(image_type, day_token, hour_index, rows_by_hour.get(hour_index), selected_hour_path)
         for hour_index in range(24)
     ]
     grid = pn.GridBox(*tiles, ncols=8, sizing_mode="stretch_width")
-    selected_row = next((row for row in rows if str(row["raw_path"]) == selected_hour_path), None)
+    selected_row = next((row for row in rows_by_hour.values() if str(row["raw_path"]) == selected_hour_path), None)
     if selected_row is None:
         return pn.Column(grid, sizing_mode="stretch_width")
     selected_hour_label = str(selected_row["time_utc"])[11:16] + " UTC"
-    viewer = _build_wxcam_video_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
+    viewer = _build_wxcam_image_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
     return pn.Column(grid, viewer, sizing_mode="stretch_width")
 
 

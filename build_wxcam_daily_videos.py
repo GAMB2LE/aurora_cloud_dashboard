@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build daily wxcam mp4 products and hourly thumbnails from raw clips."""
+"""Build daily wxcam mp4 products, rolling latest videos, and hourly thumbnails."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from wxcam_catalog import WXCAM_IMAGE_TYPES
+from PIL import Image
+
+from wxcam_catalog import WXCAM_IMAGE_TYPES, parse_timestamp
 
 RAW_DEFAULT = Path("/project/aurora/raw/wxcam")
 OUTPUT_DEFAULT = Path("/data/aurora/products/wxcam/daily_videos")
@@ -26,8 +28,9 @@ def _iter_day_dirs(stream_root: Path):
             yield path
 
 
-def _list_clips(day_dir: Path, pattern: str) -> list[Path]:
-    return sorted(path for path in day_dir.glob(pattern) if path.is_file())
+def _list_files(day_dir: Path, pattern: str, recursive: bool = False) -> list[Path]:
+    iterator = day_dir.rglob(pattern) if recursive else day_dir.glob(pattern)
+    return sorted(path for path in iterator if path.is_file())
 
 
 def _needs_refresh(clips: list[Path], output_path: Path) -> bool:
@@ -86,61 +89,40 @@ def _build_output(clips: list[Path], output_path: Path) -> None:
         tmp_output.replace(output_path)
 
 
-def _thumbnail_path(thumbnail_root: Path, image_type: str, day_token: str, clip_path: Path) -> Path:
-    return thumbnail_root / image_type / day_token / f"{clip_path.stem}.jpg"
+def _thumbnail_path(thumbnail_root: Path, image_type: str, day_token: str, source_path: Path) -> Path:
+    return thumbnail_root / image_type / day_token / f"{source_path.stem}.jpg"
 
 
-def _probe_duration_seconds(path: Path) -> float:
-    output = subprocess.check_output(
-        [
-            shutil.which("ffprobe") or "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        text=True,
-    ).strip()
-    return float(output) if output else 0.0
+def _representative_hourly_images(day_dir: Path, pattern: str) -> dict[int, Path]:
+    chosen: dict[int, Path] = {}
+    scores: dict[int, tuple[int, int, str]] = {}
+    for image_path in _list_files(day_dir, pattern, recursive=True):
+        timestamp = parse_timestamp(image_path)
+        if timestamp is None:
+            continue
+        hour = timestamp.hour
+        seconds_after_hour = timestamp.minute * 60 + timestamp.second
+        score = (
+            abs(seconds_after_hour - 30 * 60),
+            seconds_after_hour,
+            image_path.name,
+        )
+        if hour not in chosen or score < scores[hour]:
+            chosen[hour] = image_path
+            scores[hour] = score
+    return chosen
 
 
-def _render_thumbnail(clip_path: Path, tmp_output: Path, seek_seconds: float) -> None:
-    subprocess.run(
-        [
-            shutil.which("ffmpeg") or "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            f"{seek_seconds:.3f}",
-            "-i",
-            str(clip_path),
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            "-vf",
-            "scale=360:-2",
-            str(tmp_output),
-        ],
-        check=True,
-    )
-
-
-def _build_thumbnail(clip_path: Path, output_path: Path) -> bool:
+def _build_image_thumbnail(image_path: Path, output_path: Path) -> bool:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    duration_seconds = _probe_duration_seconds(clip_path)
-    seek_seconds = max(min(duration_seconds * 0.5, max(duration_seconds - 0.01, 0.0)), 0.0)
+    resample = getattr(Image, "Resampling", Image).LANCZOS
     with tempfile.TemporaryDirectory(dir=output_path.parent) as tmpdir_name:
         tmpdir = Path(tmpdir_name)
         tmp_output = tmpdir / output_path.name
-        _render_thumbnail(clip_path, tmp_output, seek_seconds)
-        if not tmp_output.exists():
-            _render_thumbnail(clip_path, tmp_output, 0.0)
+        with Image.open(image_path) as image:
+            preview = image.convert("RGB")
+            preview.thumbnail((540, 540), resample)
+            preview.save(tmp_output, format="JPEG", quality=88, optimize=True)
         if not tmp_output.exists():
             return False
         tmp_output.replace(output_path)
@@ -149,34 +131,41 @@ def _build_thumbnail(clip_path: Path, output_path: Path) -> bool:
 
 def build_daily_videos(raw_root: Path, output_root: Path, thumbnail_root: Path) -> None:
     built = 0
+    latest_built = 0
     skipped = 0
+    latest_skipped = 0
     thumbs_built = 0
     thumbs_skipped = 0
     thumbs_failed = 0
     for image_type, spec in WXCAM_IMAGE_TYPES.items():
         stream_root = raw_root / spec["stream"]
+        image_glob = spec["image_glob"]
         video_glob = spec["video_glob"]
         type_output_root = output_root / image_type
+        all_clips: list[Path] = []
         for day_dir in _iter_day_dirs(stream_root):
-            clips = _list_clips(day_dir, video_glob)
-            if not clips:
-                continue
-            for clip_path in clips:
-                thumb_path = _thumbnail_path(thumbnail_root, image_type, day_dir.name, clip_path)
-                if _needs_refresh([clip_path], thumb_path):
+            hourly_images = _representative_hourly_images(day_dir, image_glob)
+            for image_path in hourly_images.values():
+                thumb_path = _thumbnail_path(thumbnail_root, image_type, day_dir.name, image_path)
+                if _needs_refresh([image_path], thumb_path):
                     try:
-                        built_thumb = _build_thumbnail(clip_path, thumb_path)
+                        built_thumb = _build_image_thumbnail(image_path, thumb_path)
                     except Exception as exc:
-                        print(f"Skipping wxcam thumbnail {clip_path}: {exc}")
+                        print(f"Skipping wxcam thumbnail {image_path}: {exc}")
                         thumbs_failed += 1
                         continue
                     if built_thumb:
                         thumbs_built += 1
                     else:
-                        print(f"Skipping wxcam thumbnail {clip_path}: ffmpeg produced no frame")
+                        print(f"Skipping wxcam thumbnail {image_path}: no thumbnail produced")
                         thumbs_failed += 1
                 else:
                     thumbs_skipped += 1
+            clips = _list_files(day_dir, video_glob)
+            if clips:
+                all_clips.extend(clips)
+            if not clips:
+                continue
             output_path = type_output_root / f"{day_dir.name}.mp4"
             if not _needs_refresh(clips, output_path):
                 skipped += 1
@@ -184,9 +173,19 @@ def build_daily_videos(raw_root: Path, output_root: Path, thumbnail_root: Path) 
             _build_output(clips, output_path)
             built += 1
             print(f"Built wxcam daily video: {image_type} {day_dir.name} -> {output_path}")
+        if all_clips:
+            latest_clips = all_clips[-24:]
+            latest_path = type_output_root / "latest.mp4"
+            if _needs_refresh(latest_clips, latest_path):
+                _build_output(latest_clips, latest_path)
+                latest_built += 1
+                print(f"Built wxcam rolling latest video: {image_type} -> {latest_path}")
+            else:
+                latest_skipped += 1
     print(
         "wxcam daily products complete: "
         f"videos_built={built} videos_skipped={skipped} "
+        f"latest_built={latest_built} latest_skipped={latest_skipped} "
         f"thumbnails_built={thumbs_built} thumbnails_skipped={thumbs_skipped} thumbnails_failed={thumbs_failed} "
         f"video_root={output_root} thumbnail_root={thumbnail_root}"
     )
