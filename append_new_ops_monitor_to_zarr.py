@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
 import shutil
@@ -138,6 +138,13 @@ def _consolidate(zarr_path: Path) -> None:
         print(f"Could not consolidate Zarr metadata for {zarr_path}: {exc}")
 
 
+def _backup_existing_store(zarr_path: Path, reason: str) -> None:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = zarr_path.with_name(f"{zarr_path.stem}.backup_{reason}_{timestamp}{zarr_path.suffix}")
+    shutil.move(str(zarr_path), str(backup_path))
+    print(f"Moved existing operations Zarr to {backup_path}")
+
+
 def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None, lookback_days: int = 2) -> None:
     if not root.exists():
         print(f"Raw operations snapshot directory does not exist: {root}")
@@ -158,7 +165,12 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
         print("Bootstrap complete.")
         return
 
-    existing = xr.open_zarr(zarr_path, chunks={})
+    try:
+        existing = xr.open_zarr(zarr_path, chunks={})
+    except Exception as exc:
+        print(f"Existing operations Zarr is unreadable ({exc}); rebuilding from raw snapshots.")
+        _backup_existing_store(zarr_path, "corrupt")
+        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
     if "time" not in existing:
         raise KeyError("Zarr store missing time coordinate")
     last_time = pd.to_datetime(existing["time"].max().values).to_pydatetime()
