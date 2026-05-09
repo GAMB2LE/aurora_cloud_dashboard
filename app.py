@@ -1320,7 +1320,18 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_celine_source"),
-                "100.117.101.84 /",
+                "100.117.101.84 /home/aurora/data/cl61",
+            ),
+            _ops_card_markup(
+                "CL61 data disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_celine_data_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_celine_data_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_celine_data"),
+                "100.117.101.84 /home/aurora/data",
             ),
             _ops_card_markup(
                 "ASS data disk",
@@ -1353,6 +1364,28 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_aps_source"),
+                "100.81.226.30 /data/power/level1",
+            ),
+            _ops_card_markup(
+                "APS data disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_aps_data_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_aps_data_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_aps_data"),
+                "100.81.226.30 /data",
+            ),
+            _ops_card_markup(
+                "APS root disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_aps_root_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_aps_root_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_aps_root"),
                 "100.81.226.30 /",
             ),
             _ops_card_markup(

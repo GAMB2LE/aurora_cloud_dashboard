@@ -21,29 +21,54 @@ KNOWN_HOSTS = Path("/home/aurora/.ssh/known_hosts")
 
 SOURCE_HOSTS = {
     "host_celine_source": {
+        "host_id": "celine",
         "user_env": "CL61_SOURCE_USER",
         "host_env": "CL61_SOURCE_HOST",
         "path_env": "CL61_SOURCE_PATH",
         "path_default": "/home/aurora/data/cl61",
         "auth": "cl61",
     },
+    "host_celine_data": {
+        "host_id": "celine",
+        "user_env": "CL61_SOURCE_USER",
+        "host_env": "CL61_SOURCE_HOST",
+        "path_default": "/home/aurora/data",
+        "auth": "cl61",
+    },
     "host_ass_data": {
+        "host_id": "ass",
         "user_env": "RADAR_SOURCE_USER",
         "host_env": "RADAR_SOURCE_HOST",
         "path_default": "/home/aurora/data",
         "auth": "tailscale",
     },
     "host_ass_root": {
+        "host_id": "ass",
         "user_env": "RADAR_SOURCE_USER",
         "host_env": "RADAR_SOURCE_HOST",
         "path_default": "/",
         "auth": "tailscale",
     },
     "host_aps_source": {
+        "host_id": "aps",
         "user_env": "POWER_SOURCE_USER",
         "host_env": "POWER_SOURCE_HOST",
         "path_env": "POWER_SOURCE_PATH",
         "path_default": "/data/power/level1",
+        "auth": "tailscale",
+    },
+    "host_aps_data": {
+        "host_id": "aps",
+        "user_env": "POWER_SOURCE_USER",
+        "host_env": "POWER_SOURCE_HOST",
+        "path_default": "/data",
+        "auth": "tailscale",
+    },
+    "host_aps_root": {
+        "host_id": "aps",
+        "user_env": "POWER_SOURCE_USER",
+        "host_env": "POWER_SOURCE_HOST",
+        "path_default": "/",
         "auth": "tailscale",
     },
 }
@@ -384,26 +409,28 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         except Exception:
             pass
 
-    source_probe_failures = 0
+    host_reachability: dict[str, bool] = {}
     for prefix, cfg in SOURCE_HOSTS.items():
+        host_id = cfg.get("host_id", prefix)
         user = os.environ.get(cfg["user_env"], "aurora")
         host = os.environ.get(cfg["host_env"], "")
         path = os.environ.get(cfg.get("path_env", ""), cfg["path_default"])
         if not host:
-            source_probe_failures += 1
             record[f"{prefix}_probe_ok_state"] = 0
+            host_reachability.setdefault(host_id, False)
             continue
         base_cmd = _cl61_ssh_base() if cfg["auth"] == "cl61" else _tailscale_ssh_base()
         target = f"{user}@{host}"
         try:
             metrics = _remote_df(base_cmd, target, path)
             record[f"{prefix}_probe_ok_state"] = 1
+            host_reachability[host_id] = True
             for key, value in metrics.items():
                 record[f"{prefix}_{key}"] = value
         except Exception:
-            source_probe_failures += 1
             record[f"{prefix}_probe_ok_state"] = 0
-    record["source_host_probe_fail_count"] = source_probe_failures
+            host_reachability.setdefault(host_id, False)
+    record["source_host_probe_fail_count"] = sum(1 for ok in host_reachability.values() if not ok)
 
     for prefix, path in (
         ("aurora_project", "/project"),

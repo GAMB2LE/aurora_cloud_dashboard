@@ -10,7 +10,7 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`.
 - `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`.
 - `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` shows rolling latest and per-day MP4s. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
-- `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, processing health, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream.
+- `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, processing health, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. The storage section now breaks out the CL61 source/data views, ASS data/root views, and APS source/data/root views separately.
 
 Additional housekeeping products now exist for:
 
