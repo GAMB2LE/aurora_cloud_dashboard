@@ -620,6 +620,9 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
     cfg = _cfg(inst)
     with hold():
         vars_cfg = cfg["vars"]
+        is_hatpro = inst == "Scanning Microwave Radiometer"
+        is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
+        is_wxcam = _is_wxcam_instrument(inst)
         var1_name = cfg["default_top"]
         var2_name = cfg["default_bottom"]
         var1_select.options = list(vars_cfg.keys())
@@ -658,12 +661,11 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
             start = end - DEFAULT_WINDOW
             range_start.value = start
             range_end.value = end
-            _set_live(True)
+            # WXcam is a manual browser: refresh when switching back into it,
+            # but do not keep a hidden live timer running while it is selected.
+            _set_live(not is_wxcam)
 
         # Instrument-specific UI trimming
-        is_hatpro = inst == "Scanning Microwave Radiometer"
-        is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
-        is_wxcam = _is_wxcam_instrument(inst)
         range_start.visible = not is_wxcam
         range_end.visible = not is_wxcam
         live_toggle.visible = not is_wxcam
@@ -1100,14 +1102,10 @@ wxcam_calendar_state = WxcamSelectionState()
 
 
 def _refresh_wxcam_latest_if_needed():
-    if CURRENT_INSTRUMENT != "wxcam":
-        return
-    if wxcam_date.value == "Today (latest)":
-        # Refresh the rolling latest-video option map slowly enough that
-        # playback stays stable while new stitched products appear.
-        global _wxcam_ql_options
-        _wxcam_ql_options = _wxcam_interactive_video_options(wxcam_image_type.value or _cfg("wxcam")["default_top"])
-        wxcam_date.param.trigger("value")
+    # WXcam should not auto-refresh while selected. We refresh its options when
+    # the user switches away and comes back, or when they explicitly change the
+    # WXcam controls.
+    return
 
 
 _wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
@@ -1831,6 +1829,8 @@ ql_next.on_click(lambda _e: _shift_ql(1))
 # Periodically refresh the "Today (latest)" selection to pick up new PNGs.
 def _refresh_latest_if_needed():
     """If viewing the latest image, reload the mapping and redraw without changing selection."""
+    if _is_wxcam_instrument(calendar_instrument.value):
+        return
     if ql_date.value == "Today (latest)":
         # Update the cached option map, but do not touch the selector options
         # to avoid snapping the current calendar state while browsing.
