@@ -60,6 +60,25 @@ from wxcam_catalog import (
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
 
+def _static_asset_data_uri(path: Path) -> str:
+    if not path.exists():
+        return ""
+    suffix = path.suffix.lower()
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".svg": "image/svg+xml",
+        ".ico": "image/x-icon",
+    }.get(suffix, "application/octet-stream")
+    encoded = b64encode(path.read_bytes()).decode("utf-8")
+    return f"data:{mime};base64,{encoded}"
+
+
+DASHBOARD_LOGO = _static_asset_data_uri(Path(__file__).resolve().parent / "assets" / "logo.png")
+DASHBOARD_FAVICON = "https://gamb2le.pages.dev/assets/logo.png"
+
+
 class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
     src = param.String(default="")
     title = param.String(default="")
@@ -4478,6 +4497,8 @@ pn.extension(raw_css=[css])
 # Template layout: header + tabs
 template = pn.template.MaterialTemplate(
     title="AURORA Data Viewer",
+    logo=DASHBOARD_LOGO,
+    favicon=DASHBOARD_FAVICON,
     header_background=ACCENT,
     header_color="white",
     main_max_width="1800px",  # wide but keeps a valid string
