@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate grouped daily and latest ASFS LoggerNet quicklook PNGs."""
+"""Generate ASFS summary and housekeeping quicklook PNGs."""
 
 from __future__ import annotations
 
@@ -12,12 +12,14 @@ import pandas as pd
 import xarray as xr
 
 from grouped_timeseries import (
-    clear_grouped_quicklooks,
-    default_calendar_label,
-    group_daily_png,
-    group_latest_png,
-    group_specs,
-    plot_grouped_timeseries,
+    clear_generated_quicklooks,
+    housekeeping_daily_png,
+    housekeeping_label,
+    housekeeping_latest_png,
+    plot_housekeeping_timeseries,
+    save_summary_png,
+    summary_daily_png,
+    summary_latest_png,
     refresh_legacy_aliases,
 )
 
@@ -41,19 +43,21 @@ def main(force: bool = False) -> None:
 
     QUICKLOOK_DIR.mkdir(parents=True, exist_ok=True)
     if force:
-        clear_grouped_quicklooks(QUICKLOOK_DIR, INSTRUMENT)
-        print("Deleted existing grouped ASFS LoggerNet quicklook PNGs.")
+        clear_generated_quicklooks(QUICKLOOK_DIR, INSTRUMENT)
+        print("Deleted existing ASFS quicklook PNGs.")
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
     latest_mask = (time_index >= start_time) & (time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
-        for spec in group_specs(INSTRUMENT):
-            out = group_latest_png(QUICKLOOK_DIR, INSTRUMENT, spec.label)
-            plot_grouped_timeseries(latest_day, INSTRUMENT, spec.label, f"{spec.label} - Latest 24 hours", out)
-            if spec.label == default_calendar_label(INSTRUMENT):
-                refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, latest_png=out)
+        summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
+        save_summary_png(latest_day, INSTRUMENT, "ASFS - Latest 24 hours", summary_out)
+        hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
+        if hk_out is not None:
+            hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
+            plot_housekeeping_timeseries(latest_day, INSTRUMENT, hk_title, hk_out)
+            refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, latest_png=hk_out)
 
     for day in dates:
         start = pd.Timestamp(day)
@@ -64,18 +68,19 @@ def main(force: bool = False) -> None:
         ds_day = ds.isel(time=mask).sortby("time")
         if ds_day.sizes.get("time", 0) < 2:
             continue
-        for spec in group_specs(INSTRUMENT):
-            out = group_daily_png(QUICKLOOK_DIR, INSTRUMENT, spec.label, day)
-            if out.exists() and not force:
-                continue
-            title = pd.Timestamp(day).strftime(f"{spec.label} - %Y-%m-%d")
-            plot_grouped_timeseries(ds_day, INSTRUMENT, spec.label, title, out)
-            if spec.label == default_calendar_label(INSTRUMENT):
-                refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, day_png=out)
+        summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
+        if force or not summary_out.exists():
+            title = pd.Timestamp(day).strftime("ASFS - %Y-%m-%d")
+            save_summary_png(ds_day, INSTRUMENT, title, summary_out)
+        hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
+        if hk_out is not None and (force or not hk_out.exists()):
+            hk_title = pd.Timestamp(day).strftime(f"{housekeeping_label(INSTRUMENT)} - %Y-%m-%d")
+            plot_housekeeping_timeseries(ds_day, INSTRUMENT, hk_title, hk_out)
+            refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, day_png=hk_out)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate grouped ASFS LoggerNet quicklook PNGs")
+    parser = argparse.ArgumentParser(description="Generate ASFS summary and housekeeping quicklook PNGs")
     parser.add_argument("--force", action="store_true", help="Regenerate all quicklooks")
     args = parser.parse_args()
     main(force=args.force)

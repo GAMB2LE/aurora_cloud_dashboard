@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate grouped daily and latest ASFS fast-sonic quicklook PNGs."""
+"""Generate ASFS fast-sonic summary quicklook PNGs."""
 
 from __future__ import annotations
 
@@ -12,11 +12,10 @@ import pandas as pd
 import xarray as xr
 
 from grouped_timeseries import (
-    clear_grouped_quicklooks,
-    group_daily_png,
-    group_latest_png,
-    group_specs,
-    plot_grouped_timeseries,
+    clear_generated_quicklooks,
+    save_summary_png,
+    summary_daily_png,
+    summary_latest_png,
 )
 
 APP_DIR = Path(__file__).resolve().parent
@@ -39,17 +38,16 @@ def main(force: bool = False) -> None:
 
     QUICKLOOK_DIR.mkdir(parents=True, exist_ok=True)
     if force:
-        clear_grouped_quicklooks(QUICKLOOK_DIR, INSTRUMENT)
-        print("Deleted existing grouped ASFS fast-sonic quicklook PNGs.")
+        clear_generated_quicklooks(QUICKLOOK_DIR, INSTRUMENT)
+        print("Deleted existing ASFS fast-sonic quicklook PNGs.")
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
     latest_mask = (time_index >= start_time) & (time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
-        for spec in group_specs(INSTRUMENT):
-            out = group_latest_png(QUICKLOOK_DIR, INSTRUMENT, spec.label)
-            plot_grouped_timeseries(latest_day, INSTRUMENT, spec.label, f"{spec.label} - Latest 24 hours", out)
+        summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
+        save_summary_png(latest_day, INSTRUMENT, "ASFS Fast Sonic - Latest 24 hours", summary_out)
 
     for day in dates:
         start = pd.Timestamp(day)
@@ -60,16 +58,15 @@ def main(force: bool = False) -> None:
         ds_day = ds.isel(time=mask).sortby("time")
         if ds_day.sizes.get("time", 0) < 2:
             continue
-        for spec in group_specs(INSTRUMENT):
-            out = group_daily_png(QUICKLOOK_DIR, INSTRUMENT, spec.label, day)
-            if out.exists() and not force:
-                continue
-            title = pd.Timestamp(day).strftime(f"{spec.label} - %Y-%m-%d")
-            plot_grouped_timeseries(ds_day, INSTRUMENT, spec.label, title, out)
+        summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
+        if summary_out.exists() and not force:
+            continue
+        title = pd.Timestamp(day).strftime("ASFS Fast Sonic - %Y-%m-%d")
+        save_summary_png(ds_day, INSTRUMENT, title, summary_out)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate grouped ASFS fast-sonic quicklook PNGs")
+    parser = argparse.ArgumentParser(description="Generate ASFS fast-sonic summary quicklook PNGs")
     parser.add_argument("--force", action="store_true", help="Regenerate all quicklooks")
     args = parser.parse_args()
     main(force=args.force)

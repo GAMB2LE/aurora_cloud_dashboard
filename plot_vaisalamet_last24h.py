@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render grouped Vaisala met time-series PNGs."""
+"""Render Meteorology housekeeping latest-24h PNGs."""
 
 from __future__ import annotations
 
@@ -8,32 +8,27 @@ from pathlib import Path
 
 import xarray as xr
 
-from grouped_timeseries import (
-    default_calendar_label,
-    plot_grouped_timeseries,
-    plot_last_24h,
-)
+from grouped_timeseries import plot_housekeeping_last_24h, plot_housekeeping_timeseries
 
 INSTRUMENT = "vaisalamet"
 ZARR_DEFAULT = Path("/data/aurora/products/vaisalamet/vaisalamet.zarr")
 OUTPUT_DEFAULT = Path("latest_vaisalamet.png")
 
 
-def plot_timeseries(ds: xr.Dataset, title: str, output: Path, group: str | None = None) -> None:
-    plot_grouped_timeseries(ds, instrument=INSTRUMENT, selection=group, title=title, output=output)
+def plot_timeseries(ds: xr.Dataset, title: str, output: Path) -> None:
+    plot_housekeeping_timeseries(ds, instrument=INSTRUMENT, title=title, output=output)
 
 
-def plot_last_24h_group(zarr_path: Path, output: Path, group: str | None = None) -> None:
-    plot_last_24h(zarr_path, output, instrument=INSTRUMENT, selection=group)
+def plot_last_24h_group(zarr_path: Path, output: Path) -> None:
+    plot_housekeeping_last_24h(zarr_path, output, instrument=INSTRUMENT)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render grouped Vaisala met latest-24h PNGs")
+    parser = argparse.ArgumentParser(description="Render Meteorology housekeeping latest-24h PNGs")
     parser.add_argument("zarr_path", nargs="?", type=Path, default=ZARR_DEFAULT)
     parser.add_argument("output", nargs="?", type=Path, default=OUTPUT_DEFAULT)
-    parser.add_argument("--group", default=default_calendar_label(INSTRUMENT), help="Display label or group key to render")
     args = parser.parse_args()
-    plot_last_24h_group(args.zarr_path, args.output, group=args.group)
+    plot_last_24h_group(args.zarr_path, args.output)
 
 
 if __name__ == "__main__":

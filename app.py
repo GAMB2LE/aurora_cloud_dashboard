@@ -27,13 +27,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
 from grouped_timeseries import (
+    build_summary_plotly,
+    calendar_date_tokens,
+    calendar_product_paths,
     default_calendar_label,
     default_interactive_label,
-    downsample_time,
-    grouped_numeric_time_vars,
-    group_spec_for_selection,
-    is_status_like_var,
-    quicklook_prefix,
+    display_name,
+    is_summary_instrument,
     widget_group_options,
 )
 from wxcam_catalog import (
@@ -519,7 +519,7 @@ INSTRUMENTS = {
 }
 
 INSTRUMENT_OPTIONS = {
-    ("WXcam" if name == "wxcam" else name): name
+    ("WXcam" if name == "wxcam" else display_name(name)): name
     for name in INSTRUMENTS.keys()
 }
 
@@ -807,7 +807,7 @@ def _numeric_time_vars(ds: xr.Dataset) -> list[str]:
 
 
 def _is_stacked_timeseries_instrument(inst: str) -> bool:
-    return inst in {"vaisalamet", "asfs-logger", "asfs-fast-sonic", "power"}
+    return is_summary_instrument(inst)
 
 
 def _is_wxcam_instrument(inst: str) -> bool:
@@ -862,12 +862,11 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         is_wxcam = _is_wxcam_instrument(inst)
         var1_name = cfg["default_top"]
         var2_name = cfg["default_bottom"]
-        calendar_selection = cfg.get("default_calendar", var1_name)
         var1_select.options = list(vars_cfg.keys())
         var2_select.options = list(vars_cfg.keys())
         var1_select.value = var1_name
         var2_select.value = var2_name
-        var1_select.name = "Plot group" if is_stacked_timeseries else "Top var"
+        var1_select.name = "Overview" if is_stacked_timeseries else "Top var"
         var2_select.name = "Bottom var"
         var1 = vars_cfg[var1_name]
         var2 = vars_cfg[var2_name]
@@ -907,7 +906,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         range_start.visible = not is_wxcam
         range_end.visible = not is_wxcam
         live_toggle.visible = not is_wxcam
-        var1_select.visible = not is_hatpro and not is_wxcam
+        var1_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
         var2_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
         bottom_range_m.visible = not is_stacked_timeseries and not is_wxcam
         top_range_m.visible = not is_stacked_timeseries and not is_wxcam
@@ -917,7 +916,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
-        calendar_image_type.visible = is_wxcam or is_stacked_timeseries
+        calendar_image_type.visible = is_wxcam
         if is_wxcam:
             calendar_image_type.name = "Image type"
             calendar_image_type.options = list(vars_cfg.keys())
@@ -925,10 +924,6 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
             wxcam_image_type.options = list(vars_cfg.keys())
             wxcam_image_type.value = var1_name
             _refresh_wxcam_ql_options(preserve_current=False)
-        elif is_stacked_timeseries:
-            calendar_image_type.name = "Plot"
-            calendar_image_type.options = list(vars_cfg.keys())
-            calendar_image_type.value = calendar_selection
         else:
             calendar_image_type.name = "Image type"
             calendar_image_type.options = []
@@ -1042,8 +1037,6 @@ def _on_var_change(event):
             calendar_image_type.value = var1_select.value
         return
     if _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT):
-        if calendar_image_type.value != var1_select.value:
-            calendar_image_type.value = var1_select.value
         return
     var1 = vars_cfg.get(var1_select.value, None)
     var2 = vars_cfg.get(var2_select.value, None)
@@ -1062,7 +1055,7 @@ var2_select.param.watch(_on_var_change, "value")
 
 
 def _on_calendar_image_type_change(event):
-    if not (_is_wxcam_instrument(CURRENT_INSTRUMENT) or _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT)):
+    if not _is_wxcam_instrument(CURRENT_INSTRUMENT):
         return
     _refresh_ql_options(preserve_current=False)
     ql_date.param.trigger("value")
@@ -1620,129 +1613,28 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
 
 
 def _update_stacked_timeseries_view(instrument: str, start, end):
-    """Render a 1D logger dataset as stacked time series, one row per variable."""
+    """Render a 1D summary instrument with fixed multi-panel layouts."""
     print(f"[{instrument}] render window {start} -> {end}")
     with _timed_perf("stacked_timeseries_render", instrument=instrument, start=start, end=end) as perf:
         ds = open_window(start, end, instrument=instrument)
-        selection = var1_select.value
-        spec = group_spec_for_selection(instrument, selection)
-        ds = downsample_time(ds, max_time_samples=3500)
-        bg = "white"
-        fg = "#222222"
-        grid = "#dddddd"
-        times = pd.to_datetime(ds["time"].values) if "time" in ds else None
-        names = grouped_numeric_time_vars(ds, instrument, selection) if ds is not None else []
+        times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
         perf["time_count"] = 0 if times is None else int(len(times))
-        perf["variable_count"] = int(len(names))
-        perf["plot_group"] = spec.key
-        if times is None or len(times) == 0 or not names:
+        if times is None or len(times) == 0:
             perf["status"] = "no_data"
-            fig = go.Figure()
-            fig.add_annotation(
-                text="No data",
-                x=0.5,
-                y=0.5,
-                xref="paper",
-                yref="paper",
-                showarrow=False,
-                font=dict(color=fg, size=16),
-            )
-            fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-            _show_plot(fig)
+            empty = go.Figure()
+            empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+            empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
+            _show_plot(empty)
             return
-
-        max_rows = len(names)
-        tickvals = []
-        ticktext = []
-        noon_annots = []
-        if start and end:
-            start_ts = pd.Timestamp(start)
-            end_ts = pd.Timestamp(end)
-            duration = end_ts - start_ts
-            freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
-            hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
-            for t in hours:
-                tickvals.append(t.to_pydatetime())
-                ticktext.append(t.strftime("%H:%M"))
-                if t.hour == 12:
-                    noon_annots.append(
-                        dict(
-                            x=t.to_pydatetime(),
-                            y=-0.08,
-                            xref="x",
-                            yref="paper",
-                            text=t.strftime("%Y-%m-%d"),
-                            showarrow=False,
-                            xanchor="center",
-                            yanchor="top",
-                            font=dict(size=14, color=fg),
-                        )
-                    )
-
-        fig = make_subplots(
-            rows=max_rows,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=min(0.02, 0.6 / max(max_rows - 1, 1)),
-        )
-        colors = ["#0b7285", "#c92a2a", "#2b8a3e", "#5f3dc4", "#e67700", "#087f5b", "#364fc7", "#a61e4d"]
-        for idx, name in enumerate(names, start=1):
-            values = np.asarray(ds[name].values, dtype=np.float64)
-            fig.add_trace(
-                go.Scatter(
-                    x=times,
-                    y=values,
-                    mode="lines",
-                    name=name,
-                    line=dict(
-                        color=colors[(idx - 1) % len(colors)],
-                        width=1.4,
-                        shape="hv" if is_status_like_var(name) else "linear",
-                    ),
-                    hovertemplate=f"Time=%{{x}}<br>{name}=%{{y:.6g}}<extra></extra>",
-                    connectgaps=False,
-                ),
-                row=idx,
-                col=1,
-            )
-            fig.update_yaxes(
-                title_text=name,
-                showgrid=True,
-                gridcolor=grid,
-                linecolor=fg,
-                tickfont=dict(color=fg, size=9),
-                title_font=dict(color=fg, size=9),
-                row=idx,
-                col=1,
-            )
-
-        fig.update_xaxes(
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
-            tickangle=-45,
-            showgrid=True,
-            gridcolor=grid,
-            linecolor=fg,
-            tickfont=dict(color=fg, size=12),
-            title_font=dict(color=fg, size=12),
-        )
-        fig.update_xaxes(
-            title_text="Date and Time (UTC)",
-            title_standoff=50,
-            row=max_rows,
-            col=1,
-        )
-        fig.update_layout(
-            showlegend=False,
-            height=max(650, min(4200, 76 * len(names) + 120)),
-            margin=dict(l=115, r=35, t=30, b=95),
-            paper_bgcolor=bg,
-            plot_bgcolor=bg,
-            font=dict(color=fg, size=13),
-            annotations=tuple(noon_annots),
-            title=dict(text=f"{instrument} - {spec.label}", x=0.01, xanchor="left", font=dict(size=16, color=fg)),
-        )
+        try:
+            fig = build_summary_plotly(ds, instrument, title=display_name(instrument))
+        except ValueError:
+            perf["status"] = "no_data"
+            empty = go.Figure()
+            empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+            empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
+            _show_plot(empty)
+            return
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
         _show_plot(fig)
@@ -2062,27 +1954,13 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
     if _is_wxcam_instrument(inst):
         return _wxcam_calendar_options(wxcam_selection or _cfg("wxcam")["default_top"])
     if _is_stacked_timeseries_instrument(inst):
-        selection = wxcam_selection or cfg.get("default_calendar", cfg["default_top"])
-        spec = group_spec_for_selection(inst, selection)
         quick_dir = cfg["quicklook_dir"]
         opts = {}
-        date_labels = []
-        latest_path = None
-        prefix = quicklook_prefix(inst)
         if quick_dir.exists():
-            for png in sorted(quick_dir.glob(f"{prefix}__{spec.key}__*.png")):
-                stem_parts = png.stem.split("__")
-                if len(stem_parts) != 3:
-                    continue
-                suffix = stem_parts[-1]
-                if suffix == "latest":
-                    latest_path = str(png)
-                    continue
-                date_labels.append((suffix, str(png)))
-        for label, path in date_labels:
-            opts[label] = path
-        if latest_path:
-            opts["Today (latest)"] = latest_path
+            for token in calendar_date_tokens(quick_dir, inst):
+                opts[token] = token
+            if calendar_product_paths(quick_dir, inst, "latest"):
+                opts["Today (latest)"] = "latest"
         return opts or {"No images available": None}
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
@@ -2483,6 +2361,17 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection, selected_hour_pat
             perf["selection"] = selection
             day_token = _wxcam_calendar_day_token(selected)
             return _build_wxcam_calendar_day_view(selection, day_token or "", selected_hour_path)
+        if _is_stacked_timeseries_instrument(instrument):
+            token = _quicklook_options(instrument).get(selected)
+            quick_dir = _cfg(instrument)["quicklook_dir"]
+            products = [] if token is None else calendar_product_paths(quick_dir, instrument, token)
+            perf["product_count"] = len(products)
+            if not products:
+                perf["status"] = "missing_file"
+                return pn.pane.Markdown("No image available for this selection.")
+            perf["status"] = "ok"
+            panes = [pn.pane.PNG(path, sizing_mode="stretch_width") for _label, path in products if path.exists()]
+            return pn.Column(*panes, sizing_mode="stretch_width") if panes else pn.pane.Markdown("No image available for this selection.")
         path = _quicklook_options(instrument).get(selected)
         perf["path"] = path
         if path and Path(path).exists():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared grouping and plotting helpers for 1D Aurora time-series instruments."""
+"""Summary and housekeeping plotting helpers for 1D Aurora instruments."""
 
 from __future__ import annotations
 
@@ -13,158 +13,66 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import xarray as xr
 
 MAX_TIME_SAMPLES = 2200
+INTERACTIVE_MAX_TIME_SAMPLES = 3500
+OVERVIEW_LABEL = "Overview"
 
 
 @dataclass(frozen=True)
-class TimeseriesGroup:
+class TraceSpec:
+    var: str
+    label: str
+    color: str
+    axis: str = "left"
+    scale: float = 1.0
+    dash: str | None = None
+    step: bool = False
+    valid_min: float | None = None
+    valid_max: float | None = None
+    skip_if_all_zero: bool = False
+
+
+@dataclass(frozen=True)
+class PanelSpec:
     key: str
     label: str
-    variables: tuple[str, ...] | None = None
+    left_axis_label: str
+    right_axis_label: str | None
+    traces: tuple[TraceSpec, ...]
 
 
-GROUPS: dict[str, tuple[TimeseriesGroup, ...]] = {
-    "vaisalamet": (
-        TimeseriesGroup("hk_met", "HK_Met"),
-        TimeseriesGroup(
-            "core_met",
-            "Core Met",
-            ("baro_hPa", "h1_t", "h1_rh", "h1_td", "h1_ah", "h1_mr", "h1_e", "t2_t"),
-        ),
-        TimeseriesGroup("probe_compare", "Probe Comparison", ("h1_t", "t2_t")),
-        TimeseriesGroup(
-            "sensor_status",
-            "Sensor Status",
-            (
-                "h1_online",
-                "h1_error_status",
-                "h1_dev_critical_error",
-                "h1_dev_warning",
-                "h1_dev_notification",
-                "t2_online",
-                "t2_error_status",
-                "t2_dev_critical_error",
-                "t2_dev_warning",
-                "t2_dev_notification",
-                "baro_st_sensor_failure",
-                "baro_st_value_locked",
-                "baro_err_pressure_meas_err",
-                "baro_err_pressure_oor",
-            ),
-        ),
-    ),
-    "asfs-logger": (
-        TimeseriesGroup("hk_asfs", "HK_ASFS"),
-        TimeseriesGroup(
-            "power_hk",
-            "Power/HK",
-            ("batt_volt_Avg", "amp_meter_48vdc_Avg", "watts_on_48vdc_Avg", "PTemp_Avg", "scantime"),
-        ),
-        TimeseriesGroup(
-            "wind_t",
-            "Wind/T",
-            ("metek_x_out_Avg", "metek_y_out_Avg", "metek_z_out_Avg", "metek_T_out_Avg"),
-        ),
-        TimeseriesGroup(
-            "radiation_surface",
-            "Radiation/Surface",
-            ("spn1_tot_Avg", "spn1_dif_Avg", "sr50_dist_Avg", "sr50_qc_Avg", "kt15_amb_Avg", "kt15_tem_Avg"),
-        ),
-        TimeseriesGroup(
-            "licor",
-            "LICOR",
-            ("licor_co2_out_Avg", "licor_h2o_out_Avg", "licor_t_out_Avg", "licor_co2_str_out_Avg"),
-        ),
-    ),
-    "asfs-fast-sonic": (
-        TimeseriesGroup("wind_components", "Wind Components", ("metek_x_out", "metek_y_out", "metek_z_out")),
-        TimeseriesGroup(
-            "tilt_temperature",
-            "Tilt/Temperature",
-            ("metek_InclX_out", "metek_InclY_out", "metek_T_out"),
-        ),
-        TimeseriesGroup(
-            "quality",
-            "Quality",
-            ("metek_quality_out", "metek_senspathstate_out"),
-        ),
-    ),
-    "power": (
-        TimeseriesGroup("hk_aps", "HK_APS"),
-        TimeseriesGroup(
-            "ac_output",
-            "AC Output",
-            ("ACOutputVolts", "ACOutputAmps", "ACOutputWatts", "ACOutputHZ", "ACkWh", "ACnHours"),
-        ),
-        TimeseriesGroup(
-            "battery_dc",
-            "Battery/DC",
-            (
-                "BatteryAmps",
-                "BatteryWatts",
-                "BatteryState",
-                "BattsOnline",
-                "DCInverterAmps",
-                "DCInverterVolts",
-                "DCInverterWatts",
-                "TotCapacity",
-            ),
-        ),
-        TimeseriesGroup(
-            "solar",
-            "Solar",
-            (
-                "SolarWatts_East",
-                "SolarWatts_South",
-                "SolarWatts_West",
-                "SolarVolts_East",
-                "SolarVolts_South",
-                "SolarVolts_West",
-                "SolarAmps_East",
-                "SolarAmps_South",
-                "SolarAmps_West",
-                "SolarYield_East",
-                "SolarYield_South",
-                "SolarYield_West",
-                "MaxSolarWatts_East",
-                "MaxSolarWatts_South",
-                "MaxSolarWatts_West",
-            ),
-        ),
-        TimeseriesGroup(
-            "thermal_status",
-            "Thermal/Status",
-            (
-                "InternalTemperature",
-                "HeatsinkTemperature",
-                "TempSensor1",
-                "TempSensor2",
-                "TempSensor3",
-                "TempSensor4",
-                "AlarmBits",
-                "FaultBits",
-                "HeatsinkTempAlarm",
-                "InternalTempAlarm",
-                "time_discrepancy",
-            ),
-        ),
-    ),
+COLOR = {
+    "teal": "#2bb3b1",
+    "light_blue": "#b7e2ef",
+    "blue": "#4b66c4",
+    "purple": "#7a52c7",
+    "brown": "#aa5a2a",
+    "olive": "#c5bf67",
+    "red": "#b52020",
+    "magenta": "#c43aa7",
+    "green": "#2d8a4f",
+    "slate": "#55636d",
+    "black": "#222222",
 }
 
-DEFAULT_INTERACTIVE_GROUP_KEY = {
-    "vaisalamet": "core_met",
-    "asfs-logger": "wind_t",
-    "asfs-fast-sonic": "wind_components",
-    "power": "ac_output",
+
+SUMMARY_INSTRUMENTS = ("vaisalamet", "asfs-logger", "asfs-fast-sonic", "power")
+
+DISPLAY_NAMES = {
+    "vaisalamet": "Meteorology",
+    "asfs-logger": "ASFS",
+    "asfs-fast-sonic": "ASFS Fast Sonic",
+    "power": "Aurora Power Supply",
 }
 
-DEFAULT_CALENDAR_GROUP_KEY = {
-    "vaisalamet": "hk_met",
-    "asfs-logger": "hk_asfs",
-    "asfs-fast-sonic": "wind_components",
-    "power": "hk_aps",
+HOUSEKEEPING_LABELS = {
+    "vaisalamet": "HK_Met",
+    "asfs-logger": "HK_ASFS",
+    "power": "HK_APS",
 }
 
 QUICKLOOK_PREFIX = {
@@ -206,163 +114,372 @@ STATUS_TOKENS = (
     "warning",
 )
 
+HUMAN_LABELS = {
+    "baro_hPa": "Pressure",
+    "h1_t": "HMP1 Air Temperature",
+    "t2_t": "T2 Air Temperature",
+    "h1_td": "Dew Point",
+    "h1_rh": "Relative Humidity",
+    "h1_e": "Vapor Pressure",
+    "h1_ah": "Absolute Humidity",
+    "h1_mr": "Mixing Ratio",
+    "h1_online": "HMP1 Online",
+    "t2_online": "T2 Online",
+    "h1_error_status": "HMP1 Error Status",
+    "t2_error_status": "T2 Error Status",
+    "baro_err_pressure_meas_err": "Pressure Measurement Error",
+    "baro_err_pressure_oor": "Pressure Out of Range",
+    "baro_st_sensor_failure": "Pressure Sensor Failure",
+    "baro_st_value_locked": "Pressure Value Locked",
+    "batt_volt_Avg": "Battery Voltage",
+    "amp_meter_48vdc_Avg": "48 V Current",
+    "watts_on_48vdc_Avg": "48 V Power",
+    "PTemp_Avg": "Panel Temperature",
+    "metek_x_out_Avg": "Metek U Wind",
+    "metek_y_out_Avg": "Metek V Wind",
+    "metek_z_out_Avg": "Metek W Wind",
+    "metek_T_out_Avg": "Sonic Temperature",
+    "spn1_tot_Avg": "Total Radiation",
+    "spn1_dif_Avg": "Diffuse Radiation",
+    "sr50_dist_Avg": "SR50 Distance",
+    "sr50_qc_Avg": "SR50 Quality",
+    "kt15_amb_Avg": "KT15 Ambient Temperature",
+    "kt15_tem_Avg": "KT15 Surface Temperature",
+    "licor_co2_out_Avg": "LI-COR CO2",
+    "licor_h2o_out_Avg": "LI-COR H2O",
+    "licor_t_out_Avg": "LI-COR Temperature",
+    "licor_co2_str_out_Avg": "LI-COR CO2 Strength",
+    "metek_x_out": "Metek U Wind",
+    "metek_y_out": "Metek V Wind",
+    "metek_z_out": "Metek W Wind",
+    "metek_T_out": "Sonic Temperature",
+    "metek_InclX_out": "Tilt X",
+    "metek_InclY_out": "Tilt Y",
+    "metek_quality_out": "Metek Quality",
+    "metek_senspathstate_out": "Sensor Path State",
+    "ACOutputWatts": "AC Output Power",
+    "DCInverterWatts": "DC Inverter Power",
+    "ACOutputVolts": "AC Output Voltage",
+    "DCInverterVolts": "DC Inverter Voltage",
+    "BatteryWatts": "Battery Power",
+    "BatteryAmps": "Battery Current",
+    "BatteryState": "State of Charge",
+    "BattsOnline": "Batteries Online",
+    "InternalTemperature": "Internal Temperature",
+    "HeatsinkTemperature": "Heatsink Temperature",
+    "TempSensor1": "Temperature Sensor 1",
+    "TempSensor2": "Temperature Sensor 2",
+    "TempSensor3": "Temperature Sensor 3",
+    "TempSensor4": "Temperature Sensor 4",
+    "SolarWatts_East": "Solar East Power",
+    "SolarWatts_South": "Solar South Power",
+    "SolarWatts_West": "Solar West Power",
+    "SolarVolts_East": "Solar East Voltage",
+    "SolarVolts_South": "Solar South Voltage",
+    "SolarVolts_West": "Solar West Voltage",
+    "SolarAmps_East": "Solar East Current",
+    "SolarAmps_South": "Solar South Current",
+    "SolarAmps_West": "Solar West Current",
+    "SolarYield_East": "Solar East Yield",
+    "SolarYield_South": "Solar South Yield",
+    "SolarYield_West": "Solar West Yield",
+    "SolarState_East": "Solar East State",
+    "SolarState_South": "Solar South State",
+    "SolarState_West": "Solar West State",
+    "AlarmBits": "Alarm Bits",
+    "FaultBits": "Fault Bits",
+    "HeatsinkTempAlarm": "Heatsink Alarm",
+    "InternalTempAlarm": "Internal Alarm",
+    "time_discrepancy": "Clock Discrepancy",
+}
 
-def group_specs(instrument: str) -> tuple[TimeseriesGroup, ...]:
-    return GROUPS.get(instrument, ())
+HUMAN_UNITS = {
+    "baro_hPa": "hPa",
+    "h1_t": "C",
+    "t2_t": "C",
+    "h1_td": "C",
+    "h1_rh": "%",
+    "h1_e": "hPa",
+    "h1_ah": "g m^-3",
+    "h1_mr": "g kg^-1",
+    "h1_online": "state",
+    "t2_online": "state",
+    "h1_error_status": "state",
+    "t2_error_status": "state",
+    "baro_err_pressure_meas_err": "state",
+    "baro_err_pressure_oor": "state",
+    "baro_st_sensor_failure": "state",
+    "baro_st_value_locked": "state",
+    "batt_volt_Avg": "V",
+    "amp_meter_48vdc_Avg": "A",
+    "watts_on_48vdc_Avg": "W",
+    "PTemp_Avg": "C",
+    "metek_x_out_Avg": "m s^-1",
+    "metek_y_out_Avg": "m s^-1",
+    "metek_z_out_Avg": "m s^-1",
+    "metek_T_out_Avg": "C",
+    "metek_InclX_out_Avg": "deg",
+    "spn1_tot_Avg": "W m^-2",
+    "spn1_dif_Avg": "W m^-2",
+    "sr50_dist_Avg": "m",
+    "sr50_qc_Avg": "state",
+    "kt15_amb_Avg": "C",
+    "kt15_tem_Avg": "C",
+    "licor_co2_out_Avg": "ppm",
+    "licor_h2o_out_Avg": "mmol mol^-1",
+    "licor_t_out_Avg": "C",
+    "licor_co2_str_out_Avg": "%",
+    "metek_x_out": "m s^-1",
+    "metek_y_out": "m s^-1",
+    "metek_z_out": "m s^-1",
+    "metek_T_out": "C",
+    "metek_InclX_out": "deg",
+    "metek_InclY_out": "deg",
+    "metek_msec_out": "ms",
+    "metek_quality_out": "state",
+    "metek_senspathstate_out": "state",
+    "ACOutputAmps": "A",
+    "ACOutputHZ": "Hz",
+    "ACOutputVolts": "V",
+    "ACOutputWatts": "W",
+    "ACkWh": "kWh",
+    "ACnHours": "h",
+    "BatteryAmps": "A",
+    "BatteryState": "%",
+    "BatteryWatts": "W",
+    "BattsOnline": "state",
+    "DCInverterAmps": "A",
+    "DCInverterVolts": "V",
+    "DCInverterWatts": "W",
+    "FaultBits": "bits",
+    "AlarmBits": "bits",
+    "HeatsinkTempAlarm": "state",
+    "HeatsinkTemperature": "C",
+    "InternalTempAlarm": "state",
+    "InternalTemperature": "C",
+    "MaxSolarWatts_East": "W",
+    "MaxSolarWatts_South": "W",
+    "MaxSolarWatts_West": "W",
+    "SolarAmps_East": "A",
+    "SolarAmps_South": "A",
+    "SolarAmps_West": "A",
+    "SolarState_East": "state",
+    "SolarState_South": "state",
+    "SolarState_West": "state",
+    "SolarVolts_East": "V",
+    "SolarVolts_South": "V",
+    "SolarVolts_West": "V",
+    "SolarWatts_East": "W",
+    "SolarWatts_South": "W",
+    "SolarWatts_West": "W",
+    "SolarYield_East": "kWh",
+    "SolarYield_South": "kWh",
+    "SolarYield_West": "kWh",
+    "TempSensor1": "C",
+    "TempSensor2": "C",
+    "TempSensor3": "C",
+    "TempSensor4": "C",
+    "TotCapacity": "Ah",
+    "time_discrepancy": "s",
+    "scantime": "s",
+}
+
+DISPLAY_SCALE = {
+    "BatteryState": 100.0,
+}
+
+SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
+    "vaisalamet": (
+        PanelSpec(
+            "met",
+            "Met",
+            "Air / Dew Temperature [C]",
+            "Relative Humidity [%]",
+            (
+                TraceSpec("h1_t", "HMP1 Air Temperature", COLOR["teal"]),
+                TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
+                TraceSpec("h1_td", "Dew Point", COLOR["purple"]),
+                TraceSpec("h1_rh", "Relative Humidity", COLOR["brown"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "pressure",
+            "Pressure",
+            "Pressure [hPa]",
+            "Vapor Pressure [hPa]",
+            (
+                TraceSpec("baro_hPa", "Pressure", COLOR["green"]),
+                TraceSpec("h1_e", "Vapor Pressure", COLOR["olive"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "sensor_status",
+            "Sensor Status",
+            "Probe Temperature [C]",
+            "Sensor State",
+            (
+                TraceSpec("h1_t", "HMP1 Air Temperature", COLOR["teal"]),
+                TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
+                TraceSpec("h1_online", "HMP1 Online", COLOR["red"], axis="right", step=True),
+                TraceSpec("t2_online", "T2 Online", COLOR["magenta"], axis="right", step=True),
+                TraceSpec("h1_error_status", "HMP1 Error Status", COLOR["slate"], axis="right", step=True),
+                TraceSpec("t2_error_status", "T2 Error Status", COLOR["black"], axis="right", step=True),
+            ),
+        ),
+    ),
+    "asfs-logger": (
+        PanelSpec(
+            "met",
+            "Met",
+            "Metek U / V Wind [m/s]",
+            "Metek W Wind [m/s]",
+            (
+                TraceSpec("metek_x_out_Avg", "Metek U Wind", COLOR["teal"]),
+                TraceSpec("metek_y_out_Avg", "Metek V Wind", COLOR["light_blue"]),
+                TraceSpec("metek_z_out_Avg", "Metek W Wind", COLOR["purple"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "temperature",
+            "Temperature",
+            "Instrument Temperature [C]",
+            None,
+            (
+                TraceSpec("metek_T_out_Avg", "Sonic Temperature", COLOR["brown"]),
+                TraceSpec("kt15_amb_Avg", "KT15 Ambient Temperature", COLOR["olive"]),
+                TraceSpec("kt15_tem_Avg", "KT15 Surface Temperature", COLOR["magenta"]),
+            ),
+        ),
+        PanelSpec(
+            "radiation",
+            "Radiation",
+            "Radiation [W m^-2]",
+            "Distance [m]",
+            (
+                TraceSpec("spn1_tot_Avg", "Total Radiation", COLOR["brown"]),
+                TraceSpec("spn1_dif_Avg", "Diffuse Radiation", COLOR["purple"]),
+                TraceSpec("sr50_dist_Avg", "SR50 Distance", COLOR["slate"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "power",
+            "Power",
+            "Battery Voltage [V]",
+            "48 V Load Power [W]",
+            (
+                TraceSpec("batt_volt_Avg", "Battery Voltage", COLOR["teal"]),
+                TraceSpec("watts_on_48vdc_Avg", "48 V Power", COLOR["red"], axis="right"),
+            ),
+        ),
+    ),
+    "asfs-fast-sonic": (
+        PanelSpec(
+            "met",
+            "Met",
+            "Metek U / V Wind [m/s]",
+            "Metek W Wind [m/s]",
+            (
+                TraceSpec("metek_x_out", "Metek U Wind", COLOR["teal"], valid_min=-100.0, valid_max=100.0),
+                TraceSpec("metek_y_out", "Metek V Wind", COLOR["light_blue"], valid_min=-100.0, valid_max=100.0),
+                TraceSpec("metek_z_out", "Metek W Wind", COLOR["purple"], axis="right", valid_min=-30.0, valid_max=30.0),
+            ),
+        ),
+        PanelSpec(
+            "tilt_temperature",
+            "Tilt / Temperature",
+            "Tilt [deg]",
+            "Sonic Temperature [C]",
+            (
+                TraceSpec("metek_InclX_out", "Tilt X", COLOR["brown"], valid_min=-10.0, valid_max=360.0),
+                TraceSpec("metek_InclY_out", "Tilt Y", COLOR["olive"], valid_min=-10.0, valid_max=360.0),
+                TraceSpec("metek_T_out", "Sonic Temperature", COLOR["magenta"], axis="right", valid_min=-50.0, valid_max=50.0),
+            ),
+        ),
+        PanelSpec(
+            "quality",
+            "Quality",
+            "Quality",
+            "State",
+            (
+                TraceSpec("metek_quality_out", "Metek Quality", COLOR["red"], step=True),
+                TraceSpec("metek_senspathstate_out", "Sensor Path State", COLOR["slate"], axis="right", step=True),
+            ),
+        ),
+    ),
+    "power": (
+        PanelSpec(
+            "batteries",
+            "Batteries",
+            "Battery Current [A]",
+            "Battery Power [W]",
+            (
+                TraceSpec("BatteryAmps", "Battery Current", COLOR["teal"]),
+                TraceSpec("BatteryWatts", "Battery Power", COLOR["light_blue"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "renewables",
+            "Renewables",
+            "Solar Power [W]",
+            "Solar Voltage [V]",
+            (
+                TraceSpec("SolarWatts_East", "Solar East Power", COLOR["brown"]),
+                TraceSpec("SolarWatts_South", "Solar South Power", COLOR["purple"]),
+                TraceSpec("SolarWatts_West", "Solar West Power", COLOR["magenta"]),
+                TraceSpec("SolarVolts_East", "Solar East Voltage", COLOR["olive"], axis="right"),
+                TraceSpec("SolarVolts_South", "Solar South Voltage", COLOR["green"], axis="right"),
+                TraceSpec("SolarVolts_West", "Solar West Voltage", COLOR["blue"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "output",
+            "Output",
+            "Output Power [W]",
+            "Output Voltage [V]",
+            (
+                TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"]),
+                TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"]),
+                TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"], axis="right"),
+                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"], axis="right"),
+            ),
+        ),
+    ),
+}
 
 
-def group_spec_for_selection(instrument: str, selection: str | None) -> TimeseriesGroup:
-    specs = group_specs(instrument)
-    if not specs:
-        raise KeyError(f"No grouped time-series config for instrument {instrument}")
-    if selection:
-        for spec in specs:
-            if selection in {spec.key, spec.label}:
-                return spec
-    default_key = DEFAULT_INTERACTIVE_GROUP_KEY.get(instrument, specs[0].key)
-    for spec in specs:
-        if spec.key == default_key:
-            return spec
-    return specs[0]
+def is_summary_instrument(instrument: str) -> bool:
+    return instrument in SUMMARY_INSTRUMENTS
+
+
+def display_name(instrument: str) -> str:
+    return DISPLAY_NAMES.get(instrument, instrument)
+
+
+def housekeeping_label(instrument: str) -> str | None:
+    return HOUSEKEEPING_LABELS.get(instrument)
 
 
 def default_interactive_label(instrument: str) -> str:
-    return group_spec_for_selection(instrument, DEFAULT_INTERACTIVE_GROUP_KEY.get(instrument)).label
+    return OVERVIEW_LABEL
 
 
 def default_calendar_label(instrument: str) -> str:
-    key = DEFAULT_CALENDAR_GROUP_KEY.get(instrument, DEFAULT_INTERACTIVE_GROUP_KEY.get(instrument))
-    return group_spec_for_selection(instrument, key).label
+    return OVERVIEW_LABEL
 
 
 def widget_group_options(instrument: str) -> OrderedDict[str, dict[str, object]]:
     return OrderedDict(
-        (
-            spec.label,
-            {
-                "label": spec.label,
-                "group_key": spec.key,
-                "clim": (0.0, 1.0),
-                "log": False,
-                "colorscale": "Viridis",
-            },
-        )
-        for spec in group_specs(instrument)
-    )
-
-
-def numeric_time_vars(ds: xr.Dataset) -> list[str]:
-    names: list[str] = []
-    for name, da in ds.data_vars.items():
-        if da.dims != ("time",):
-            continue
-        if name == "RECORD":
-            continue
-        if np.issubdtype(da.dtype, np.number):
-            names.append(name)
-    return names
-
-
-def grouped_numeric_time_vars(ds: xr.Dataset, instrument: str, selection: str | None) -> list[str]:
-    names = numeric_time_vars(ds)
-    spec = group_spec_for_selection(instrument, selection)
-    if spec.variables is None:
-        return names
-    available = set(names)
-    return [name for name in spec.variables if name in available]
-
-
-def downsample_time(ds: xr.Dataset, max_time_samples: int = MAX_TIME_SAMPLES) -> xr.Dataset:
-    if "time" not in ds:
-        return ds
-    count = ds.sizes.get("time", 0)
-    if count > max_time_samples:
-        step = int(np.ceil(count / max_time_samples))
-        ds = ds.isel(time=slice(None, None, step))
-    return ds
-
-
-def is_status_like_var(name: str) -> bool:
-    lower = name.lower()
-    return any(token in lower for token in STATUS_TOKENS)
-
-
-def _plot_title(instrument: str, selection: str | None, suffix: str) -> str:
-    label = group_spec_for_selection(instrument, selection).label
-    return f"{label} - {suffix}"
-
-
-def plot_grouped_timeseries(
-    ds: xr.Dataset,
-    instrument: str,
-    selection: str | None,
-    title: str,
-    output: Path,
-    max_time_samples: int = MAX_TIME_SAMPLES,
-) -> list[str]:
-    ds = downsample_time(ds, max_time_samples=max_time_samples)
-    times = pd.to_datetime(ds["time"].values) if "time" in ds else pd.DatetimeIndex([])
-    names = grouped_numeric_time_vars(ds, instrument, selection)
-    if len(times) == 0 or not names:
-        raise ValueError(f"No numeric {instrument} time-series variables available for {selection}")
-
-    max_height = 42.0 if instrument == "power" else 34.0
-    per_var = 1.0 if instrument == "power" else 1.15
-    height = max(8.0, min(max_height, per_var * len(names)))
-    fig, axes = plt.subplots(len(names), 1, figsize=(13, height), sharex=True, squeeze=False)
-    axes = axes[:, 0]
-    colors = ["#0b7285", "#c92a2a", "#2b8a3e", "#5f3dc4", "#e67700", "#087f5b", "#364fc7", "#a61e4d"]
-    for idx, (ax, name) in enumerate(zip(axes, names)):
-        values = np.asarray(ds[name].values, dtype=np.float64)
-        drawstyle = "steps-post" if is_status_like_var(name) else "default"
-        ax.plot(times, values, color=colors[idx % len(colors)], linewidth=0.8, drawstyle=drawstyle)
-        ax.set_ylabel(name, fontsize=7, rotation=0, ha="right", va="center")
-        ax.grid(True, color="#d9d9d9", linewidth=0.4)
-        ax.tick_params(axis="y", labelsize=7)
-
-    span_hours = max((times.max() - times.min()) / np.timedelta64(1, "h"), 1.0)
-    interval = 1 if span_hours <= 12 else 2 if span_hours <= 36 else 6
-    for ax in axes:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax.tick_params(axis="x", labelrotation=90, labelsize=8)
-    axes[-1].set_xlabel("Time (UTC)")
-    fig.suptitle(title)
-    fig.tight_layout()
-    fig.subplots_adjust(left=0.23, bottom=0.08, top=0.96, hspace=0.18)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=150)
-    plt.close(fig)
-    print(f"Wrote {output}")
-    return names
-
-
-def plot_last_24h(
-    zarr_path: Path,
-    output: Path,
-    instrument: str,
-    selection: str | None,
-    max_time_samples: int = MAX_TIME_SAMPLES,
-) -> list[str]:
-    ds = xr.open_zarr(zarr_path, chunks={})
-    if "time" not in ds:
-        raise KeyError("Dataset is missing a time coordinate")
-    time_index = pd.DatetimeIndex(ds["time"].values)
-    if len(time_index) == 0:
-        raise ValueError("Dataset contains no time samples")
-    end_time = time_index.max()
-    start_time = end_time - timedelta(hours=24)
-    mask = (time_index >= start_time) & (time_index <= end_time)
-    if not mask.any():
-        raise ValueError("No data in latest 24h")
-    window = ds.isel(time=mask).sortby("time")
-    return plot_grouped_timeseries(
-        window,
-        instrument=instrument,
-        selection=selection,
-        title=_plot_title(instrument, selection, "Latest 24 hours"),
-        output=output,
-        max_time_samples=max_time_samples,
+        [
+            (
+                OVERVIEW_LABEL,
+                {
+                    "label": OVERVIEW_LABEL,
+                    "clim": (0.0, 1.0),
+                    "log": False,
+                    "colorscale": "Viridis",
+                },
+            )
+        ]
     )
 
 
@@ -370,15 +487,30 @@ def quicklook_prefix(instrument: str) -> str:
     return QUICKLOOK_PREFIX[instrument]
 
 
-def group_latest_png(quicklook_dir: Path, instrument: str, selection: str | None) -> Path:
-    spec = group_spec_for_selection(instrument, selection)
-    return quicklook_dir / f"{quicklook_prefix(instrument)}__{spec.key}__latest.png"
+def summary_latest_png(quicklook_dir: Path, instrument: str) -> Path:
+    return quicklook_dir / f"{quicklook_prefix(instrument)}__summary__latest.png"
 
 
-def group_daily_png(quicklook_dir: Path, instrument: str, selection: str | None, day: pd.Timestamp | str) -> Path:
-    spec = group_spec_for_selection(instrument, selection)
+def summary_daily_png(quicklook_dir: Path, instrument: str, day: pd.Timestamp | str) -> Path:
     stamp = pd.Timestamp(day).strftime("%Y%m%d")
-    return quicklook_dir / f"{quicklook_prefix(instrument)}__{spec.key}__{stamp}.png"
+    return quicklook_dir / f"{quicklook_prefix(instrument)}__summary__{stamp}.png"
+
+
+def housekeeping_latest_png(quicklook_dir: Path, instrument: str) -> Path | None:
+    label = housekeeping_label(instrument)
+    if label is None:
+        return None
+    key = label.lower()
+    return quicklook_dir / f"{quicklook_prefix(instrument)}__{key}__latest.png"
+
+
+def housekeeping_daily_png(quicklook_dir: Path, instrument: str, day: pd.Timestamp | str) -> Path | None:
+    label = housekeeping_label(instrument)
+    if label is None:
+        return None
+    key = label.lower()
+    stamp = pd.Timestamp(day).strftime("%Y%m%d")
+    return quicklook_dir / f"{quicklook_prefix(instrument)}__{key}__{stamp}.png"
 
 
 def legacy_latest_png(quicklook_dir: Path, instrument: str) -> Path | None:
@@ -396,7 +528,7 @@ def legacy_daily_png(quicklook_dir: Path, instrument: str, day: pd.Timestamp | s
     return quicklook_dir / f"{prefix}_{stamp}.png"
 
 
-def clear_grouped_quicklooks(quicklook_dir: Path, instrument: str) -> None:
+def clear_generated_quicklooks(quicklook_dir: Path, instrument: str) -> None:
     prefix = quicklook_prefix(instrument)
     for png in quicklook_dir.glob(f"{prefix}*.png"):
         png.unlink()
@@ -416,10 +548,450 @@ def refresh_legacy_aliases(
     latest_png: Path | None = None,
 ) -> None:
     if day_png is not None:
-        legacy_day = legacy_daily_png(quicklook_dir, instrument, day_png.stem.rsplit("__", 1)[-1])
+        token = day_png.stem.rsplit("__", 1)[-1]
+        legacy_day = legacy_daily_png(quicklook_dir, instrument, token)
         if legacy_day:
             shutil.copyfile(day_png, legacy_day)
     if latest_png is not None:
         legacy_latest = legacy_latest_png(quicklook_dir, instrument)
         if legacy_latest:
             shutil.copyfile(latest_png, legacy_latest)
+
+
+def calendar_date_tokens(quicklook_dir: Path, instrument: str) -> list[str]:
+    prefix = quicklook_prefix(instrument)
+    tokens: list[str] = []
+    for png in sorted(quicklook_dir.glob(f"{prefix}__summary__*.png")):
+        suffix = png.stem.split("__")[-1]
+        if suffix == "latest":
+            continue
+        tokens.append(suffix)
+    return tokens
+
+
+def calendar_product_paths(quicklook_dir: Path, instrument: str, token: str) -> list[tuple[str, Path]]:
+    paths: list[tuple[str, Path]] = []
+    if token == "latest":
+        summary = summary_latest_png(quicklook_dir, instrument)
+        if summary.exists():
+            paths.append((display_name(instrument), summary))
+        hk = housekeeping_latest_png(quicklook_dir, instrument)
+        if hk and hk.exists():
+            paths.append((housekeeping_label(instrument) or "Housekeeping", hk))
+        return paths
+
+    summary = summary_daily_png(quicklook_dir, instrument, token)
+    if summary.exists():
+        paths.append((display_name(instrument), summary))
+    hk = housekeeping_daily_png(quicklook_dir, instrument, token)
+    if hk and hk.exists():
+        paths.append((housekeeping_label(instrument) or "Housekeeping", hk))
+    return paths
+
+
+def human_label(name: str) -> str:
+    if name in HUMAN_LABELS:
+        return HUMAN_LABELS[name]
+    return name.replace("_", " ")
+
+
+def human_unit(name: str) -> str | None:
+    if name in HUMAN_UNITS:
+        return HUMAN_UNITS[name]
+    lower = name.lower()
+    if "volt" in lower:
+        return "V"
+    if "watt" in lower:
+        return "W"
+    if "amp" in lower:
+        return "A"
+    if lower.endswith("hz") or "_hz" in lower:
+        return "Hz"
+    if "yield" in lower or lower.endswith("kwh"):
+        return "kWh"
+    if "temp" in lower or lower.endswith("_t") or lower.endswith("_td") or "_amb_" in lower or "_tem_" in lower:
+        return "C"
+    if lower.endswith("_rh") or "_rh_" in lower or lower == "batterystate":
+        return "%"
+    if lower.startswith("baro") or lower.endswith("_hpa") or lower == "h1_e":
+        return "hPa"
+    if "dist" in lower:
+        return "m"
+    if "incl" in lower:
+        return "deg"
+    if "msec" in lower:
+        return "ms"
+    if lower == "scantime" or lower == "time_discrepancy":
+        return "s"
+    if "co2" in lower and "str" not in lower:
+        return "ppm"
+    if "h2o" in lower:
+        return "mmol mol^-1"
+    if "co2_str" in lower:
+        return "%"
+    if any(token in lower for token in STATUS_TOKENS):
+        return "state"
+    return None
+
+
+def human_axis_label(name: str) -> str:
+    label = human_label(name)
+    unit = human_unit(name)
+    return f"{label} [{unit}]" if unit else label
+
+
+def display_scale(name: str) -> float:
+    return DISPLAY_SCALE.get(name, 1.0)
+
+
+def numeric_time_vars(ds: xr.Dataset) -> list[str]:
+    names: list[str] = []
+    for name, da in ds.data_vars.items():
+        if da.dims != ("time",):
+            continue
+        if name == "RECORD":
+            continue
+        if np.issubdtype(da.dtype, np.number):
+            names.append(name)
+    return names
+
+
+def downsample_time(ds: xr.Dataset, max_time_samples: int = MAX_TIME_SAMPLES) -> xr.Dataset:
+    if "time" not in ds:
+        return ds
+    count = ds.sizes.get("time", 0)
+    if count > max_time_samples:
+        step = int(np.ceil(count / max_time_samples))
+        ds = ds.isel(time=slice(None, None, step))
+    return ds
+
+
+def is_status_like_var(name: str) -> bool:
+    lower = name.lower()
+    return any(token in lower for token in STATUS_TOKENS)
+
+
+def _clean_values(values: np.ndarray, trace: TraceSpec) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64).copy()
+    if trace.valid_min is not None:
+        arr[arr < trace.valid_min] = np.nan
+    if trace.valid_max is not None:
+        arr[arr > trace.valid_max] = np.nan
+    if trace.scale != 1.0:
+        arr *= trace.scale
+    return arr
+
+
+def _has_signal(values: np.ndarray, trace: TraceSpec) -> bool:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return False
+    if trace.skip_if_all_zero and np.allclose(finite, 0.0):
+        return False
+    return True
+
+
+def _panel_series(ds: xr.Dataset, panel: PanelSpec) -> list[tuple[TraceSpec, np.ndarray]]:
+    rows: list[tuple[TraceSpec, np.ndarray]] = []
+    for trace in panel.traces:
+        if trace.var not in ds:
+            continue
+        values = _clean_values(ds[trace.var].values, trace)
+        if not _has_signal(values, trace):
+            continue
+        rows.append((trace, values))
+    return rows
+
+
+def _active_panels(ds: xr.Dataset, instrument: str) -> list[tuple[PanelSpec, list[tuple[TraceSpec, np.ndarray]]]]:
+    panels: list[tuple[PanelSpec, list[tuple[TraceSpec, np.ndarray]]]] = []
+    for panel in SUMMARY_LAYOUTS[instrument]:
+        rows = _panel_series(ds, panel)
+        if rows:
+            panels.append((panel, rows))
+    return panels
+
+
+def _time_index(ds: xr.Dataset) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex(ds["time"].values) if "time" in ds else pd.DatetimeIndex([])
+
+
+def _window_title(suffix: str, instrument: str) -> str:
+    return f"{display_name(instrument)} - {suffix}"
+
+
+def plot_housekeeping_timeseries(
+    ds: xr.Dataset,
+    instrument: str,
+    title: str,
+    output: Path,
+    max_time_samples: int = MAX_TIME_SAMPLES,
+) -> list[str]:
+    ds = downsample_time(ds, max_time_samples=max_time_samples)
+    times = _time_index(ds)
+    names = numeric_time_vars(ds)
+    if len(times) == 0 or not names:
+        raise ValueError(f"No numeric {instrument} time-series variables available")
+
+    max_height = 42.0 if instrument == "power" else 34.0
+    per_var = 1.0 if instrument == "power" else 1.1
+    height = max(8.0, min(max_height, per_var * len(names)))
+    fig, axes = plt.subplots(len(names), 1, figsize=(13, height), sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    colors = [COLOR["teal"], COLOR["red"], COLOR["green"], COLOR["purple"], COLOR["brown"], COLOR["magenta"], COLOR["olive"], COLOR["blue"]]
+    for idx, (ax, name) in enumerate(zip(axes, names)):
+        values = np.asarray(ds[name].values, dtype=np.float64) * display_scale(name)
+        drawstyle = "steps-post" if is_status_like_var(name) else "default"
+        ax.plot(times, values, color=colors[idx % len(colors)], linewidth=0.8, drawstyle=drawstyle)
+        ax.set_ylabel(human_axis_label(name), fontsize=7, rotation=0, ha="right", va="center")
+        ax.grid(True, color="#d9d9d9", linewidth=0.4)
+        ax.tick_params(axis="y", labelsize=7)
+
+    span_hours = max((times.max() - times.min()) / np.timedelta64(1, "h"), 1.0)
+    interval = 1 if span_hours <= 12 else 2 if span_hours <= 36 else 6
+    for ax in axes:
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax.tick_params(axis="x", labelrotation=90, labelsize=8)
+    axes[-1].set_xlabel("Time (UTC)")
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.subplots_adjust(left=0.27, bottom=0.08, top=0.96, hspace=0.18)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+    print(f"Wrote {output}")
+    return names
+
+
+def plot_housekeeping_last_24h(
+    zarr_path: Path,
+    output: Path,
+    instrument: str,
+    max_time_samples: int = MAX_TIME_SAMPLES,
+) -> list[str]:
+    ds = xr.open_zarr(zarr_path, chunks={})
+    if "time" not in ds:
+        raise KeyError("Dataset is missing a time coordinate")
+    time_index = _time_index(ds)
+    if len(time_index) == 0:
+        raise ValueError("Dataset contains no time samples")
+    end_time = time_index.max()
+    start_time = end_time - timedelta(hours=24)
+    mask = (time_index >= start_time) & (time_index <= end_time)
+    if not mask.any():
+        raise ValueError("No data in latest 24h")
+    window = ds.isel(time=mask).sortby("time")
+    title = _window_title(f"{housekeeping_label(instrument) or 'Housekeeping'} - Latest 24 hours", instrument)
+    return plot_housekeeping_timeseries(window, instrument=instrument, title=title, output=output, max_time_samples=max_time_samples)
+
+
+def _apply_time_axis_matplotlib(ax, times: pd.DatetimeIndex) -> None:
+    span_hours = max((times.max() - times.min()) / np.timedelta64(1, "h"), 1.0)
+    interval = 1 if span_hours <= 18 else 2 if span_hours <= 36 else 6
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    ax.tick_params(axis="x", labelrotation=0, labelsize=9)
+
+
+def save_summary_png(
+    ds: xr.Dataset,
+    instrument: str,
+    title: str,
+    output: Path,
+    max_time_samples: int = MAX_TIME_SAMPLES,
+) -> int:
+    ds = downsample_time(ds, max_time_samples=max_time_samples)
+    times = _time_index(ds)
+    panels = _active_panels(ds, instrument)
+    if len(times) == 0 or not panels:
+        raise ValueError(f"No summary time-series panels available for {instrument}")
+
+    fig, axes = plt.subplots(len(panels), 1, figsize=(14, max(7.5, 2.6 * len(panels))), sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    for ax, (panel, rows) in zip(axes, panels):
+        right_ax = ax.twinx() if panel.right_axis_label else None
+        left_color = None
+        right_color = None
+        for trace, values in rows:
+            target = right_ax if trace.axis == "right" and right_ax is not None else ax
+            drawstyle = "steps-post" if trace.step else "default"
+            target.plot(times, values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
+            if trace.axis == "right" and right_color is None:
+                right_color = trace.color
+            if trace.axis == "left" and left_color is None:
+                left_color = trace.color
+
+        ax.set_facecolor("white")
+        ax.grid(True, color="#dddddd", linewidth=0.5)
+        ax.tick_params(axis="y", colors=left_color or COLOR["black"], labelsize=9)
+        ax.set_ylabel(panel.left_axis_label, color=left_color or COLOR["black"], fontsize=11)
+        if right_ax is not None:
+            right_ax.tick_params(axis="y", colors=right_color or COLOR["black"], labelsize=9)
+            right_ax.set_ylabel(panel.right_axis_label or "", color=right_color or COLOR["black"], fontsize=11)
+
+        ax.text(
+            0.01,
+            0.94,
+            panel.label,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=12,
+            bbox=dict(facecolor="white", edgecolor="#222222", linewidth=1.0, boxstyle="square,pad=0.3"),
+        )
+
+        handles_left, labels_left = ax.get_legend_handles_labels()
+        handles_right, labels_right = right_ax.get_legend_handles_labels() if right_ax is not None else ([], [])
+        handles = handles_left + handles_right
+        labels = labels_left + labels_right
+        if handles:
+            ax.legend(handles, labels, loc="upper right", fontsize=8, frameon=False, ncol=max(1, min(3, len(labels))))
+
+    _apply_time_axis_matplotlib(axes[-1], times)
+    start_stamp = times.min().strftime("%b %d, %Y")
+    axes[-1].set_xlabel(f"Hours after 00:00 UTC on {start_stamp}", fontsize=12)
+    fig.suptitle(title, fontsize=15)
+    fig.tight_layout()
+    fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.95, hspace=0.05)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+    print(f"Wrote {output}")
+    return len(panels)
+
+
+def plot_summary_last_24h(
+    zarr_path: Path,
+    output: Path,
+    instrument: str,
+    max_time_samples: int = MAX_TIME_SAMPLES,
+) -> int:
+    ds = xr.open_zarr(zarr_path, chunks={})
+    if "time" not in ds:
+        raise KeyError("Dataset is missing a time coordinate")
+    time_index = _time_index(ds)
+    if len(time_index) == 0:
+        raise ValueError("Dataset contains no time samples")
+    end_time = time_index.max()
+    start_time = end_time - timedelta(hours=24)
+    mask = (time_index >= start_time) & (time_index <= end_time)
+    if not mask.any():
+        raise ValueError("No data in latest 24h")
+    window = ds.isel(time=mask).sortby("time")
+    title = _window_title("Latest 24 hours", instrument)
+    return save_summary_png(window, instrument=instrument, title=title, output=output, max_time_samples=max_time_samples)
+
+
+def build_summary_plotly(
+    ds: xr.Dataset,
+    instrument: str,
+    title: str | None = None,
+    max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
+) -> go.Figure:
+    ds = downsample_time(ds, max_time_samples=max_time_samples)
+    times = _time_index(ds)
+    panels = _active_panels(ds, instrument)
+    if len(times) == 0 or not panels:
+        raise ValueError(f"No summary time-series panels available for {instrument}")
+
+    fig = make_subplots(
+        rows=len(panels),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        specs=[[{"secondary_y": panel.right_axis_label is not None}] for panel, _rows in panels],
+        subplot_titles=[panel.label for panel, _rows in panels],
+    )
+
+    seen_labels: set[str] = set()
+    for row_index, (panel, rows) in enumerate(panels, start=1):
+        left_color = None
+        right_color = None
+        for trace, values in rows:
+            secondary = trace.axis == "right" and panel.right_axis_label is not None
+            if secondary and right_color is None:
+                right_color = trace.color
+            if not secondary and left_color is None:
+                left_color = trace.color
+            showlegend = trace.label not in seen_labels
+            seen_labels.add(trace.label)
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=values,
+                    mode="lines",
+                    name=trace.label,
+                    line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                    hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}}<extra></extra>",
+                    connectgaps=False,
+                    showlegend=showlegend,
+                ),
+                row=row_index,
+                col=1,
+                secondary_y=secondary,
+            )
+        fig.update_yaxes(
+            title_text=panel.left_axis_label,
+            showgrid=True,
+            gridcolor="#dddddd",
+            linecolor="#222222",
+            tickfont=dict(color=left_color or COLOR["black"], size=10),
+            title_font=dict(color=left_color or COLOR["black"], size=11),
+            row=row_index,
+            col=1,
+            secondary_y=False,
+        )
+        if panel.right_axis_label is not None:
+            fig.update_yaxes(
+                title_text=panel.right_axis_label,
+                showgrid=False,
+                linecolor="#222222",
+                tickfont=dict(color=right_color or COLOR["black"], size=10),
+                title_font=dict(color=right_color or COLOR["black"], size=11),
+                row=row_index,
+                col=1,
+                secondary_y=True,
+            )
+
+    tickvals = []
+    ticktext = []
+    if len(times):
+        start = times.min()
+        end = times.max()
+        duration = end - start
+        freq = "1h" if duration <= pd.Timedelta(hours=18) else "2h" if duration <= pd.Timedelta(hours=36) else "6h"
+        for stamp in pd.date_range(start=start.floor("h"), end=end.ceil("h"), freq=freq):
+            tickvals.append(stamp.to_pydatetime())
+            ticktext.append(stamp.strftime("%H:%M"))
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=tickvals,
+        ticktext=ticktext,
+        showgrid=True,
+        gridcolor="#dddddd",
+        linecolor="#222222",
+        tickfont=dict(color="#222222", size=11),
+    )
+    fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(orientation="h", y=1.02, x=0.0, xanchor="left", font=dict(size=11)),
+        height=max(620, min(1800, 280 * len(panels) + 90)),
+        margin=dict(l=80, r=80, t=60, b=70),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color="#222222", size=12),
+        title=dict(text=title or display_name(instrument), x=0.01, xanchor="left", font=dict(size=17, color="#222222")),
+    )
+    for ann in fig.layout.annotations:
+        ann.update(
+            x=0.01,
+            xref="paper",
+            xanchor="left",
+            bgcolor="white",
+            bordercolor="#222222",
+            borderwidth=1,
+            font=dict(size=12, color="#222222"),
+        )
+    return fig
