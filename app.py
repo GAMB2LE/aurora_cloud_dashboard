@@ -4597,27 +4597,33 @@ tabs = pn.Tabs(
     sizing_mode="stretch_both",
 )
 
-site_footer = pn.pane.HTML(
-    """
-    <div class="site-footer">
-      <div class="site-footer__title">More Aurora project information</div>
-      <div class="site-footer__links">
-        <div class="site-footer__link">
-          <a href="https://gamb2le.pages.dev/" target="_blank" rel="noopener noreferrer">gamb2le.pages.dev</a>
-          <div class="site-footer__desc">Project documentation portal with dashboard, infrastructure, and operational notes.</div>
-        </div>
-        <div class="site-footer__link">
-          <a href="https://www.gamb2le.co.uk/" target="_blank" rel="noopener noreferrer">gamb2le.co.uk</a>
-          <div class="site-footer__desc">Main Gamb2le website with broader project context and public-facing information.</div>
-        </div>
-      </div>
+SITE_FOOTER_HTML = """
+<div class="site-footer">
+  <div class="site-footer__title">More Aurora project information</div>
+  <div class="site-footer__links">
+    <div class="site-footer__link">
+      <a href="https://gamb2le.pages.dev/" target="_blank" rel="noopener noreferrer">gamb2le.pages.dev</a>
+      <div class="site-footer__desc">Project documentation portal with dashboard, infrastructure, and operational notes.</div>
     </div>
-    """,
-    sizing_mode="stretch_width",
-    margin=0,
-)
+    <div class="site-footer__link">
+      <a href="https://www.gamb2le.co.uk/" target="_blank" rel="noopener noreferrer">gamb2le.co.uk</a>
+      <div class="site-footer__desc">Main Gamb2le website with broader project context and public-facing information.</div>
+    </div>
+  </div>
+</div>
+"""
 
-main_layout = pn.Column(tabs, site_footer, sizing_mode="stretch_width", margin=0)
+
+def _site_footer_pane() -> pn.pane.HTML:
+    return pn.pane.HTML(SITE_FOOTER_HTML, sizing_mode="stretch_width", margin=0)
+
+
+interactive_tab.append(_site_footer_pane())
+science_quicklooks_tab.append(_site_footer_pane())
+housekeeping_quicklooks_tab.append(_site_footer_pane())
+operations_tab.append(_site_footer_pane())
+
+main_layout = pn.Column(tabs, sizing_mode="stretch_width", margin=0)
 
 _QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "operations": 3}
 
