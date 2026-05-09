@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -369,7 +369,7 @@ def _probe_gws(gws_path: Path) -> tuple[str | None, dict[str, float] | None]:
 
 
 def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     record: dict[str, Any] = {
         "time_utc": now.isoformat(),
     }
