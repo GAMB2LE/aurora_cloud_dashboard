@@ -521,6 +521,7 @@ INSTRUMENTS = {
 INSTRUMENT_OPTIONS = {
     ("WXcam" if name == "wxcam" else display_name(name)): name
     for name in INSTRUMENTS.keys()
+    if name != "asfs-fast-sonic"
 }
 
 DEFAULT_WINDOW = timedelta(hours=24)

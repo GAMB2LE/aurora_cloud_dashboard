@@ -8,7 +8,6 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 - `Cloud Radar` - RPG FMCW 94 GHz Zarr with interactive height-time plots and calendar quicklooks.
 - `Meteorology` - fixed multi-panel 1D summary view on Interactive, plus `Meteorology` and `HK_Met` calendar quicklooks from the same Zarr.
 - `ASFS` - fixed multi-panel 1D summary view on Interactive, plus `ASFS` and `HK_ASFS` calendar quicklooks from the same Zarr.
-- `ASFS Fast Sonic` - fixed multi-panel 1D summary view on Interactive and Calendar.
 - `Aurora Power Supply` - fixed multi-panel 1D summary view on Interactive, plus `Aurora Power Supply` and `HK_APS` calendar quicklooks from the same Zarr.
 - `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. The Interactive tab shows rolling latest and per-day MP4s. The Calendar tab shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
 
@@ -156,8 +155,9 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 ## Notes
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
-- `Meteorology`, `ASFS`, `ASFS Fast Sonic`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the Interactive page.
+- `Meteorology`, `ASFS`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the Interactive page.
 - `Meteorology`, `ASFS`, and `Aurora Power Supply` stack their summary quicklook together with the existing all-variable housekeeping quicklook on the Calendar tab under the labels `HK_Met`, `HK_ASFS`, and `HK_APS`.
+- `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the Interactive and Calendar selectors.
 - WXcam keeps the stitched MP4 player on the Interactive tab. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
 - The WXcam Calendar tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
 

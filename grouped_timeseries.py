@@ -291,13 +291,21 @@ DISPLAY_SCALE = {
 SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
     "vaisalamet": (
         PanelSpec(
-            "met",
-            "Met",
-            "Air / Dew Temperature [C]",
-            "Relative Humidity [%]",
+            "air_temperature",
+            "Air Temperature",
+            "Air Temperature [C]",
+            None,
             (
                 TraceSpec("h1_t", "HMP1 Air Temperature", COLOR["teal"]),
                 TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
+            ),
+        ),
+        PanelSpec(
+            "humidity",
+            "Humidity / Dew Point",
+            "Dew Point [C]",
+            "Relative Humidity [%]",
+            (
                 TraceSpec("h1_td", "Dew Point", COLOR["purple"]),
                 TraceSpec("h1_rh", "Relative Humidity", COLOR["brown"], axis="right"),
             ),
@@ -306,30 +314,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "pressure",
             "Pressure",
             "Pressure [hPa]",
-            "Vapor Pressure [hPa]",
+            None,
             (
                 TraceSpec("baro_hPa", "Pressure", COLOR["green"]),
-                TraceSpec("h1_e", "Vapor Pressure", COLOR["olive"], axis="right"),
-            ),
-        ),
-        PanelSpec(
-            "sensor_status",
-            "Sensor Status",
-            "Probe Temperature [C]",
-            "Sensor State",
-            (
-                TraceSpec("h1_t", "HMP1 Air Temperature", COLOR["teal"]),
-                TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
-                TraceSpec("h1_online", "HMP1 Online", COLOR["red"], axis="right", step=True),
-                TraceSpec("t2_online", "T2 Online", COLOR["magenta"], axis="right", step=True),
-                TraceSpec("h1_error_status", "HMP1 Error Status", COLOR["slate"], axis="right", step=True),
-                TraceSpec("t2_error_status", "T2 Error Status", COLOR["black"], axis="right", step=True),
             ),
         ),
     ),
     "asfs-logger": (
         PanelSpec(
-            "met",
+            "metek_wind",
             "Met",
             "Metek U / V Wind [m/s]",
             "Metek W Wind [m/s]",
@@ -340,9 +333,9 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "temperature",
-            "Temperature",
-            "Instrument Temperature [C]",
+            "surface_temperature",
+            "Met",
+            "Surface / Sonic Temperature [C]",
             None,
             (
                 TraceSpec("metek_T_out_Avg", "Sonic Temperature", COLOR["brown"]),
@@ -354,21 +347,10 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "radiation",
             "Radiation",
             "Radiation [W m^-2]",
-            "Distance [m]",
+            None,
             (
                 TraceSpec("spn1_tot_Avg", "Total Radiation", COLOR["brown"]),
                 TraceSpec("spn1_dif_Avg", "Diffuse Radiation", COLOR["purple"]),
-                TraceSpec("sr50_dist_Avg", "SR50 Distance", COLOR["slate"], axis="right"),
-            ),
-        ),
-        PanelSpec(
-            "power",
-            "Power",
-            "Battery Voltage [V]",
-            "48 V Load Power [W]",
-            (
-                TraceSpec("batt_volt_Avg", "Battery Voltage", COLOR["teal"]),
-                TraceSpec("watts_on_48vdc_Avg", "48 V Power", COLOR["red"], axis="right"),
             ),
         ),
     ),
@@ -889,6 +871,7 @@ def build_summary_plotly(
     title: str | None = None,
     max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
 ) -> go.Figure:
+    vertical_spacing = 0.04
     ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
@@ -899,13 +882,27 @@ def build_summary_plotly(
         rows=len(panels),
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.04,
+        vertical_spacing=vertical_spacing,
         specs=[[{"secondary_y": panel.right_axis_label is not None}] for panel, _rows in panels],
         subplot_titles=[panel.label for panel, _rows in panels],
     )
 
-    seen_labels: set[str] = set()
+    panel_height = (1.0 - vertical_spacing * (len(panels) - 1)) / len(panels)
+    legend_layouts: dict[str, dict[str, object]] = {}
     for row_index, (panel, rows) in enumerate(panels, start=1):
+        legend_name = "legend" if row_index == 1 else f"legend{row_index}"
+        panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
+        legend_layouts[legend_name] = dict(
+            x=0.985,
+            xanchor="right",
+            y=max(0.02, panel_top - 0.02),
+            yanchor="top",
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#d0d0d0",
+            borderwidth=1,
+            font=dict(size=10, color="#222222"),
+            tracegroupgap=2,
+        )
         left_color = None
         right_color = None
         for trace, values in rows:
@@ -914,18 +911,17 @@ def build_summary_plotly(
                 right_color = trace.color
             if not secondary and left_color is None:
                 left_color = trace.color
-            showlegend = trace.label not in seen_labels
-            seen_labels.add(trace.label)
             fig.add_trace(
                 go.Scatter(
                     x=times,
                     y=values,
                     mode="lines",
                     name=trace.label,
+                    legend=legend_name,
                     line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
                     hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}}<extra></extra>",
                     connectgaps=False,
-                    showlegend=showlegend,
+                    showlegend=True,
                 ),
                 row=row_index,
                 col=1,
@@ -976,13 +972,13 @@ def build_summary_plotly(
     fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
         showlegend=True,
-        legend=dict(orientation="h", y=1.02, x=0.0, xanchor="left", font=dict(size=11)),
         height=max(620, min(1800, 280 * len(panels) + 90)),
         margin=dict(l=80, r=80, t=60, b=70),
         paper_bgcolor="white",
         plot_bgcolor="white",
         font=dict(color="#222222", size=12),
         title=dict(text=title or display_name(instrument), x=0.01, xanchor="left", font=dict(size=17, color="#222222")),
+        **legend_layouts,
     )
     for ann in fig.layout.annotations:
         ann.update(
