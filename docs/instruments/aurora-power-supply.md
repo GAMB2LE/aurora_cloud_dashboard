@@ -17,6 +17,7 @@ Typical panels include:
   - `West Solar Generated`
   - `Total Generated`
   - `Utilised`
+  - `Surplus / Deficit` on the right axis
 - **Battery Charging**
   - `Charging Current In`
   - `Charging Power In`

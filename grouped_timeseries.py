@@ -198,6 +198,7 @@ HUMAN_LABELS = {
     "SolarYield_South": "South Solar Generated",
     "SolarYield_West": "West Solar Generated",
     "CumulativePowerGeneratedTotal": "Total Generated",
+    "CumulativePowerBalance": "Surplus / Deficit",
     "CumulativePowerUtilised": "Power Utilised",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
@@ -292,6 +293,7 @@ HUMAN_UNITS = {
     "SolarYield_South": "kWh",
     "SolarYield_West": "kWh",
     "CumulativePowerGeneratedTotal": "kWh",
+    "CumulativePowerBalance": "kWh",
     "CumulativePowerUtilised": "kWh",
     "TempSensor1": "C",
     "TempSensor2": "C",
@@ -433,13 +435,14 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "cumulative_power",
             "Cumulative Power",
             "Cumulative Energy [kWh]",
-            None,
+            "Surplus / Deficit [kWh]",
             (
                 TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
                 TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
                 TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"]),
                 TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"]),
                 TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
+                TraceSpec("CumulativePowerBalance", "Surplus / Deficit", COLOR["red"], axis="right"),
             ),
         ),
         PanelSpec(
@@ -957,7 +960,11 @@ def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> x
 def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if instrument != "power" or "time" not in ds or ds.sizes.get("time", 0) == 0:
         return ds
-    if "CumulativePowerUtilised" in ds and "CumulativePowerGeneratedTotal" in ds:
+    if (
+        "CumulativePowerUtilised" in ds
+        and "CumulativePowerGeneratedTotal" in ds
+        and "CumulativePowerBalance" in ds
+    ):
         return ds
 
     times = pd.DatetimeIndex(ds["time"].values)
@@ -1004,6 +1011,17 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
                 dims=("time",),
                 attrs={"units": "kWh"},
             )
+
+    generated_total_da = assignments.get("CumulativePowerGeneratedTotal", ds.get("CumulativePowerGeneratedTotal"))
+    utilised_da = assignments.get("CumulativePowerUtilised", ds.get("CumulativePowerUtilised"))
+    if "CumulativePowerBalance" not in ds and generated_total_da is not None and utilised_da is not None:
+        balance = np.asarray(generated_total_da.values, dtype=np.float64) - np.asarray(utilised_da.values, dtype=np.float64)
+        assignments["CumulativePowerBalance"] = xr.DataArray(
+            balance,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "kWh"},
+        )
 
     if not assignments:
         return ds
