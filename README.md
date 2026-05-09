@@ -9,7 +9,7 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 - `vaisalamet` - stacked 1D time-series plots for all retained variables, plus daily quicklooks.
 - `asfs-logger` - stacked 1D time-series plots for all retained variables, plus daily quicklooks.
 - `power` - stacked 1D time-series plots for all retained non-wind variables, plus daily quicklooks.
-- `wxcam` - interactive daily HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog. The Calendar tab shows the current-day daily MP4 plus a past-day `3 x 8` grid of hourly video thumbnails.
+- `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. The Interactive tab shows rolling latest and per-day MP4s. The Calendar tab shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
 
 `asfs-fast-sonic` is processed into its own Zarr store for downstream analysis, but it is not exposed in the dashboard UI.
 
@@ -17,9 +17,9 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 
 - `app.py` - main Panel application.
 - `wxcam_catalog.py` - shared helpers for the wxcam SQLite catalog.
-- `index_wxcam_catalog.py` - indexes local wxcam HDR images and videos, with optional remote bootstrap metadata.
+- `index_wxcam_catalog.py` - indexes local WXcam HDR images and videos, with optional one-shot remote metadata bootstrap if explicitly requested.
 - `build_wxcam_daily_videos.py` - builds daily wxcam MP4 products and hourly thumbnails from raw hourly clips.
-- `append_new_wxcam_to_zarr.py` - forward append path for wxcam pixel Zarr groups. The service exists, but the timer is currently disabled.
+- `append_new_wxcam_to_zarr.py` - appends local WXcam HDR JPGs into per-stream pixel Zarr groups.
 - `append_new_*_to_zarr.py` - appenders for the numeric instruments.
 - `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
 
@@ -40,6 +40,7 @@ Important products:
 - ASFS logger Zarr: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 - ASFS fast-sonic Zarr: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 - Power Zarr: `/data/aurora/products/power/power.zarr`
+- WXcam Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
 - Wxcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - Wxcam daily videos: `/data/aurora/products/wxcam/daily_videos`
 - Wxcam hourly thumbnails: `/data/aurora/products/wxcam/hourly_thumbnails`
@@ -78,7 +79,7 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
   - `aurora-wxcam-source-sync.timer`
   - `aurora-wxcam-catalog.timer`
   - `aurora-wxcam-daily-videos.timer` (daily MP4s plus hourly thumbnails)
-  - `aurora-wxcam-append.timer` (installed, currently disabled)
+  - `aurora-wxcam-append.timer`
 
 Useful commands:
 
@@ -99,4 +100,71 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 ## Notes
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
-- Wxcam keeps the full daily player on the Interactive tab. The Calendar tab now uses the current-day daily MP4 for `Today (latest)` and a past-day hourly thumbnail grid for historical browsing.
+- WXcam keeps the stitched MP4 player on the Interactive tab. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
+- The WXcam Calendar tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
+
+## WXcam data products
+
+### Local raw mirror
+
+The deployed WXcam raw mirror only retains HDR assets locally:
+
+- `FISH/HDR_*.jpg`
+- `FISH/HDR_*.mp4`
+- `PANO/HDR_*_PANO.jpg`
+- `PANO/HDR_*_PANO.mp4`
+
+Non-HDR WXcam files may still exist on the remote source host, but they are not mirrored into the local dashboard raw tree.
+
+### Catalog
+
+The WXcam catalog at `/data/aurora/products/wxcam/wxcam_catalog.sqlite` indexes both HDR JPGs and HDR MP4s. Timestamps are derived from filenames and stored as UTC. Key fields include:
+
+- `image_type` - `fish_hdr` or `pano_hdr`
+- `media_kind` - `image` or `video`
+- `time_utc`, `time_epoch_ns`, `day_utc`
+- `raw_path`, `relative_path`, `filename`
+- `width`, `height`, `size_bytes`
+
+### Daily videos and hourly thumbnails
+
+- Daily MP4s live under `/data/aurora/products/wxcam/daily_videos/<image_type>/YYYYMMDD.mp4`
+- Rolling latest MP4s live at `/data/aurora/products/wxcam/daily_videos/<image_type>/latest.mp4`
+- Hourly thumbnails live under `/data/aurora/products/wxcam/hourly_thumbnails/<image_type>/YYYYMMDD/`
+
+Daily videos are stitched from the 24 hourly MP4 clips for that UTC day. `latest.mp4` is stitched from the most recent 24 hourly clips across day boundaries.
+
+### WXcam Zarr structure
+
+The WXcam Zarr at `/data/aurora/products/wxcam/wxcam.zarr` contains HDR JPG image data only. MP4 products are stored separately.
+
+Root attrs:
+
+- `instrument = "wxcam"`
+- `title = "Aurora wxcam HDR images"`
+- `storage_policy = "Contains locally retained HDR JPG image data for fish_hdr and pano_hdr with timestamps derived from filenames; MP4 products are stored separately."`
+
+Root groups:
+
+- `fish_hdr`
+- `pano_hdr`
+
+Each group stores one xarray dataset with:
+
+- dimensions: `time`, `y`, `x`, `channel`
+- coordinates:
+  - `time` - UTC image timestamps
+  - `y` - pixel row index
+  - `x` - pixel column index
+  - `channel` - RGB color channel labels: `R`, `G`, `B`
+- data variables:
+  - `image[time, y, x, channel]` - `uint8` RGB pixel data
+  - `filename[time]`
+  - `width[time]`
+  - `height[time]`
+  - `size_bytes[time]`
+
+Group-specific image geometry:
+
+- `fish_hdr`: `3120 x 3040` pixels, chunked as `(1, 1024, 1024, 3)`
+- `pano_hdr`: `2880 x 750` pixels, chunked as `(1, 750, 1024, 3)`
