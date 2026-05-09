@@ -15,7 +15,6 @@ theme:
 
 plugins:
   - search
-  - include-markdown
 
 markdown_extensions:
   - admonition
