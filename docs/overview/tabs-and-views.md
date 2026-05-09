@@ -14,6 +14,10 @@ This is the primary live-browsing surface.
 The share link, download, freshness, and availability UI are rendered beneath
 the content area so the data surface stays visually primary.
 
+The interactive browser keeps the last rendered pane warm per instrument,
+remembers the instrument-specific control state, and shows a small loading
+notice or skeleton while a refresh is in progress.
+
 ## Science Quicklooks
 
 This tab shows archived science-facing products.

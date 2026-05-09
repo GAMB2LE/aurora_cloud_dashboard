@@ -26,6 +26,7 @@ tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 
 - `base_dataset_open`
 - `dataset_time_bounds`
+- `dataset_time_bounds_cache_hit`
 - `window_open`
 - `interactive_view_update`
 - `hatpro_render`
@@ -40,6 +41,18 @@ tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 - `session_destroyed`
 - `ui_selection_change`
 - `plot_relayout`
+
+The interactive browser also uses a few runtime behaviors that affect how these
+events should be interpreted:
+
+- per-instrument pane reuse keeps the last rendered view warm while a refresh is
+  queued
+- dataset time bounds and latest timestamps are cached briefly
+- stale-render protection drops older queued renders before they can repaint the
+  page
+- a loading skeleton is shown for uncached views
+- the heavier 2D interactive plots use a coarse-first pass before a full detail
+  pass replaces it
 
 ## Session context
 

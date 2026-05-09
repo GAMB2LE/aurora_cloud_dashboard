@@ -1,10 +1,10 @@
 # app.py
-# Minimal Panel + Plotly viewer for ceilometer Zarr data.
-# - Loads a Zarr dataset once and slices out a time window for plotting.
-# - Two heatmaps: attenuated backscatter (log-scaled) and linear depol ratio.
-# - Controls: instrument (placeholder), time window, range limits, color limits,
-#   a “live” toggle to jump to the latest 24h, and previous/next day navigation.
-# - Lightweight coarsening and subsampling to keep plots responsive.
+# Aurora dashboard application.
+# - Multi-instrument Panel + Plotly browser for 2D atmospheric curtains, 1D
+#   station summaries, WXcam media, quicklooks, and operations monitoring.
+# - Keeps per-instrument interactive state warm so switching back feels fast.
+# - Uses cached time bounds, stale-render protection, and coarse-first rendering
+#   on the heavier interactive plots to keep the UI responsive.
 
 import os
 from base64 import b64encode
@@ -623,9 +623,17 @@ DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
 # A small future tolerance keeps normal clock skew harmless while protecting
 # the dashboard from bogus outlier timestamps that can blank the latest window.
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
+TIME_BOUNDS_CACHE_TTL = timedelta(seconds=45)
+INTERACTIVE_PLACEHOLDER_HEIGHT = 540
 
 _BASE_DS: dict[str, xr.Dataset | None] = {}
+_TIME_BOUNDS_CACHE: dict[str, dict[str, object]] = {}
+_INTERACTIVE_FIGURE_CACHE: dict[str, go.Figure] = {}
+_INSTRUMENT_VIEW_STATE: dict[str, dict[str, object]] = {}
 CURRENT_INSTRUMENT = "Ceilometer"
+_RENDER_REQUEST_COUNTER = 0
+_ACTIVE_RENDER_REQUEST_ID = 0
+_DISPLAYED_INTERACTIVE_INSTRUMENT: str | None = None
 
 
 def _cfg(inst: str | None = None):
@@ -700,6 +708,15 @@ def _refresh_base_dataset(inst: str | None = None):
     """Drop the cached dataset so the next access reopens the Zarr (captures new data)."""
     inst = inst or CURRENT_INSTRUMENT
     _BASE_DS[inst] = None
+    _TIME_BOUNDS_CACHE.pop(inst, None)
+
+
+def _remember_time_bounds(inst: str, lower: datetime | None, upper: datetime | None) -> tuple[datetime | None, datetime | None]:
+    _TIME_BOUNDS_CACHE[inst] = {
+        "captured_at": datetime.now(timezone.utc),
+        "bounds": (lower, upper),
+    }
+    return lower, upper
 
 
 def _valid_time_mask(times: np.ndarray) -> np.ndarray:
@@ -725,22 +742,30 @@ def _median_filter_nan(arr, k=3):
 def _dataset_time_bounds(inst: str | None = None):
     """Compute earliest and latest timestamps in the dataset (or None/None)."""
     inst = inst or CURRENT_INSTRUMENT
+    cached = _TIME_BOUNDS_CACHE.get(inst)
+    if cached:
+        captured_at = cached.get("captured_at")
+        bounds = cached.get("bounds")
+        if isinstance(captured_at, datetime) and isinstance(bounds, tuple):
+            if datetime.now(timezone.utc) - captured_at <= TIME_BOUNDS_CACHE_TTL:
+                _perf_log("dataset_time_bounds_cache_hit", instrument=inst)
+                return bounds
     with _timed_perf("dataset_time_bounds", instrument=inst) as perf:
         if inst == "wxcam":
             lower, upper = catalog_time_bounds(_wxcam_catalog_path(inst))
             perf["source"] = "wxcam_catalog"
             perf["time_start"] = lower
             perf["time_end"] = upper
-            return lower, upper
+            return _remember_time_bounds(inst, lower, upper)
         ds = _get_base_dataset(inst)
         if ds is None or "time" not in ds:
             perf["status"] = "no_dataset"
-            return None, None
+            return _remember_time_bounds(inst, None, None)
         times = np.asarray(ds["time"].values)
         perf["raw_time_count"] = int(times.size)
         if times.size == 0:
             perf["status"] = "empty"
-            return None, None
+            return _remember_time_bounds(inst, None, None)
         valid = _valid_time_mask(times)
         times = times[valid]
         perf["valid_time_count"] = int(times.size)
@@ -748,7 +773,7 @@ def _dataset_time_bounds(inst: str | None = None):
         upper = pd.Timestamp(times.max()).to_pydatetime(warn=False)
         perf["time_start"] = lower
         perf["time_end"] = upper
-        return lower, upper
+        return _remember_time_bounds(inst, lower, upper)
 
 
 def _instrument_time_index(inst: str) -> pd.DatetimeIndex:
@@ -1759,7 +1784,7 @@ def _coarsen_targets(duration: timedelta | None, height_span: float | None):
     return time_subsample, time_target, height_target
 
 
-def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None):
+def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None, render_quality: str = "full"):
     """Slice the base dataset, adapt coarsening to window span, and filter height."""
     instrument = instrument or CURRENT_INSTRUMENT
     cfg = _cfg(instrument)
@@ -1772,6 +1797,7 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
         end=t1,
         bottom_m=bottom_m,
         top_m=top_m,
+        render_quality=render_quality,
     ) as perf:
         if t0 is None or t1 is None or t0 >= t1:
             perf["status"] = "invalid_window"
@@ -1784,6 +1810,10 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
             t = top_m if top_m is not None else cfg["height_load_max"]
             height_span = max(t - b, 0.0)
         time_subsample, time_target, height_target = _coarsen_targets(duration, height_span)
+        if render_quality == "coarse":
+            time_subsample = max(time_subsample, 2)
+            time_target = max(96, time_target // 3)
+            height_target = max(72, height_target // 2)
         perf["time_subsample"] = int(time_subsample)
         perf["time_target"] = int(time_target)
         perf["height_target"] = int(height_target)
@@ -1924,6 +1954,32 @@ _relayout_guard = False  # prevents loops when syncing zoom back to widgets
 pn.state.add_periodic_callback(_refresh_base_dataset, period=DATA_REFRESH_MS, start=True)
 
 
+def _capture_current_instrument_state(inst: str | None = None) -> None:
+    inst = inst or CURRENT_INSTRUMENT
+    _INSTRUMENT_VIEW_STATE[inst] = {
+        "range_start": _ensure_utc(range_start.value),
+        "range_end": _ensure_utc(range_end.value),
+        "top_range_m": top_range_m.value,
+        "bottom_range_m": bottom_range_m.value,
+        "var1_select": var1_select.value,
+        "var2_select": var2_select.value,
+        "beta_vmin": beta_vmin.value,
+        "beta_vmax": beta_vmax.value,
+        "ldr_vmin": ldr_vmin.value,
+        "ldr_vmax": ldr_vmax.value,
+        "lwp_ymin": lwp_ymin.value,
+        "lwp_ymax": lwp_ymax.value,
+        "iwv_ymin": iwv_ymin.value,
+        "iwv_ymax": iwv_ymax.value,
+        "irr_ymin": irr_ymin.value,
+        "irr_ymax": irr_ymax.value,
+        "live_toggle": live_toggle.value,
+        "science_image_type": science_image_type.value,
+        "wxcam_image_type": globals().get("wxcam_image_type").value if "wxcam_image_type" in globals() else None,
+        "wxcam_date": globals().get("wxcam_date").value if "wxcam_date" in globals() else None,
+    }
+
+
 def _apply_instrument_defaults(inst: str, reset_time: bool = True):
     """Switch instrument: refresh dataset cache, reset controls, and relabel color widgets."""
     global CURRENT_INSTRUMENT, _instrument_guard
@@ -1931,6 +1987,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
     CURRENT_INSTRUMENT = inst
     _refresh_base_dataset(inst)
     cfg = _cfg(inst)
+    saved_state = _INSTRUMENT_VIEW_STATE.get(inst, {})
     with hold():
         vars_cfg = cfg["vars"]
         is_hatpro = inst == "Scanning Microwave Radiometer"
@@ -1970,14 +2027,26 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         hk_instrument.value = inst
 
         if reset_time:
-            tmin, tmax = _dataset_time_bounds(inst)
-            end = tmax or datetime.utcnow()
-            start = end - DEFAULT_WINDOW
-            range_start.value = start
-            range_end.value = end
+            saved_live = bool(saved_state.get("live_toggle")) if (saved_state and not is_wxcam) else False
+            saved_start = saved_state.get("range_start")
+            saved_end = saved_state.get("range_end")
+            if (
+                not saved_live
+                and isinstance(saved_start, datetime)
+                and isinstance(saved_end, datetime)
+                and saved_start < saved_end
+            ):
+                range_start.value = saved_start
+                range_end.value = saved_end
+            else:
+                tmin, tmax = _dataset_time_bounds(inst)
+                end = tmax or datetime.utcnow()
+                start = end - DEFAULT_WINDOW
+                range_start.value = start
+                range_end.value = end
             # WXcam is a manual browser: refresh when switching back into it,
             # but do not keep a hidden live timer running while it is selected.
-            _set_live(not is_wxcam)
+            _set_live(saved_live if not is_wxcam else False)
 
         # Instrument-specific UI trimming
         range_start.visible = not is_wxcam
@@ -1997,13 +2066,29 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         if is_wxcam:
             science_image_type.name = "Image type"
             science_image_type.options = list(vars_cfg.keys())
-            science_image_type.value = var1_name
+            saved_wxcam_type = saved_state.get("wxcam_image_type") or saved_state.get("science_image_type")
+            science_image_type.value = saved_wxcam_type if saved_wxcam_type in vars_cfg else var1_name
             wxcam_image_type.options = list(vars_cfg.keys())
-            wxcam_image_type.value = var1_name
+            wxcam_image_type.value = saved_wxcam_type if saved_wxcam_type in vars_cfg else var1_name
             _refresh_wxcam_ql_options(preserve_current=False)
+            saved_wxcam_date = saved_state.get("wxcam_date")
+            if saved_wxcam_date in list(wxcam_date.options):
+                wxcam_date.value = saved_wxcam_date
         else:
             science_image_type.name = "Image type"
             science_image_type.options = []
+        if saved_state and not is_wxcam:
+            if saved_state.get("var1_select") in vars_cfg:
+                var1_select.value = saved_state["var1_select"]
+            if saved_state.get("var2_select") in vars_cfg:
+                var2_select.value = saved_state["var2_select"]
+            if not is_stacked_timeseries:
+                bottom_range_m.value = int(saved_state.get("bottom_range_m", bottom_range_m.value) or 0)
+                top_range_m.value = int(saved_state.get("top_range_m", top_range_m.value) or top_range_m.value)
+                beta_vmin.value = saved_state.get("beta_vmin", beta_vmin.value)
+                beta_vmax.value = saved_state.get("beta_vmax", beta_vmax.value)
+                ldr_vmin.value = saved_state.get("ldr_vmin", ldr_vmin.value)
+                ldr_vmax.value = saved_state.get("ldr_vmax", ldr_vmax.value)
         if is_hatpro:
             beta_vmin.name = "T_PROF min (K)"
             beta_vmax.name = "T_PROF max (K)"
@@ -2016,6 +2101,13 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
             lwp_ymin.value, lwp_ymax.value = 0.0, 400.0
             iwv_ymin.value, iwv_ymax.value = 0.0, 60.0
             irr_ymin.value, irr_ymax.value = -20.0, 60.0
+            if saved_state:
+                lwp_ymin.value = saved_state.get("lwp_ymin", lwp_ymin.value)
+                lwp_ymax.value = saved_state.get("lwp_ymax", lwp_ymax.value)
+                iwv_ymin.value = saved_state.get("iwv_ymin", iwv_ymin.value)
+                iwv_ymax.value = saved_state.get("iwv_ymax", iwv_ymax.value)
+                irr_ymin.value = saved_state.get("irr_ymin", irr_ymin.value)
+                irr_ymax.value = saved_state.get("irr_ymax", irr_ymax.value)
         else:
             lwp_ymin.visible = lwp_ymax.visible = False
             iwv_ymin.visible = iwv_ymax.visible = False
@@ -2091,6 +2183,8 @@ def _on_instrument_change(event):
     """Switch datasets and reset controls when instrument dropdown changes."""
     if _instrument_guard:
         return
+    if event.old:
+        _capture_current_instrument_state(event.old)
     _apply_instrument_defaults(event.new, reset_time=True)
 
 
@@ -2233,20 +2327,148 @@ range_start.param.watch(_on_manual_time_change, "value")
 range_end.param.watch(_on_manual_time_change, "value")
 
 # Persistent plot pane so we can listen for zoom/pan events (relayout).
-# Keep the pane width responsive, but reserve explicit vertical space from the
-# figure height so footer cards cannot visually overlap the rendered plot.
+# Keep one stable shell for the interactive area so switching instruments
+# reuses the same pane tree instead of rebuilding the whole section.
 plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width")
-interactive_content = pn.Column(plot_pane, sizing_mode="stretch_width", margin=0)
+interactive_loading = pn.pane.HTML("", visible=False, sizing_mode="stretch_width", margin=(0, 0, 8, 0))
+interactive_placeholder = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
+interactive_body = pn.Column(plot_pane, sizing_mode="stretch_width", margin=0)
+interactive_content = pn.Column(interactive_loading, interactive_body, sizing_mode="stretch_width", margin=0)
 
 
-def _show_plot(fig: go.Figure) -> None:
+def _interactive_placeholder_height(inst: str) -> int:
+    if inst == "Scanning Microwave Radiometer":
+        return 760
+    if _is_stacked_timeseries_instrument(inst):
+        return 620
+    if _is_wxcam_instrument(inst):
+        return 520
+    return 760
+
+
+def _interactive_loading_notice_markup(inst: str, message: str, phase: str) -> str:
+    label = "WXcam" if inst == "wxcam" else display_name(inst)
+    phase_label = "Refining detail" if phase == "refining" else "Loading"
+    return (
+        "<div class='interactive-loading-notice'>"
+        f"<span class='interactive-loading-notice__badge'>{escape(phase_label)}</span>"
+        f"<div class='interactive-loading-notice__text'><strong>{escape(label)}</strong> {escape(message)}</div>"
+        "</div>"
+    )
+
+
+def _interactive_placeholder_markup(inst: str, message: str) -> str:
+    label = "WXcam" if inst == "wxcam" else display_name(inst)
+    return (
+        "<div class='interactive-skeleton'>"
+        f"<div class='interactive-skeleton__title'>{escape(label)}</div>"
+        f"<div class='interactive-skeleton__subtitle'>{escape(message)}</div>"
+        "<div class='interactive-skeleton__plot'></div>"
+        "<div class='interactive-skeleton__plot interactive-skeleton__plot--secondary'></div>"
+        "</div>"
+    )
+
+
+def _set_interactive_body(target) -> None:
+    if len(interactive_body.objects) != 1 or interactive_body.objects[0] is not target:
+        interactive_body[:] = [target]
+
+
+def _show_interactive_placeholder(inst: str, message: str) -> None:
+    placeholder_height = _interactive_placeholder_height(inst)
+    interactive_placeholder.height = placeholder_height
+    interactive_placeholder.min_height = placeholder_height
+    interactive_placeholder.object = _interactive_placeholder_markup(inst, message)
+    interactive_body.height = placeholder_height
+    interactive_body.min_height = placeholder_height
+    _set_interactive_body(interactive_placeholder)
+
+
+def _set_interactive_loading(inst: str, message: str, phase: str = "loading", visible: bool = True) -> None:
+    interactive_loading.object = _interactive_loading_notice_markup(inst, message, phase) if visible else ""
+    interactive_loading.visible = visible
+
+
+def _clear_interactive_loading() -> None:
+    interactive_loading.object = ""
+    interactive_loading.visible = False
+
+
+def _show_plot(fig: go.Figure, instrument: str | None = None, cache_figure: bool = True) -> None:
+    global _DISPLAYED_INTERACTIVE_INSTRUMENT
+    instrument = instrument or CURRENT_INSTRUMENT
     plot_height = int(getattr(fig.layout, "height", 900) or 900)
     plot_pane.height = plot_height
     plot_pane.min_height = plot_height
-    interactive_content.height = plot_height
-    interactive_content.min_height = plot_height
+    interactive_body.height = plot_height
+    interactive_body.min_height = plot_height
+    _set_interactive_body(plot_pane)
     plot_pane.object = fig
-    interactive_content[:] = [plot_pane]
+    _DISPLAYED_INTERACTIVE_INSTRUMENT = instrument
+    if cache_figure:
+        _INTERACTIVE_FIGURE_CACHE[instrument] = go.Figure(fig)
+
+
+def _show_interactive_panel(panel_obj, instrument: str | None = None) -> None:
+    global _DISPLAYED_INTERACTIVE_INSTRUMENT
+    plot_pane.height = None
+    plot_pane.min_height = None
+    interactive_body.height = None
+    interactive_body.min_height = None
+    _set_interactive_body(panel_obj)
+    _DISPLAYED_INTERACTIVE_INSTRUMENT = instrument or CURRENT_INSTRUMENT
+
+
+def _begin_render_request() -> int:
+    global _RENDER_REQUEST_COUNTER, _ACTIVE_RENDER_REQUEST_ID
+    _RENDER_REQUEST_COUNTER += 1
+    _ACTIVE_RENDER_REQUEST_ID = _RENDER_REQUEST_COUNTER
+    return _ACTIVE_RENDER_REQUEST_ID
+
+
+def _render_request_active(request_id: int | None) -> bool:
+    return request_id is None or request_id == _ACTIVE_RENDER_REQUEST_ID
+
+
+def _publish_plot_if_current(fig: go.Figure, instrument: str, request_id: int | None, cache_figure: bool = True) -> bool:
+    if not _render_request_active(request_id):
+        return False
+    _show_plot(fig, instrument=instrument, cache_figure=cache_figure)
+    return True
+
+
+def _publish_panel_if_current(panel_obj, request_id: int | None) -> bool:
+    if not _render_request_active(request_id):
+        return False
+    _show_interactive_panel(panel_obj)
+    return True
+
+
+def _restore_cached_interactive_view(inst: str) -> bool:
+    if _is_wxcam_instrument(inst):
+        if _DISPLAYED_INTERACTIVE_INSTRUMENT == inst and len(interactive_body.objects) == 1 and interactive_body.objects[0] is wxcam_interactive_browser:
+            return True
+        _show_interactive_panel(wxcam_interactive_browser, instrument=inst)
+        return True
+    cached = _INTERACTIVE_FIGURE_CACHE.get(inst)
+    if cached is None:
+        return False
+    if _DISPLAYED_INTERACTIVE_INSTRUMENT == inst and len(interactive_body.objects) == 1 and interactive_body.objects[0] is plot_pane and plot_pane.object is not None:
+        return True
+    _show_plot(go.Figure(cached), instrument=inst, cache_figure=False)
+    return True
+
+
+def _interactive_supports_refine(inst: str) -> bool:
+    return inst in {"Ceilometer", "Cloud Radar", "Scanning Microwave Radiometer"}
+
+
+def _schedule_next_tick(callback) -> None:
+    doc = pn.state.curdoc
+    if doc is not None:
+        doc.add_next_tick_callback(callback)
+    else:
+        callback()
 
 
 def _image_type_from_selection(selection: str) -> str:
@@ -2650,21 +2872,33 @@ wxcam_interactive_browser = pn.Column(
 wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
 
 
-def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
-    plot_pane.height = None
-    plot_pane.min_height = None
-    interactive_content.height = None
-    interactive_content.min_height = None
-    interactive_content[:] = [wxcam_interactive_browser]
+def _update_wxcam_view(start, end, top_name: str, bottom_name: str, request_id: int | None = None) -> bool:
+    return _publish_panel_if_current(wxcam_interactive_browser, request_id)
 
 
-def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax):
+def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax, request_id: int | None = None, render_quality: str = "full"):
     """Custom renderer for HATPRO radiometer: split LWP/IWV and IRR; T_PROF heatmap."""
     print(f"[hatpro] render window {start} -> {end}")
-    with _timed_perf("hatpro_render", instrument="Scanning Microwave Radiometer", start=start, end=end) as perf:
+    with _timed_perf(
+        "hatpro_render",
+        instrument="Scanning Microwave Radiometer",
+        start=start,
+        end=end,
+        render_quality=render_quality,
+    ) as perf:
+        if not _render_request_active(request_id):
+            perf["status"] = "stale_before_start"
+            return False
         bottom = max(float(bottom_val), 0.0)
         top = max(float(top_val), bottom + 100.0)
-        ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument="Scanning Microwave Radiometer")
+        ds = open_window(
+            start,
+            end,
+            bottom_m=bottom,
+            top_m=top,
+            instrument="Scanning Microwave Radiometer",
+            render_quality=render_quality,
+        )
         cfg = _cfg("Scanning Microwave Radiometer")
         times = pd.to_datetime(ds["time"].values) if "time" in ds else None
         perf["time_count"] = 0 if times is None else int(len(times))
@@ -2681,8 +2915,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
                 font=dict(color=THEME_TEXT, size=16),
             )
             fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
-            _show_plot(fig)
-            return
+            return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id)
 
         fig = make_subplots(
             rows=3,
@@ -2857,18 +3090,27 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
         )
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
-        _show_plot(fig)
+        return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id)
 
 
-def _update_stacked_timeseries_view(instrument: str, start, end):
+def _update_stacked_timeseries_view(instrument: str, start, end, request_id: int | None = None, render_quality: str = "full"):
     """Render a 1D summary instrument with fixed multi-panel layouts."""
     print(f"[{instrument}] render window {start} -> {end}")
-    with _timed_perf("stacked_timeseries_render", instrument=instrument, start=start, end=end) as perf:
+    with _timed_perf(
+        "stacked_timeseries_render",
+        instrument=instrument,
+        start=start,
+        end=end,
+        render_quality=render_quality,
+    ) as perf:
+        if not _render_request_active(request_id):
+            perf["status"] = "stale_before_start"
+            return False
         source_instruments = summary_source_instruments(instrument)
         perf["source_instruments"] = list(source_instruments)
         ds = combine_summary_datasets(
             instrument,
-            *(open_window(start, end, instrument=source_inst) for source_inst in source_instruments),
+            *(open_window(start, end, instrument=source_inst, render_quality=render_quality) for source_inst in source_instruments),
         )
         times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
         perf["time_count"] = 0 if times is None else int(len(times))
@@ -2877,8 +3119,7 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
             empty = go.Figure()
             empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
             empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
-            _show_plot(empty)
-            return
+            return _publish_plot_if_current(empty, instrument, request_id)
         try:
             fig = build_summary_plotly(ds, instrument, title=display_name(instrument))
         except ValueError:
@@ -2886,11 +3127,367 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
             empty = go.Figure()
             empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
             empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
-            _show_plot(empty)
-            return
+            return _publish_plot_if_current(empty, instrument, request_id)
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
-        _show_plot(fig)
+        return _publish_plot_if_current(fig, instrument, request_id)
+
+
+def _render_interactive_view(
+    start,
+    end,
+    bottom_val,
+    top_val,
+    var1_name,
+    var2_name,
+    bmin,
+    bmax,
+    lmin,
+    lmax,
+    lymin,
+    lymax,
+    iymin,
+    iymax,
+    rymin,
+    rymax,
+    instrument,
+    request_id: int | None = None,
+    render_quality: str = "full",
+):
+    """Render the current interactive view, dropping stale work if a newer request arrives."""
+    if _instrument_guard:
+        return
+    global CURRENT_INSTRUMENT
+    if instrument != CURRENT_INSTRUMENT:
+        CURRENT_INSTRUMENT = instrument
+    print(f"[render-view] instrument={instrument} quality={render_quality} request={request_id}")
+    with _timed_perf(
+        "interactive_view_update",
+        instrument=instrument,
+        start=start,
+        end=end,
+        render_quality=render_quality,
+        request_id=request_id,
+    ) as perf:
+        if not _render_request_active(request_id):
+            perf["status"] = "stale_before_start"
+            return
+        perf["top_var"] = var1_name
+        perf["bottom_var"] = var2_name
+        perf["bottom_m"] = bottom_val
+        perf["top_m"] = top_val
+        if instrument == "Scanning Microwave Radiometer":
+            perf["view_type"] = "hatpro"
+            published = _update_hatpro_view(
+                start,
+                end,
+                bottom_val,
+                top_val,
+                lymin,
+                lymax,
+                iymin,
+                iymax,
+                rymin,
+                rymax,
+                request_id=request_id,
+                render_quality=render_quality,
+            )
+            if not published:
+                perf["status"] = "stale"
+                return
+            perf["status"] = "ok"
+        elif _is_wxcam_instrument(instrument):
+            perf["view_type"] = "wxcam"
+            published = _update_wxcam_view(start, end, var1_name, var2_name, request_id=request_id)
+            if not published:
+                perf["status"] = "stale"
+                return
+            perf["status"] = "ok"
+        elif _is_stacked_timeseries_instrument(instrument):
+            perf["view_type"] = "stacked_timeseries"
+            published = _update_stacked_timeseries_view(
+                instrument,
+                start,
+                end,
+                request_id=request_id,
+                render_quality=render_quality,
+            )
+            if not published:
+                perf["status"] = "stale"
+                return
+            perf["status"] = "ok"
+        else:
+            perf["view_type"] = "heatmap"
+            bottom = max(float(bottom_val), 0.0)
+            top = max(float(top_val), bottom + 100.0)
+            ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument=instrument, render_quality=render_quality)
+            cfg = _cfg()
+            vars_cfg = cfg["vars"]
+            var1 = vars_cfg.get(var1_name)
+            var2 = vars_cfg.get(var2_name)
+            bg = "white"
+            fg = THEME_TEXT
+            grid = THEME_GRID
+            perf["time_count"] = int(ds.sizes.get("time", 0)) if ds is not None else 0
+            perf["range_count"] = int(ds.sizes.get("range", 0)) if ds is not None else 0
+            if ds is None or not ds.data_vars:
+                perf["status"] = "no_data"
+                fig = go.Figure()
+                fig.add_annotation(
+                    text="No data",
+                    x=0.5,
+                    y=0.5,
+                    xref="paper",
+                    yref="paper",
+                    showarrow=False,
+                    font=dict(color=fg, size=16),
+                )
+                fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
+                if not _publish_plot_if_current(fig, instrument, request_id):
+                    perf["status"] = "stale"
+                    return
+            else:
+                if var1 and var1.get("log"):
+                    b_cmin = np.log10(bmin)
+                    b_cmax = np.log10(bmax)
+                    b_tickvals = list(range(int(np.floor(b_cmin)), int(np.ceil(b_cmax)) + 1))
+                    sup = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+                    b_ticktext = [f"10{str(v).translate(sup)}" for v in b_tickvals]
+                else:
+                    b_cmin, b_cmax = bmin, bmax
+                    b_tickvals = None
+                    b_ticktext = None
+                fig = make_subplots(
+                    rows=2,
+                    cols=1,
+                    shared_xaxes=True,
+                    shared_yaxes=False,
+                    vertical_spacing=0.08,
+                    subplot_titles=(var1["label"] if var1 else "", var2["label"] if var2 else ""),
+                )
+                if var1 and var1_name in ds:
+                    fig.add_trace(_make_plot(ds, var1_name, (bmin, bmax), var1.get("log", False), coloraxis="coloraxis"), row=1, col=1)
+                if var2 and var2_name in ds:
+                    if var1_name == "beta_att" and var2_name == "linear_depol_ratio" and "beta_att" in ds:
+                        times = pd.to_datetime(ds["time"].values)
+                        heights = ds["range"].values
+                        ldr = np.array(ds[var2_name].transpose("range", "time"))
+                        beta_vals = np.array(ds["beta_att"].transpose("range", "time"))
+                        ldr = np.where((ldr >= 0.0) & (ldr <= 1.0), ldr, np.nan)
+                        mask_threshold = 10 ** -6.5
+                        ldr = np.where(beta_vals >= mask_threshold, ldr, np.nan)
+                        fig.add_trace(
+                            go.Heatmap(
+                                x=times,
+                                y=heights,
+                                z=ldr,
+                                zmin=lmin,
+                                zmax=lmax,
+                                coloraxis="coloraxis2",
+                                showscale=False,
+                            ),
+                            row=2,
+                            col=1,
+                        )
+                    else:
+                        times = pd.to_datetime(ds["time"].values)
+                        heights = ds["range"].values
+                        ldr = np.array(ds[var2_name].transpose("range", "time"))
+                        fig.add_trace(
+                            go.Heatmap(
+                                x=times,
+                                y=heights,
+                                z=ldr,
+                                zmin=lmin,
+                                zmax=lmax,
+                                coloraxis="coloraxis2",
+                                showscale=False,
+                            ),
+                            row=2,
+                            col=1,
+                        )
+                fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=1, col=1)
+                fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=2, col=1)
+                tickvals = []
+                ticktext = []
+                noon_annots = []
+                if start and end:
+                    start_ts = pd.Timestamp(start)
+                    end_ts = pd.Timestamp(end)
+                    duration = end_ts - start_ts
+                    freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
+                    hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
+                    for t in hours:
+                        tickvals.append(t.to_pydatetime())
+                        ticktext.append(t.strftime("%H:%M"))
+                        if t.hour == 12:
+                            noon_annots.append(
+                                dict(
+                                    x=t.to_pydatetime(),
+                                    y=-0.06,
+                                    xref="x",
+                                    yref="paper",
+                                    text=t.strftime("%Y-%m-%d"),
+                                    showarrow=False,
+                                    xanchor="center",
+                                    yanchor="top",
+                                    font=dict(size=14, color=fg),
+                                )
+                            )
+                fig.update_xaxes(
+                    title_text="Date and Time (UTC)",
+                    title_standoff=50,
+                    tickmode="array",
+                    tickvals=tickvals,
+                    ticktext=ticktext,
+                    tickangle=-45,
+                    showgrid=True,
+                    gridcolor=grid,
+                    linecolor=THEME_LINE,
+                    tickfont=dict(color=fg, size=12),
+                    title_font=dict(color=fg, size=12),
+                    row=2,
+                    col=1,
+                )
+                fig.update_xaxes(
+                    tickmode="array",
+                    tickvals=tickvals,
+                    ticktext=ticktext,
+                    tickangle=-45,
+                    showgrid=True,
+                    gridcolor=grid,
+                    linecolor=THEME_LINE,
+                    tickfont=dict(color=fg, size=12),
+                    title_font=dict(color=fg, size=12),
+                    row=1,
+                    col=1,
+                )
+                fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=1, col=1)
+                fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
+                fig.update_yaxes(matches="y", row=2, col=1)
+                fig.update_layout(
+                    height=max(630, int(pn.state.viewport_height * 0.675)) if hasattr(pn.state, "viewport_height") else 810,
+                    margin=dict(l=50, r=70, t=30, b=90),
+                    coloraxis=dict(
+                        colorscale=var1["colorscale"] if var1 else "Cividis",
+                        cmin=b_cmin,
+                        cmax=b_cmax,
+                        colorbar=dict(
+                            title=dict(text=var1["label"] if var1 else "", side="right"),
+                            x=1.04,
+                            y=0.77,
+                            len=0.35,
+                            tickvals=b_tickvals,
+                            ticktext=b_ticktext,
+                            tickfont=dict(color=fg, size=9),
+                        ),
+                    ),
+                    coloraxis2=dict(
+                        colorscale=var2["colorscale"] if var2 else "Viridis",
+                        cmin=lmin,
+                        cmax=lmax,
+                        colorbar=dict(title=dict(text=var2["label"] if var2 else "", side="right"), x=1.04, y=0.27, len=0.35, tickfont=dict(color=fg, size=9)),
+                    ),
+                    paper_bgcolor=bg,
+                    plot_bgcolor=bg,
+                    font=dict(color=fg, size=13),
+                    annotations=tuple(list(fig.layout.annotations) + noon_annots),
+                )
+                perf["status"] = "ok"
+                perf["trace_count"] = len(fig.data)
+                if not _publish_plot_if_current(fig, instrument, request_id):
+                    perf["status"] = "stale"
+                    return
+        if (
+            render_quality == "coarse"
+            and _interactive_supports_refine(instrument)
+            and _render_request_active(request_id)
+            and perf.get("status") == "ok"
+        ):
+            _set_interactive_loading(instrument, "Refining higher-detail data for this view.", phase="refining", visible=True)
+            _schedule_next_tick(
+                lambda: _render_interactive_view(
+                    start,
+                    end,
+                    bottom_val,
+                    top_val,
+                    var1_name,
+                    var2_name,
+                    bmin,
+                    bmax,
+                    lmin,
+                    lmax,
+                    lymin,
+                    lymax,
+                    iymin,
+                    iymax,
+                    rymin,
+                    rymax,
+                    instrument,
+                    request_id=request_id,
+                    render_quality="full",
+                )
+            )
+        elif _render_request_active(request_id):
+            _clear_interactive_loading()
+
+
+def _schedule_interactive_render(
+    start,
+    end,
+    bottom_val,
+    top_val,
+    var1_name,
+    var2_name,
+    bmin,
+    bmax,
+    lmin,
+    lmax,
+    lymin,
+    lymax,
+    iymin,
+    iymax,
+    rymin,
+    rymax,
+    instrument,
+):
+    if _instrument_guard:
+        return
+    global CURRENT_INSTRUMENT
+    if instrument != CURRENT_INSTRUMENT:
+        CURRENT_INSTRUMENT = instrument
+    _capture_current_instrument_state(instrument)
+    request_id = _begin_render_request()
+    has_cached_view = _restore_cached_interactive_view(instrument)
+    loading_message = "Refreshing the current selection." if has_cached_view else "Preparing the latest view for this instrument."
+    _set_interactive_loading(instrument, loading_message, phase="loading", visible=True)
+    if not has_cached_view:
+        _show_interactive_placeholder(instrument, "Loading the selected window and preparing the first pass of the plot.")
+
+    first_quality = "coarse" if _interactive_supports_refine(instrument) else "full"
+    _schedule_next_tick(
+        lambda: _render_interactive_view(
+            start,
+            end,
+            bottom_val,
+            top_val,
+            var1_name,
+            var2_name,
+            bmin,
+            bmax,
+            lmin,
+            lmax,
+            lymin,
+            lymax,
+            iymin,
+            iymax,
+            rymin,
+            rymax,
+            instrument,
+            request_id=request_id,
+            render_quality=first_quality,
+        )
+    )
 
 
 @pn.depends(
@@ -2914,209 +3511,26 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
     watch=True,
 )
 def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax, lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument):
-    """Render both heatmaps for the current window and control values."""
-    if _instrument_guard:
-        # Skip expensive re-renders while we batch instrument switch updates.
-        return
-    # Ensure global instrument matches the dropdown to avoid stale cache use.
-    global CURRENT_INSTRUMENT
-    if instrument != CURRENT_INSTRUMENT:
-        CURRENT_INSTRUMENT = instrument
-    print(f"[update-view] instrument param={instrument} current={CURRENT_INSTRUMENT}")
-    with _timed_perf("interactive_view_update", instrument=instrument, start=start, end=end) as perf:
-        perf["top_var"] = var1_name
-        perf["bottom_var"] = var2_name
-        perf["bottom_m"] = bottom_val
-        perf["top_m"] = top_val
-        if instrument == "Scanning Microwave Radiometer":
-            perf["view_type"] = "hatpro"
-            _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
-            return
-        if _is_wxcam_instrument(instrument):
-            perf["view_type"] = "wxcam"
-            _update_wxcam_view(start, end, var1_name, var2_name)
-            return
-        if _is_stacked_timeseries_instrument(instrument):
-            perf["view_type"] = "stacked_timeseries"
-            _update_stacked_timeseries_view(instrument, start, end)
-            return
-        perf["view_type"] = "heatmap"
-        bottom = max(float(bottom_val), 0.0)
-        top = max(float(top_val), bottom + 100.0)
-        ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument=instrument)
-        cfg = _cfg()
-        vars_cfg = cfg["vars"]
-        var1 = vars_cfg.get(var1_name)
-        var2 = vars_cfg.get(var2_name)
-        bg = "white"
-        fg = THEME_TEXT
-        grid = THEME_GRID
-        perf["time_count"] = int(ds.sizes.get("time", 0)) if ds is not None else 0
-        perf["range_count"] = int(ds.sizes.get("range", 0)) if ds is not None else 0
-        if ds is None or not ds.data_vars:
-            perf["status"] = "no_data"
-            fig = go.Figure()
-            fig.add_annotation(
-                text="No data",
-                x=0.5,
-                y=0.5,
-                xref="paper",
-                yref="paper",
-                showarrow=False,
-                font=dict(color=fg, size=16),
-            )
-            fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-            _show_plot(fig)
-            return
-        if var1 and var1.get("log"):
-            b_cmin = np.log10(bmin)
-            b_cmax = np.log10(bmax)
-            b_tickvals = list(range(int(np.floor(b_cmin)), int(np.ceil(b_cmax)) + 1))
-            sup = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
-            b_ticktext = [f"10{str(v).translate(sup)}" for v in b_tickvals]
-        else:
-            b_cmin, b_cmax = bmin, bmax
-            b_tickvals = None
-            b_ticktext = None
-        fig = make_subplots(
-            rows=2,
-            cols=1,
-            shared_xaxes=True,
-            shared_yaxes=False,
-            vertical_spacing=0.08,
-            subplot_titles=(var1["label"] if var1 else "", var2["label"] if var2 else ""),
-        )
-        if var1 and var1_name in ds:
-            fig.add_trace(_make_plot(ds, var1_name, (bmin, bmax), var1.get("log", False), coloraxis="coloraxis"), row=1, col=1)
-        if var2 and var2_name in ds:
-            if var1_name == "beta_att" and var2_name == "linear_depol_ratio" and "beta_att" in ds:
-                times = pd.to_datetime(ds["time"].values)
-                heights = ds["range"].values
-                ldr = np.array(ds[var2_name].transpose("range", "time"))
-                beta_vals = np.array(ds["beta_att"].transpose("range", "time"))
-                ldr = np.where((ldr >= 0.0) & (ldr <= 1.0), ldr, np.nan)
-                mask_threshold = 10 ** -6.5
-                ldr = np.where(beta_vals >= mask_threshold, ldr, np.nan)
-                fig.add_trace(
-                    go.Heatmap(
-                        x=times,
-                        y=heights,
-                        z=ldr,
-                        zmin=lmin,
-                        zmax=lmax,
-                        coloraxis="coloraxis2",
-                        showscale=False,
-                    ),
-                    row=2,
-                    col=1,
-                )
-            else:
-                times = pd.to_datetime(ds["time"].values)
-                heights = ds["range"].values
-                ldr = np.array(ds[var2_name].transpose("range", "time"))
-                fig.add_trace(
-                    go.Heatmap(
-                        x=times,
-                        y=heights,
-                        z=ldr,
-                        zmin=lmin,
-                        zmax=lmax,
-                        coloraxis="coloraxis2",
-                        showscale=False,
-                    ),
-                    row=2,
-                    col=1,
-                )
-        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=1, col=1)
-        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=2, col=1)
-        tickvals = []
-        ticktext = []
-        noon_annots = []
-        if start and end:
-            start_ts = pd.Timestamp(start)
-            end_ts = pd.Timestamp(end)
-            duration = end_ts - start_ts
-            freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
-            hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
-            for t in hours:
-                tickvals.append(t.to_pydatetime())
-                ticktext.append(t.strftime("%H:%M"))
-                if t.hour == 12:
-                    noon_annots.append(
-                        dict(
-                            x=t.to_pydatetime(),
-                            y=-0.06,
-                            xref="x",
-                            yref="paper",
-                            text=t.strftime("%Y-%m-%d"),
-                            showarrow=False,
-                            xanchor="center",
-                            yanchor="top",
-                            font=dict(size=14, color=fg),
-                        )
-                    )
-        fig.update_xaxes(
-            title_text="Date and Time (UTC)",
-            title_standoff=50,
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
-            tickangle=-45,
-            showgrid=True,
-            gridcolor=grid,
-            linecolor=THEME_LINE,
-            tickfont=dict(color=fg, size=12),
-            title_font=dict(color=fg, size=12),
-            row=2,
-            col=1,
-        )
-        fig.update_xaxes(
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
-            tickangle=-45,
-            showgrid=True,
-            gridcolor=grid,
-            linecolor=THEME_LINE,
-            tickfont=dict(color=fg, size=12),
-            title_font=dict(color=fg, size=12),
-            row=1,
-            col=1,
-        )
-        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=1, col=1)
-        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
-        fig.update_yaxes(matches="y", row=2, col=1)
-        fig.update_layout(
-            height=max(630, int(pn.state.viewport_height * 0.675)) if hasattr(pn.state, "viewport_height") else 810,
-            margin=dict(l=50, r=70, t=30, b=90),
-            coloraxis=dict(
-                colorscale=var1["colorscale"] if var1 else "Cividis",
-                cmin=b_cmin,
-                cmax=b_cmax,
-                colorbar=dict(
-                    title=dict(text=var1["label"] if var1 else "", side="right"),
-                    x=1.04,
-                    y=0.77,
-                    len=0.35,
-                    tickvals=b_tickvals,
-                    ticktext=b_ticktext,
-                    tickfont=dict(color=fg, size=9),
-                ),
-            ),
-            coloraxis2=dict(
-                colorscale=var2["colorscale"] if var2 else "Viridis",
-                cmin=lmin,
-                cmax=lmax,
-                colorbar=dict(title=dict(text=var2["label"] if var2 else "", side="right"), x=1.04, y=0.27, len=0.35, tickfont=dict(color=fg, size=9)),
-            ),
-            paper_bgcolor=bg,
-            plot_bgcolor=bg,
-            font=dict(color=fg, size=13),
-            annotations=tuple(list(fig.layout.annotations) + noon_annots),
-        )
-        perf["status"] = "ok"
-        perf["trace_count"] = len(fig.data)
-        _show_plot(fig)
+    """Schedule an interactive render while keeping the current pane warm."""
+    _schedule_interactive_render(
+        start,
+        end,
+        bottom_val,
+        top_val,
+        var1_name,
+        var2_name,
+        bmin,
+        bmax,
+        lmin,
+        lmax,
+        lymin,
+        lymax,
+        iymin,
+        iymax,
+        rymin,
+        rymax,
+        instrument,
+    )
 
 
 def _parse_relayout_time(val):
@@ -4303,6 +4717,68 @@ body, .bk {
     border-color: #d8dee4;
     background: #f8fafb;
     color: #334155;
+}
+.interactive-loading-notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #fbfcfd;
+}
+.interactive-loading-notice__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 78px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #edf6f8;
+    color: #0b7285;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+}
+.interactive-loading-notice__text {
+    font-size: 12px;
+    color: #536171;
+    line-height: 1.35;
+}
+.interactive-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 100%;
+    padding: 16px 18px;
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+}
+.interactive-skeleton__title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #22313f;
+}
+.interactive-skeleton__subtitle {
+    font-size: 12px;
+    color: #647283;
+}
+.interactive-skeleton__plot {
+    height: 260px;
+    border-radius: 8px;
+    border: 1px solid #e5eaef;
+    background:
+        linear-gradient(90deg, rgba(248, 250, 252, 0.95), rgba(237, 242, 247, 0.75), rgba(248, 250, 252, 0.95));
+    background-size: 220% 100%;
+    animation: interactive-skeleton-shimmer 1.6s ease-in-out infinite;
+}
+.interactive-skeleton__plot--secondary {
+    height: 160px;
+}
+@keyframes interactive-skeleton-shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
 }
 .availability-shell {
     display: flex;

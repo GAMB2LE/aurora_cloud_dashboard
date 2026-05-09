@@ -197,6 +197,7 @@ The main event families currently logged are:
 
 - `base_dataset_open`
 - `dataset_time_bounds`
+- `dataset_time_bounds_cache_hit`
 - `window_open`
 - `interactive_view_update`
 - `hatpro_render`
@@ -211,6 +212,18 @@ The main event families currently logged are:
 - `session_destroyed`
 - `ui_selection_change`
 - `plot_relayout`
+
+The interactive browser now also uses a few lightweight runtime behaviors to
+keep switching responsive:
+
+- per-instrument pane reuse, so switching back can show the last rendered view
+  immediately while a refresh is queued
+- short-lived cached dataset time bounds and latest timestamps
+- stale-render protection, so older renders cannot overwrite a newer selection
+- a loading skeleton for uncached views and a slim refresh banner for warmed
+  views
+- coarse-first rendering for the heavier 2D interactive plots before a full
+  detail pass replaces them
 
 Each event also carries session and concurrency context when available, including:
 
