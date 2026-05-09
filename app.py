@@ -788,6 +788,47 @@ def _binned_time_coverage(times: pd.DatetimeIndex, start: datetime | None, end: 
     return bits
 
 
+def _availability_hour_titles(start: datetime | None, end: datetime | None) -> list[str]:
+    if start is None or end is None or end < start:
+        return []
+    start_ts = pd.Timestamp(start).floor("h")
+    end_ts = pd.Timestamp(end).floor("h")
+    expected = pd.date_range(start=start_ts, end=end_ts, freq="1h")
+    return [f"{stamp.strftime('%H:00')} UTC" for stamp in expected]
+
+
+def _availability_binned_titles(start: datetime | None, end: datetime | None, segments: int) -> list[str]:
+    if start is None or end is None or end <= start or segments <= 0:
+        return []
+    start_ns = pd.Timestamp(start).value
+    end_ns = pd.Timestamp(end).value
+    if end_ns <= start_ns:
+        return []
+    edges = np.linspace(start_ns, end_ns, segments + 1)
+    labels: list[str] = []
+    for idx in range(segments):
+        lo = pd.to_datetime(int(edges[idx]), utc=True)
+        hi = pd.to_datetime(int(edges[idx + 1]), utc=True)
+        labels.append(f"{lo.strftime('%m-%d %H:%M')} to {hi.strftime('%m-%d %H:%M')} UTC")
+    return labels
+
+
+def _availability_bucket_text(start: datetime | None, end: datetime | None, count: int) -> str:
+    if start is None or end is None or count <= 0 or end <= start:
+        return "Each block shows one slice of the selected range."
+    seconds = (pd.Timestamp(end) - pd.Timestamp(start)).total_seconds() / count
+    if seconds >= 3600:
+        hours = seconds / 3600
+        if abs(hours - round(hours)) < 0.15:
+            value = int(round(hours))
+            unit = "hour" if value == 1 else "hours"
+            return f"Each block represents {value} {unit} of the selected range."
+        return f"Each block represents about {hours:.1f} hours of the selected range."
+    minutes = max(int(round(seconds / 60)), 1)
+    unit = "minute" if minutes == 1 else "minutes"
+    return f"Each block represents about {minutes} {unit} of the selected range."
+
+
 def _wxcam_hour_bits(selection: str, day_token: str) -> list[bool]:
     rows_by_hour = _wxcam_hourly_image_rows(selection, day_token)
     return [hour in rows_by_hour for hour in range(24)]
@@ -812,23 +853,56 @@ def _availability_bar_markup(
     start_label: str,
     end_label: str,
     caption: str,
+    explainer: str,
+    full_label: str = "Data present",
+    partial_label: str = "Partial coverage",
+    empty_label: str = "No data",
+    segment_titles: list[str] | None = None,
 ) -> str:
     if not states:
         return "<div class='availability-shell'><div class='availability-empty'>No availability information</div></div>"
     parts = []
-    for state in states:
+    for idx, state in enumerate(states):
         if state in (True, 2):
             cls = "availability-segment availability-segment--full"
+            state_label = full_label
         elif state == 1:
             cls = "availability-segment availability-segment--partial"
+            state_label = partial_label
         else:
             cls = "availability-segment availability-segment--empty"
-        parts.append(f"<span class='{cls}'></span>")
+            state_label = empty_label
+        title = state_label
+        if segment_titles and idx < len(segment_titles):
+            title = f"{segment_titles[idx]}: {state_label}"
+        parts.append(f"<span class='{cls}' title='{escape(title)}'></span>")
+
+    legend_parts = [
+        "<span class='availability-legend-item'>"
+        "<span class='availability-legend-swatch availability-segment--full'></span>"
+        f"{escape(full_label)}"
+        "</span>"
+    ]
+    if any(state == 1 for state in states):
+        legend_parts.append(
+            "<span class='availability-legend-item'>"
+            "<span class='availability-legend-swatch availability-segment--partial'></span>"
+            f"{escape(partial_label)}"
+            "</span>"
+        )
+    legend_parts.append(
+        "<span class='availability-legend-item'>"
+        "<span class='availability-legend-swatch availability-segment--empty'></span>"
+        f"{escape(empty_label)}"
+        "</span>"
+    )
     return (
         "<div class='availability-shell'>"
         f"<div class='availability-caption'>{escape(caption)}</div>"
+        f"<div class='availability-explainer'>{escape(explainer)}</div>"
         f"<div class='availability-bar'>{''.join(parts)}</div>"
         f"<div class='availability-scale'><span>{escape(start_label)}</span><span>{escape(end_label)}</span></div>"
+        f"<div class='availability-legend'>{''.join(legend_parts)}</div>"
         "</div>"
     )
 
@@ -2786,13 +2860,31 @@ def _current_interactive_availability_markup() -> str:
         end_label = "23:00"
         if day_token == datetime.now(timezone.utc).strftime("%Y%m%d"):
             end_label = datetime.now(timezone.utc).strftime("%H:00")
-        return _availability_bar_markup(bits, start_label, end_label, "HDR image availability by hour")
+        return _availability_bar_markup(
+            bits,
+            start_label,
+            end_label,
+            "HDR image availability by hour",
+            "Each block represents one UTC hour. Teal means at least one HDR image exists for that hour.",
+            full_label="HDR image present",
+            empty_label="No HDR image",
+            segment_titles=[f"{hour:02d}:00 UTC" for hour in range(24)],
+        )
     start = _ensure_utc(range_start.value)
     end = _ensure_utc(range_end.value)
     bits = _binned_time_coverage(_instrument_time_index(inst), start, end, segments=72)
     start_label = start.strftime("%m-%d %H:%M") if start else "--"
     end_label = end.strftime("%m-%d %H:%M") if end else "--"
-    return _availability_bar_markup(bits, start_label, end_label, "Availability across the selected time window")
+    return _availability_bar_markup(
+        bits,
+        start_label,
+        end_label,
+        "Data availability across the selected time window",
+        _availability_bucket_text(start, end, len(bits)) + " Teal means at least one sample exists in that slice.",
+        full_label="Samples present",
+        empty_label="No samples",
+        segment_titles=_availability_binned_titles(start, end, len(bits)),
+    )
 
 
 def _current_science_status_markup() -> str:
@@ -2837,15 +2929,33 @@ def _current_science_availability_markup() -> str:
         day_token = _wxcam_calendar_day_token(ql_date.value)
         bits = _wxcam_hour_bits(selection, day_token or "")
         end_label = datetime.now(timezone.utc).strftime("%H:00") if day_token == datetime.now(timezone.utc).strftime("%Y%m%d") else "23:00"
-        return _availability_bar_markup(bits, "00:00", end_label, "HDR image availability by hour")
+        return _availability_bar_markup(
+            bits,
+            "00:00",
+            end_label,
+            "HDR image availability by hour",
+            "Each block represents one UTC hour. Teal means the science quicklook has an HDR image source for that hour.",
+            full_label="Representative HDR image present",
+            empty_label="No representative HDR image",
+            segment_titles=[f"{hour:02d}:00 UTC" for hour in range(24)],
+        )
     start, end, _day_token = _selected_token_window(ql_date.value)
     times = _instrument_time_index(inst)
     if start is None or end is None:
-        return _availability_bar_markup([], "--", "--", "Availability by hour")
+        return _availability_bar_markup([], "--", "--", "Data availability by hour", "Each block would represent one UTC hour in the selected day.")
     mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
     bits, _missing, _total = _hourly_coverage_summary(times[mask], start, end)
     end_label = end.strftime("%H:%M")
-    return _availability_bar_markup(bits, "00:00", end_label, "Availability by hour")
+    return _availability_bar_markup(
+        bits,
+        "00:00",
+        end_label,
+        "Data availability by hour",
+        "Each block represents one UTC hour in the selected day. Teal means at least one sample exists in that hour.",
+        full_label="Samples present",
+        empty_label="No samples",
+        segment_titles=_availability_hour_titles(start, end),
+    )
 
 
 def _current_hk_status_markup() -> str:
@@ -2886,13 +2996,32 @@ def _current_hk_availability_markup() -> str:
     if inst == "wxcam":
         states = _wxcam_combined_hour_states(day_token or "")
         end_label = datetime.now(timezone.utc).strftime("%H:00") if day_token == datetime.now(timezone.utc).strftime("%Y%m%d") else "23:00"
-        return _availability_bar_markup(states, "00:00", end_label, "HDR availability by hour (full or partial)")
+        return _availability_bar_markup(
+            states,
+            "00:00",
+            end_label,
+            "WXcam HDR availability by hour",
+            "Each block represents one UTC hour. Teal means both FISH and PANO have HDR images, amber means one stream only, and gray means neither stream is available.",
+            full_label="Both FISH and PANO present",
+            partial_label="Only one stream present",
+            empty_label="No HDR images",
+            segment_titles=[f"{hour:02d}:00 UTC" for hour in range(24)],
+        )
     if start is None or end is None:
-        return _availability_bar_markup([], "--", "--", "Availability by hour")
+        return _availability_bar_markup([], "--", "--", "Housekeeping data availability by hour", "Each block would represent one UTC hour in the selected day.")
     times = _instrument_time_index(inst)
     mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
     bits, _missing, _total = _hourly_coverage_summary(times[mask], start, end)
-    return _availability_bar_markup(bits, "00:00", end.strftime("%H:%M"), "Availability by hour")
+    return _availability_bar_markup(
+        bits,
+        "00:00",
+        end.strftime("%H:%M"),
+        "Housekeeping data availability by hour",
+        "Each block represents one UTC hour in the selected day. Teal means at least one housekeeping sample exists in that hour.",
+        full_label="Samples present",
+        empty_label="No samples",
+        segment_titles=_availability_hour_titles(start, end),
+    )
 
 
 interactive_status = pn.bind(
@@ -3218,6 +3347,11 @@ body, .bk {
     font-size: 12px;
     color: #566370;
 }
+.availability-explainer {
+    font-size: 11px;
+    color: #6b7280;
+    line-height: 1.35;
+}
 .availability-bar {
     display: grid;
     grid-auto-flow: column;
@@ -3248,6 +3382,26 @@ body, .bk {
     justify-content: space-between;
     font-size: 11px;
     color: #6b7280;
+}
+.availability-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    font-size: 11px;
+    color: #566370;
+}
+.availability-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.availability-legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    border: 1px solid #d8dee4;
 }
 .availability-empty {
     font-size: 12px;
