@@ -194,9 +194,10 @@ HUMAN_LABELS = {
     "SolarAmps_East": "Solar East Current",
     "SolarAmps_South": "Solar South Current",
     "SolarAmps_West": "Solar West Current",
-    "SolarYield_East": "Solar East Yield",
-    "SolarYield_South": "Solar South Yield",
-    "SolarYield_West": "Solar West Yield",
+    "SolarYield_East": "East Solar Generated",
+    "SolarYield_South": "South Solar Generated",
+    "SolarYield_West": "West Solar Generated",
+    "CumulativePowerGeneratedTotal": "Total Generated",
     "CumulativePowerUtilised": "Power Utilised",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
@@ -290,6 +291,7 @@ HUMAN_UNITS = {
     "SolarYield_East": "kWh",
     "SolarYield_South": "kWh",
     "SolarYield_West": "kWh",
+    "CumulativePowerGeneratedTotal": "kWh",
     "CumulativePowerUtilised": "kWh",
     "TempSensor1": "C",
     "TempSensor2": "C",
@@ -433,9 +435,10 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "Cumulative Energy [kWh]",
             None,
             (
-                TraceSpec("SolarYield_East", "East", COLOR["brown"]),
-                TraceSpec("SolarYield_South", "South", COLOR["purple"]),
-                TraceSpec("SolarYield_West", "West", COLOR["magenta"]),
+                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
+                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
+                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"]),
+                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"]),
                 TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
             ),
         ),
@@ -954,35 +957,57 @@ def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> x
 def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if instrument != "power" or "time" not in ds or ds.sizes.get("time", 0) == 0:
         return ds
-    if "CumulativePowerUtilised" in ds:
-        return ds
-    if "ACOutputWatts" not in ds and "DCInverterWatts" not in ds:
+    if "CumulativePowerUtilised" in ds and "CumulativePowerGeneratedTotal" in ds:
         return ds
 
     times = pd.DatetimeIndex(ds["time"].values)
     if len(times) == 0:
         return ds
 
-    ac_power = np.asarray(ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.zeros(len(times)), dtype=np.float64)
-    dc_power = np.asarray(ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.zeros(len(times)), dtype=np.float64)
-    utilised_power_w = np.nan_to_num(ac_power, nan=0.0) + np.nan_to_num(dc_power, nan=0.0)
-    utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
+    assignments: dict[str, xr.DataArray] = {}
 
-    cumulative_kwh = np.zeros(len(times), dtype=np.float64)
-    if len(times) > 1:
-        dt_hours = np.diff(times.asi8.astype(np.float64)) / 3.6e12
-        dt_hours = np.clip(dt_hours, a_min=0.0, a_max=None)
-        incremental_kwh = 0.5 * (utilised_power_w[1:] + utilised_power_w[:-1]) * dt_hours / 1000.0
-        cumulative_kwh[1:] = np.cumsum(incremental_kwh)
+    if "CumulativePowerUtilised" not in ds and ("ACOutputWatts" in ds or "DCInverterWatts" in ds):
+        ac_power = np.asarray(
+            ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.zeros(len(times)),
+            dtype=np.float64,
+        )
+        dc_power = np.asarray(
+            ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.zeros(len(times)),
+            dtype=np.float64,
+        )
+        utilised_power_w = np.nan_to_num(ac_power, nan=0.0) + np.nan_to_num(dc_power, nan=0.0)
+        utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
 
-    return ds.assign(
-        CumulativePowerUtilised=xr.DataArray(
+        cumulative_kwh = np.zeros(len(times), dtype=np.float64)
+        if len(times) > 1:
+            dt_hours = np.diff(times.asi8.astype(np.float64)) / 3.6e12
+            dt_hours = np.clip(dt_hours, a_min=0.0, a_max=None)
+            incremental_kwh = 0.5 * (utilised_power_w[1:] + utilised_power_w[:-1]) * dt_hours / 1000.0
+            cumulative_kwh[1:] = np.cumsum(incremental_kwh)
+
+        assignments["CumulativePowerUtilised"] = xr.DataArray(
             cumulative_kwh,
             coords={"time": ds["time"]},
             dims=("time",),
             attrs={"units": "kWh"},
         )
-    )
+
+    if "CumulativePowerGeneratedTotal" not in ds:
+        generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
+        if generated_fields:
+            total_generated = np.zeros(len(times), dtype=np.float64)
+            for field_name in generated_fields:
+                total_generated += np.nan_to_num(np.asarray(ds[field_name].values, dtype=np.float64), nan=0.0)
+            assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
+                total_generated,
+                coords={"time": ds["time"]},
+                dims=("time",),
+                attrs={"units": "kWh"},
+            )
+
+    if not assignments:
+        return ds
+    return ds.assign(**assignments)
 
 
 def numeric_time_vars(ds: xr.Dataset) -> list[str]:

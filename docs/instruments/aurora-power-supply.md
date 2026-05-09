@@ -12,9 +12,10 @@ Typical panels include:
 
 - **Renewables**
 - **Cumulative Power**
-  - `East`
-  - `South`
-  - `West`
+  - `East Solar Generated`
+  - `South Solar Generated`
+  - `West Solar Generated`
+  - `Total Generated`
   - `Utilised`
 - **Battery Charging**
   - `Charging Current In`
