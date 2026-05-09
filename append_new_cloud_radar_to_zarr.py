@@ -8,10 +8,12 @@ Append new RPG FMCW 94 GHz cloud radar NetCDF files into an existing Zarr store.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List
+from typing import List, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -22,6 +24,13 @@ ZARR_DEFAULT = Path("/mnt/data/ass/rpgfmcw94/cloud_radar.zarr")
 TIME_ZERO = np.datetime64("2001-01-01T00:00:00")
 NC_REGEX = re.compile(r"_(\d{6})_(\d{6})")  # yymmdd_hhmmss
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
+
+
+class GeometryRecord(NamedTuple):
+    timestamp: datetime
+    path: Path
+    key: str
+    range_count: int
 
 
 def _parse_timestamp(path: Path) -> datetime | None:
@@ -49,20 +58,84 @@ def _list_files_after(root: Path, after: datetime | None = None) -> List[Path]:
     return [p for _, p in files]
 
 
+def _range_values_from_raw(raw: xr.Dataset, path: Path) -> np.ndarray:
+    required = ["C1Range", "C2Range"]
+    for r in required:
+        if r not in raw:
+            raise KeyError(f"Missing {r} in {path}")
+    r1 = raw["C1Range"].values
+    r2 = raw["C2Range"].values
+    return np.concatenate([r1, r2])
+
+
+def _range_key(ranges: np.ndarray) -> str:
+    arr = np.asarray(ranges, dtype=np.float32)
+    digest = hashlib.sha1(arr.tobytes()).hexdigest()[:12]
+    return f"{arr.size}:{digest}"
+
+
+def _inspect_file_geometry(path: Path) -> tuple[str, int]:
+    raw = xr.open_dataset(path, decode_times=False)
+    ranges = _range_values_from_raw(raw, path)
+    return _range_key(ranges), int(ranges.size)
+
+
+def _scan_geometries(files: List[Path]) -> List[GeometryRecord]:
+    records: List[GeometryRecord] = []
+    for path in files:
+        ts = _parse_timestamp(path)
+        if ts is None:
+            continue
+        try:
+            key, count = _inspect_file_geometry(path)
+        except Exception as exc:
+            print(f"Skipping unreadable radar geometry {path}: {exc}")
+            continue
+        records.append(GeometryRecord(ts, path, key, count))
+    return records
+
+
+def _latest_geometry_run(root: Path) -> tuple[list[GeometryRecord], str, int]:
+    all_files = _list_files_after(root, None)
+    records = _scan_geometries(all_files)
+    if not records:
+        raise ValueError("No readable radar .LV1.NC files available to inspect geometry.")
+    target_key = records[-1].key
+    target_count = records[-1].range_count
+    start_idx = len(records) - 1
+    while start_idx > 0 and records[start_idx - 1].key == target_key:
+        start_idx -= 1
+    run = records[start_idx:]
+    return run, target_key, target_count
+
+
+def _backup_path(zarr_path: Path) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    candidate = zarr_path.with_name(f"{zarr_path.stem}.backup_{stamp}{zarr_path.suffix}")
+    counter = 1
+    while candidate.exists():
+        candidate = zarr_path.with_name(f"{zarr_path.stem}.backup_{stamp}_{counter}{zarr_path.suffix}")
+        counter += 1
+    return candidate
+
+
+def _backup_existing_store(zarr_path: Path) -> Path | None:
+    if not zarr_path.exists():
+        return None
+    backup = _backup_path(zarr_path)
+    print(f"Backing up existing radar Zarr to {backup}")
+    shutil.move(str(zarr_path), str(backup))
+    return backup
+
+
 def _load_nc(path: Path) -> xr.Dataset:
     raw = xr.open_dataset(path, decode_times=False)
     base = TIME_ZERO
     time = base + raw["Time"].astype("timedelta64[s]") + raw["Timems"].astype("timedelta64[ms]")
     time_vals = np.array(time.values)
-
-    required = ["C1Range", "C2Range"]
-    for r in required:
-        if r not in raw:
-            raise KeyError(f"Missing {r} in {path}")
-
+    ranges = _range_values_from_raw(raw, path)
     r1 = raw["C1Range"].values
     r2 = raw["C2Range"].values
-    ranges = np.concatenate([r1, r2])
     t_len = raw["Time"].sizes["Time"]
 
     var_specs = [
@@ -96,6 +169,8 @@ def _load_nc(path: Path) -> xr.Dataset:
         data_vars[out_name] = (("time", "range"), arr.astype(np.float32))
 
     ds = xr.Dataset(data_vars, coords={"time": time_vals, "range": ranges})
+    ds.attrs["range_layout_key"] = _range_key(ranges)
+    ds.attrs["range_count"] = int(ranges.size)
     return ds.sortby("time")
 
 
@@ -145,13 +220,68 @@ def _latest_valid_time(base: xr.Dataset) -> datetime:
     return latest.replace(tzinfo=timezone.utc)
 
 
+def _existing_range_key(base: xr.Dataset) -> tuple[str, int]:
+    if "range" not in base.coords:
+        raise KeyError("Zarr store missing range coordinate")
+    ranges = np.asarray(base["range"].values)
+    return _range_key(ranges), int(ranges.size)
+
+
+def _bootstrap_store(
+    files: List[Path],
+    zarr_path: Path,
+    chunks: dict | str | None = None,
+    description: str = "bootstrap",
+):
+    if not files:
+        print(f"No radar files available for {description}.")
+        return
+    print(f"{description.capitalize()} from {len(files)} files")
+    combined = _load_files(files, chunks=chunks)
+    if combined.sizes.get("time", 0) == 0:
+        print(f"No readable radar samples available for {description}.")
+        return
+    combined.attrs["range_layout_key"] = combined.attrs.get("range_layout_key", _range_key(np.asarray(combined["range"].values)))
+    combined.attrs["range_count"] = int(combined.sizes.get("range", 0))
+    zarr_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_zarr(zarr_path, mode="w", consolidated=True)
+    print(f"{description.capitalize()} complete.")
+
+
+def rebuild_from_latest_geometry_run(
+    root: Path,
+    zarr_path: Path,
+    chunks: dict | str | None = None,
+    backup_existing: bool = True,
+):
+    run, target_key, target_count = _latest_geometry_run(root)
+    print(
+        "Rebuilding radar Zarr from latest geometry run: "
+        f"{target_count} range gates, starting at {run[0].timestamp}, "
+        f"ending at {run[-1].timestamp}."
+    )
+    if backup_existing:
+        _backup_existing_store(zarr_path)
+    _bootstrap_store(
+        [record.path for record in run],
+        zarr_path,
+        chunks=chunks,
+        description=f"latest-geometry rebuild ({target_count} gates, key={target_key})",
+    )
+
+
 def append_new(
     root: Path,
     zarr_path: Path,
     chunks: dict | str | None = None,
     max_backfill_days: int | None = 11,
     lookback_hours: int = 6,
+    rebuild_latest_geometry: bool = False,
 ):
+    if rebuild_latest_geometry:
+        rebuild_from_latest_geometry_run(root, zarr_path, chunks=chunks, backup_existing=True)
+        return
+
     if not zarr_path.exists():
         start_cutoff = None
         if max_backfill_days is not None:
@@ -163,21 +293,16 @@ def append_new(
         if not files:
             print("No radar .LV1.NC files available to bootstrap.")
             return
-        print(f"Bootstrapping radar Zarr from {len(files)} files")
-        combined = _load_files(files, chunks=chunks)
-        if combined.sizes.get("time", 0) == 0:
-            print("No readable radar samples available to bootstrap.")
-            return
-        zarr_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.to_zarr(zarr_path, mode="w", consolidated=True)
-        print("Bootstrap complete.")
+        _bootstrap_store(files, zarr_path, chunks=chunks, description="bootstrap")
         return
 
     base = xr.open_zarr(zarr_path, chunks={})
     if "time" not in base:
         raise KeyError("Zarr store missing time coordinate")
+    base_key, base_count = _existing_range_key(base)
     last_time = _latest_valid_time(base)
     print(f"Latest time in Zarr: {last_time}")
+    print(f"Existing radar geometry: {base_count} range gates ({base_key})")
 
     scan_after = last_time - timedelta(hours=max(lookback_hours, 0))
     files = _list_files_after(root, scan_after)
@@ -186,6 +311,23 @@ def append_new(
         return
 
     print(f"Scanning {len(files)} candidate files")
+    geometry_records = _scan_geometries(files)
+    if not geometry_records:
+        print("Candidate files contain no readable radar geometry metadata.")
+        return
+    latest_record = geometry_records[-1]
+    if latest_record.key != base_key:
+        print(
+            "Detected radar geometry change: "
+            f"store has {base_count} gates ({base_key}), "
+            f"latest file has {latest_record.range_count} gates ({latest_record.key})."
+        )
+        rebuild_from_latest_geometry_run(root, zarr_path, chunks=chunks, backup_existing=True)
+        return
+    files = [record.path for record in geometry_records if record.key == base_key]
+    skipped = len(geometry_records) - len(files)
+    if skipped:
+        print(f"Skipping {skipped} candidate files with mismatched radar geometry.")
     combined = _load_files(files, chunks=chunks)
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no readable radar samples.")
@@ -207,6 +349,11 @@ def main():
     parser.add_argument("--chunk-time", type=int, default=400)
     parser.add_argument("--max-backfill-days", type=int, default=11)
     parser.add_argument("--lookback-hours", type=int, default=6)
+    parser.add_argument(
+        "--rebuild-latest-geometry",
+        action="store_true",
+        help="Back up any existing store and rebuild from the newest contiguous radar geometry run.",
+    )
     args = parser.parse_args()
 
     chunks = {"time": args.chunk_time} if args.chunk_time else None
@@ -216,6 +363,7 @@ def main():
         chunks=chunks,
         max_backfill_days=args.max_backfill_days,
         lookback_hours=args.lookback_hours,
+        rebuild_latest_geometry=args.rebuild_latest_geometry,
     )
 
 
