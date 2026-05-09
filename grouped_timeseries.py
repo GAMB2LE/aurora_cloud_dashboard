@@ -412,16 +412,6 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
     ),
     "power": (
         PanelSpec(
-            "batteries",
-            "Batteries",
-            "Battery Current [A]",
-            "Battery Power [W]",
-            (
-                TraceSpec("BatteryAmps", "Battery Current", COLOR["teal"]),
-                TraceSpec("BatteryWatts", "Battery Power", COLOR["light_blue"], axis="right"),
-            ),
-        ),
-        PanelSpec(
             "renewables",
             "Renewables",
             "Solar Power [W]",
@@ -444,6 +434,16 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("SolarYield_East", "East", COLOR["brown"]),
                 TraceSpec("SolarYield_South", "South", COLOR["purple"]),
                 TraceSpec("SolarYield_West", "West", COLOR["magenta"]),
+            ),
+        ),
+        PanelSpec(
+            "battery_charging",
+            "Battery Charging",
+            "Charging Current In [A]",
+            "Charging Power In [W]",
+            (
+                TraceSpec("BatteryAmps", "Charging Current In", COLOR["teal"]),
+                TraceSpec("BatteryWatts", "Charging Power In", COLOR["light_blue"], axis="right"),
             ),
         ),
         PanelSpec(

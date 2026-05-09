@@ -10,12 +10,14 @@ multi-panel style inspired by the reference plots used during development.
 
 Typical panels include:
 
-- **Batteries**
 - **Renewables**
 - **Cumulative Solar Power Generated**
   - `East`
   - `South`
   - `West`
+- **Battery Charging**
+  - `Charging Current In`
+  - `Charging Power In`
 - **Output**
 
 Legends are placed in a consistent right-side gutter rather than collected into
