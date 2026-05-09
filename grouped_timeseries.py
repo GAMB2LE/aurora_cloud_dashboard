@@ -727,6 +727,16 @@ def _time_index(ds: xr.Dataset) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(ds["time"].values) if "time" in ds else pd.DatetimeIndex([])
 
 
+def _trace_time_values(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Drop merged-grid NaNs so each trace renders on its own real sampling cadence."""
+    if len(times) == 0:
+        return times, values
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+    return times[finite], values[finite]
+
+
 def _window_title(suffix: str, instrument: str) -> str:
     return f"{display_name(instrument)} - {suffix}"
 
@@ -827,7 +837,10 @@ def save_summary_png(
         for trace, values in rows:
             target = right_ax if trace.axis == "right" and right_ax is not None else ax
             drawstyle = "steps-post" if trace.step else "default"
-            target.plot(times, values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
+            trace_times, trace_values = _trace_time_values(times, values)
+            if len(trace_times) == 0:
+                continue
+            target.plot(trace_times, trace_values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
             if trace.axis == "right" and right_color is None:
                 right_color = trace.color
             if trace.axis == "left" and left_color is None:
@@ -940,10 +953,13 @@ def build_summary_plotly(
                 right_color = trace.color
             if not secondary and left_color is None:
                 left_color = trace.color
+            trace_times, trace_values = _trace_time_values(times, values)
+            if len(trace_times) == 0:
+                continue
             fig.add_trace(
                 go.Scatter(
-                    x=times,
-                    y=values,
+                    x=trace_times,
+                    y=trace_values,
                     mode="lines",
                     name=trace.label,
                     legend=legend_name,
