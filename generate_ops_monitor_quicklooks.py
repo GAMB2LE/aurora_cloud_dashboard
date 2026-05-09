@@ -16,12 +16,10 @@ from grouped_timeseries import (
     housekeeping_daily_png,
     housekeeping_label,
     housekeeping_latest_png,
-    plot_housekeeping_timeseries,
     refresh_legacy_aliases,
     save_summary_png,
     summary_daily_png,
     summary_latest_png,
-    summary_trace_vars,
 )
 
 
@@ -30,6 +28,48 @@ QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklo
 ZARR_PATH = Path(os.environ.get("OPS_MONITOR_ZARR_PATH", "/data/aurora/products/ops_monitor/ops_monitor.zarr"))
 QUICKLOOK_DIR = Path(os.environ.get("OPS_MONITOR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "ops_monitor"))
 INSTRUMENT = "ops-monitor"
+OPS_HK_LAYOUT_KEY = "ops-monitor-hk"
+OPS_STREAMS = (
+    "cl61",
+    "radar",
+    "vaisalamet",
+    "asfs_logger",
+    "asfs_fast_sonic",
+    "power",
+    "wxcam",
+)
+
+
+def _ops_housekeeping_dataset(ds: xr.Dataset) -> xr.Dataset:
+    hk = ds.copy()
+    for stream in OPS_STREAMS:
+        local_missing = hk.get(f"{stream}_local_missing_count")
+        local_mismatch = hk.get(f"{stream}_local_mismatch_count")
+        gws_missing = hk.get(f"{stream}_gws_missing_count")
+        gws_mismatch = hk.get(f"{stream}_gws_mismatch_count")
+        if local_missing is not None and local_mismatch is not None:
+            hk[f"{stream}_local_issue_count"] = local_missing.fillna(0.0) + local_mismatch.fillna(0.0)
+        if gws_missing is not None and gws_mismatch is not None:
+            hk[f"{stream}_gws_issue_count"] = gws_missing.fillna(0.0) + gws_mismatch.fillna(0.0)
+
+    if "source_sync_enabled_count" in hk and "streams_product_gate_ok_count" in hk:
+        hk["streams_product_gate_block_count"] = (
+            hk["source_sync_enabled_count"].fillna(0.0) - hk["streams_product_gate_ok_count"].fillna(0.0)
+        ).clip(min=0.0)
+    if "source_sync_enabled_count" in hk and "streams_prune_ready_count" in hk:
+        hk["streams_prune_block_count"] = (
+            hk["source_sync_enabled_count"].fillna(0.0) - hk["streams_prune_ready_count"].fillna(0.0)
+        ).clip(min=0.0)
+
+    for healthy_name, problem_name in (
+        ("gws_available_state", "gws_unavailable_state"),
+        ("mirror_verify_service_healthy_state", "mirror_verify_problem_state"),
+        ("ops_monitor_append_service_healthy_state", "ops_monitor_append_problem_state"),
+        ("ops_monitor_quicklooks_service_healthy_state", "ops_monitor_quicklooks_problem_state"),
+    ):
+        if healthy_name in hk:
+            hk[problem_name] = 1.0 - hk[healthy_name].fillna(1.0)
+    return hk
 
 
 def main(force: bool = False) -> None:
@@ -58,13 +98,7 @@ def main(force: bool = False) -> None:
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
-            plot_housekeeping_timeseries(
-                latest_day,
-                INSTRUMENT,
-                hk_title,
-                hk_out,
-                exclude_vars=summary_trace_vars(INSTRUMENT),
-            )
+            save_summary_png(_ops_housekeeping_dataset(latest_day), OPS_HK_LAYOUT_KEY, hk_title, hk_out)
 
     for day in dates:
         start = pd.Timestamp(day)
@@ -82,13 +116,7 @@ def main(force: bool = False) -> None:
         hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if hk_out is not None and (force or not hk_out.exists()):
             hk_title = pd.Timestamp(day).strftime(f"{housekeeping_label(INSTRUMENT)} - %Y-%m-%d")
-            plot_housekeeping_timeseries(
-                ds_day,
-                INSTRUMENT,
-                hk_title,
-                hk_out,
-                exclude_vars=summary_trace_vars(INSTRUMENT),
-            )
+            save_summary_png(_ops_housekeeping_dataset(ds_day), OPS_HK_LAYOUT_KEY, hk_title, hk_out)
             refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, day_png=hk_out)
 
 
