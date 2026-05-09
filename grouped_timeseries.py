@@ -432,20 +432,6 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "cumulative_power",
-            "Cumulative Power",
-            "Cumulative Energy [kWh]",
-            "Surplus / Deficit [kWh]",
-            (
-                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
-                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
-                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"]),
-                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"]),
-                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
-                TraceSpec("CumulativePowerBalance", "Surplus / Deficit", COLOR["red"], axis="right"),
-            ),
-        ),
-        PanelSpec(
             "battery_charging",
             "Battery Charging",
             "Charging Current In [A]",
@@ -463,6 +449,20 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"]),
                 TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"]),
+            ),
+        ),
+        PanelSpec(
+            "cumulative_power",
+            "Cumulative Power",
+            "Cumulative Energy [kWh]",
+            "Surplus / Deficit [kWh]",
+            (
+                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
+                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
+                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"]),
+                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"]),
+                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
+                TraceSpec("CumulativePowerBalance", "Surplus / Deficit", COLOR["red"], axis="right"),
             ),
         ),
         PanelSpec(

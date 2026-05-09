@@ -11,6 +11,10 @@ multi-panel style inspired by the reference plots used during development.
 Typical panels include:
 
 - **Renewables**
+- **Battery Charging**
+  - `Charging Current In`
+  - `Charging Power In`
+- **Output Power**
 - **Cumulative Power**
   - `East Solar Generated`
   - `South Solar Generated`
@@ -18,10 +22,6 @@ Typical panels include:
   - `Total Generated`
   - `Utilised`
   - `Surplus / Deficit` on the right axis
-- **Battery Charging**
-  - `Charging Current In`
-  - `Charging Power In`
-- **Output Power**
 - **Output Voltage**
 
 Legends are placed in a consistent right-side gutter rather than collected into
