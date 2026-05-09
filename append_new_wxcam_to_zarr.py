@@ -28,7 +28,7 @@ def _ensure_store(zarr_path: Path) -> None:
         {
             "instrument": "wxcam",
             "title": "Aurora wxcam HDR images",
-            "storage_policy": "Catalog includes historical HDR images; pixel Zarr appends only new images indexed after initialization.",
+            "storage_policy": "Contains locally retained HDR JPG image data for fish_hdr and pano_hdr with timestamps derived from filenames; MP4 products are stored separately.",
         }
     )
 
@@ -53,7 +53,7 @@ def _initialize_state(catalog_path: Path, zarr_path: Path, state_path: Path) -> 
     frontier = catalog_frontier(catalog_path, media_kind="image")
     state = {image_type: int(frontier.get(image_type, 0)) for image_type in WXCAM_IMAGE_TYPES}
     _save_state(state_path, state)
-    print("Initialized wxcam pixel-Zarr state at the current catalog frontier; historical images remain catalog-only.")
+    print("Initialized wxcam pixel-Zarr state at the current catalog frontier.")
     for image_type, last_ns in state.items():
         if last_ns:
             print(f"  {image_type}: {ns_to_datetime(last_ns)}")
