@@ -2260,7 +2260,30 @@ def _log_session_destroyed(session_context) -> None:
             server_sessions = int(len(server_context.sessions))
         except Exception:
             server_sessions = None
-    fields = _selection_snapshot_safe()
+    fields = {}
+    try:
+        instrument_widget = globals().get("instrument_select")
+        calendar_widget = globals().get("calendar_instrument")
+        ql_widget = globals().get("ql_date")
+        calendar_type_widget = globals().get("calendar_image_type")
+        wxcam_type_widget = globals().get("wxcam_image_type")
+        wxcam_date_widget = globals().get("wxcam_date")
+        wxcam_state = globals().get("wxcam_calendar_state")
+        live_widget = globals().get("live_toggle")
+        fields.update(
+            {
+                "current_instrument": getattr(instrument_widget, "value", None),
+                "calendar_instrument": getattr(calendar_widget, "value", None),
+                "calendar_date": getattr(ql_widget, "value", None),
+                "calendar_image_type": getattr(calendar_type_widget, "value", None),
+                "wxcam_image_type": getattr(wxcam_type_widget, "value", None),
+                "wxcam_date": getattr(wxcam_date_widget, "value", None),
+                "wxcam_selected_hour_path": getattr(wxcam_state, "selected_hour_path", ""),
+                "live_mode": getattr(live_widget, "value", None),
+            }
+        )
+    except Exception:
+        fields = {}
     fields.update(
         {
             "request_path": path,
@@ -2269,7 +2292,8 @@ def _log_session_destroyed(session_context) -> None:
             "server_sessions": server_sessions,
         }
     )
-    _perf_log("session_destroyed", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
+    current_instrument = fields.get("current_instrument") or globals().get("CURRENT_INSTRUMENT")
+    _perf_log("session_destroyed", instrument=current_instrument, **fields)
 
 
 instrument_select.param.watch(
