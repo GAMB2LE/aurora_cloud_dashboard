@@ -8,10 +8,15 @@
 
 import os
 from base64 import b64encode
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
 from functools import lru_cache
 from html import escape
+import json
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -180,6 +185,96 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
+PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
+PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+PERF_LOG_BACKUP_COUNT = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT", "5"))
+
+
+def _session_id() -> str | None:
+    try:
+        doc = pn.state.curdoc
+        if doc is None:
+            return None
+        session_context = doc.session_context
+        if session_context is None:
+            return None
+        return session_context.id
+    except Exception:
+        return None
+
+
+def _normalize_perf_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        dt = value.astimezone(timezone.utc) if value.tzinfo else value
+        return dt.isoformat()
+    if isinstance(value, timedelta):
+        return round(value.total_seconds(), 6)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_normalize_perf_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _normalize_perf_value(item) for key, item in value.items()}
+    return str(value)
+
+
+_PERF_LOGGER = logging.getLogger("aurora.dashboard.perf")
+_PERF_LOGGER.setLevel(logging.INFO)
+_PERF_LOGGER.propagate = False
+_PERF_LOG_READY = False
+
+if PERF_LOG_ENABLED and not _PERF_LOGGER.handlers:
+    try:
+        PERF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _perf_handler = RotatingFileHandler(
+            PERF_LOG_PATH,
+            maxBytes=PERF_LOG_MAX_BYTES,
+            backupCount=PERF_LOG_BACKUP_COUNT,
+        )
+        _perf_handler.setFormatter(logging.Formatter("%(message)s"))
+        _PERF_LOGGER.addHandler(_perf_handler)
+        _PERF_LOG_READY = True
+    except Exception as exc:
+        print(f"[perf] disabled: could not initialize {PERF_LOG_PATH}: {exc}")
+
+
+def _perf_log(event: str, duration_ms: float | None = None, **fields) -> None:
+    if not _PERF_LOG_READY:
+        return
+    instrument = fields.get("instrument", globals().get("CURRENT_INSTRUMENT"))
+    record = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        "duration_ms": None if duration_ms is None else round(float(duration_ms), 3),
+        "session_id": _session_id(),
+        "instrument": instrument,
+    }
+    for key, value in fields.items():
+        record[key] = _normalize_perf_value(value)
+    try:
+        _PERF_LOGGER.info(json.dumps(record, sort_keys=True))
+    except Exception as exc:
+        print(f"[perf] write failed for {event}: {exc}")
+
+
+@contextmanager
+def _timed_perf(event: str, **fields):
+    details = dict(fields)
+    start = perf_counter()
+    try:
+        yield details
+    except Exception as exc:
+        details.setdefault("status", "error")
+        details.setdefault("error_type", type(exc).__name__)
+        details.setdefault("error", str(exc))
+        raise
+    finally:
+        _perf_log(event, duration_ms=(perf_counter() - start) * 1000.0, **details)
 
 
 def _path_from_env(env_name: str, default: Path) -> Path:
@@ -397,15 +492,30 @@ def _get_base_dataset(inst: str | None = None):
     cfg = _cfg(inst)
     zarr_path = _zarr_path(inst)
     print(f"[base-ds] open {inst} -> {zarr_path}")
-    try:
-        ds = xr.open_zarr(zarr_path, chunks=cfg["chunk_spec"], consolidated=cfg["consolidated"])
-    except Exception as first_exc:
+    with _timed_perf(
+        "base_dataset_open",
+        instrument=inst,
+        zarr_path=zarr_path,
+        requested_chunks=cfg["chunk_spec"],
+        requested_consolidated=cfg["consolidated"],
+    ) as perf:
         try:
-            ds = xr.open_zarr(zarr_path, chunks="auto", consolidated=False)
-        except Exception as second_exc:
-            print(f"[base-ds] unavailable for {inst}: {first_exc}; fallback failed: {second_exc}")
-            _BASE_DS[inst] = None
-            return None
+            ds = xr.open_zarr(zarr_path, chunks=cfg["chunk_spec"], consolidated=cfg["consolidated"])
+            perf["status"] = "configured"
+        except Exception as first_exc:
+            perf["status"] = "fallback"
+            perf["configured_error"] = str(first_exc)
+            try:
+                ds = xr.open_zarr(zarr_path, chunks="auto", consolidated=False)
+                perf["fallback_chunks"] = "auto"
+                perf["fallback_consolidated"] = False
+            except Exception as second_exc:
+                perf["status"] = "unavailable"
+                perf["fallback_error"] = str(second_exc)
+                print(f"[base-ds] unavailable for {inst}: {first_exc}; fallback failed: {second_exc}")
+                _BASE_DS[inst] = None
+                return None
+        perf["dims"] = dict(ds.sizes)
     _BASE_DS[inst] = ds
     return ds
 
@@ -439,20 +549,30 @@ def _median_filter_nan(arr, k=3):
 def _dataset_time_bounds(inst: str | None = None):
     """Compute earliest and latest timestamps in the dataset (or None/None)."""
     inst = inst or CURRENT_INSTRUMENT
-    if inst == "wxcam":
-        return catalog_time_bounds(_wxcam_catalog_path(inst))
-    ds = _get_base_dataset(inst)
-    if ds is None or "time" not in ds:
-        return None, None
-    times = np.asarray(ds["time"].values)
-    if times.size == 0:
-        return None, None
-    valid = _valid_time_mask(times)
-    times = times[valid]
-    return (
-        pd.Timestamp(times.min()).to_pydatetime(warn=False),
-        pd.Timestamp(times.max()).to_pydatetime(warn=False),
-    )
+    with _timed_perf("dataset_time_bounds", instrument=inst) as perf:
+        if inst == "wxcam":
+            lower, upper = catalog_time_bounds(_wxcam_catalog_path(inst))
+            perf["source"] = "wxcam_catalog"
+            perf["time_start"] = lower
+            perf["time_end"] = upper
+            return lower, upper
+        ds = _get_base_dataset(inst)
+        if ds is None or "time" not in ds:
+            perf["status"] = "no_dataset"
+            return None, None
+        times = np.asarray(ds["time"].values)
+        perf["raw_time_count"] = int(times.size)
+        if times.size == 0:
+            perf["status"] = "empty"
+            return None, None
+        valid = _valid_time_mask(times)
+        times = times[valid]
+        perf["valid_time_count"] = int(times.size)
+        lower = pd.Timestamp(times.min()).to_pydatetime(warn=False)
+        upper = pd.Timestamp(times.max()).to_pydatetime(warn=False)
+        perf["time_start"] = lower
+        perf["time_end"] = upper
+        return lower, upper
 
 
 def _coarsen_targets(duration: timedelta | None, height_span: float | None):
@@ -481,58 +601,90 @@ def _coarsen_targets(duration: timedelta | None, height_span: float | None):
 
 def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None):
     """Slice the base dataset, adapt coarsening to window span, and filter height."""
+    instrument = instrument or CURRENT_INSTRUMENT
     cfg = _cfg(instrument)
     t0 = _ensure_utc(t0)
     t1 = _ensure_utc(t1)
-    if t0 is None or t1 is None or t0 >= t1:
-        return xr.Dataset()
-    duration = t1 - t0
-    height_span = None
-    if bottom_m is not None or top_m is not None:
-        b = max(bottom_m or 0.0, 0.0)
-        t = top_m if top_m is not None else cfg["height_load_max"]
-        height_span = max(t - b, 0.0)
-    time_subsample, time_target, height_target = _coarsen_targets(duration, height_span)
-    base = _get_base_dataset(instrument)
-    if base is None:
-        return xr.Dataset()
-    try:
-        tvals = base["time"].values
-        mask = _valid_time_mask(tvals) & (tvals >= np.datetime64(t0)) & (tvals <= np.datetime64(t1))
-        if not np.any(mask):
+    with _timed_perf(
+        "window_open",
+        instrument=instrument,
+        start=t0,
+        end=t1,
+        bottom_m=bottom_m,
+        top_m=top_m,
+    ) as perf:
+        if t0 is None or t1 is None or t0 >= t1:
+            perf["status"] = "invalid_window"
             return xr.Dataset()
-        idx = np.nonzero(mask)[0]
-        ds = base.isel(time=idx)
-    except Exception:
-        ds = base
-    has_range = "range" in ds.coords or "range" in ds.dims
-    if has_range:
+        duration = t1 - t0
+        perf["window_hours"] = round(duration.total_seconds() / 3600.0, 3)
+        height_span = None
+        if bottom_m is not None or top_m is not None:
+            b = max(bottom_m or 0.0, 0.0)
+            t = top_m if top_m is not None else cfg["height_load_max"]
+            height_span = max(t - b, 0.0)
+        time_subsample, time_target, height_target = _coarsen_targets(duration, height_span)
+        perf["time_subsample"] = int(time_subsample)
+        perf["time_target"] = int(time_target)
+        perf["height_target"] = int(height_target)
+        base = _get_base_dataset(instrument)
+        if base is None:
+            perf["status"] = "no_dataset"
+            return xr.Dataset()
+        perf["base_time_count"] = int(base.sizes.get("time", 0))
+        perf["base_range_count"] = int(base.sizes.get("range", 0))
+
+        phase_start = perf_counter()
         try:
-            ds = ds.sel({"range": slice(0, cfg["height_load_max"])})
-        except Exception:
-            ds = ds.where(ds["range"] <= cfg["height_load_max"], drop=True)
-    # If the user narrowed the plotted range, trim the data before coarsening so
-    # we keep more vertical detail within the zoomed band.
-    if has_range and (bottom_m is not None or top_m is not None):
-        low = max(bottom_m or 0.0, 0.0)
-        high = min(top_m or cfg["height_load_max"], cfg["height_load_max"])
+            tvals = base["time"].values
+            mask = _valid_time_mask(tvals) & (tvals >= np.datetime64(t0)) & (tvals <= np.datetime64(t1))
+            perf["matched_time_count"] = int(np.count_nonzero(mask))
+            if not np.any(mask):
+                perf["status"] = "no_match"
+                perf["select_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
+                return xr.Dataset()
+            idx = np.nonzero(mask)[0]
+            ds = base.isel(time=idx)
+        except Exception as exc:
+            ds = base
+            perf["time_select_error"] = str(exc)
+        perf["select_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
+
+        has_range = "range" in ds.coords or "range" in ds.dims
+        phase_start = perf_counter()
+        if has_range:
+            try:
+                ds = ds.sel({"range": slice(0, cfg["height_load_max"])})
+            except Exception:
+                ds = ds.where(ds["range"] <= cfg["height_load_max"], drop=True)
+        if has_range and (bottom_m is not None or top_m is not None):
+            low = max(bottom_m or 0.0, 0.0)
+            high = min(top_m or cfg["height_load_max"], cfg["height_load_max"])
+            try:
+                ds = ds.sel({"range": slice(low, high)})
+            except Exception:
+                ds = ds.where((ds["range"] >= low) & (ds["range"] <= high), drop=True)
+        perf["range_filter_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
+
+        phase_start = perf_counter()
+        if time_subsample > 1:
+            ds = ds.isel(time=slice(None, None, time_subsample))
         try:
-            ds = ds.sel({"range": slice(low, high)})
-        except Exception:
-            ds = ds.where((ds["range"] >= low) & (ds["range"] <= high), drop=True)
-    if time_subsample > 1:
-        ds = ds.isel(time=slice(None, None, time_subsample))
-    # Coarsen to target sample counts to keep payloads small.
-    try:
-        if ds.sizes.get("range", 0) > height_target:
-            fh = max(int(np.ceil(ds.sizes["range"] / height_target)), 1)
-            ds = ds.coarsen({"range": fh}, boundary="trim").mean()
-        if ds.sizes.get("time", 0) > time_target:
-            ft = max(int(np.ceil(ds.sizes["time"] / time_target)), 1)
-            ds = ds.coarsen({"time": ft}, boundary="trim").mean()
-    except Exception:
-        pass
-    return ds
+            if ds.sizes.get("range", 0) > height_target:
+                fh = max(int(np.ceil(ds.sizes["range"] / height_target)), 1)
+                perf["range_coarsen_factor"] = int(fh)
+                ds = ds.coarsen({"range": fh}, boundary="trim").mean()
+            if ds.sizes.get("time", 0) > time_target:
+                ft = max(int(np.ceil(ds.sizes["time"] / time_target)), 1)
+                perf["time_coarsen_factor"] = int(ft)
+                ds = ds.coarsen({"time": ft}, boundary="trim").mean()
+        except Exception as exc:
+            perf["coarsen_error"] = str(exc)
+        perf["coarsen_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
+        perf["output_time_count"] = int(ds.sizes.get("time", 0))
+        perf["output_range_count"] = int(ds.sizes.get("range", 0))
+        perf["status"] = "ok"
+        return ds
 
 
 def _make_plot(ds, var, clim, logz, coloraxis):
@@ -929,34 +1081,46 @@ def _wxcam_daily_video_dir(image_type: str) -> Path:
 def _wxcam_interactive_video_options(selection: str) -> dict[str, str | None]:
     image_type = _image_type_from_selection(selection)
     day_dir = _wxcam_daily_video_dir(image_type)
-    if not day_dir.exists():
-        return {"No videos available": None}
-    opts: dict[str, str | None] = {}
-    for video_path in sorted(day_dir.glob("*.mp4")):
-        if video_path.name == "latest.mp4":
-            continue
-        opts[video_path.stem] = str(video_path)
-    latest_path = day_dir / "latest.mp4"
-    if latest_path.exists():
-        opts["Today (latest)"] = str(latest_path)
-    return opts or {"No videos available": None}
+    with _timed_perf("wxcam_interactive_options", instrument="wxcam", image_type=image_type, day_dir=day_dir) as perf:
+        if not day_dir.exists():
+            perf["status"] = "missing_dir"
+            return {"No videos available": None}
+        opts: dict[str, str | None] = {}
+        video_count = 0
+        for video_path in sorted(day_dir.glob("*.mp4")):
+            video_count += 1
+            if video_path.name == "latest.mp4":
+                continue
+            opts[video_path.stem] = str(video_path)
+        latest_path = day_dir / "latest.mp4"
+        if latest_path.exists():
+            opts["Today (latest)"] = str(latest_path)
+        perf["video_count"] = video_count
+        perf["option_count"] = len(opts)
+        perf["status"] = "ok" if opts else "empty"
+        return opts or {"No videos available": None}
 
 
 def _wxcam_calendar_options(selection: str) -> dict[str, str | None]:
     image_type = _image_type_from_selection(selection)
-    day_values = available_days(_wxcam_catalog_path("wxcam"), image_type, media_kind="image")
-    if not day_values:
-        return {"No images available": None}
-    today_token = _wxcam_today_token()
-    opts: dict[str, str | None] = {}
-    for day_utc in day_values:
-        day_token = day_utc.replace("-", "")
-        if day_token == today_token:
-            continue
-        opts[day_token] = day_token
-    if any(day_utc.replace("-", "") == today_token for day_utc in day_values):
-        opts["Today (latest)"] = today_token
-    return opts or {"No images available": None}
+    with _timed_perf("wxcam_calendar_options", instrument="wxcam", image_type=image_type) as perf:
+        day_values = available_days(_wxcam_catalog_path("wxcam"), image_type, media_kind="image")
+        if not day_values:
+            perf["status"] = "empty"
+            return {"No images available": None}
+        today_token = _wxcam_today_token()
+        opts: dict[str, str | None] = {}
+        for day_utc in day_values:
+            day_token = day_utc.replace("-", "")
+            if day_token == today_token:
+                continue
+            opts[day_token] = day_token
+        if any(day_utc.replace("-", "") == today_token for day_utc in day_values):
+            opts["Today (latest)"] = today_token
+        perf["day_count"] = len(day_values)
+        perf["option_count"] = len(opts)
+        perf["status"] = "ok"
+        return opts or {"No images available": None}
 
 
 def _wxcam_day_token_to_utc(day_token: str) -> str | None:
@@ -1021,32 +1185,38 @@ def _image_data_uri(path: Path) -> str:
 
 def _build_wxcam_video_view(path: Path, selection: str, selected_label: str):
     image_type = _image_type_from_selection(selection)
-    mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
-    title = f"{selection} | {selected_label} | {path.name}"
-    return pn.Column(
-        WxcamVideoPlayer(src=_video_data_uri(path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
-        sizing_mode="stretch_width",
-    )
+    with _timed_perf("wxcam_video_view_build", instrument="wxcam", image_type=image_type, path=path, selected_label=selected_label) as perf:
+        mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
+        title = f"{selection} | {selected_label} | {path.name}"
+        stat_result = path.stat()
+        perf["size_bytes"] = int(stat_result.st_size)
+        return pn.Column(
+            WxcamVideoPlayer(src=_video_data_uri(path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
+            sizing_mode="stretch_width",
+        )
 
 
 def _build_wxcam_image_view(path: Path, selection: str, selected_label: str):
     image_type = _image_type_from_selection(selection)
-    mode_class = "wxcam-still--vertical" if image_type == "fish_hdr" else "wxcam-still--wide"
-    title = escape(f"{selection} | {selected_label} | {path.name}")
-    alt = escape(f"{selection} {selected_label}")
-    return pn.Column(
-        pn.pane.HTML(
-            (
-                f"<div class='wxcam-still {mode_class}'>"
-                f"<div class='wxcam-player__meta'><div class='wxcam-player__title'>{title}</div></div>"
-                f"<div class='wxcam-still__frame'><img src='{_image_data_uri(path)}' alt='{alt}'></div>"
-                f"</div>"
+    with _timed_perf("wxcam_image_view_build", instrument="wxcam", image_type=image_type, path=path, selected_label=selected_label) as perf:
+        mode_class = "wxcam-still--vertical" if image_type == "fish_hdr" else "wxcam-still--wide"
+        title = escape(f"{selection} | {selected_label} | {path.name}")
+        alt = escape(f"{selection} {selected_label}")
+        stat_result = path.stat()
+        perf["size_bytes"] = int(stat_result.st_size)
+        return pn.Column(
+            pn.pane.HTML(
+                (
+                    f"<div class='wxcam-still {mode_class}'>"
+                    f"<div class='wxcam-player__meta'><div class='wxcam-player__title'>{title}</div></div>"
+                    f"<div class='wxcam-still__frame'><img src='{_image_data_uri(path)}' alt='{alt}'></div>"
+                    f"</div>"
+                ),
+                sizing_mode="stretch_width",
+                margin=0,
             ),
             sizing_mode="stretch_width",
-            margin=0,
-        ),
-        sizing_mode="stretch_width",
-    )
+        )
 
 
 wxcam_image_type = pn.widgets.Select(
@@ -1113,13 +1283,19 @@ _wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed
 
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
 def _wxcam_interactive_media(selected, selection):
-    path = _wxcam_interactive_video_options(selection or _cfg("wxcam")["default_top"]).get(selected)
-    if not path:
-        return pn.pane.Markdown("No media available for this selection.")
-    video_path = Path(path)
-    if not video_path.exists():
-        return pn.pane.Markdown("No media available for this selection.")
-    return _build_wxcam_video_view(video_path, selection or _cfg("wxcam")["default_top"], selected)
+    selection = selection or _cfg("wxcam")["default_top"]
+    with _timed_perf("wxcam_interactive_render", instrument="wxcam", selection=selection, selected=selected) as perf:
+        path = _wxcam_interactive_video_options(selection).get(selected)
+        if not path:
+            perf["status"] = "missing_option"
+            return pn.pane.Markdown("No media available for this selection.")
+        video_path = Path(path)
+        perf["path"] = video_path
+        if not video_path.exists():
+            perf["status"] = "missing_file"
+            return pn.pane.Markdown("No media available for this selection.")
+        perf["status"] = "ok"
+        return _build_wxcam_video_view(video_path, selection, selected)
 
 
 # wxcam now uses the Interactive tab as its primary browser/player so the
@@ -1148,312 +1324,323 @@ def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
 def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax):
     """Custom renderer for HATPRO radiometer: split LWP/IWV and IRR; T_PROF heatmap."""
     print(f"[hatpro] render window {start} -> {end}")
-    bottom = max(float(bottom_val), 0.0)
-    top = max(float(top_val), bottom + 100.0)
-    ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument="Scanning Microwave Radiometer")
-    cfg = _cfg("Scanning Microwave Radiometer")
-    times = pd.to_datetime(ds["time"].values) if "time" in ds else None
-    if times is None or len(times) == 0:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="No data",
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
-            font=dict(color="#222", size=16),
-        )
-        fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
-        _show_plot(fig)
-        return
+    with _timed_perf("hatpro_render", instrument="Scanning Microwave Radiometer", start=start, end=end) as perf:
+        bottom = max(float(bottom_val), 0.0)
+        top = max(float(top_val), bottom + 100.0)
+        ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument="Scanning Microwave Radiometer")
+        cfg = _cfg("Scanning Microwave Radiometer")
+        times = pd.to_datetime(ds["time"].values) if "time" in ds else None
+        perf["time_count"] = 0 if times is None else int(len(times))
+        if times is None or len(times) == 0:
+            perf["status"] = "no_data"
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No data",
+                x=0.5,
+                y=0.5,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(color="#222", size=16),
+            )
+            fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
+            _show_plot(fig)
+            return
 
-    fig = make_subplots(
-        rows=3,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05,
-        specs=[[{"secondary_y": True}], [{"secondary_y": True}], [{}]],
-        row_heights=[0.25, 0.25, 0.5],
-        subplot_titles=("LWP / IWV", "IRR / SURF_T", cfg["vars"]["T_PROF"]["label"]),
-    )
-    # Color the subplot titles to match their traces.
-    if len(fig.layout.annotations) >= 1:
-        fig.layout.annotations[0].update(text='<span style="color:#1f77b4">LWP</span> / <span style="color:#2ca02c">IWV</span>', font=dict(size=14))
-    if len(fig.layout.annotations) >= 2:
-        fig.layout.annotations[1].update(
-            text='<span style="color:#d62728">IRR</span> / <span style="color:#9467bd">SURF_T</span>',
-            font=dict(size=14),
+        fig = make_subplots(
+            rows=3,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            specs=[[{"secondary_y": True}], [{"secondary_y": True}], [{}]],
+            row_heights=[0.25, 0.25, 0.5],
+            subplot_titles=("LWP / IWV", "IRR / SURF_T", cfg["vars"]["T_PROF"]["label"]),
         )
-    if len(fig.layout.annotations) >= 3:
-        fig.layout.annotations[2].update(font=dict(size=14))
+        # Color the subplot titles to match their traces.
+        if len(fig.layout.annotations) >= 1:
+            fig.layout.annotations[0].update(text='<span style="color:#1f77b4">LWP</span> / <span style="color:#2ca02c">IWV</span>', font=dict(size=14))
+        if len(fig.layout.annotations) >= 2:
+            fig.layout.annotations[1].update(
+                text='<span style="color:#d62728">IRR</span> / <span style="color:#9467bd">SURF_T</span>',
+                font=dict(size=14),
+            )
+        if len(fig.layout.annotations) >= 3:
+            fig.layout.annotations[2].update(font=dict(size=14))
 
-    # Row 1: LWP (left), IWV (right, kg/m²)
-    if "LWP" in ds:
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=np.asarray(ds["LWP"]),
-                mode="lines",
-                name="LWP (g/m²)",
-                line=dict(color="#1f77b4", width=2),
-            ),
-            row=1,
-            col=1,
-            secondary_y=False,
-        )
-    if "IWV" in ds:
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=np.asarray(ds["IWV"]),
-                mode="lines",
-                name="IWV (kg/m²)",
-                line=dict(color="#2ca02c", width=2, dash="dot"),
-            ),
-            row=1,
-            col=1,
-            secondary_y=True,
-        )
+        # Row 1: LWP (left), IWV (right, kg/m²)
+        if "LWP" in ds:
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=np.asarray(ds["LWP"]),
+                    mode="lines",
+                    name="LWP (g/m²)",
+                    line=dict(color="#1f77b4", width=2),
+                ),
+                row=1,
+                col=1,
+                secondary_y=False,
+            )
+        if "IWV" in ds:
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=np.asarray(ds["IWV"]),
+                    mode="lines",
+                    name="IWV (kg/m²)",
+                    line=dict(color="#2ca02c", width=2, dash="dot"),
+                ),
+                row=1,
+                col=1,
+                secondary_y=True,
+            )
 
-    # Row 2: IRR only
-    if "IRR_Map" in ds:
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=np.asarray(ds["IRR_Map"]),
-                mode="lines",
-                name="IRR (°C)",
-                line=dict(color="#d62728", width=2),
-            ),
-            row=2,
-            col=1,
-        )
-    if "SURF_T" in ds:
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=np.asarray(ds["SURF_T"]) - 273.15,  # convert K to °C for display
-                mode="lines",
-                name="SURF_T (°C)",
-                line=dict(color="#9467bd", width=2, dash="dot"),
-            ),
-            row=2,
-            col=1,
-        )
+        # Row 2: IRR only
+        if "IRR_Map" in ds:
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=np.asarray(ds["IRR_Map"]),
+                    mode="lines",
+                    name="IRR (°C)",
+                    line=dict(color="#d62728", width=2),
+                ),
+                row=2,
+                col=1,
+            )
+        if "SURF_T" in ds:
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=np.asarray(ds["SURF_T"]) - 273.15,  # convert K to °C for display
+                    mode="lines",
+                    name="SURF_T (°C)",
+                    line=dict(color="#9467bd", width=2, dash="dot"),
+                ),
+                row=2,
+                col=1,
+            )
 
-    # Row 3: Temperature profile heatmap + contours
-    if "T_PROF" in ds:
-        heights = ds["range"].values if "range" in ds else np.arange(ds["T_PROF"].shape[1])
-        temps = np.array(ds["T_PROF"].transpose("range", "time"))
-        vmin, vmax = cfg["vars"]["T_PROF"]["clim"]
-        fig.add_trace(
-            go.Heatmap(
-                x=times,
-                y=heights,
-                z=temps,
-                zmin=vmin,
-                zmax=vmax,
-                coloraxis="coloraxis",
-                showscale=True,
-            ),
-            row=3,
-            col=1,
-        )
-        fig.add_trace(
-            go.Contour(
-                x=times,
-                y=heights,
-                z=temps,
-                showscale=False,
-                contours=dict(coloring="none", showlabels=True, labelfont=dict(color="white", size=10)),
-                line=dict(color="white", width=1),
-                hoverinfo="skip",
-            ),
-            row=3,
-            col=1,
-        )
+        # Row 3: Temperature profile heatmap + contours
+        if "T_PROF" in ds:
+            heights = ds["range"].values if "range" in ds else np.arange(ds["T_PROF"].shape[1])
+            temps = np.array(ds["T_PROF"].transpose("range", "time"))
+            vmin, vmax = cfg["vars"]["T_PROF"]["clim"]
+            fig.add_trace(
+                go.Heatmap(
+                    x=times,
+                    y=heights,
+                    z=temps,
+                    zmin=vmin,
+                    zmax=vmax,
+                    coloraxis="coloraxis",
+                    showscale=True,
+                ),
+                row=3,
+                col=1,
+            )
+            fig.add_trace(
+                go.Contour(
+                    x=times,
+                    y=heights,
+                    z=temps,
+                    showscale=False,
+                    contours=dict(coloring="none", showlabels=True, labelfont=dict(color="white", size=10)),
+                    line=dict(color="white", width=1),
+                    hoverinfo="skip",
+                ),
+                row=3,
+                col=1,
+            )
 
-    tickvals = []
-    ticktext = []
-    noon_annots = []
-    if start and end:
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
-        duration = end_ts - start_ts
-        freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
-        hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
-        for t in hours:
-            tickvals.append(t.to_pydatetime())
-            ticktext.append(t.strftime("%H:%M"))
-            if t.hour == 12:
-                noon_annots.append(
-                    dict(
-                        x=t.to_pydatetime(),
-                        y=-0.06,
-                        xref="x",
-                        yref="paper",
-                        text=t.strftime("%Y-%m-%d"),
-                        showarrow=False,
-                        xanchor="center",
-                        yanchor="top",
-                        font=dict(size=14, color="#222"),
+        tickvals = []
+        ticktext = []
+        noon_annots = []
+        if start and end:
+            start_ts = pd.Timestamp(start)
+            end_ts = pd.Timestamp(end)
+            duration = end_ts - start_ts
+            freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
+            hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
+            for t in hours:
+                tickvals.append(t.to_pydatetime())
+                ticktext.append(t.strftime("%H:%M"))
+                if t.hour == 12:
+                    noon_annots.append(
+                        dict(
+                            x=t.to_pydatetime(),
+                            y=-0.06,
+                            xref="x",
+                            yref="paper",
+                            text=t.strftime("%Y-%m-%d"),
+                            showarrow=False,
+                            xanchor="center",
+                            yanchor="top",
+                            font=dict(size=14, color="#222"),
+                        )
                     )
-                )
 
-    # x-axes
-    for row in (1, 2, 3):
+        # x-axes
+        for row in (1, 2, 3):
+            fig.update_xaxes(
+                tickmode="array",
+                tickvals=tickvals,
+                ticktext=ticktext,
+                tickangle=-45,
+                showgrid=True,
+                gridcolor="#dddddd",
+                linecolor="#222222",
+                tickfont=dict(color="#222222", size=12),
+                title_font=dict(color="#222222", size=12),
+                row=row,
+                col=1,
+            )
+        fig.update_xaxes(title_text="Date and Time (UTC)", title_standoff=40, row=3, col=1)
+
+        # y-axes
+        fig.update_yaxes(title_text="LWP (g/m²)", range=[float(lymin), float(lymax)], row=1, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="IWV (kg/m²)", range=[float(iymin), float(iymax)], row=1, col=1, secondary_y=True)
+        fig.update_yaxes(title_text="IRR / SURF_T (°C)", range=[float(rymin), float(rymax)], row=2, col=1)
+        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=3, col=1, showgrid=True, gridcolor="#dddddd", linecolor="#222222")
+
+        fig.update_layout(
+            showlegend=False,
+            height=max(700, int(pn.state.viewport_height * 0.8)) if hasattr(pn.state, "viewport_height") else 900,
+            margin=dict(l=60, r=80, t=30, b=110),
+            coloraxis=dict(
+                colorscale=cfg["vars"]["T_PROF"]["colorscale"],
+                cmin=cfg["vars"]["T_PROF"]["clim"][0],
+                cmax=cfg["vars"]["T_PROF"]["clim"][1],
+                colorbar=dict(title=dict(text="T (K)", side="right"), x=1.02, y=0.18, len=0.3, tickfont=dict(color="#222222", size=9)),
+            ),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            font=dict(color="#222222", size=13),
+            annotations=tuple(list(fig.layout.annotations) + noon_annots),
+        )
+        perf["status"] = "ok"
+        perf["trace_count"] = len(fig.data)
+        _show_plot(fig)
+
+
+def _update_stacked_timeseries_view(instrument: str, start, end):
+    """Render a 1D logger dataset as stacked time series, one row per variable."""
+    print(f"[{instrument}] render window {start} -> {end}")
+    with _timed_perf("stacked_timeseries_render", instrument=instrument, start=start, end=end) as perf:
+        ds = open_window(start, end, instrument=instrument)
+        bg = "white"
+        fg = "#222222"
+        grid = "#dddddd"
+        times = pd.to_datetime(ds["time"].values) if "time" in ds else None
+        names = _numeric_time_vars(ds) if ds is not None else []
+        perf["time_count"] = 0 if times is None else int(len(times))
+        perf["variable_count"] = int(len(names))
+        if times is None or len(times) == 0 or not names:
+            perf["status"] = "no_data"
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No data",
+                x=0.5,
+                y=0.5,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(color=fg, size=16),
+            )
+            fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
+            _show_plot(fig)
+            return
+
+        max_rows = len(names)
+        tickvals = []
+        ticktext = []
+        noon_annots = []
+        if start and end:
+            start_ts = pd.Timestamp(start)
+            end_ts = pd.Timestamp(end)
+            duration = end_ts - start_ts
+            freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
+            hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
+            for t in hours:
+                tickvals.append(t.to_pydatetime())
+                ticktext.append(t.strftime("%H:%M"))
+                if t.hour == 12:
+                    noon_annots.append(
+                        dict(
+                            x=t.to_pydatetime(),
+                            y=-0.08,
+                            xref="x",
+                            yref="paper",
+                            text=t.strftime("%Y-%m-%d"),
+                            showarrow=False,
+                            xanchor="center",
+                            yanchor="top",
+                            font=dict(size=14, color=fg),
+                        )
+                    )
+
+        fig = make_subplots(
+            rows=max_rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=min(0.02, 0.6 / max(max_rows - 1, 1)),
+        )
+        colors = ["#0b7285", "#c92a2a", "#2b8a3e", "#5f3dc4", "#e67700", "#087f5b", "#364fc7", "#a61e4d"]
+        for idx, name in enumerate(names, start=1):
+            values = np.asarray(ds[name].values, dtype=np.float64)
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=values,
+                    mode="lines",
+                    name=name,
+                    line=dict(color=colors[(idx - 1) % len(colors)], width=1.4),
+                    hovertemplate=f"Time=%{{x}}<br>{name}=%{{y:.6g}}<extra></extra>",
+                    connectgaps=False,
+                ),
+                row=idx,
+                col=1,
+            )
+            fig.update_yaxes(
+                title_text=name,
+                showgrid=True,
+                gridcolor=grid,
+                linecolor=fg,
+                tickfont=dict(color=fg, size=9),
+                title_font=dict(color=fg, size=9),
+                row=idx,
+                col=1,
+            )
+
         fig.update_xaxes(
             tickmode="array",
             tickvals=tickvals,
             ticktext=ticktext,
             tickangle=-45,
             showgrid=True,
-            gridcolor="#dddddd",
-            linecolor="#222222",
-            tickfont=dict(color="#222222", size=12),
-            title_font=dict(color="#222222", size=12),
-            row=row,
-            col=1,
-        )
-    fig.update_xaxes(title_text="Date and Time (UTC)", title_standoff=40, row=3, col=1)
-
-    # y-axes
-    fig.update_yaxes(title_text="LWP (g/m²)", range=[float(lymin), float(lymax)], row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="IWV (kg/m²)", range=[float(iymin), float(iymax)], row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text="IRR / SURF_T (°C)", range=[float(rymin), float(rymax)], row=2, col=1)
-    fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=3, col=1, showgrid=True, gridcolor="#dddddd", linecolor="#222222")
-
-    fig.update_layout(
-        showlegend=False,
-        height=max(700, int(pn.state.viewport_height * 0.8)) if hasattr(pn.state, "viewport_height") else 900,
-        margin=dict(l=60, r=80, t=30, b=110),
-        coloraxis=dict(
-            colorscale=cfg["vars"]["T_PROF"]["colorscale"],
-            cmin=cfg["vars"]["T_PROF"]["clim"][0],
-            cmax=cfg["vars"]["T_PROF"]["clim"][1],
-            colorbar=dict(title=dict(text="T (K)", side="right"), x=1.02, y=0.18, len=0.3, tickfont=dict(color="#222222", size=9)),
-        ),
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        font=dict(color="#222222", size=13),
-        annotations=tuple(list(fig.layout.annotations) + noon_annots),
-    )
-    _show_plot(fig)
-
-
-def _update_stacked_timeseries_view(instrument: str, start, end):
-    """Render a 1D logger dataset as stacked time series, one row per variable."""
-    print(f"[{instrument}] render window {start} -> {end}")
-    ds = open_window(start, end, instrument=instrument)
-    bg = "white"
-    fg = "#222222"
-    grid = "#dddddd"
-    times = pd.to_datetime(ds["time"].values) if "time" in ds else None
-    names = _numeric_time_vars(ds) if ds is not None else []
-    if times is None or len(times) == 0 or not names:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="No data",
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
-            font=dict(color=fg, size=16),
-        )
-        fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-        _show_plot(fig)
-        return
-
-    max_rows = len(names)
-    tickvals = []
-    ticktext = []
-    noon_annots = []
-    if start and end:
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
-        duration = end_ts - start_ts
-        freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
-        hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
-        for t in hours:
-            tickvals.append(t.to_pydatetime())
-            ticktext.append(t.strftime("%H:%M"))
-            if t.hour == 12:
-                noon_annots.append(
-                    dict(
-                        x=t.to_pydatetime(),
-                        y=-0.08,
-                        xref="x",
-                        yref="paper",
-                        text=t.strftime("%Y-%m-%d"),
-                        showarrow=False,
-                        xanchor="center",
-                        yanchor="top",
-                        font=dict(size=14, color=fg),
-                    )
-                )
-
-    fig = make_subplots(
-        rows=max_rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=min(0.02, 0.6 / max(max_rows - 1, 1)),
-    )
-    colors = ["#0b7285", "#c92a2a", "#2b8a3e", "#5f3dc4", "#e67700", "#087f5b", "#364fc7", "#a61e4d"]
-    for idx, name in enumerate(names, start=1):
-        values = np.asarray(ds[name].values, dtype=np.float64)
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=values,
-                mode="lines",
-                name=name,
-                line=dict(color=colors[(idx - 1) % len(colors)], width=1.4),
-                hovertemplate=f"Time=%{{x}}<br>{name}=%{{y:.6g}}<extra></extra>",
-                connectgaps=False,
-            ),
-            row=idx,
-            col=1,
-        )
-        fig.update_yaxes(
-            title_text=name,
-            showgrid=True,
             gridcolor=grid,
             linecolor=fg,
-            tickfont=dict(color=fg, size=9),
-            title_font=dict(color=fg, size=9),
-            row=idx,
+            tickfont=dict(color=fg, size=12),
+            title_font=dict(color=fg, size=12),
+        )
+        fig.update_xaxes(
+            title_text="Date and Time (UTC)",
+            title_standoff=50,
+            row=max_rows,
             col=1,
         )
-
-    fig.update_xaxes(
-        tickmode="array",
-        tickvals=tickvals,
-        ticktext=ticktext,
-        tickangle=-45,
-        showgrid=True,
-        gridcolor=grid,
-        linecolor=fg,
-        tickfont=dict(color=fg, size=12),
-        title_font=dict(color=fg, size=12),
-    )
-    fig.update_xaxes(
-        title_text="Date and Time (UTC)",
-        title_standoff=50,
-        row=max_rows,
-        col=1,
-    )
-    fig.update_layout(
-        showlegend=False,
-        height=max(650, min(4200, 76 * len(names) + 120)),
-        margin=dict(l=115, r=35, t=30, b=95),
-        paper_bgcolor=bg,
-        plot_bgcolor=bg,
-        font=dict(color=fg, size=13),
-        annotations=tuple(noon_annots),
-    )
-    _show_plot(fig)
+        fig.update_layout(
+            showlegend=False,
+            height=max(650, min(4200, 76 * len(names) + 120)),
+            margin=dict(l=115, r=35, t=30, b=95),
+            paper_bgcolor=bg,
+            plot_bgcolor=bg,
+            font=dict(color=fg, size=13),
+            annotations=tuple(noon_annots),
+        )
+        perf["status"] = "ok"
+        perf["trace_count"] = len(fig.data)
+        _show_plot(fig)
 
 
 @pn.depends(
@@ -1486,191 +1673,196 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
     if instrument != CURRENT_INSTRUMENT:
         CURRENT_INSTRUMENT = instrument
     print(f"[update-view] instrument param={instrument} current={CURRENT_INSTRUMENT}")
-    if instrument == "Scanning Microwave Radiometer":
-        _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
-        return
-    if _is_wxcam_instrument(instrument):
-        _update_wxcam_view(start, end, var1_name, var2_name)
-        return
-    if _is_stacked_timeseries_instrument(instrument):
-        _update_stacked_timeseries_view(instrument, start, end)
-        return
-    bottom = max(float(bottom_val), 0.0)
-    top = max(float(top_val), bottom + 100.0)
-    ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument=instrument)
-    cfg = _cfg()
-    vars_cfg = cfg["vars"]
-    var1 = vars_cfg.get(var1_name)
-    var2 = vars_cfg.get(var2_name)
-    # Simple light theme for plots
-    bg = "white"
-    fg = "#222222"
-    grid = "#dddddd"
-    if ds is None or not ds.data_vars:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="No data",
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
-            font=dict(color=fg, size=16),
-        )
-        fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-        _show_plot(fig)
-        return
-    # Colorbar configs
-    if var1 and var1.get("log"):
-        b_cmin = np.log10(bmin)
-        b_cmax = np.log10(bmax)
-        b_tickvals = list(range(int(np.floor(b_cmin)), int(np.ceil(b_cmax)) + 1))
-        sup = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
-        b_ticktext = [f"10{str(v).translate(sup)}" for v in b_tickvals]
-    else:
-        b_cmin, b_cmax = bmin, bmax
-        b_tickvals = None
-        b_ticktext = None
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        shared_yaxes=False,
-        vertical_spacing=0.08,
-        subplot_titles=(var1["label"] if var1 else "", var2["label"] if var2 else ""),
-    )
-    if var1 and var1_name in ds:
-        fig.add_trace(_make_plot(ds, var1_name, (bmin, bmax), var1.get("log", False), coloraxis="coloraxis"), row=1, col=1)
-    if var2 and var2_name in ds:
-        if var1_name == "beta_att" and var2_name == "linear_depol_ratio" and "beta_att" in ds:
-            # Only plot depol where beta is above threshold.
-            times = pd.to_datetime(ds["time"].values)
-            heights = ds["range"].values
-            ldr = np.array(ds[var2_name].transpose("range", "time"))
-            beta_vals = np.array(ds["beta_att"].transpose("range", "time"))
-            ldr = np.where((ldr >= 0.0) & (ldr <= 1.0), ldr, np.nan)
-            mask_threshold = 10 ** -6.5
-            ldr = np.where(beta_vals >= mask_threshold, ldr, np.nan)
-            fig.add_trace(
-                go.Heatmap(
-                    x=times,
-                    y=heights,
-                    z=ldr,
-                    zmin=lmin,
-                    zmax=lmax,
-                    coloraxis="coloraxis2",
-                    showscale=False,
-                ),
-                row=2,
-                col=1,
+    with _timed_perf("interactive_view_update", instrument=instrument, start=start, end=end) as perf:
+        if instrument == "Scanning Microwave Radiometer":
+            perf["view_type"] = "hatpro"
+            _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
+            return
+        if _is_wxcam_instrument(instrument):
+            perf["view_type"] = "wxcam"
+            _update_wxcam_view(start, end, var1_name, var2_name)
+            return
+        if _is_stacked_timeseries_instrument(instrument):
+            perf["view_type"] = "stacked_timeseries"
+            _update_stacked_timeseries_view(instrument, start, end)
+            return
+        perf["view_type"] = "heatmap"
+        bottom = max(float(bottom_val), 0.0)
+        top = max(float(top_val), bottom + 100.0)
+        ds = open_window(start, end, bottom_m=bottom, top_m=top, instrument=instrument)
+        cfg = _cfg()
+        vars_cfg = cfg["vars"]
+        var1 = vars_cfg.get(var1_name)
+        var2 = vars_cfg.get(var2_name)
+        bg = "white"
+        fg = "#222222"
+        grid = "#dddddd"
+        perf["time_count"] = int(ds.sizes.get("time", 0)) if ds is not None else 0
+        perf["range_count"] = int(ds.sizes.get("range", 0)) if ds is not None else 0
+        if ds is None or not ds.data_vars:
+            perf["status"] = "no_data"
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No data",
+                x=0.5,
+                y=0.5,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(color=fg, size=16),
             )
+            fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
+            _show_plot(fig)
+            return
+        if var1 and var1.get("log"):
+            b_cmin = np.log10(bmin)
+            b_cmax = np.log10(bmax)
+            b_tickvals = list(range(int(np.floor(b_cmin)), int(np.ceil(b_cmax)) + 1))
+            sup = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+            b_ticktext = [f"10{str(v).translate(sup)}" for v in b_tickvals]
         else:
-            times = pd.to_datetime(ds["time"].values)
-            heights = ds["range"].values
-            ldr = np.array(ds[var2_name].transpose("range", "time"))
-            fig.add_trace(
-                go.Heatmap(
-                    x=times,
-                    y=heights,
-                    z=ldr,
-                    zmin=lmin,
-                    zmax=lmax,
-                    coloraxis="coloraxis2",
-                    showscale=False,
-                ),
-                row=2,
-                col=1,
-            )
-    fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=1, col=1)
-    fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=2, col=1)
-    # Hourly ticks; add horizontal date annotations at 12:00.
-    tickvals = []
-    ticktext = []
-    noon_annots = []
-    if start and end:
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
-        duration = end_ts - start_ts
-        freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
-        hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
-        for t in hours:
-            tickvals.append(t.to_pydatetime())
-            ticktext.append(t.strftime("%H:%M"))
-            if t.hour == 12:  # add a date label at local noon
-                noon_annots.append(
-                    dict(
-                        x=t.to_pydatetime(),
-                        y=-0.06,
-                        xref="x",
-                        yref="paper",
-                        text=t.strftime("%Y-%m-%d"),
-                        showarrow=False,
-                        xanchor="center",
-                        yanchor="top",
-                        font=dict(size=14, color=fg),
-                    )
+            b_cmin, b_cmax = bmin, bmax
+            b_tickvals = None
+            b_ticktext = None
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            shared_yaxes=False,
+            vertical_spacing=0.08,
+            subplot_titles=(var1["label"] if var1 else "", var2["label"] if var2 else ""),
+        )
+        if var1 and var1_name in ds:
+            fig.add_trace(_make_plot(ds, var1_name, (bmin, bmax), var1.get("log", False), coloraxis="coloraxis"), row=1, col=1)
+        if var2 and var2_name in ds:
+            if var1_name == "beta_att" and var2_name == "linear_depol_ratio" and "beta_att" in ds:
+                times = pd.to_datetime(ds["time"].values)
+                heights = ds["range"].values
+                ldr = np.array(ds[var2_name].transpose("range", "time"))
+                beta_vals = np.array(ds["beta_att"].transpose("range", "time"))
+                ldr = np.where((ldr >= 0.0) & (ldr <= 1.0), ldr, np.nan)
+                mask_threshold = 10 ** -6.5
+                ldr = np.where(beta_vals >= mask_threshold, ldr, np.nan)
+                fig.add_trace(
+                    go.Heatmap(
+                        x=times,
+                        y=heights,
+                        z=ldr,
+                        zmin=lmin,
+                        zmax=lmax,
+                        coloraxis="coloraxis2",
+                        showscale=False,
+                    ),
+                    row=2,
+                    col=1,
                 )
-    fig.update_xaxes(
-        title_text="Date and Time (UTC)",
-        title_standoff=50,
-        tickmode="array",
-        tickvals=tickvals,
-        ticktext=ticktext,
-        tickangle=-45,
-        showgrid=True,
-        gridcolor=grid,
-        linecolor=fg,
-        tickfont=dict(color=fg, size=12),
-        title_font=dict(color=fg, size=12),
-        row=2,
-        col=1,
-    )
-    fig.update_xaxes(
-        tickmode="array",
-        tickvals=tickvals,
-        ticktext=ticktext,
-        tickangle=-45,
-        showgrid=True,
-        gridcolor=grid,
-        linecolor=fg,
-        tickfont=dict(color=fg, size=12),
-        title_font=dict(color=fg, size=12),
-        row=1,
-        col=1,
-    )
-    fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=fg, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=1, col=1)
-    fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=fg, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
-    # Keep both panels locked together when the user pans/zooms vertically.
-    fig.update_yaxes(matches="y", row=2, col=1)
-    fig.update_layout(
-        height=max(630, int(pn.state.viewport_height * 0.675)) if hasattr(pn.state, "viewport_height") else 810,
-        margin=dict(l=50, r=70, t=30, b=90),
-        coloraxis=dict(
-            colorscale=var1["colorscale"] if var1 else "Cividis",
-            cmin=b_cmin,
-            cmax=b_cmax,
-            colorbar=dict(
-                title=dict(text=var1["label"] if var1 else "", side="right"),
-                x=1.04,
-                y=0.77,
-                len=0.35,
-                tickvals=b_tickvals,
-                ticktext=b_ticktext,
-                tickfont=dict(color=fg, size=9),
+            else:
+                times = pd.to_datetime(ds["time"].values)
+                heights = ds["range"].values
+                ldr = np.array(ds[var2_name].transpose("range", "time"))
+                fig.add_trace(
+                    go.Heatmap(
+                        x=times,
+                        y=heights,
+                        z=ldr,
+                        zmin=lmin,
+                        zmax=lmax,
+                        coloraxis="coloraxis2",
+                        showscale=False,
+                    ),
+                    row=2,
+                    col=1,
+                )
+        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=1, col=1)
+        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=2, col=1)
+        tickvals = []
+        ticktext = []
+        noon_annots = []
+        if start and end:
+            start_ts = pd.Timestamp(start)
+            end_ts = pd.Timestamp(end)
+            duration = end_ts - start_ts
+            freq = "2h" if duration > pd.Timedelta(hours=24) else "h"
+            hours = pd.date_range(start=start_ts.floor("h"), end=end_ts.ceil("h"), freq=freq)
+            for t in hours:
+                tickvals.append(t.to_pydatetime())
+                ticktext.append(t.strftime("%H:%M"))
+                if t.hour == 12:
+                    noon_annots.append(
+                        dict(
+                            x=t.to_pydatetime(),
+                            y=-0.06,
+                            xref="x",
+                            yref="paper",
+                            text=t.strftime("%Y-%m-%d"),
+                            showarrow=False,
+                            xanchor="center",
+                            yanchor="top",
+                            font=dict(size=14, color=fg),
+                        )
+                    )
+        fig.update_xaxes(
+            title_text="Date and Time (UTC)",
+            title_standoff=50,
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            tickangle=-45,
+            showgrid=True,
+            gridcolor=grid,
+            linecolor=fg,
+            tickfont=dict(color=fg, size=12),
+            title_font=dict(color=fg, size=12),
+            row=2,
+            col=1,
+        )
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            tickangle=-45,
+            showgrid=True,
+            gridcolor=grid,
+            linecolor=fg,
+            tickfont=dict(color=fg, size=12),
+            title_font=dict(color=fg, size=12),
+            row=1,
+            col=1,
+        )
+        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=fg, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=1, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=fg, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
+        fig.update_yaxes(matches="y", row=2, col=1)
+        fig.update_layout(
+            height=max(630, int(pn.state.viewport_height * 0.675)) if hasattr(pn.state, "viewport_height") else 810,
+            margin=dict(l=50, r=70, t=30, b=90),
+            coloraxis=dict(
+                colorscale=var1["colorscale"] if var1 else "Cividis",
+                cmin=b_cmin,
+                cmax=b_cmax,
+                colorbar=dict(
+                    title=dict(text=var1["label"] if var1 else "", side="right"),
+                    x=1.04,
+                    y=0.77,
+                    len=0.35,
+                    tickvals=b_tickvals,
+                    ticktext=b_ticktext,
+                    tickfont=dict(color=fg, size=9),
+                ),
             ),
-        ),
-        coloraxis2=dict(
-            colorscale=var2["colorscale"] if var2 else "Viridis",
-            cmin=lmin,
-            cmax=lmax,
-            colorbar=dict(title=dict(text=var2["label"] if var2 else "", side="right"), x=1.04, y=0.27, len=0.35, tickfont=dict(color=fg, size=9)),
-        ),
-        paper_bgcolor=bg,
-        plot_bgcolor=bg,
-        font=dict(color=fg, size=13),
-        annotations=tuple(list(fig.layout.annotations) + noon_annots),
-    )
-    _show_plot(fig)
+            coloraxis2=dict(
+                colorscale=var2["colorscale"] if var2 else "Viridis",
+                cmin=lmin,
+                cmax=lmax,
+                colorbar=dict(title=dict(text=var2["label"] if var2 else "", side="right"), x=1.04, y=0.27, len=0.35, tickfont=dict(color=fg, size=9)),
+            ),
+            paper_bgcolor=bg,
+            plot_bgcolor=bg,
+            font=dict(color=fg, size=13),
+            annotations=tuple(list(fig.layout.annotations) + noon_annots),
+        )
+        perf["status"] = "ok"
+        perf["trace_count"] = len(fig.data)
+        _show_plot(fig)
 
 
 def _parse_relayout_time(val):
@@ -1847,29 +2039,40 @@ _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
 
 
 def _sync_wxcam_calendar_hour(*_events):
-    if not _is_wxcam_instrument(calendar_instrument.value):
-        wxcam_calendar_state.selected_hour_path = ""
-        return
-    selected_day = ql_date.value
-    selection = calendar_image_type.value or _cfg("wxcam")["default_top"]
-    day_token = _wxcam_calendar_day_token(selected_day)
-    day_utc = _wxcam_day_token_to_utc(day_token or "")
-    if not day_utc:
-        wxcam_calendar_state.selected_hour_path = ""
-        return
-    image_type = _image_type_from_selection(selection)
-    rows_by_hour = representative_hourly_records(
-        _wxcam_catalog_path("wxcam"),
-        image_type,
-        day_utc,
-        media_kind="image",
-    )
-    available_paths = [str(row["raw_path"]) for row in rows_by_hour.values()]
-    if not available_paths:
-        wxcam_calendar_state.selected_hour_path = ""
-        return
-    if wxcam_calendar_state.selected_hour_path not in available_paths:
-        wxcam_calendar_state.selected_hour_path = ""
+    with _timed_perf(
+        "wxcam_calendar_sync",
+        instrument="wxcam",
+        selected_day=ql_date.value,
+        selection=calendar_image_type.value,
+    ) as perf:
+        if not _is_wxcam_instrument(calendar_instrument.value):
+            perf["status"] = "non_wxcam"
+            wxcam_calendar_state.selected_hour_path = ""
+            return
+        selected_day = ql_date.value
+        selection = calendar_image_type.value or _cfg("wxcam")["default_top"]
+        day_token = _wxcam_calendar_day_token(selected_day)
+        day_utc = _wxcam_day_token_to_utc(day_token or "")
+        if not day_utc:
+            perf["status"] = "invalid_day"
+            wxcam_calendar_state.selected_hour_path = ""
+            return
+        image_type = _image_type_from_selection(selection)
+        rows_by_hour = representative_hourly_records(
+            _wxcam_catalog_path("wxcam"),
+            image_type,
+            day_utc,
+            media_kind="image",
+        )
+        available_paths = [str(row["raw_path"]) for row in rows_by_hour.values()]
+        perf["hour_count"] = len(rows_by_hour)
+        if not available_paths:
+            perf["status"] = "empty"
+            wxcam_calendar_state.selected_hour_path = ""
+            return
+        if wxcam_calendar_state.selected_hour_path not in available_paths:
+            wxcam_calendar_state.selected_hour_path = ""
+        perf["status"] = "ok"
 
 
 calendar_instrument.param.watch(_sync_wxcam_calendar_hour, "value")
@@ -1933,29 +2136,41 @@ def _build_wxcam_hour_tile(
 
 
 def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour_path: str):
-    day_utc = _wxcam_day_token_to_utc(day_token)
-    if not day_utc:
-        return pn.pane.Markdown("No hourly images available for this selection.")
-    image_type = _image_type_from_selection(selection)
-    rows_by_hour = representative_hourly_records(
-        _wxcam_catalog_path("wxcam"),
-        image_type,
-        day_utc,
-        media_kind="image",
-    )
-    if not rows_by_hour:
-        return pn.pane.Markdown("No hourly images available for this selection.")
-    tiles = [
-        _build_wxcam_hour_tile(image_type, day_token, hour_index, rows_by_hour.get(hour_index), selected_hour_path)
-        for hour_index in range(24)
-    ]
-    grid = pn.GridBox(*tiles, ncols=8, sizing_mode="stretch_width")
-    selected_row = next((row for row in rows_by_hour.values() if str(row["raw_path"]) == selected_hour_path), None)
-    if selected_row is None:
-        return pn.Column(grid, sizing_mode="stretch_width")
-    selected_hour_label = str(selected_row["time_utc"])[11:16] + " UTC"
-    viewer = _build_wxcam_image_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
-    return pn.Column(grid, viewer, sizing_mode="stretch_width")
+    with _timed_perf(
+        "wxcam_calendar_day_view",
+        instrument="wxcam",
+        selection=selection,
+        day_token=day_token,
+        selected_hour_path=selected_hour_path,
+    ) as perf:
+        day_utc = _wxcam_day_token_to_utc(day_token)
+        if not day_utc:
+            perf["status"] = "invalid_day"
+            return pn.pane.Markdown("No hourly images available for this selection.")
+        image_type = _image_type_from_selection(selection)
+        rows_by_hour = representative_hourly_records(
+            _wxcam_catalog_path("wxcam"),
+            image_type,
+            day_utc,
+            media_kind="image",
+        )
+        perf["hour_count"] = len(rows_by_hour)
+        if not rows_by_hour:
+            perf["status"] = "empty"
+            return pn.pane.Markdown("No hourly images available for this selection.")
+        tiles = [
+            _build_wxcam_hour_tile(image_type, day_token, hour_index, rows_by_hour.get(hour_index), selected_hour_path)
+            for hour_index in range(24)
+        ]
+        grid = pn.GridBox(*tiles, ncols=8, sizing_mode="stretch_width")
+        selected_row = next((row for row in rows_by_hour.values() if str(row["raw_path"]) == selected_hour_path), None)
+        if selected_row is None:
+            perf["status"] = "grid_only"
+            return pn.Column(grid, sizing_mode="stretch_width")
+        selected_hour_label = str(selected_row["time_utc"])[11:16] + " UTC"
+        viewer = _build_wxcam_image_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
+        perf["status"] = "with_viewer"
+        return pn.Column(grid, viewer, sizing_mode="stretch_width")
 
 
 @pn.depends(
@@ -1967,15 +2182,19 @@ def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour
 def _quicklook_image(selected, calendar_inst, wxcam_selection, selected_hour_path):
     """Show the selected quicklook asset (or a message if missing)."""
     instrument = calendar_inst or CURRENT_INSTRUMENT
-    if _is_wxcam_instrument(instrument):
-        selection = wxcam_selection or _cfg("wxcam")["default_top"]
-        day_token = _wxcam_calendar_day_token(selected)
-        return _build_wxcam_calendar_day_view(selection, day_token or "", selected_hour_path)
-    # Use the latest map in case files changed since last refresh.
-    path = _quicklook_options(instrument).get(selected)
-    if path and Path(path).exists():
-        return _media_pane(path)
-    return pn.pane.Markdown("No image available for this selection.")
+    with _timed_perf("calendar_render", instrument=instrument, selected=selected) as perf:
+        if _is_wxcam_instrument(instrument):
+            selection = wxcam_selection or _cfg("wxcam")["default_top"]
+            perf["selection"] = selection
+            day_token = _wxcam_calendar_day_token(selected)
+            return _build_wxcam_calendar_day_view(selection, day_token or "", selected_hour_path)
+        path = _quicklook_options(instrument).get(selected)
+        perf["path"] = path
+        if path and Path(path).exists():
+            perf["status"] = "ok"
+            return _media_pane(path)
+        perf["status"] = "missing_file"
+        return pn.pane.Markdown("No image available for this selection.")
 
 
 ACCENT = "#0b7285"  # header/accent color

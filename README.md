@@ -89,6 +89,39 @@ sudo systemctl list-timers --all | rg '^.*aurora-'
 sudo journalctl -u aurora-dashboard.service -f
 ```
 
+## Performance logging
+
+The dashboard writes structured JSONL timing events to:
+
+- `/data/aurora/products/dashboard/dashboard_perf.jsonl`
+
+The log rotates automatically. You can change the path and rotation settings with:
+
+- `AURORA_DASHBOARD_PERF_LOG`
+- `AURORA_DASHBOARD_PERF_LOG_MAX_BYTES`
+- `AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT`
+- `AURORA_DASHBOARD_PERF_ENABLED`
+
+Useful commands:
+
+```bash
+tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
+/opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 24
+/opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 6 --event interactive_view_update
+```
+
+The main event families currently logged are:
+
+- `base_dataset_open`
+- `dataset_time_bounds`
+- `window_open`
+- `interactive_view_update`
+- `hatpro_render`
+- `stacked_timeseries_render`
+- `calendar_render`
+- `wxcam_interactive_render`
+- `wxcam_calendar_day_view`
+
 ## Running locally
 
 ```bash
