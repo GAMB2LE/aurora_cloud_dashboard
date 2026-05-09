@@ -20,6 +20,7 @@ from matplotlib.dates import HourLocator, DateFormatter
 import numpy as np
 import pandas as pd
 import xarray as xr
+from extra_housekeeping import extra_housekeeping_daily_png, plot_ceilometer_housekeeping
 
 # --- Paths and constants ---
 APP_DIR = Path(__file__).resolve().parent
@@ -127,7 +128,8 @@ def main():
 
     for d in dates:
         out_path = QUICKLOOK_DIR / f"ceilometer_{pd.Timestamp(d).strftime('%Y%m%d')}.png"
-        if out_path.exists():
+        hk_out = extra_housekeeping_daily_png(QUICKLOOK_DIR, "Ceilometer", d)
+        if out_path.exists() and hk_out is not None and hk_out.exists():
             continue
         start = pd.Timestamp(d)
         if tz is not None:
@@ -146,7 +148,11 @@ def main():
         times = pd.to_datetime(ds_day["time"].values)
         if len(times) < 2 or (times.max() - times.min()) < np.timedelta64(1, "h"):
             continue
-        _plot_day(ds_day, range_coord, pd.Timestamp(d).strftime("%Y-%m-%d"), out_path)
+        if not out_path.exists():
+            _plot_day(ds_day, range_coord, pd.Timestamp(d).strftime("%Y-%m-%d"), out_path)
+        if hk_out is not None and not hk_out.exists():
+            hk_title = pd.Timestamp(d).strftime("HK_Ceilometer - %Y-%m-%d")
+            plot_ceilometer_housekeeping(ds_day, hk_title, hk_out)
 
 
 if __name__ == "__main__":
@@ -160,6 +166,8 @@ if __name__ == "__main__":
 
     if args.force and QUICKLOOK_DIR.exists():
         for png in QUICKLOOK_DIR.glob("ceilometer_*.png"):
+            png.unlink()
+        for png in QUICKLOOK_DIR.glob("ceilometer__hk_ceilometer__*.png"):
             png.unlink()
         print("Deleted existing quicklook PNGs.")
 

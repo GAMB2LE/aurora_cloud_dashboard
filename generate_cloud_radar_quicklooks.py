@@ -15,6 +15,7 @@ from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
+from extra_housekeeping import extra_housekeeping_daily_png, plot_cloud_radar_housekeeping
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
@@ -104,11 +105,14 @@ def main(force: bool = False):
     if force:
         for png in QUICKLOOK_DIR.glob("cloud_radar_*.png"):
             png.unlink()
+        for png in QUICKLOOK_DIR.glob("cloud_radar__hk_radar__*.png"):
+            png.unlink()
         print("Deleted existing quicklook PNGs.")
 
     for d in dates:
         out = QUICKLOOK_DIR / f"cloud_radar_{pd.Timestamp(d).strftime('%Y%m%d')}.png"
-        if out.exists():
+        hk_out = extra_housekeeping_daily_png(QUICKLOOK_DIR, "Cloud Radar", d)
+        if out.exists() and hk_out is not None and hk_out.exists():
             continue
         start = pd.Timestamp(d)
         end = start + timedelta(days=1) - timedelta(milliseconds=1)
@@ -119,7 +123,11 @@ def main(force: bool = False):
         ds_day = ds_day.sel({"range": slice(0, RANGE_MAX)})
         if ds_day.sizes.get("time", 0) < 2:
             continue
-        _plot_day(ds_day, pd.Timestamp(d).strftime("%Y-%m-%d"), out)
+        if not out.exists():
+            _plot_day(ds_day, pd.Timestamp(d).strftime("%Y-%m-%d"), out)
+        if hk_out is not None and not hk_out.exists():
+            hk_title = pd.Timestamp(d).strftime("HK_Radar - %Y-%m-%d")
+            plot_cloud_radar_housekeeping(ds_day, hk_title, hk_out)
 
 
 if __name__ == "__main__":

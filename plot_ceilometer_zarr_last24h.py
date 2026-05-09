@@ -15,6 +15,9 @@ from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pathlib import Path
+
+from extra_housekeeping import extra_housekeeping_latest_png, plot_ceilometer_housekeeping
 
 BETA_CMAP = "cividis"
 
@@ -131,6 +134,11 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
     fig.subplots_adjust(bottom=0.22)
     fig.savefig(output_png, dpi=150)
     print(f"Wrote {output_png}")
+
+    hk_output = extra_housekeeping_latest_png(Path(output_png).parent, "Ceilometer")
+    if hk_output is not None:
+        hk_title = "HK_Ceilometer - Latest 24 hours"
+        plot_ceilometer_housekeeping(ds_window, hk_title, hk_output)
 
 
 if __name__ == "__main__":

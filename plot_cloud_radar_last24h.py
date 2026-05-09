@@ -15,6 +15,7 @@ from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
+from extra_housekeeping import extra_housekeeping_latest_png, plot_cloud_radar_housekeeping
 
 ZARR_DEFAULT = Path("/mnt/data/ass/rpgfmcw94/cloud_radar.zarr")
 OUTPUT_DEFAULT = Path("last24h_cloudradar.png")
@@ -95,6 +96,9 @@ def plot_last_24h(zarr_path: Path, output: Path):
     fig.subplots_adjust(top=0.96, bottom=0.22, hspace=0.18)
     fig.savefig(output, dpi=150)
     print(f"Wrote {output}")
+    hk_output = extra_housekeeping_latest_png(output.parent, "Cloud Radar")
+    if hk_output is not None:
+        plot_cloud_radar_housekeeping(window, "HK_Radar - Latest 24 hours", hk_output)
 
 
 def main():

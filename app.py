@@ -33,6 +33,7 @@ from grouped_timeseries import (
     default_calendar_label,
     default_interactive_label,
     display_name,
+    housekeeping_label,
     housekeeping_daily_png,
     housekeeping_latest_png,
     is_summary_instrument,
@@ -40,6 +41,12 @@ from grouped_timeseries import (
     summary_latest_png,
     summary_source_instruments,
     widget_group_options,
+)
+from extra_housekeeping import (
+    extra_housekeeping_daily_png,
+    extra_housekeeping_label,
+    extra_housekeeping_latest_png,
+    extra_housekeeping_tokens,
 )
 from wxcam_catalog import (
     available_days,
@@ -1978,6 +1985,27 @@ def _empty_quicklook_options(mode: str) -> dict[str, None]:
     return {"No images available": None}
 
 
+def _housekeeping_quicklook_label(inst: str) -> str | None:
+    return housekeeping_label(inst) if _is_stacked_timeseries_instrument(inst) else extra_housekeeping_label(inst)
+
+
+def _housekeeping_latest_path(inst: str, quick_dir: Path) -> Path | None:
+    return housekeeping_latest_png(quick_dir, inst) if _is_stacked_timeseries_instrument(inst) else extra_housekeeping_latest_png(quick_dir, inst)
+
+
+def _housekeeping_daily_path(inst: str, quick_dir: Path, token: str) -> Path | None:
+    return housekeeping_daily_png(quick_dir, inst, token) if _is_stacked_timeseries_instrument(inst) else extra_housekeeping_daily_png(quick_dir, inst, token)
+
+
+def _housekeeping_tokens(inst: str, quick_dir: Path) -> list[str]:
+    if _is_stacked_timeseries_instrument(inst):
+        label = _housekeeping_quicklook_label(inst)
+        if label is None:
+            return []
+        return [token for token in calendar_date_tokens(quick_dir, inst) if (_housekeeping_daily_path(inst, quick_dir, token) or Path()).exists()]
+    return extra_housekeeping_tokens(quick_dir, inst)
+
+
 def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = None, mode: str = "science"):
     """Build a mapping of label -> quicklook asset token/path for a quicklook mode."""
     inst = inst or CURRENT_INSTRUMENT
@@ -1996,16 +2024,25 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
             if summary_latest_png(quick_dir, inst).exists():
                 opts["Today (latest)"] = "latest"
         elif mode == "housekeeping" and quick_dir.exists():
-            hk_latest = housekeeping_latest_png(quick_dir, inst)
-            for token in calendar_date_tokens(quick_dir, inst):
-                hk_path = housekeeping_daily_png(quick_dir, inst, token)
+            hk_latest = _housekeeping_latest_path(inst, quick_dir)
+            for token in _housekeeping_tokens(inst, quick_dir):
+                hk_path = _housekeeping_daily_path(inst, quick_dir, token)
                 if hk_path and hk_path.exists():
                     opts[token] = token
             if hk_latest and hk_latest.exists():
                 opts["Today (latest)"] = "latest"
         return opts or _empty_quicklook_options(mode)
     if mode == "housekeeping":
-        return _empty_quicklook_options(mode)
+        quick_dir = cfg["quicklook_dir"]
+        hk_latest = _housekeeping_latest_path(inst, quick_dir)
+        if quick_dir.exists():
+            for token in _housekeeping_tokens(inst, quick_dir):
+                hk_path = _housekeeping_daily_path(inst, quick_dir, token)
+                if hk_path and hk_path.exists():
+                    opts[token] = token
+            if hk_latest and hk_latest.exists():
+                opts["Today (latest)"] = "latest"
+        return opts or _empty_quicklook_options(mode)
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -2499,15 +2536,16 @@ def _housekeeping_quicklook_image(selected, hk_inst):
     """Show the selected housekeeping quicklook asset (or a message if missing)."""
     instrument = hk_inst or CURRENT_INSTRUMENT
     with _timed_perf("housekeeping_quicklook_render", instrument=instrument, selected=selected) as perf:
-        if not _is_stacked_timeseries_instrument(instrument):
+        quick_dir = _cfg(instrument)["quicklook_dir"]
+        hk_label = _housekeeping_quicklook_label(instrument)
+        if hk_label is None:
             perf["status"] = "unsupported"
             return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
         token = _quicklook_options(instrument, mode="housekeeping").get(selected)
-        quick_dir = _cfg(instrument)["quicklook_dir"]
         if token is None:
             perf["status"] = "missing_file"
             return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
-        path = housekeeping_latest_png(quick_dir, instrument) if token == "latest" else housekeeping_daily_png(quick_dir, instrument, token)
+        path = _housekeeping_latest_path(instrument, quick_dir) if token == "latest" else _housekeeping_daily_path(instrument, quick_dir, token)
         perf["path"] = path
         if path and path.exists():
             perf["status"] = "ok"
