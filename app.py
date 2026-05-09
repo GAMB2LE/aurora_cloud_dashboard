@@ -7,7 +7,6 @@
 # - Lightweight coarsening and subsampling to keep plots responsive.
 
 import os
-import subprocess
 from base64 import b64encode
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
@@ -53,9 +52,7 @@ from extra_housekeeping import (
 from wxcam_catalog import (
     available_days,
     catalog_time_bounds,
-    latest_records,
     latest_record,
-    records_for_day,
     representative_hourly_records,
 )
 
@@ -93,7 +90,6 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
     title = param.String(default="")
     subtitle = param.String(default="")
     mode_class = param.String(default="wxcam-player--wide")
-    initial_seconds = param.Number(default=0.0)
 
     _template = """
     <div id="player_shell" class="wxcam-player ${mode_class}">
@@ -154,16 +150,6 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
           duration.textContent = "00:00";
           play_btn.textContent = "Play";
           speed_select.value = "1";
-          video_el.dataset.pendingSeek = String(initial_seconds || 0);
-        """,
-        "initial_seconds": """
-          const nextTime = Number(initial_seconds || 0);
-          if (Number.isFinite(video_el.duration) && video_el.duration > 0) {
-            video_el.currentTime = Math.max(0, Math.min(video_el.duration, nextTime));
-            view.run_script('sync_time');
-          } else {
-            video_el.dataset.pendingSeek = String(nextTime);
-          }
         """,
         "toggle_play": """
           if (video_el.paused) {
@@ -217,16 +203,8 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
           current_time.textContent = formatTime(video_el.currentTime || 0);
           duration.textContent = formatTime(durationSeconds);
           seek_slider.value = 0;
-          if (video_el.dataset.pendingSeek) {
-            const requestedTime = Number(video_el.dataset.pendingSeek || 0);
-            if (Number.isFinite(requestedTime) && requestedTime > 0) {
-              video_el.currentTime = Math.max(0, Math.min(durationSeconds, requestedTime));
-            }
-            video_el.dataset.pendingSeek = "";
-          }
           video_el.loop = loop_toggle.checked;
           video_el.playbackRate = Number(speed_select.value || 1);
-          view.run_script('sync_time');
           view.run_script('sync_play_state');
           view.run_script('sync_speed_state');
         """,
@@ -2284,10 +2262,6 @@ def _wxcam_daily_video_dir(image_type: str) -> Path:
     return _wxcam_daily_video_root() / image_type
 
 
-def _wxcam_is_latest_label(label: str | None) -> bool:
-    return label == "Today (latest)"
-
-
 def _wxcam_row_time(row) -> datetime | None:
     if not row:
         return None
@@ -2314,81 +2288,24 @@ def _humanize_age(moment: datetime | None) -> str:
     days = hours // 24
     return f"Updated {days} d ago"
 
-
-@lru_cache(maxsize=2048)
-def _cached_media_duration_seconds(path_str: str, size_bytes: int, mtime_ns: int) -> float:
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                path_str,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return 0.0
-        return max(0.0, float((result.stdout or "0").strip() or 0.0))
-    except Exception:
-        return 0.0
-
-
-def _media_duration_seconds(path: Path) -> float:
-    stat_result = path.stat()
-    return _cached_media_duration_seconds(str(path), stat_result.st_size, stat_result.st_mtime_ns)
-
-
-def _wxcam_recent_video_rows(image_type: str, limit: int = 24):
-    return latest_records(_wxcam_catalog_path("wxcam"), image_type, media_kind="video", limit=limit)
-
-
 def _wxcam_video_context(selection: str, selected_label: str | None) -> dict[str, object]:
     image_type = _image_type_from_selection(selection)
     path_str = _wxcam_interactive_video_options(selection).get(selected_label)
     if not path_str:
         return {}
     video_path = Path(path_str)
-    latest_mode = _wxcam_is_latest_label(selected_label)
-    if latest_mode:
-        video_rows = _wxcam_recent_video_rows(image_type, limit=24)
-        filmstrip_mode = "recent"
-        day_token = _wxcam_today_token()
-        headline = "Rolling latest 24 hours"
-    else:
-        day_token = selected_label or ""
-        day_utc = _wxcam_day_token_to_utc(day_token)
-        video_rows = records_for_day(_wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="video") if day_utc else []
-        filmstrip_mode = "day"
-        headline = pd.Timestamp(day_utc).strftime("%Y-%m-%d UTC") if day_utc else (selected_label or "Selected day")
-
-    jump_points: dict[str, float] = {"Start of video": 0.0}
-    running_seconds = 0.0
-    for row in video_rows:
-        row_time = _wxcam_row_time(row)
-        if row_time is None:
-            continue
-        if latest_mode:
-            label = row_time.strftime("%m-%d %H:00")
-        else:
-            label = row_time.strftime("%H:00 UTC")
-        jump_points[label] = running_seconds
-        raw_path = Path(str(row["raw_path"]))
-        running_seconds += _media_duration_seconds(raw_path) if raw_path.exists() else 0.0
-
-    last_row = video_rows[-1] if video_rows else latest_record(_wxcam_catalog_path("wxcam"), image_type, media_kind="video")
+    latest_mode = selected_label == "Today (latest)"
+    day_token = _wxcam_today_token() if latest_mode else (selected_label or "")
+    headline = "Rolling latest 24 hours" if latest_mode else (
+        pd.Timestamp(_wxcam_day_token_to_utc(day_token)).strftime("%Y-%m-%d UTC")
+        if _wxcam_day_token_to_utc(day_token)
+        else (selected_label or "Selected day")
+    )
+    last_row = latest_record(_wxcam_catalog_path("wxcam"), image_type, media_kind="video")
     last_time = _wxcam_row_time(last_row)
     last_clip_text = last_time.strftime("%H:%M UTC") if last_time else "n/a"
-    clip_count = len(video_rows)
     subtitle_bits = [
         _humanize_age(last_time),
-        f"{clip_count} hourly clips" if clip_count else "No hourly clips indexed",
         f"Last clip {last_clip_text}",
     ]
     return {
@@ -2396,37 +2313,16 @@ def _wxcam_video_context(selection: str, selected_label: str | None) -> dict[str
         "image_type": image_type,
         "selected_label": selected_label or "",
         "headline": headline,
-        "filmstrip_mode": filmstrip_mode,
         "day_token": day_token,
-        "video_rows": video_rows,
-        "jump_points": jump_points,
         "title": f"{selection} | {headline}",
         "subtitle": " | ".join(bit for bit in subtitle_bits if bit),
     }
 
 
-def _wxcam_recent_strip_markup(video_rows: list[object], selected_jump: str | None) -> str:
-    cells: list[str] = []
-    for row in video_rows:
-        row_time = _wxcam_row_time(row)
-        if row_time is None:
-            continue
-        label = row_time.strftime("%m-%d %H")
-        active = " wxcam-hour-strip__tile--active" if selected_jump == row_time.strftime("%m-%d %H:00") else ""
-        cells.append(
-            "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--recent"
-            f"{active}'><div class='wxcam-hour-strip__hour'>{escape(label)}</div>"
-            "<div class='wxcam-hour-strip__chip'>Recent</div></div>"
-        )
-    if not cells:
-        return "<div class='wxcam-hour-strip__empty'>Recent hourly clips have not been indexed yet.</div>"
-    return "".join(cells)
-
-
-def _wxcam_day_strip_markup(image_type: str, day_token: str, selected_jump: str | None) -> str:
+def _wxcam_day_strip_markup(image_type: str, day_token: str) -> str:
     day_utc = _wxcam_day_token_to_utc(day_token)
     if not day_utc:
-        return "<div class='wxcam-hour-strip__empty'>Hourly previews are unavailable for this selection.</div>"
+        return ""
     hourly_rows = representative_hourly_records(
         _wxcam_catalog_path("wxcam"),
         image_type,
@@ -2437,7 +2333,6 @@ def _wxcam_day_strip_markup(image_type: str, day_token: str, selected_jump: str 
     for hour in range(24):
         row = hourly_rows.get(hour)
         hour_label = f"{hour:02d}"
-        active = " wxcam-hour-strip__tile--active" if selected_jump == f"{hour:02d}:00 UTC" else ""
         if row is None:
             cells.append(
                 "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--empty'>"
@@ -2451,8 +2346,7 @@ def _wxcam_day_strip_markup(image_type: str, day_token: str, selected_jump: str 
         else:
             image_markup = f"<div class='wxcam-hour-strip__placeholder'>{hour_label}</div>"
         cells.append(
-            "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--day"
-            f"{active}'>"
+            "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--day'>"
             f"{image_markup}"
             f"<div class='wxcam-hour-strip__hour'>{hour_label}</div>"
             "</div>"
@@ -2460,22 +2354,21 @@ def _wxcam_day_strip_markup(image_type: str, day_token: str, selected_jump: str 
     return "".join(cells)
 
 
-def _wxcam_hour_strip_markup(selection: str, selected_label: str | None, selected_jump: str | None) -> str:
+def _wxcam_hour_strip_markup(selection: str, selected_label: str | None) -> str:
     context = _wxcam_video_context(selection, selected_label)
     if not context:
-        return "<div class='wxcam-hour-strip__empty'>No hourly previews are available for this selection.</div>"
+        return ""
+    if selected_label == "Today (latest)":
+        return ""
     image_type = str(context["image_type"])
-    if context["filmstrip_mode"] == "recent":
-        body = _wxcam_recent_strip_markup(list(context["video_rows"]), selected_jump)
-        legend = "Recent hourly clip strip"
-    else:
-        body = _wxcam_day_strip_markup(image_type, str(context["day_token"]), selected_jump)
-        legend = "Representative hourly stills"
+    body = _wxcam_day_strip_markup(image_type, str(context["day_token"]))
+    if not body:
+        return ""
     return (
         "<div class='wxcam-hour-strip'>"
         "<div class='wxcam-hour-strip__header'>"
-        f"<div class='wxcam-hour-strip__title'>{escape(legend)}</div>"
-        "<div class='wxcam-hour-strip__hint'>Use Jump to hour for an exact seek into the stitched movie.</div>"
+        "<div class='wxcam-hour-strip__title'>Representative hourly stills</div>"
+        "<div class='wxcam-hour-strip__hint'>Historical days keep a small hourly image strip for quick visual scanning.</div>"
         "</div>"
         f"<div class='wxcam-hour-strip__scroller'>{body}</div>"
         "</div>"
@@ -2591,9 +2484,9 @@ wxcam_player = WxcamVideoPlayer(sizing_mode="stretch_width")
 wxcam_player_shell = pn.Column(wxcam_player, sizing_mode="stretch_width")
 
 
-def _build_wxcam_video_view(path: Path, selection: str, selected_label: str, context: dict[str, object], jump_seconds: float):
+def _build_wxcam_video_view(path: Path, selection: str, selected_label: str, context: dict[str, object]):
     image_type = _image_type_from_selection(selection)
-    with _timed_perf("wxcam_video_view_build", instrument="wxcam", image_type=image_type, path=path, selected_label=selected_label, jump_seconds=jump_seconds) as perf:
+    with _timed_perf("wxcam_video_view_build", instrument="wxcam", image_type=image_type, path=path, selected_label=selected_label) as perf:
         mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
         title = str(context.get("title", f"{selection} | {selected_label}"))
         subtitle = str(context.get("subtitle", ""))
@@ -2603,7 +2496,6 @@ def _build_wxcam_video_view(path: Path, selection: str, selected_label: str, con
         wxcam_player.title = title
         wxcam_player.subtitle = subtitle
         wxcam_player.mode_class = mode_class
-        wxcam_player.initial_seconds = float(jump_seconds or 0.0)
         return wxcam_player_shell
 
 
@@ -2642,8 +2534,6 @@ if _wxcam_ql_options:
 wxcam_latest = pn.widgets.Button(name="Latest", button_type="primary")
 wxcam_prev = pn.widgets.Button(name="Previous", button_type="default")
 wxcam_next = pn.widgets.Button(name="Next", button_type="default")
-_wxcam_jump_options: dict[str, float] = {"Start of video": 0.0}
-wxcam_jump_hour = pn.widgets.Select(name="Jump to hour", options=list(_wxcam_jump_options.keys()), value="Start of video")
 
 
 def _refresh_wxcam_ql_options(preserve_current: bool = True):
@@ -2659,16 +2549,6 @@ def _refresh_wxcam_ql_options(preserve_current: bool = True):
         wxcam_date.value = current
     else:
         wxcam_date.value = opts[-1]
-
-
-def _refresh_wxcam_jump_options(preserve_current: bool = True):
-    global _wxcam_jump_options
-    current = wxcam_jump_hour.value if preserve_current else None
-    context = _wxcam_video_context(wxcam_image_type.value or _cfg("wxcam")["default_top"], wxcam_date.value)
-    _wxcam_jump_options = dict(context.get("jump_points", {"Start of video": 0.0}))
-    option_labels = list(_wxcam_jump_options.keys()) or ["Start of video"]
-    wxcam_jump_hour.options = option_labels
-    wxcam_jump_hour.value = current if preserve_current and current in option_labels else option_labels[0]
 
 
 def _shift_wxcam_ql(delta: int):
@@ -2699,14 +2579,9 @@ def _go_wxcam_latest(_event=None):
             wxcam_date.value = opts[-1]
 
 
-def _on_wxcam_date_change(event):
-    _refresh_wxcam_jump_options(preserve_current=False)
-
-
 wxcam_latest.on_click(_go_wxcam_latest)
 wxcam_prev.on_click(lambda _e: _shift_wxcam_ql(-1))
 wxcam_next.on_click(lambda _e: _shift_wxcam_ql(1))
-wxcam_date.param.watch(_on_wxcam_date_change, "value")
 
 
 class WxcamSelectionState(param.Parameterized):
@@ -2726,17 +2601,10 @@ def _refresh_wxcam_latest_if_needed():
 _wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
 
 
-def _on_wxcam_jump_change(event):
-    wxcam_player.initial_seconds = float(_wxcam_jump_options.get(event.new, 0.0))
-
-
-wxcam_jump_hour.param.watch(_on_wxcam_jump_change, "value")
-
-
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
 def _wxcam_interactive_media(selected, selection):
     selection = selection or _cfg("wxcam")["default_top"]
-    with _timed_perf("wxcam_interactive_render", instrument="wxcam", selection=selection, selected=selected, jump_label=wxcam_jump_hour.value) as perf:
+    with _timed_perf("wxcam_interactive_render", instrument="wxcam", selection=selection, selected=selected) as perf:
         context = _wxcam_video_context(selection, selected)
         path = context.get("path")
         if not path:
@@ -2747,17 +2615,15 @@ def _wxcam_interactive_media(selected, selection):
         if not video_path.exists():
             perf["status"] = "missing_file"
             return pn.pane.Markdown("No media available for this selection.")
-        jump_seconds = float(_wxcam_jump_options.get(wxcam_jump_hour.value, 0.0))
-        perf["jump_seconds"] = jump_seconds
         perf["status"] = "ok"
-        return _build_wxcam_video_view(video_path, selection, selected or "", context, jump_seconds)
+        return _build_wxcam_video_view(video_path, selection, selected or "", context)
 
 
-@pn.depends(wxcam_date.param.value, wxcam_image_type.param.value, wxcam_jump_hour.param.value)
-def _wxcam_interactive_hour_strip(selected, selection, jump_label):
+@pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
+def _wxcam_interactive_hour_strip(selected, selection):
     selection = selection or _cfg("wxcam")["default_top"]
     return pn.pane.HTML(
-        _wxcam_hour_strip_markup(selection, selected, jump_label),
+        _wxcam_hour_strip_markup(selection, selected),
         sizing_mode="stretch_width",
         margin=0,
     )
@@ -2769,7 +2635,7 @@ def _wxcam_interactive_hour_strip(selected, selection, jump_label):
 wxcam_interactive_browser = pn.Column(
     pn.Card(
         pn.Row(wxcam_image_type, wxcam_latest, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(wxcam_prev, wxcam_date, wxcam_next, wxcam_jump_hour, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(wxcam_prev, wxcam_date, wxcam_next, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         title="",
         collapsible=False,
         sizing_mode="stretch_width",
@@ -2780,9 +2646,6 @@ wxcam_interactive_browser = pn.Column(
     sizing_mode="stretch_width",
     css_classes=["wxcam-browser"],
 )
-
-
-_refresh_wxcam_jump_options(preserve_current=False)
 
 wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
 
