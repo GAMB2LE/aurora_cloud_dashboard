@@ -158,7 +158,9 @@ def iter_raw_images(root: Path, image_type: str | None = None) -> Iterable[tuple
             continue
         patterns = [spec["image_glob"], spec["video_glob"]]
         for pattern in patterns:
-            for path in sorted(stream_root.rglob(pattern)):
+            # Newest-first ordering helps the live catalog catch current coverage
+            # sooner during long backfill scans.
+            for path in sorted(stream_root.rglob(pattern), reverse=True):
                 if path.is_file():
                     yield current_type, path
 

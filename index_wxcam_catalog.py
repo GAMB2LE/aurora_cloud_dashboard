@@ -11,6 +11,7 @@ from wxcam_catalog import build_bootstrap_record, build_record, ensure_schema, e
 
 ROOT_DEFAULT = Path("/project/aurora/raw/wxcam")
 CATALOG_DEFAULT = Path("/data/aurora/products/wxcam/wxcam_catalog.sqlite")
+COMMIT_INTERVAL = 500
 
 
 def _bootstrap_from_remote(
@@ -120,6 +121,7 @@ def index_catalog(
     bootstrap_source_path: str | None = None,
     bootstrap_fish_pattern: str = "HDR_*.jpg",
     bootstrap_pano_pattern: str = "HDR_*_PANO.jpg",
+    commit_interval: int = COMMIT_INTERVAL,
 ) -> None:
     catalog_exists = catalog_path.exists()
     if not root.exists():
@@ -167,6 +169,8 @@ def index_catalog(
                 updated += 1
             else:
                 inserted += 1
+            if (inserted + updated) % max(commit_interval, 1) == 0:
+                conn.commit()
         conn.commit()
 
     print(

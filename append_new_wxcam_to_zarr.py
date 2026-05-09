@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import time
 from typing import Iterable
 
 import numpy as np
@@ -19,6 +20,7 @@ CATALOG_DEFAULT = Path("/data/aurora/products/wxcam/wxcam_catalog.sqlite")
 STATE_DEFAULT = Path("/var/lib/aurora-cloud/wxcam-zarr-state.json")
 ZARR_DEFAULT = Path("/data/aurora/products/wxcam/wxcam.zarr")
 DEFAULT_BATCH_SIZE = 4
+TRANSIENT_FILE_GRACE_SECONDS = 10 * 60
 
 
 def _ensure_store(zarr_path: Path) -> None:
@@ -72,7 +74,22 @@ def _group_exists(zarr_path: Path, image_type: str) -> bool:
     return image_type in root.group_keys()
 
 
-def _build_dataset(image_type: str, rows: list) -> xr.Dataset | None:
+def _row_age_seconds(row, path: Path | None, now_ts: float) -> float:
+    if path is not None:
+        try:
+            return max(0.0, now_ts - path.stat().st_mtime)
+        except FileNotFoundError:
+            pass
+    return max(0.0, now_ts - (int(row["mtime_ns"]) / 1_000_000_000))
+
+
+def _build_dataset(
+    image_type: str,
+    rows: list,
+    transient_grace_seconds: int = TRANSIENT_FILE_GRACE_SECONDS,
+) -> tuple[xr.Dataset | None, int | None, bool]:
+    # Fresh catalog rows can point at files that rsync has created but not finished
+    # writing yet. Defer those rows so the Zarr frontier does not skip ahead.
     images: list[np.ndarray] = []
     times: list[np.datetime64] = []
     size_bytes: list[int] = []
@@ -80,22 +97,46 @@ def _build_dataset(image_type: str, rows: list) -> xr.Dataset | None:
     height_values: list[int] = []
     filenames: list[str] = []
     expected_shape: tuple[int, int, int] | None = None
+    last_advanced_ns: int | None = None
+    deferred = False
+    now_ts = time.time()
 
     for row in rows:
         path = Path(row["raw_path"])
         if not path.exists():
-            print(f"Skipping missing wxcam image {path}")
+            age_seconds = _row_age_seconds(row, None, now_ts)
+            if age_seconds < transient_grace_seconds:
+                print(f"Deferring wxcam append until in-flight image arrives: {path}")
+                deferred = True
+                break
+            print(f"Skipping stale missing wxcam image {path}")
+            last_advanced_ns = int(row["time_epoch_ns"])
             continue
         try:
             with Image.open(path) as image:
                 rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
         except Exception as exc:
-            print(f"Skipping unreadable wxcam image {path}: {exc}")
+            age_seconds = _row_age_seconds(row, path, now_ts)
+            if age_seconds < transient_grace_seconds:
+                print(f"Deferring wxcam append for fresh unreadable image {path}: {exc}")
+                deferred = True
+                break
+            print(f"Skipping stale unreadable wxcam image {path}: {exc}")
+            last_advanced_ns = int(row["time_epoch_ns"])
             continue
         if expected_shape is None:
             expected_shape = rgb.shape
         if rgb.shape != expected_shape:
-            print(f"Skipping shape-mismatched {path} ({rgb.shape} != {expected_shape})")
+            age_seconds = _row_age_seconds(row, path, now_ts)
+            if age_seconds < transient_grace_seconds:
+                print(
+                    "Deferring wxcam append for fresh shape-mismatched image "
+                    f"{path} ({rgb.shape} != {expected_shape})"
+                )
+                deferred = True
+                break
+            print(f"Skipping stale shape-mismatched wxcam image {path} ({rgb.shape} != {expected_shape})")
+            last_advanced_ns = int(row["time_epoch_ns"])
             continue
         images.append(rgb)
         times.append(np.datetime64(row["time_utc"].replace(" ", "T")))
@@ -103,9 +144,10 @@ def _build_dataset(image_type: str, rows: list) -> xr.Dataset | None:
         width_values.append(int(row["width"]))
         height_values.append(int(row["height"]))
         filenames.append(str(row["filename"]))
+        last_advanced_ns = int(row["time_epoch_ns"])
 
     if not images:
-        return None
+        return None, last_advanced_ns, deferred
 
     stack = np.stack(images, axis=0)
     y_size, x_size = stack.shape[1], stack.shape[2]
@@ -130,7 +172,7 @@ def _build_dataset(image_type: str, rows: list) -> xr.Dataset | None:
             "stream": WXCAM_IMAGE_TYPES[image_type]["stream"],
         },
     )
-    return ds
+    return ds, last_advanced_ns, deferred
 
 
 def _consolidate(zarr_path: Path) -> None:
@@ -163,39 +205,40 @@ def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size
         group_exists = _group_exists(zarr_path, image_type)
         last_appended_ns = last_ns
         for batch in _batched(rows, max(batch_size, 1)):
-            ds = _build_dataset(image_type, batch)
-            if ds is None or ds.sizes.get("time", 0) == 0:
-                continue
-            y_chunk = min(ds.sizes["y"], 1024)
-            x_chunk = min(ds.sizes["x"], 1024)
-            time_chunk = min(ds.sizes["time"], max(batch_size, 1))
-            encoding = {
-                "image": {"chunks": (1, y_chunk, x_chunk, ds.sizes["channel"])},
-                "size_bytes": {"chunks": (time_chunk,)},
-                "width": {"chunks": (time_chunk,)},
-                "height": {"chunks": (time_chunk,)},
-                "filename": {"chunks": (time_chunk,)},
-            }
-            if group_exists:
-                ds.to_zarr(
-                    zarr_path,
-                    group=image_type,
-                    mode="a",
-                    append_dim="time",
-                    safe_chunks=False,
-                )
-            else:
-                ds.to_zarr(
-                    zarr_path,
-                    group=image_type,
-                    mode="a",
-                    consolidated=False,
-                    encoding=encoding,
-                )
-                group_exists = True
-            batch_max = max(int(row["time_epoch_ns"]) for row in batch)
-            last_appended_ns = max(last_appended_ns, batch_max)
-            changed = True
+            ds, advanced_ns, deferred = _build_dataset(image_type, batch)
+            if ds is not None and ds.sizes.get("time", 0) > 0:
+                y_chunk = min(ds.sizes["y"], 1024)
+                x_chunk = min(ds.sizes["x"], 1024)
+                time_chunk = min(ds.sizes["time"], max(batch_size, 1))
+                encoding = {
+                    "image": {"chunks": (1, y_chunk, x_chunk, ds.sizes["channel"])},
+                    "size_bytes": {"chunks": (time_chunk,)},
+                    "width": {"chunks": (time_chunk,)},
+                    "height": {"chunks": (time_chunk,)},
+                    "filename": {"chunks": (time_chunk,)},
+                }
+                if group_exists:
+                    ds.to_zarr(
+                        zarr_path,
+                        group=image_type,
+                        mode="a",
+                        append_dim="time",
+                        safe_chunks=False,
+                    )
+                else:
+                    ds.to_zarr(
+                        zarr_path,
+                        group=image_type,
+                        mode="a",
+                        consolidated=False,
+                        encoding=encoding,
+                    )
+                    group_exists = True
+                changed = True
+            if advanced_ns is not None:
+                last_appended_ns = max(last_appended_ns, advanced_ns)
+            if deferred:
+                break
         state[image_type] = last_appended_ns
 
     _save_state(state_path, state)

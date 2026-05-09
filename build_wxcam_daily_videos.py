@@ -27,12 +27,13 @@ THUMBNAIL_DEFAULT = Path("/data/aurora/products/wxcam/hourly_thumbnails")
 QUICKLOOK_DEFAULT = Path("/data/aurora/products/quicklooks/wxcam")
 CATALOG_DEFAULT = Path("/data/aurora/products/wxcam/wxcam_catalog.sqlite")
 DAY_DIR_REGEX = re.compile(r"^\d{8}$")
+SETTLED_VIDEO_GRACE_SECONDS = 10 * 60
 
 
-def _iter_day_dirs(stream_root: Path):
+def _iter_day_dirs(stream_root: Path, reverse: bool = False):
     if not stream_root.exists():
         return
-    for path in sorted(stream_root.iterdir()):
+    for path in sorted(stream_root.iterdir(), reverse=reverse):
         if path.is_dir() and DAY_DIR_REGEX.match(path.name):
             yield path
 
@@ -40,6 +41,30 @@ def _iter_day_dirs(stream_root: Path):
 def _list_files(day_dir: Path, pattern: str, recursive: bool = False) -> list[Path]:
     iterator = day_dir.rglob(pattern) if recursive else day_dir.glob(pattern)
     return sorted(path for path in iterator if path.is_file())
+
+
+def _settled_video_clips(clips: list[Path], *, now_ts: float, grace_seconds: int = SETTLED_VIDEO_GRACE_SECONDS) -> list[Path]:
+    # During long raw backfills, the newest hourly clip may still be growing on disk.
+    # Hold those back for the next timer pass instead of failing the whole product job.
+    cutoff = now_ts - grace_seconds
+    settled: list[Path] = []
+    for path in clips:
+        try:
+            if path.stat().st_mtime <= cutoff:
+                settled.append(path)
+        except FileNotFoundError:
+            continue
+    return settled
+
+
+def _prime_latest_clips(day_dirs: list[Path], video_glob: str, *, now_ts: float, max_clips: int = 24) -> list[Path]:
+    seeded: list[Path] = []
+    for day_dir in day_dirs:
+        seeded.extend(_settled_video_clips(_list_files(day_dir, video_glob), now_ts=now_ts))
+        seeded.sort()
+        if len(seeded) >= max_clips:
+            break
+    return seeded[-max_clips:]
 
 
 def _needs_refresh(clips: list[Path], output_path: Path) -> bool:
@@ -149,17 +174,68 @@ def build_daily_videos(
     latest_built = 0
     skipped = 0
     latest_skipped = 0
+    failed = 0
+    latest_failed = 0
     thumbs_built = 0
     thumbs_skipped = 0
     thumbs_failed = 0
     day_tokens_seen: set[str] = set()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    today_token = datetime.now(timezone.utc).strftime("%Y%m%d")
+    today_iso = f"{today_token[:4]}-{today_token[4:6]}-{today_token[6:8]}"
+    if catalog_path.exists():
+        latest_hk = extra_housekeeping_latest_png(quicklook_root, "wxcam")
+        if latest_hk is not None:
+            plot_wxcam_housekeeping_latest(catalog_path, "HK_WXcam - Latest 24 hours", latest_hk)
+        today_hk = extra_housekeeping_daily_png(quicklook_root, "wxcam", today_token)
+        if today_hk is not None:
+            plot_wxcam_housekeeping_day(catalog_path, today_iso, f"HK_WXcam - {today_iso}", today_hk)
     for image_type, spec in WXCAM_IMAGE_TYPES.items():
         stream_root = raw_root / spec["stream"]
         image_glob = spec["image_glob"]
         video_glob = spec["video_glob"]
         type_output_root = output_root / image_type
         all_clips: list[Path] = []
-        for day_dir in _iter_day_dirs(stream_root):
+        latest_path = type_output_root / "latest.mp4"
+        latest_finalized = False
+        primed_days: set[str] = set()
+        day_dirs = list(_iter_day_dirs(stream_root, reverse=True))
+
+        primed_latest_clips = _prime_latest_clips(day_dirs, video_glob, now_ts=now_ts)
+        if primed_latest_clips:
+            if _needs_refresh(primed_latest_clips, latest_path):
+                try:
+                    _build_output(primed_latest_clips, latest_path)
+                except subprocess.CalledProcessError as exc:
+                    print(f"Skipping wxcam rolling latest video for {image_type}: {exc}")
+                    latest_failed += 1
+                else:
+                    latest_built += 1
+                    latest_finalized = True
+                    print(f"Built wxcam rolling latest video: {image_type} -> {latest_path}")
+            else:
+                latest_skipped += 1
+                latest_finalized = True
+
+        if day_dirs:
+            newest_day = day_dirs[0]
+            newest_day_clips = _settled_video_clips(_list_files(newest_day, video_glob), now_ts=now_ts)
+            newest_output = type_output_root / f"{newest_day.name}.mp4"
+            if newest_day_clips:
+                if _needs_refresh(newest_day_clips, newest_output):
+                    try:
+                        _build_output(newest_day_clips, newest_output)
+                    except subprocess.CalledProcessError as exc:
+                        print(f"Skipping wxcam daily video build for {image_type} {newest_day.name}: {exc}")
+                        failed += 1
+                    else:
+                        built += 1
+                        primed_days.add(newest_day.name)
+                        print(f"Built wxcam daily video: {image_type} {newest_day.name} -> {newest_output}")
+                else:
+                    primed_days.add(newest_day.name)
+
+        for day_dir in day_dirs:
             day_tokens_seen.add(day_dir.name)
             hourly_images = _representative_hourly_images(day_dir, image_glob)
             for image_path in hourly_images.values():
@@ -179,28 +255,55 @@ def build_daily_videos(
                 else:
                     thumbs_skipped += 1
             clips = _list_files(day_dir, video_glob)
-            if clips:
-                all_clips.extend(clips)
-            if not clips:
+            settled_clips = _settled_video_clips(clips, now_ts=now_ts)
+            if settled_clips:
+                all_clips.extend(settled_clips)
+                all_clips.sort()
+                if not latest_finalized and len(all_clips) >= 24:
+                    latest_clips = all_clips[-24:]
+                    if _needs_refresh(latest_clips, latest_path):
+                        try:
+                            _build_output(latest_clips, latest_path)
+                        except subprocess.CalledProcessError as exc:
+                            print(f"Skipping wxcam rolling latest video for {image_type}: {exc}")
+                            latest_failed += 1
+                        else:
+                            latest_built += 1
+                            latest_finalized = True
+                            print(f"Built wxcam rolling latest video: {image_type} -> {latest_path}")
+                    else:
+                        latest_skipped += 1
+                        latest_finalized = True
+            if not settled_clips:
                 continue
             output_path = type_output_root / f"{day_dir.name}.mp4"
-            if not _needs_refresh(clips, output_path):
+            if day_dir.name in primed_days and not _needs_refresh(settled_clips, output_path):
+                continue
+            if not _needs_refresh(settled_clips, output_path):
                 skipped += 1
                 continue
-            _build_output(clips, output_path)
+            try:
+                _build_output(settled_clips, output_path)
+            except subprocess.CalledProcessError as exc:
+                print(f"Skipping wxcam daily video build for {image_type} {day_dir.name}: {exc}")
+                failed += 1
+                continue
             built += 1
             print(f"Built wxcam daily video: {image_type} {day_dir.name} -> {output_path}")
-        if all_clips:
+        if all_clips and not latest_finalized:
             latest_clips = all_clips[-24:]
-            latest_path = type_output_root / "latest.mp4"
             if _needs_refresh(latest_clips, latest_path):
-                _build_output(latest_clips, latest_path)
+                try:
+                    _build_output(latest_clips, latest_path)
+                except subprocess.CalledProcessError as exc:
+                    print(f"Skipping wxcam rolling latest video for {image_type}: {exc}")
+                    latest_failed += 1
+                    continue
                 latest_built += 1
                 print(f"Built wxcam rolling latest video: {image_type} -> {latest_path}")
             else:
                 latest_skipped += 1
     if catalog_path.exists():
-        today_token = datetime.now(timezone.utc).strftime("%Y%m%d")
         for day_token in sorted(day_tokens_seen):
             hk_out = extra_housekeeping_daily_png(quicklook_root, "wxcam", day_token)
             if hk_out is None:
@@ -213,8 +316,8 @@ def build_daily_videos(
             plot_wxcam_housekeeping_latest(catalog_path, "HK_WXcam - Latest 24 hours", latest_hk)
     print(
         "wxcam daily products complete: "
-        f"videos_built={built} videos_skipped={skipped} "
-        f"latest_built={latest_built} latest_skipped={latest_skipped} "
+        f"videos_built={built} videos_skipped={skipped} videos_failed={failed} "
+        f"latest_built={latest_built} latest_skipped={latest_skipped} latest_failed={latest_failed} "
         f"thumbnails_built={thumbs_built} thumbnails_skipped={thumbs_skipped} thumbnails_failed={thumbs_failed} "
         f"video_root={output_root} thumbnail_root={thumbnail_root} quicklook_root={quicklook_root}"
     )
