@@ -2119,12 +2119,18 @@ range_start.param.watch(_on_manual_time_change, "value")
 range_end.param.watch(_on_manual_time_change, "value")
 
 # Persistent plot pane so we can listen for zoom/pan events (relayout).
-# Use stretch_width so height stays predictable on mobile.
+# Keep the pane width responsive, but reserve explicit vertical space from the
+# figure height so footer cards cannot visually overlap the rendered plot.
 plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width")
-interactive_content = pn.Column(plot_pane, sizing_mode="stretch_both")
+interactive_content = pn.Column(plot_pane, sizing_mode="stretch_width", margin=0)
 
 
 def _show_plot(fig: go.Figure) -> None:
+    plot_height = int(getattr(fig.layout, "height", 900) or 900)
+    plot_pane.height = plot_height
+    plot_pane.min_height = plot_height
+    interactive_content.height = plot_height
+    interactive_content.min_height = plot_height
     plot_pane.object = fig
     interactive_content[:] = [plot_pane]
 
@@ -2382,6 +2388,10 @@ wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
 
 
 def _update_wxcam_view(start, end, top_name: str, bottom_name: str) -> None:
+    plot_pane.height = None
+    plot_pane.min_height = None
+    interactive_content.height = None
+    interactive_content.min_height = None
     interactive_content[:] = [wxcam_interactive_browser]
 
 
@@ -4530,7 +4540,7 @@ def _refresh_operations_dashboard() -> None:
 
 _operations_timer = pn.state.add_periodic_callback(_refresh_operations_dashboard, period=60_000, start=True)
 
-interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_both")
+interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_width")
 science_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(science_instrument, science_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
@@ -4542,7 +4552,7 @@ science_quicklooks_tab = pn.Column(
     ),
     _science_quicklook_image,
     science_footer,
-    sizing_mode="stretch_both",
+    sizing_mode="stretch_width",
 )
 housekeeping_quicklooks_tab = pn.Column(
     pn.Card(
@@ -4555,9 +4565,9 @@ housekeeping_quicklooks_tab = pn.Column(
     ),
     _housekeeping_quicklook_image,
     hk_footer,
-    sizing_mode="stretch_both",
+    sizing_mode="stretch_width",
 )
-operations_tab = pn.Column(operations_dashboard, sizing_mode="stretch_both")
+operations_tab = pn.Column(operations_dashboard, sizing_mode="stretch_width")
 tabs = pn.Tabs(
     ("Interactive Data Browser", interactive_tab),
     ("Science Quicklooks", science_quicklooks_tab),
