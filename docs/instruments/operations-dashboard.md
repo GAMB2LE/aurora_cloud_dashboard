@@ -7,6 +7,8 @@ stack.
 
 - source-host probe health
 - local and remote storage pressure
+- Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
+  above `52 V`, amber from `50-52 V`, and red below `50 V`
 - source sync and processing health
 - GWS transfer status
 - mirror verification and prune-readiness indicators

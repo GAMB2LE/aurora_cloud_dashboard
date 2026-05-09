@@ -469,6 +469,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
+            "aps_battery_voltage",
+            "APS Battery Voltage",
+            "Voltage [V]",
+            None,
+            (
+                TraceSpec("aps_battery_voltage_v", "DC Inverter Voltage", COLOR["brown"]),
+            ),
+        ),
+        PanelSpec(
             "local_coverage",
             "Local Mirror Coverage",
             "Coverage [%]",

@@ -45,6 +45,8 @@ It shows:
 
 - traffic-light indicators for source hosts, processing, transfers, and mirror
   verification
+- Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
+  above `52 V`, amber from `50-52 V`, and red below `50 V`
 - storage cards for the source hosts, the local Aurora host, and the JASMIN GWS
 - per-stream archive and prune-readiness status
 

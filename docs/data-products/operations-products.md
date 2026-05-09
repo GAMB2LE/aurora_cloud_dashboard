@@ -15,6 +15,9 @@ These snapshots capture:
 - source-host disk usage and probe reachability
 - per-stream source recency, with a red operational state if a source has not
   produced data in the last 1.5 hours
+- Aurora Power Supply battery voltage from the latest `DCInverterVolts` sample
+  in the power Zarr, scored green above `52 V`, amber from `50-52 V`, and red
+  below `50 V`
 - local `/project`, `/data`, and `/` filesystem usage
 - GWS usage and reachability
 - per-stream mirror coverage, lag, and mismatch counts

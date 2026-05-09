@@ -8,15 +8,19 @@ import csv
 from datetime import datetime, timezone
 import json
 import math
+import numpy as np
 import os
 from pathlib import Path
 import subprocess
 from typing import Any
+import pandas as pd
+import xarray as xr
 
 
 RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
 MANIFEST_ROOT_DEFAULT = Path("/data/aurora/internal/mirror_manifests")
 GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
+POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 KNOWN_HOSTS = Path("/home/aurora/.ssh/known_hosts")
 
 SOURCE_HOSTS = {
@@ -329,6 +333,46 @@ def _recent_state(age_minutes: float | None, threshold_minutes: float = SOURCE_R
     return 1 if age_minutes <= threshold_minutes else 0
 
 
+def _latest_finite_zarr_value(
+    zarr_path: Path,
+    var_name: str,
+    *,
+    time_name: str = "time",
+) -> tuple[float | None, datetime | None]:
+    if not zarr_path.exists():
+        return None, None
+    ds = xr.open_zarr(zarr_path)
+    try:
+        if var_name not in ds or time_name not in ds:
+            return None, None
+        data = ds[var_name]
+        if time_name not in data.dims:
+            return None, None
+        total = int(data.sizes.get(time_name, 0))
+        if total <= 0:
+            return None, None
+        time_coord = ds[time_name]
+        for window in (2048, 16384, None):
+            selector = slice(None) if window is None or total <= window else slice(-window, None)
+            values = np.asarray(data.isel({time_name: selector}).values)
+            times = np.asarray(time_coord.isel({time_name: selector}).values)
+            finite_idx = np.flatnonzero(np.isfinite(values))
+            if finite_idx.size == 0:
+                continue
+            idx = int(finite_idx[-1])
+            timestamp = pd.Timestamp(times[idx])
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.tz_localize("UTC")
+            else:
+                timestamp = timestamp.tz_convert("UTC")
+            return float(values[idx]), timestamp.to_pydatetime(warn=False)
+        return None, None
+    finally:
+        close = getattr(ds, "close", None)
+        if callable(close):
+            close()
+
+
 def _unit_slug(unit: str) -> str:
     return unit.replace("aurora-", "").replace(".", "_").replace("-", "_")
 
@@ -465,6 +509,15 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     if gws_metrics:
         for key, value in gws_metrics.items():
             record[f"gws_storage_{key}"] = value
+
+    battery_voltage, battery_time = _latest_finite_zarr_value(
+        _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
+        "DCInverterVolts",
+    )
+    record["aps_battery_voltage_v"] = battery_voltage
+    if battery_time is not None:
+        record["aps_battery_voltage_time_utc"] = battery_time.isoformat()
+        record["aps_battery_voltage_age_min"] = max((now - battery_time).total_seconds(), 0.0) / 60.0
 
     streams = summary.get("streams", {})
     local_issue_count = 0

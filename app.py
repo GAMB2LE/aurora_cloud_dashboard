@@ -1123,6 +1123,17 @@ def _ops_level_from_source_probes(fail_count_value, total_hosts: int = 3) -> str
     return "red"
 
 
+def _ops_level_from_battery_voltage(value) -> str:
+    voltage = _ops_float(value)
+    if voltage is None:
+        return "gray"
+    if voltage > 52.0:
+        return "green"
+    if voltage >= 50.0:
+        return "amber"
+    return "red"
+
+
 def _ops_source_freshness_text(snapshot: dict, prefix: str) -> str:
     recent = _ops_bool(snapshot.get(f"{prefix}_source_recent_state"))
     age_min = _ops_float(snapshot.get(f"{prefix}_source_age_min"))
@@ -1132,6 +1143,18 @@ def _ops_source_freshness_text(snapshot: dict, prefix: str) -> str:
         return "Recent" if recent else "Stale"
     age_text = _format_duration(timedelta(minutes=age_min))
     return f"Recent ({age_text})" if recent else f"Stale ({age_text})"
+
+
+def _ops_battery_text(snapshot: dict) -> tuple[str, str]:
+    voltage = _ops_float(snapshot.get("aps_battery_voltage_v"))
+    age_min = _ops_float(snapshot.get("aps_battery_voltage_age_min"))
+    if voltage is None:
+        return "No data", "Aurora Power Supply DC inverter voltage unavailable"
+    value = f"{voltage:.2f} V"
+    if age_min is None:
+        return value, "Aurora Power Supply DC inverter voltage"
+    age_text = _format_duration(timedelta(minutes=age_min))
+    return value, f"Aurora Power Supply DC inverter voltage, {age_text} old"
 
 
 def _ops_storage_text(snapshot: dict, key_prefix: str) -> str:
@@ -1284,6 +1307,7 @@ def _ops_operations_markup() -> str:
         snapshot_level = _ops_level_from_age_minutes(snapshot_age_min)
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
         source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
+        battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
         transfer_level = _ops_worst_level(
             [
@@ -1303,7 +1327,7 @@ def _ops_operations_markup() -> str:
             )
             if mirror_level == "green" and backfill_pending_count > 0:
                 mirror_level = "amber"
-        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, processing_level, transfer_level, mirror_level])
+        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, battery_level, processing_level, transfer_level, mirror_level])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -1315,6 +1339,7 @@ def _ops_operations_markup() -> str:
 
         updated_label = updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "Unknown"
         age_label = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
+        battery_value, battery_meta = _ops_battery_text(snapshot)
 
         summary_cards = [
             _ops_card_markup(
@@ -1344,6 +1369,12 @@ def _ops_operations_markup() -> str:
                     else f"{int(_ops_float(snapshot.get('streams_source_stale_count')) or 0)} stale streams"
                 ),
                 "Source data seen within the last 1.5 hours",
+            ),
+            _ops_card_markup(
+                "Battery voltage",
+                battery_level,
+                battery_value,
+                f"{battery_meta}; green >52 V, amber 50-52 V, red <50 V",
             ),
             _ops_card_markup(
                 "Processing pipeline",
