@@ -27,7 +27,7 @@ Additional housekeeping products now exist for:
 - `extra_housekeeping.py` - housekeeping quicklook helpers for Ceilometer, Cloud Radar, and WXcam.
 - `append_new_wxcam_to_zarr.py` - appends local WXcam HDR JPGs into per-stream pixel Zarr groups.
 - `collect_operations_snapshot.py` - samples source-host disk state, local/GWS storage, mirror manifests, and systemd health into raw Operations snapshots.
-- `append_new_ops_monitor_to_zarr.py` - appends Operations snapshots into the monitoring Zarr used for archived monitoring products.
+- `append_new_ops_monitor_to_zarr.py` - appends Operations snapshots into the monitoring Zarr used for archived monitoring products and rebuilds automatically if the schema expands.
 - `generate_ops_monitor_quicklooks.py` - builds summary and housekeeping quicklooks for the archived Operations monitor products.
 - `append_new_*_to_zarr.py` - appenders for the numeric instruments.
 - `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
@@ -262,6 +262,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - Summary-plot legends are kept per panel in a dedicated right-side gutter beyond the right y-axis labels instead of sharing one global legend.
 - `Science Quicklooks` and `House Keeping Quicklooks` use separate tab state. Science quicklooks show one product at a time, while housekeeping quicklooks only appear for instruments that actually have HK images.
 - `Operations Dashboard` is the live status surface for current health, while archived `HK_Operations` quicklooks remain available from `House Keeping Quicklooks`. The live tab reads the latest Operations snapshot JSON directly so the traffic lights reflect current service and transfer state even when archived monitoring quicklooks lag behind.
+- `WXcam` full-archive mirroring is treated as a backfill state rather than a hard failure when the historical copy is still catching up but the live tip is current.
 - `HK_Ceilometer` excludes the main science fields (`beta_att`, `linear_depol_ratio`) and focuses on non-science diagnostics such as gain, noise, tilt, detections, and cloud-layer metadata.
 - `HK_Radar` excludes the main science quicklook fields and instead shows the remaining radar moments: `ZE45_dBZ`, `ZDR`, `PhiDP`, `KDP`, and `DiffAtt`.
 - `HK_WXcam` is catalog-driven rather than pixel-driven. It summarizes hourly HDR image/video counts, median HDR JPG size, and the offset of the representative hourly image from the `:30` target used by the science grid.

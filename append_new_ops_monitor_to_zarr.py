@@ -22,6 +22,10 @@ ZARR_DEFAULT = Path("/data/aurora/products/ops_monitor/ops_monitor.zarr")
 FILE_REGEX = re.compile(r"ops_monitor_(\d{4})(\d{2})(\d{2})\.jsonl$")
 
 
+class SchemaExpansionRequired(RuntimeError):
+    """Raised when the raw ops snapshots contain variables missing from the Zarr schema."""
+
+
 def _parse_file_date(path: Path) -> date | None:
     match = FILE_REGEX.match(path.name)
     if not match:
@@ -126,8 +130,9 @@ def _align_to_existing(combined: xr.Dataset, existing: xr.Dataset) -> xr.Dataset
             combined[name] = (("time",), np.full(combined.sizes["time"], np.nan, dtype=np.float32))
     extras = [name for name in combined.data_vars if name not in existing_vars]
     if extras:
-        print(f"Dropping new variables not present in existing Zarr: {', '.join(extras)}")
-        combined = combined.drop_vars(extras)
+        raise SchemaExpansionRequired(
+            f"raw ops snapshots contain new variables missing from Zarr schema: {', '.join(extras)}"
+        )
     return combined[existing_vars]
 
 
@@ -191,7 +196,12 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no snapshots newer than the existing Zarr.")
         return
-    combined = _align_to_existing(combined, existing)
+    try:
+        combined = _align_to_existing(combined, existing)
+    except SchemaExpansionRequired as exc:
+        print(f"{exc}; rebuilding from raw snapshots.")
+        _backup_existing_store(zarr_path, "schema")
+        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
     if chunks:
         combined = combined.chunk(chunks)
     combined.to_zarr(zarr_path, mode="a", append_dim="time", safe_chunks=False)

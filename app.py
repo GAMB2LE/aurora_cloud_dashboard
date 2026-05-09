@@ -1132,6 +1132,8 @@ def _ops_manifest_ready(snapshot: dict) -> bool:
 
 
 def _ops_archive_level(snapshot: dict, prefix: str) -> str:
+    if _ops_bool(snapshot.get(f"{prefix}_backfill_pending_state")):
+        return "amber"
     gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
     if gws_coverage is None:
         if _ops_bool(snapshot.get("gws_probe_ok_state")):
@@ -1145,6 +1147,12 @@ def _ops_archive_level(snapshot: dict, prefix: str) -> str:
 
 
 def _ops_archive_text(snapshot: dict, prefix: str) -> str:
+    if _ops_bool(snapshot.get(f"{prefix}_backfill_pending_state")):
+        local_coverage = _ops_float(snapshot.get(f"{prefix}_local_coverage_pct"))
+        gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
+        local_text = "?" if local_coverage is None else f"{local_coverage:.0f}%"
+        gws_text = "?" if gws_coverage is None else f"{gws_coverage:.0f}%"
+        return f"Backfill {local_text} local / {gws_text} GWS"
     gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
     if gws_coverage is None:
         return "Pending manifest sync"
@@ -1152,6 +1160,8 @@ def _ops_archive_text(snapshot: dict, prefix: str) -> str:
 
 
 def _ops_prune_level(snapshot: dict, prefix: str, manifest_ready: bool) -> str:
+    if _ops_bool(snapshot.get(f"{prefix}_backfill_pending_state")):
+        return "amber"
     if not manifest_ready:
         return "amber"
     prune_ready = _ops_bool(snapshot.get(f"{prefix}_prune_ready_state"))
@@ -1161,6 +1171,8 @@ def _ops_prune_level(snapshot: dict, prefix: str, manifest_ready: bool) -> str:
 
 
 def _ops_prune_text(snapshot: dict, prefix: str, manifest_ready: bool) -> str:
+    if _ops_bool(snapshot.get(f"{prefix}_backfill_pending_state")):
+        return "Backfill"
     if not manifest_ready:
         return "Pending verification"
     prune_ready = _ops_bool(snapshot.get(f"{prefix}_prune_ready_state"))
@@ -1236,6 +1248,8 @@ def _ops_operations_markup() -> str:
             snapshot_age_min = max((datetime.now(timezone.utc) - updated_at).total_seconds() / 60.0, 0.0)
         manifest_ready = _ops_manifest_ready(snapshot)
         failed_services = _ops_failed_service_names(snapshot)
+        target_stream_count = int(_ops_float(snapshot.get("streams_target_count")) or len(OPS_STREAM_SPECS))
+        backfill_pending_count = int(_ops_float(snapshot.get("streams_backfill_pending_count")) or 0)
 
         snapshot_level = _ops_level_from_age_minutes(snapshot_age_min)
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
@@ -1256,6 +1270,8 @@ def _ops_operations_markup() -> str:
                     _ops_level_from_count(snapshot.get("streams_gws_issue_count"), amber_at=1.0),
                 ]
             )
+            if mirror_level == "green" and backfill_pending_count > 0:
+                mirror_level = "amber"
         overall_level = _ops_worst_level([snapshot_level, source_level, processing_level, transfer_level, mirror_level])
 
         overall_value = "Healthy"
@@ -1309,7 +1325,8 @@ def _ops_operations_markup() -> str:
                     if not manifest_ready
                     else (
                         f"Local issues: {int(_ops_float(snapshot.get('streams_local_issue_count')) or 0)}, "
-                        f"GWS issues: {int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)}"
+                        f"GWS issues: {int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)}, "
+                        f"Backfills: {backfill_pending_count}"
                     )
                 ),
             ),
@@ -1421,25 +1438,68 @@ def _ops_operations_markup() -> str:
         manifest_cards = [
             _ops_card_markup(
                 "Local raw mirror",
-                "amber" if not manifest_ready else _ops_level_from_count(snapshot.get("streams_local_issue_count"), amber_at=1.0),
-                "Pending seed" if not manifest_ready else f"{int(_ops_float(snapshot.get('streams_local_issue_count')) or 0)} issues",
+                (
+                    "amber"
+                    if not manifest_ready
+                    else (
+                        "amber"
+                        if backfill_pending_count > 0 and int(_ops_float(snapshot.get("streams_local_issue_count")) or 0) == 0
+                        else _ops_level_from_count(snapshot.get("streams_local_issue_count"), amber_at=1.0)
+                    )
+                ),
+                (
+                    "Pending seed"
+                    if not manifest_ready
+                    else (
+                        f"{int(_ops_float(snapshot.get('streams_local_issue_count')) or 0)} issues"
+                        if backfill_pending_count == 0
+                        else f"{int(_ops_float(snapshot.get('streams_local_issue_count')) or 0)} issues, {backfill_pending_count} backfill"
+                    )
+                ),
                 "Mirror against source-host manifests",
             ),
             _ops_card_markup(
                 "GWS archive mirror",
-                "amber" if not manifest_ready else _ops_level_from_count(snapshot.get("streams_gws_issue_count"), amber_at=1.0),
-                "Pending seed" if not manifest_ready else f"{int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)} issues",
+                (
+                    "amber"
+                    if not manifest_ready
+                    else (
+                        "amber"
+                        if backfill_pending_count > 0 and int(_ops_float(snapshot.get("streams_gws_issue_count")) or 0) == 0
+                        else _ops_level_from_count(snapshot.get("streams_gws_issue_count"), amber_at=1.0)
+                    )
+                ),
+                (
+                    "Pending seed"
+                    if not manifest_ready
+                    else (
+                        f"{int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)} issues"
+                        if backfill_pending_count == 0
+                        else f"{int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)} issues, {backfill_pending_count} backfill"
+                    )
+                ),
                 "Mirror against JASMIN manifests",
             ),
             _ops_card_markup(
                 "Product gates",
                 "amber"
                 if not manifest_ready
-                else ("green" if int(_ops_float(snapshot.get("streams_product_gate_ok_count")) or 0) == len(OPS_STREAM_SPECS) else "red"),
+                else (
+                    "green"
+                    if int(_ops_float(snapshot.get("streams_product_gate_ok_count")) or 0) == target_stream_count and backfill_pending_count == 0
+                    else (
+                        "amber"
+                        if int(_ops_float(snapshot.get("streams_product_gate_ok_count")) or 0) == target_stream_count
+                        else "red"
+                    )
+                ),
                 (
                     "Pending seed"
                     if not manifest_ready
-                    else f"{int(_ops_float(snapshot.get('streams_product_gate_ok_count')) or 0)}/{len(OPS_STREAM_SPECS)} streams ready"
+                    else (
+                        f"{int(_ops_float(snapshot.get('streams_product_gate_ok_count')) or 0)}/{target_stream_count} streams ready"
+                        + (f", {backfill_pending_count} backfill" if backfill_pending_count else "")
+                    )
                 ),
                 "Processing success through candidate prune windows",
             ),
@@ -1447,11 +1507,22 @@ def _ops_operations_markup() -> str:
                 "Prune readiness",
                 "amber"
                 if not manifest_ready
-                else ("green" if int(_ops_float(snapshot.get("streams_prune_ready_count")) or 0) == len(OPS_STREAM_SPECS) else "red"),
+                else (
+                    "green"
+                    if int(_ops_float(snapshot.get("streams_prune_ready_count")) or 0) == target_stream_count and backfill_pending_count == 0
+                    else (
+                        "amber"
+                        if int(_ops_float(snapshot.get("streams_prune_ready_count")) or 0) == target_stream_count
+                        else "red"
+                    )
+                ),
                 (
                     "Pending seed"
                     if not manifest_ready
-                    else f"{int(_ops_float(snapshot.get('streams_prune_ready_count')) or 0)}/{len(OPS_STREAM_SPECS)} streams deletable"
+                    else (
+                        f"{int(_ops_float(snapshot.get('streams_prune_ready_count')) or 0)}/{target_stream_count} streams deletable"
+                        + (f", {backfill_pending_count} backfill" if backfill_pending_count else "")
+                    )
                 ),
                 "Only prune upstream when source, local, and GWS agree",
             ),

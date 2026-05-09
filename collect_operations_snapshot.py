@@ -83,6 +83,8 @@ STREAM_PREFIXES = {
     "wxcam": "wxcam",
 }
 
+BACKFILL_STREAMS = {"wxcam"}
+
 SOURCE_SYNC_UNITS = (
     "aurora-cl61-source-sync.timer",
     "aurora-cl61-source-sync.service",
@@ -455,6 +457,7 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     gws_issue_count = 0
     prune_ready_count = 0
     product_gate_ok_count = 0
+    backfill_pending_count = 0
     for stream_name, prefix in STREAM_PREFIXES.items():
         stream_dir = manifest_root / "latest" / stream_name
         source_stats = _manifest_stats(stream_dir / "source.tsv")
@@ -495,6 +498,22 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         record[f"{prefix}_prune_ready_state"] = 1 if prune_ready else 0
         record[f"{prefix}_product_gate_ok_state"] = 1 if product_gate_ok else 0
 
+        backfill_pending = False
+        if stream_name in BACKFILL_STREAMS:
+            local_coverage = record.get(f"{prefix}_local_coverage_pct")
+            local_lag = record.get(f"{prefix}_local_lag_min")
+            if (
+                local_coverage is not None
+                and local_coverage < 99.9
+                and local_lag is not None
+                and local_lag <= 1.0
+            ):
+                backfill_pending = True
+        record[f"{prefix}_backfill_pending_state"] = 1 if backfill_pending else 0
+        if backfill_pending:
+            backfill_pending_count += 1
+            continue
+
         if (local_missing or 0) > 0 or (local_mismatch or 0) > 0:
             local_issue_count += 1
         if gws_metrics and (((gws_missing or 0) > 0) or ((gws_mismatch or 0) > 0)):
@@ -508,6 +527,8 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     record["streams_gws_issue_count"] = gws_issue_count
     record["streams_prune_ready_count"] = prune_ready_count
     record["streams_product_gate_ok_count"] = product_gate_ok_count
+    record["streams_backfill_pending_count"] = backfill_pending_count
+    record["streams_target_count"] = max(0, len(STREAM_PREFIXES) - backfill_pending_count)
 
     failed_source_sync, source_sync_timer_enabled = _collect_unit_metrics(SOURCE_SYNC_UNITS, record)
     failed_processing, processing_timer_enabled = _collect_unit_metrics(PROCESSING_UNITS, record)
