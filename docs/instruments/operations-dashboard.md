@@ -9,6 +9,8 @@ stack.
 - local and remote storage pressure
 - Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
   above `52 V`, amber from `50-52 V`, and red below `50 V`
+- Aurora Power Supply internal temperature from `InternalTemperature`,
+  scored green below `35 C`, amber from `35-40 C`, and red at `40 C` or above
 - source sync and processing health
 - GWS transfer status
 - mirror verification and prune-readiness indicators

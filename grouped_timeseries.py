@@ -472,11 +472,12 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "aps_battery_voltage",
-            "APS Battery Voltage",
+            "APS Electrical / Thermal",
             "Voltage [V]",
-            None,
+            "Temperature [C]",
             (
                 TraceSpec("aps_battery_voltage_v", "DC Inverter Voltage", COLOR["brown"]),
+                TraceSpec("aps_internal_temp_c", "Internal Temperature", COLOR["red"], axis="right"),
             ),
         ),
         PanelSpec(

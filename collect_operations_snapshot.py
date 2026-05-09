@@ -528,6 +528,14 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     if battery_time is not None:
         record["aps_battery_voltage_time_utc"] = battery_time.isoformat()
         record["aps_battery_voltage_age_min"] = max((now - battery_time).total_seconds(), 0.0) / 60.0
+    internal_temp, internal_temp_time = _latest_finite_zarr_value(
+        _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
+        "InternalTemperature",
+    )
+    record["aps_internal_temp_c"] = internal_temp
+    if internal_temp_time is not None:
+        record["aps_internal_temp_time_utc"] = internal_temp_time.isoformat()
+        record["aps_internal_temp_age_min"] = max((now - internal_temp_time).total_seconds(), 0.0) / 60.0
 
     streams = summary.get("streams", {})
     local_issue_count = 0
