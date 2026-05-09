@@ -32,7 +32,10 @@ filesystem usage.
 This tab reads the latest operations snapshot directly rather than waiting for
 an archived quicklook to exist. That means a fresh deployment can show the live
 Operations tab before the archived operations PNGs have accumulated enough
-samples to plot.
+samples to plot. Archive traffic lights are based on settled mirror health, so
+a stream stays green when the verified GWS archive has no missing or mismatched
+files even if the newest just-arrived source file has not yet landed in the
+next transfer batch.
 
 ## Archived products
 

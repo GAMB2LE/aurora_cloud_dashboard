@@ -1252,11 +1252,15 @@ def _ops_manifest_ready(snapshot: dict) -> bool:
 def _ops_archive_level(snapshot: dict, prefix: str) -> str:
     if _ops_bool(snapshot.get(f"{prefix}_backfill_pending_state")):
         return "amber"
+    gws_missing = int(_ops_float(snapshot.get(f"{prefix}_gws_missing_count")) or 0)
+    gws_mismatch = int(_ops_float(snapshot.get(f"{prefix}_gws_mismatch_count")) or 0)
     gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
     if gws_coverage is None:
         if _ops_bool(snapshot.get("gws_probe_ok_state")):
             return "amber"
         return "gray"
+    if gws_missing == 0 and gws_mismatch == 0:
+        return "green"
     if gws_coverage >= 99.9:
         return "green"
     if gws_coverage >= 95.0:
@@ -1271,9 +1275,13 @@ def _ops_archive_text(snapshot: dict, prefix: str) -> str:
         local_text = "?" if local_coverage is None else f"{local_coverage:.0f}%"
         gws_text = "?" if gws_coverage is None else f"{gws_coverage:.0f}%"
         return f"Backfill {local_text} local / {gws_text} GWS"
+    gws_missing = int(_ops_float(snapshot.get(f"{prefix}_gws_missing_count")) or 0)
+    gws_mismatch = int(_ops_float(snapshot.get(f"{prefix}_gws_mismatch_count")) or 0)
     gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
     if gws_coverage is None:
         return "Pending manifest sync"
+    if gws_missing == 0 and gws_mismatch == 0 and gws_coverage < 99.9:
+        return f"{gws_coverage:.0f}% mirrored, settled OK"
     return f"{gws_coverage:.0f}% mirrored"
 
 
