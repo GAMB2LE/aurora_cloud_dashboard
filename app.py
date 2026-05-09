@@ -7,6 +7,7 @@
 # - Lightweight coarsening and subsampling to keep plots responsive.
 
 import os
+import subprocess
 from base64 import b64encode
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
@@ -52,6 +53,7 @@ from extra_housekeeping import (
 from wxcam_catalog import (
     available_days,
     catalog_time_bounds,
+    latest_records,
     latest_record,
     records_for_day,
     representative_hourly_records,
@@ -77,17 +79,29 @@ def _static_asset_data_uri(path: Path) -> str:
 
 DASHBOARD_LOGO = _static_asset_data_uri(Path(__file__).resolve().parent / "assets" / "logo.png")
 DASHBOARD_FAVICON = "https://gamb2le.pages.dev/assets/logo.png"
+THEME_TEXT = "#22313f"
+THEME_MUTED = "#5f6c7b"
+THEME_BORDER = "#d8e1e8"
+THEME_LINE = "#c5d0da"
+THEME_GRID = "#e5eaef"
+THEME_PANEL = "#fbfcfd"
+THEME_ACCENT = "#0b7285"
 
 
 class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
     src = param.String(default="")
     title = param.String(default="")
+    subtitle = param.String(default="")
     mode_class = param.String(default="wxcam-player--wide")
+    initial_seconds = param.Number(default=0.0)
 
     _template = """
     <div id="player_shell" class="wxcam-player ${mode_class}">
       <div id="meta_row" class="wxcam-player__meta">
-        <div id="title_text" class="wxcam-player__title">{{ title }}</div>
+        <div id="meta_text" class="wxcam-player__meta-text">
+          <div id="title_text" class="wxcam-player__title">{{ title }}</div>
+          <div id="subtitle_text" class="wxcam-player__subtitle">{{ subtitle }}</div>
+        </div>
       </div>
       <div id="control_row" class="wxcam-player__controls">
         <button id="play_btn" type="button" onclick="${script('toggle_play')}">Play</button>
@@ -140,6 +154,16 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
           duration.textContent = "00:00";
           play_btn.textContent = "Play";
           speed_select.value = "1";
+          video_el.dataset.pendingSeek = String(initial_seconds || 0);
+        """,
+        "initial_seconds": """
+          const nextTime = Number(initial_seconds || 0);
+          if (Number.isFinite(video_el.duration) && video_el.duration > 0) {
+            video_el.currentTime = Math.max(0, Math.min(video_el.duration, nextTime));
+            view.run_script('sync_time');
+          } else {
+            video_el.dataset.pendingSeek = String(nextTime);
+          }
         """,
         "toggle_play": """
           if (video_el.paused) {
@@ -193,8 +217,16 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
           current_time.textContent = formatTime(video_el.currentTime || 0);
           duration.textContent = formatTime(durationSeconds);
           seek_slider.value = 0;
+          if (video_el.dataset.pendingSeek) {
+            const requestedTime = Number(video_el.dataset.pendingSeek || 0);
+            if (Number.isFinite(requestedTime) && requestedTime > 0) {
+              video_el.currentTime = Math.max(0, Math.min(durationSeconds, requestedTime));
+            }
+            video_el.dataset.pendingSeek = "";
+          }
           video_el.loop = loop_toggle.checked;
           video_el.playbackRate = Number(speed_select.value || 1);
+          view.run_script('sync_time');
           view.run_script('sync_play_state');
           view.run_script('sync_speed_state');
         """,
@@ -2252,6 +2284,204 @@ def _wxcam_daily_video_dir(image_type: str) -> Path:
     return _wxcam_daily_video_root() / image_type
 
 
+def _wxcam_is_latest_label(label: str | None) -> bool:
+    return label == "Today (latest)"
+
+
+def _wxcam_row_time(row) -> datetime | None:
+    if not row:
+        return None
+    try:
+        return datetime.fromisoformat(str(row["time_utc"])).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _humanize_age(moment: datetime | None) -> str:
+    if moment is None:
+        return "Updated time unavailable"
+    delta = max(datetime.now(timezone.utc) - moment, timedelta(0))
+    seconds = int(delta.total_seconds())
+    if seconds < 90:
+        return "Updated just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"Updated {minutes} min ago"
+    hours = minutes // 60
+    if hours < 48:
+        rem_minutes = minutes % 60
+        return f"Updated {hours} h {rem_minutes:02d} min ago" if rem_minutes else f"Updated {hours} h ago"
+    days = hours // 24
+    return f"Updated {days} d ago"
+
+
+@lru_cache(maxsize=2048)
+def _cached_media_duration_seconds(path_str: str, size_bytes: int, mtime_ns: int) -> float:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                path_str,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return 0.0
+        return max(0.0, float((result.stdout or "0").strip() or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _media_duration_seconds(path: Path) -> float:
+    stat_result = path.stat()
+    return _cached_media_duration_seconds(str(path), stat_result.st_size, stat_result.st_mtime_ns)
+
+
+def _wxcam_recent_video_rows(image_type: str, limit: int = 24):
+    return latest_records(_wxcam_catalog_path("wxcam"), image_type, media_kind="video", limit=limit)
+
+
+def _wxcam_video_context(selection: str, selected_label: str | None) -> dict[str, object]:
+    image_type = _image_type_from_selection(selection)
+    path_str = _wxcam_interactive_video_options(selection).get(selected_label)
+    if not path_str:
+        return {}
+    video_path = Path(path_str)
+    latest_mode = _wxcam_is_latest_label(selected_label)
+    if latest_mode:
+        video_rows = _wxcam_recent_video_rows(image_type, limit=24)
+        filmstrip_mode = "recent"
+        day_token = _wxcam_today_token()
+        headline = "Rolling latest 24 hours"
+    else:
+        day_token = selected_label or ""
+        day_utc = _wxcam_day_token_to_utc(day_token)
+        video_rows = records_for_day(_wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="video") if day_utc else []
+        filmstrip_mode = "day"
+        headline = pd.Timestamp(day_utc).strftime("%Y-%m-%d UTC") if day_utc else (selected_label or "Selected day")
+
+    jump_points: dict[str, float] = {"Start of video": 0.0}
+    running_seconds = 0.0
+    for row in video_rows:
+        row_time = _wxcam_row_time(row)
+        if row_time is None:
+            continue
+        if latest_mode:
+            label = row_time.strftime("%m-%d %H:00")
+        else:
+            label = row_time.strftime("%H:00 UTC")
+        jump_points[label] = running_seconds
+        raw_path = Path(str(row["raw_path"]))
+        running_seconds += _media_duration_seconds(raw_path) if raw_path.exists() else 0.0
+
+    last_row = video_rows[-1] if video_rows else latest_record(_wxcam_catalog_path("wxcam"), image_type, media_kind="video")
+    last_time = _wxcam_row_time(last_row)
+    last_clip_text = last_time.strftime("%H:%M UTC") if last_time else "n/a"
+    clip_count = len(video_rows)
+    subtitle_bits = [
+        _humanize_age(last_time),
+        f"{clip_count} hourly clips" if clip_count else "No hourly clips indexed",
+        f"Last clip {last_clip_text}",
+    ]
+    return {
+        "path": video_path,
+        "image_type": image_type,
+        "selected_label": selected_label or "",
+        "headline": headline,
+        "filmstrip_mode": filmstrip_mode,
+        "day_token": day_token,
+        "video_rows": video_rows,
+        "jump_points": jump_points,
+        "title": f"{selection} | {headline}",
+        "subtitle": " | ".join(bit for bit in subtitle_bits if bit),
+    }
+
+
+def _wxcam_recent_strip_markup(video_rows: list[object], selected_jump: str | None) -> str:
+    cells: list[str] = []
+    for row in video_rows:
+        row_time = _wxcam_row_time(row)
+        if row_time is None:
+            continue
+        label = row_time.strftime("%m-%d %H")
+        active = " wxcam-hour-strip__tile--active" if selected_jump == row_time.strftime("%m-%d %H:00") else ""
+        cells.append(
+            "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--recent"
+            f"{active}'><div class='wxcam-hour-strip__hour'>{escape(label)}</div>"
+            "<div class='wxcam-hour-strip__chip'>Recent</div></div>"
+        )
+    if not cells:
+        return "<div class='wxcam-hour-strip__empty'>Recent hourly clips have not been indexed yet.</div>"
+    return "".join(cells)
+
+
+def _wxcam_day_strip_markup(image_type: str, day_token: str, selected_jump: str | None) -> str:
+    day_utc = _wxcam_day_token_to_utc(day_token)
+    if not day_utc:
+        return "<div class='wxcam-hour-strip__empty'>Hourly previews are unavailable for this selection.</div>"
+    hourly_rows = representative_hourly_records(
+        _wxcam_catalog_path("wxcam"),
+        image_type,
+        day_utc,
+        media_kind="image",
+    )
+    cells: list[str] = []
+    for hour in range(24):
+        row = hourly_rows.get(hour)
+        hour_label = f"{hour:02d}"
+        active = " wxcam-hour-strip__tile--active" if selected_jump == f"{hour:02d}:00 UTC" else ""
+        if row is None:
+            cells.append(
+                "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--empty'>"
+                f"<div class='wxcam-hour-strip__placeholder'>{hour_label}</div>"
+                "</div>"
+            )
+            continue
+        thumb_path = _wxcam_hourly_thumbnail_path(image_type, day_token, str(row["filename"]))
+        if thumb_path.exists():
+            image_markup = f"<img class='wxcam-hour-strip__thumb' src='{_image_data_uri(thumb_path)}' alt='Hour {hour_label}'>"
+        else:
+            image_markup = f"<div class='wxcam-hour-strip__placeholder'>{hour_label}</div>"
+        cells.append(
+            "<div class='wxcam-hour-strip__tile wxcam-hour-strip__tile--day"
+            f"{active}'>"
+            f"{image_markup}"
+            f"<div class='wxcam-hour-strip__hour'>{hour_label}</div>"
+            "</div>"
+        )
+    return "".join(cells)
+
+
+def _wxcam_hour_strip_markup(selection: str, selected_label: str | None, selected_jump: str | None) -> str:
+    context = _wxcam_video_context(selection, selected_label)
+    if not context:
+        return "<div class='wxcam-hour-strip__empty'>No hourly previews are available for this selection.</div>"
+    image_type = str(context["image_type"])
+    if context["filmstrip_mode"] == "recent":
+        body = _wxcam_recent_strip_markup(list(context["video_rows"]), selected_jump)
+        legend = "Recent hourly clip strip"
+    else:
+        body = _wxcam_day_strip_markup(image_type, str(context["day_token"]), selected_jump)
+        legend = "Representative hourly stills"
+    return (
+        "<div class='wxcam-hour-strip'>"
+        "<div class='wxcam-hour-strip__header'>"
+        f"<div class='wxcam-hour-strip__title'>{escape(legend)}</div>"
+        "<div class='wxcam-hour-strip__hint'>Use Jump to hour for an exact seek into the stitched movie.</div>"
+        "</div>"
+        f"<div class='wxcam-hour-strip__scroller'>{body}</div>"
+        "</div>"
+    )
+
+
 def _wxcam_interactive_video_options(selection: str) -> dict[str, str | None]:
     image_type = _image_type_from_selection(selection)
     day_dir = _wxcam_daily_video_dir(image_type)
@@ -2357,17 +2587,24 @@ def _image_data_uri(path: Path) -> str:
     return _cached_image_data_uri(str(path), stat_result.st_size, stat_result.st_mtime_ns)
 
 
-def _build_wxcam_video_view(path: Path, selection: str, selected_label: str):
+wxcam_player = WxcamVideoPlayer(sizing_mode="stretch_width")
+wxcam_player_shell = pn.Column(wxcam_player, sizing_mode="stretch_width")
+
+
+def _build_wxcam_video_view(path: Path, selection: str, selected_label: str, context: dict[str, object], jump_seconds: float):
     image_type = _image_type_from_selection(selection)
-    with _timed_perf("wxcam_video_view_build", instrument="wxcam", image_type=image_type, path=path, selected_label=selected_label) as perf:
+    with _timed_perf("wxcam_video_view_build", instrument="wxcam", image_type=image_type, path=path, selected_label=selected_label, jump_seconds=jump_seconds) as perf:
         mode_class = "wxcam-player--vertical" if image_type == "fish_hdr" else "wxcam-player--wide"
-        title = f"{selection} | {selected_label} | {path.name}"
+        title = str(context.get("title", f"{selection} | {selected_label}"))
+        subtitle = str(context.get("subtitle", ""))
         stat_result = path.stat()
         perf["size_bytes"] = int(stat_result.st_size)
-        return pn.Column(
-            WxcamVideoPlayer(src=_video_data_uri(path), title=title, mode_class=mode_class, sizing_mode="stretch_width"),
-            sizing_mode="stretch_width",
-        )
+        wxcam_player.src = _video_data_uri(path)
+        wxcam_player.title = title
+        wxcam_player.subtitle = subtitle
+        wxcam_player.mode_class = mode_class
+        wxcam_player.initial_seconds = float(jump_seconds or 0.0)
+        return wxcam_player_shell
 
 
 def _build_wxcam_image_view(path: Path, selection: str, selected_label: str):
@@ -2402,8 +2639,11 @@ _wxcam_ql_options = _wxcam_interactive_video_options(wxcam_image_type.value)
 wxcam_date = pn.widgets.Select(name="Date", options=list(_wxcam_ql_options.keys()))
 if _wxcam_ql_options:
     wxcam_date.value = list(_wxcam_ql_options.keys())[-1]
-wxcam_prev = pn.widgets.Button(name="<<", button_type="default")
-wxcam_next = pn.widgets.Button(name=">>", button_type="default")
+wxcam_latest = pn.widgets.Button(name="Latest", button_type="primary")
+wxcam_prev = pn.widgets.Button(name="Previous", button_type="default")
+wxcam_next = pn.widgets.Button(name="Next", button_type="default")
+_wxcam_jump_options: dict[str, float] = {"Start of video": 0.0}
+wxcam_jump_hour = pn.widgets.Select(name="Jump to hour", options=list(_wxcam_jump_options.keys()), value="Start of video")
 
 
 def _refresh_wxcam_ql_options(preserve_current: bool = True):
@@ -2421,6 +2661,16 @@ def _refresh_wxcam_ql_options(preserve_current: bool = True):
         wxcam_date.value = opts[-1]
 
 
+def _refresh_wxcam_jump_options(preserve_current: bool = True):
+    global _wxcam_jump_options
+    current = wxcam_jump_hour.value if preserve_current else None
+    context = _wxcam_video_context(wxcam_image_type.value or _cfg("wxcam")["default_top"], wxcam_date.value)
+    _wxcam_jump_options = dict(context.get("jump_points", {"Start of video": 0.0}))
+    option_labels = list(_wxcam_jump_options.keys()) or ["Start of video"]
+    wxcam_jump_hour.options = option_labels
+    wxcam_jump_hour.value = current if preserve_current and current in option_labels else option_labels[0]
+
+
 def _shift_wxcam_ql(delta: int):
     _refresh_wxcam_ql_options(preserve_current=True)
     opts = list(wxcam_date.options)
@@ -2434,8 +2684,29 @@ def _shift_wxcam_ql(delta: int):
         wxcam_date.param.trigger("value")
 
 
+def _go_wxcam_latest(_event=None):
+    _refresh_wxcam_ql_options(preserve_current=True)
+    opts = list(wxcam_date.options)
+    if "Today (latest)" in opts:
+        if wxcam_date.value == "Today (latest)":
+            wxcam_date.param.trigger("value")
+        else:
+            wxcam_date.value = "Today (latest)"
+    elif opts:
+        if wxcam_date.value == opts[-1]:
+            wxcam_date.param.trigger("value")
+        else:
+            wxcam_date.value = opts[-1]
+
+
+def _on_wxcam_date_change(event):
+    _refresh_wxcam_jump_options(preserve_current=False)
+
+
+wxcam_latest.on_click(_go_wxcam_latest)
 wxcam_prev.on_click(lambda _e: _shift_wxcam_ql(-1))
 wxcam_next.on_click(lambda _e: _shift_wxcam_ql(1))
+wxcam_date.param.watch(_on_wxcam_date_change, "value")
 
 
 class WxcamSelectionState(param.Parameterized):
@@ -2455,21 +2726,41 @@ def _refresh_wxcam_latest_if_needed():
 _wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
 
 
+def _on_wxcam_jump_change(event):
+    wxcam_player.initial_seconds = float(_wxcam_jump_options.get(event.new, 0.0))
+
+
+wxcam_jump_hour.param.watch(_on_wxcam_jump_change, "value")
+
+
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
 def _wxcam_interactive_media(selected, selection):
     selection = selection or _cfg("wxcam")["default_top"]
-    with _timed_perf("wxcam_interactive_render", instrument="wxcam", selection=selection, selected=selected) as perf:
-        path = _wxcam_interactive_video_options(selection).get(selected)
+    with _timed_perf("wxcam_interactive_render", instrument="wxcam", selection=selection, selected=selected, jump_label=wxcam_jump_hour.value) as perf:
+        context = _wxcam_video_context(selection, selected)
+        path = context.get("path")
         if not path:
             perf["status"] = "missing_option"
             return pn.pane.Markdown("No media available for this selection.")
-        video_path = Path(path)
+        video_path = Path(str(path))
         perf["path"] = video_path
         if not video_path.exists():
             perf["status"] = "missing_file"
             return pn.pane.Markdown("No media available for this selection.")
+        jump_seconds = float(_wxcam_jump_options.get(wxcam_jump_hour.value, 0.0))
+        perf["jump_seconds"] = jump_seconds
         perf["status"] = "ok"
-        return _build_wxcam_video_view(video_path, selection, selected)
+        return _build_wxcam_video_view(video_path, selection, selected or "", context, jump_seconds)
+
+
+@pn.depends(wxcam_date.param.value, wxcam_image_type.param.value, wxcam_jump_hour.param.value)
+def _wxcam_interactive_hour_strip(selected, selection, jump_label):
+    selection = selection or _cfg("wxcam")["default_top"]
+    return pn.pane.HTML(
+        _wxcam_hour_strip_markup(selection, selected, jump_label),
+        sizing_mode="stretch_width",
+        margin=0,
+    )
 
 
 # WXcam now uses the Interactive Data Browser as its primary browser/player so
@@ -2477,16 +2768,21 @@ def _wxcam_interactive_media(selected, selection):
 # the science-quicklook flow used by the other instruments.
 wxcam_interactive_browser = pn.Column(
     pn.Card(
-        pn.Row(wxcam_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(wxcam_prev, wxcam_date, wxcam_next, sizing_mode="stretch_width"),
+        pn.Row(wxcam_image_type, wxcam_latest, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(wxcam_prev, wxcam_date, wxcam_next, wxcam_jump_hour, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         title="",
         collapsible=False,
         sizing_mode="stretch_width",
+        css_classes=["small-card", "wxcam-browser__toolbar"],
     ),
+    _wxcam_interactive_hour_strip,
     _wxcam_interactive_media,
     sizing_mode="stretch_width",
+    css_classes=["wxcam-browser"],
 )
 
+
+_refresh_wxcam_jump_options(preserve_current=False)
 
 wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
 
@@ -2519,7 +2815,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
                 xref="paper",
                 yref="paper",
                 showarrow=False,
-                font=dict(color="#222", size=16),
+                font=dict(color=THEME_TEXT, size=16),
             )
             fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
             _show_plot(fig)
@@ -2654,7 +2950,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
                             showarrow=False,
                             xanchor="center",
                             yanchor="top",
-                            font=dict(size=14, color="#222"),
+                            font=dict(size=14, color=THEME_TEXT),
                         )
                     )
 
@@ -2666,10 +2962,10 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
                 ticktext=ticktext,
                 tickangle=-45,
                 showgrid=True,
-                gridcolor="#dddddd",
-                linecolor="#222222",
-                tickfont=dict(color="#222222", size=12),
-                title_font=dict(color="#222222", size=12),
+                gridcolor=THEME_GRID,
+                linecolor=THEME_LINE,
+                tickfont=dict(color=THEME_TEXT, size=12),
+                title_font=dict(color=THEME_TEXT, size=12),
                 row=row,
                 col=1,
             )
@@ -2679,7 +2975,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
         fig.update_yaxes(title_text="LWP (g/m²)", range=[float(lymin), float(lymax)], row=1, col=1, secondary_y=False)
         fig.update_yaxes(title_text="IWV (kg/m²)", range=[float(iymin), float(iymax)], row=1, col=1, secondary_y=True)
         fig.update_yaxes(title_text="IRR / SURF_T (°C)", range=[float(rymin), float(rymax)], row=2, col=1)
-        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=3, col=1, showgrid=True, gridcolor="#dddddd", linecolor="#222222")
+        fig.update_yaxes(range=[bottom, top], title_text="Range (m)", row=3, col=1, showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE)
 
         fig.update_layout(
             showlegend=False,
@@ -2689,11 +2985,11 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
                 colorscale=cfg["vars"]["T_PROF"]["colorscale"],
                 cmin=cfg["vars"]["T_PROF"]["clim"][0],
                 cmax=cfg["vars"]["T_PROF"]["clim"][1],
-                colorbar=dict(title=dict(text="T (K)", side="right"), x=1.02, y=0.18, len=0.3, tickfont=dict(color="#222222", size=9)),
+                colorbar=dict(title=dict(text="T (K)", side="right"), x=1.02, y=0.18, len=0.3, tickfont=dict(color=THEME_TEXT, size=9)),
             ),
             paper_bgcolor="white",
             plot_bgcolor="white",
-            font=dict(color="#222222", size=13),
+            font=dict(color=THEME_TEXT, size=13),
             annotations=tuple(list(fig.layout.annotations) + noon_annots),
         )
         perf["status"] = "ok"
@@ -2790,8 +3086,8 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
         var1 = vars_cfg.get(var1_name)
         var2 = vars_cfg.get(var2_name)
         bg = "white"
-        fg = "#222222"
-        grid = "#dddddd"
+        fg = THEME_TEXT
+        grid = THEME_GRID
         perf["time_count"] = int(ds.sizes.get("time", 0)) if ds is not None else 0
         perf["range_count"] = int(ds.sizes.get("range", 0)) if ds is not None else 0
         if ds is None or not ds.data_vars:
@@ -2905,7 +3201,7 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
             tickangle=-45,
             showgrid=True,
             gridcolor=grid,
-            linecolor=fg,
+            linecolor=THEME_LINE,
             tickfont=dict(color=fg, size=12),
             title_font=dict(color=fg, size=12),
             row=2,
@@ -2918,14 +3214,14 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
             tickangle=-45,
             showgrid=True,
             gridcolor=grid,
-            linecolor=fg,
+            linecolor=THEME_LINE,
             tickfont=dict(color=fg, size=12),
             title_font=dict(color=fg, size=12),
             row=1,
             col=1,
         )
-        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=fg, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=1, col=1)
-        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=fg, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=1, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
         fig.update_yaxes(matches="y", row=2, col=1)
         fig.update_layout(
             height=max(630, int(pn.state.viewport_height * 0.675)) if hasattr(pn.state, "viewport_height") else 810,
@@ -4065,25 +4361,27 @@ for widget, parameter in (
 wxcam_calendar_state.param.watch(_refresh_share_and_download_state, "selected_hour_path")
 
 
-ACCENT = "#0b7285"  # header/accent color
+ACCENT = THEME_ACCENT  # header/accent color
 css = """
 # Global font override for a clean, consistent look.
 body, .bk {
     font-family: "SF Pro Display","SF Pro","-apple-system","BlinkMacSystemFont","Segoe UI",sans-serif;
     font-size: 15px;
     background: #ffffff;
-    color: #1f2933;
+    color: #22313f;
 }
 .bk.card, .bk-panel-models-card {
-    border: 1px solid #d8dee4;
+    border: 1px solid #d8e1e8;
     border-radius: 8px;
     box-shadow: none;
     background: #ffffff;
 }
 .bk-btn, button.bk-btn {
     border-radius: 6px;
-    border: 1px solid #cfd8df;
+    border: 1px solid #c5d0da;
     box-shadow: none;
+    background: #ffffff;
+    color: #22313f;
 }
 .bk-btn-primary, button.bk-btn-primary {
     background: #0b7285;
@@ -4092,7 +4390,9 @@ body, .bk {
 }
 .bk-input {
     border-radius: 6px;
-    border-color: #cfd8df;
+    border-color: #c5d0da;
+    background: #ffffff;
+    color: #22313f;
 }
 .mobile-stack {
     flex-wrap: wrap !important;
@@ -4120,8 +4420,8 @@ body, .bk {
     gap: 6px;
     padding: 4px 10px;
     border-radius: 999px;
-    border: 1px solid #d8dee4;
-    background: #f8fafb;
+    border: 1px solid #d8e1e8;
+    background: #fbfcfd;
     color: #334155;
     font-size: 12px;
     line-height: 1.2;
@@ -4149,11 +4449,11 @@ body, .bk {
 }
 .availability-caption {
     font-size: 12px;
-    color: #566370;
+    color: #4c5c6b;
 }
 .availability-explainer {
     font-size: 11px;
-    color: #6b7280;
+    color: #647283;
     line-height: 1.35;
 }
 .availability-bar {
@@ -4166,7 +4466,7 @@ body, .bk {
 .availability-segment {
     height: 8px;
     border-radius: 3px;
-    border: 1px solid #d8dee4;
+    border: 1px solid #d8e1e8;
     background: #ffffff;
 }
 .availability-segment--full {
@@ -4179,7 +4479,7 @@ body, .bk {
 }
 .availability-segment--empty {
     background: #eef2f5;
-    border-color: #d8dee4;
+    border-color: #d8e1e8;
 }
 .availability-scale {
     display: flex;
@@ -4431,18 +4731,31 @@ body, .bk {
 .wxcam-player {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
     width: 100%;
 }
 .wxcam-player__meta {
     display: flex;
     justify-content: center;
+    text-align: center;
+}
+.wxcam-player__meta-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 820px;
 }
 .wxcam-player__title {
-    font-size: 14px;
-    color: #1f2933;
+    font-size: 16px;
+    font-weight: 600;
+    color: #22313f;
     text-align: center;
     word-break: break-word;
+}
+.wxcam-player__subtitle {
+    font-size: 12px;
+    color: #5f6c7b;
+    line-height: 1.4;
 }
 .wxcam-player__controls {
     display: flex;
@@ -4453,12 +4766,12 @@ body, .bk {
 }
 .wxcam-player__controls button,
 .wxcam-player__controls select {
-    border: 1px solid #cbd5e1;
+    border: 1px solid #c5d0da;
     background: #ffffff;
-    color: #0f172a;
+    color: #22313f;
     border-radius: 6px;
     padding: 6px 10px;
-    font-size: 14px;
+    font-size: 13px;
 }
 .wxcam-player__controls button {
     cursor: pointer;
@@ -4468,7 +4781,7 @@ body, .bk {
     align-items: center;
     gap: 6px;
     font-size: 14px;
-    color: #334155;
+    color: #475569;
 }
 .wxcam-player__checkbox input {
     margin: 0;
@@ -4485,7 +4798,7 @@ body, .bk {
 }
 .wxcam-player__time {
     font-size: 13px;
-    color: #475569;
+    color: #5f6c7b;
     text-align: center;
 }
 .wxcam-player__frame {
@@ -4493,10 +4806,11 @@ body, .bk {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #0f172a;
+    background: #edf2f7;
     border-radius: 8px;
     overflow: hidden;
-    padding: 8px;
+    padding: 10px;
+    border: 1px solid #d8e1e8;
 }
 .wxcam-player__frame video {
     display: block;
@@ -4504,10 +4818,111 @@ body, .bk {
     height: auto;
     max-height: 68vh;
 }
+.wxcam-browser {
+    gap: 10px;
+}
+.wxcam-browser__toolbar .bk-card-body {
+    padding: 10px 12px;
+}
+.wxcam-hour-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: #fbfcfd;
+}
+.wxcam-hour-strip__header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px 14px;
+    align-items: baseline;
+}
+.wxcam-hour-strip__title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #22313f;
+}
+.wxcam-hour-strip__hint {
+    font-size: 11px;
+    color: #5f6c7b;
+}
+.wxcam-hour-strip__scroller {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(62px, 62px);
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+}
+.wxcam-hour-strip__tile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 4px;
+    border: 1px solid #d8e1e8;
+    border-radius: 7px;
+    background: #ffffff;
+    min-height: 76px;
+}
+.wxcam-hour-strip__tile--day {
+    min-height: 96px;
+}
+.wxcam-hour-strip__tile--recent {
+    justify-content: center;
+    min-height: 56px;
+}
+.wxcam-hour-strip__tile--active {
+    border-color: #0b7285;
+    box-shadow: inset 0 0 0 1px #0b7285;
+}
+.wxcam-hour-strip__tile--empty {
+    background: #f6f8fb;
+    border-style: dashed;
+}
+.wxcam-hour-strip__thumb {
+    display: block;
+    width: 100%;
+    height: 54px;
+    object-fit: cover;
+    border-radius: 5px;
+    background: #edf2f7;
+}
+.wxcam-hour-strip__placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 54px;
+    border-radius: 5px;
+    background: #edf2f7;
+    color: #7b8794;
+    font-size: 11px;
+}
+.wxcam-hour-strip__chip,
+.wxcam-hour-strip__hour {
+    font-size: 11px;
+    color: #4c5c6b;
+    line-height: 1.2;
+}
+.wxcam-hour-strip__chip {
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: #eff6f8;
+    color: #0b7285;
+}
+.wxcam-hour-strip__empty {
+    font-size: 12px;
+    color: #647283;
+}
 .wxcam-hour-tile {
     gap: 1px;
     padding: 1px;
-    border: 1px solid #cbd5e1;
+    border: 1px solid #d8e1e8;
     border-radius: 2px;
     background: #ffffff;
 }
@@ -4521,7 +4936,7 @@ body, .bk {
     max-height: 88px;
     margin: 0 auto;
     border-radius: 2px;
-    background: #0f172a;
+    background: #edf2f7;
 }
 .wxcam-hour-tile button {
     padding: 1px 4px !important;
@@ -4535,8 +4950,8 @@ body, .bk {
     justify-content: center;
     min-height: 56px;
     border-radius: 2px;
-    background: #e2e8f0;
-    color: #475569;
+    background: #edf2f7;
+    color: #647283;
     font-size: 10px;
 }
 .wxcam-hour-tile--fish .wxcam-hour-tile__img {

@@ -52,18 +52,23 @@ class PanelSpec:
 
 
 COLOR = {
-    "teal": "#2bb3b1",
-    "light_blue": "#b7e2ef",
-    "blue": "#4b66c4",
-    "purple": "#7a52c7",
-    "brown": "#aa5a2a",
-    "olive": "#c5bf67",
-    "red": "#b52020",
-    "magenta": "#c43aa7",
-    "green": "#2d8a4f",
-    "slate": "#55636d",
-    "black": "#222222",
+    "teal": "#0b7285",
+    "light_blue": "#7fb6d6",
+    "blue": "#4d6fb3",
+    "purple": "#7768b8",
+    "brown": "#4f7d8d",
+    "olive": "#7a9964",
+    "red": "#c05647",
+    "magenta": "#9f6b9f",
+    "green": "#4f8c63",
+    "slate": "#718195",
+    "black": "#22313f",
 }
+
+PLOT_TEXT = "#22313f"
+PLOT_LINE = "#c5d0da"
+PLOT_GRID = "#e5eaef"
+PLOT_BORDER = "#d8e1e8"
 
 
 SUMMARY_INSTRUMENTS = ("vaisalamet", "asfs-logger", "asfs-fast-sonic", "power", "ops-monitor")
@@ -1035,7 +1040,7 @@ def plot_housekeeping_timeseries(
         drawstyle = "steps-post" if is_status_like_var(name) else "default"
         ax.plot(times, values, color=colors[idx % len(colors)], linewidth=0.8, drawstyle=drawstyle)
         ax.set_ylabel(human_axis_label(name), fontsize=7, rotation=0, ha="right", va="center")
-        ax.grid(True, color="#d9d9d9", linewidth=0.4)
+        ax.grid(True, color=PLOT_GRID, linewidth=0.4)
         ax.tick_params(axis="y", labelsize=7)
 
     span_hours = max((times.max() - times.min()) / np.timedelta64(1, "h"), 1.0)
@@ -1117,7 +1122,7 @@ def save_summary_png(
                 left_color = trace.color
 
         ax.set_facecolor("white")
-        ax.grid(True, color="#dddddd", linewidth=0.5)
+        ax.grid(True, color=PLOT_GRID, linewidth=0.5)
         ax.tick_params(axis="y", colors=left_color or COLOR["black"], labelsize=9)
         ax.set_ylabel(panel.left_axis_label, color=left_color or COLOR["black"], fontsize=11)
         if right_ax is not None:
@@ -1132,7 +1137,7 @@ def save_summary_png(
             ha="left",
             va="top",
             fontsize=12,
-            bbox=dict(facecolor="white", edgecolor="#222222", linewidth=1.0, boxstyle="square,pad=0.3"),
+            bbox=dict(facecolor="white", edgecolor=PLOT_TEXT, linewidth=1.0, boxstyle="square,pad=0.3"),
         )
 
         handles_left, labels_left = ax.get_legend_handles_labels()
@@ -1219,9 +1224,9 @@ def build_summary_plotly(
             y=max(0.02, panel_top - 0.02),
             yanchor="top",
             bgcolor="rgba(255,255,255,0.85)",
-            bordercolor="#d0d0d0",
+            bordercolor=PLOT_BORDER,
             borderwidth=1,
-            font=dict(size=10, color="#222222"),
+            font=dict(size=10, color=PLOT_TEXT),
             tracegroupgap=2,
         )
         left_color = None
@@ -1254,8 +1259,8 @@ def build_summary_plotly(
         fig.update_yaxes(
             title_text=panel.left_axis_label,
             showgrid=True,
-            gridcolor="#dddddd",
-            linecolor="#222222",
+            gridcolor=PLOT_GRID,
+            linecolor=PLOT_LINE,
             tickfont=dict(color=left_color or COLOR["black"], size=10),
             title_font=dict(color=left_color or COLOR["black"], size=11),
             row=row_index,
@@ -1266,7 +1271,7 @@ def build_summary_plotly(
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
                 showgrid=False,
-                linecolor="#222222",
+                linecolor=PLOT_LINE,
                 tickfont=dict(color=right_color or COLOR["black"], size=10),
                 title_font=dict(color=right_color or COLOR["black"], size=11),
                 row=row_index,
@@ -1290,9 +1295,9 @@ def build_summary_plotly(
         tickvals=tickvals,
         ticktext=ticktext,
         showgrid=True,
-        gridcolor="#dddddd",
-        linecolor="#222222",
-        tickfont=dict(color="#222222", size=11),
+        gridcolor=PLOT_GRID,
+        linecolor=PLOT_LINE,
+        tickfont=dict(color=PLOT_TEXT, size=11),
     )
     fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
@@ -1301,8 +1306,8 @@ def build_summary_plotly(
         margin=dict(l=80, r=80, t=60, b=70),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        font=dict(color="#222222", size=12),
-        title=dict(text=title or display_name(instrument), x=0.01, xanchor="left", font=dict(size=17, color="#222222")),
+        font=dict(color=PLOT_TEXT, size=12),
+        title=dict(text=title or display_name(instrument), x=0.01, xanchor="left", font=dict(size=17, color=PLOT_TEXT)),
         **legend_layouts,
     )
     for ann in fig.layout.annotations:
@@ -1311,8 +1316,8 @@ def build_summary_plotly(
             xref="paper",
             xanchor="left",
             bgcolor="white",
-            bordercolor="#222222",
+            bordercolor=PLOT_TEXT,
             borderwidth=1,
-            font=dict(size=12, color="#222222"),
+            font=dict(size=12, color=PLOT_TEXT),
         )
     return fig

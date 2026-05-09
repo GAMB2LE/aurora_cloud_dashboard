@@ -384,6 +384,29 @@ def latest_record_in_window(
     return row
 
 
+def latest_records(
+    path: Path,
+    image_type: str,
+    media_kind: str = "image",
+    limit: int = 24,
+) -> list[sqlite3.Row]:
+    if not path.exists():
+        return []
+    with open_catalog(path) as conn:
+        ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM images
+            WHERE image_type = ? AND media_kind = ?
+            ORDER BY time_epoch_ns DESC
+            LIMIT ?
+            """,
+            (image_type, media_kind, int(limit)),
+        ).fetchall()
+    return list(reversed(rows))
+
+
 def daily_latest_records(path: Path, image_type: str, media_kind: str = "image") -> list[sqlite3.Row]:
     if not path.exists():
         return []

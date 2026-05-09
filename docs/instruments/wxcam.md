@@ -9,6 +9,13 @@ The interactive tab is video-driven:
 
 - `Today (latest)` uses `latest.mp4`
 - historical days use one stitched MP4 per UTC day
+- the browser keeps `Latest`, `Previous`, `Next`, and `Jump to hour` controls
+  visible as first-class camera controls
+- a compact hourly strip sits above the player:
+  - historical days show representative hourly HDR stills
+  - `Today (latest)` shows a recent-hour clip strip
+- the player shows freshness metadata such as `Updated X min ago` and last
+  clip time
 - the player is intentionally not auto-refreshed while you are actively
   browsing WXcam
 - current-day stitched videos are refreshed ahead of the slower historical
