@@ -30,6 +30,16 @@ ZARR_PATH = Path(os.environ.get("VAISALAMET_ZARR_PATH", "/data/aurora/products/v
 ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
 QUICKLOOK_DIR = Path(os.environ.get("VAISALAMET_QUICKLOOK_DIR", QUICKLOOK_ROOT / "vaisalamet"))
 INSTRUMENT = "vaisalamet"
+MET_HK_EXTRA_VARS = ("kt15_amb_Avg",)
+
+
+def _meteorology_housekeeping_dataset(vaisala_ds: xr.Dataset, asfs_ds: xr.Dataset) -> xr.Dataset:
+    keep = [name for name in MET_HK_EXTRA_VARS if name in asfs_ds.data_vars and asfs_ds[name].dims == ("time",)]
+    if not keep:
+        return vaisala_ds
+    hk_extra = asfs_ds[keep].sortby("time")
+    merged = xr.merge([vaisala_ds.sortby("time"), hk_extra], join="outer", compat="override", combine_attrs="drop_conflicts")
+    return merged.sortby("time")
 
 
 def main(force: bool = False) -> None:
@@ -57,6 +67,10 @@ def main(force: bool = False) -> None:
     latest_mask = (time_index >= start_time) & (time_index <= end_time)
     asfs_latest_mask = (asfs_time_index >= start_time) & (asfs_time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
+    latest_hk = _meteorology_housekeeping_dataset(
+        latest_day,
+        asfs_ds.isel(time=asfs_latest_mask).sortby("time"),
+    )
     latest_summary = combine_summary_datasets(
         INSTRUMENT,
         latest_day,
@@ -68,7 +82,7 @@ def main(force: bool = False) -> None:
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
-            plot_housekeeping_timeseries(latest_day, INSTRUMENT, hk_title, hk_out)
+            plot_housekeeping_timeseries(latest_hk, INSTRUMENT, hk_title, hk_out)
             refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, latest_png=hk_out)
 
     for day in dates:
@@ -79,6 +93,10 @@ def main(force: bool = False) -> None:
         if not mask.any():
             continue
         ds_day = ds.isel(time=mask).sortby("time")
+        hk_day = _meteorology_housekeeping_dataset(
+            ds_day,
+            asfs_ds.isel(time=asfs_mask).sortby("time"),
+        )
         summary_day = combine_summary_datasets(
             INSTRUMENT,
             ds_day,
@@ -93,7 +111,7 @@ def main(force: bool = False) -> None:
         hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if hk_out is not None and (force or not hk_out.exists()):
             hk_title = pd.Timestamp(day).strftime(f"{housekeeping_label(INSTRUMENT)} - %Y-%m-%d")
-            plot_housekeeping_timeseries(ds_day, INSTRUMENT, hk_title, hk_out)
+            plot_housekeeping_timeseries(hk_day, INSTRUMENT, hk_title, hk_out)
             refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, day_png=hk_out)
 
 

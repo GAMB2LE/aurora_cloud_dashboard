@@ -35,6 +35,9 @@ Axes use human-readable labels with units rather than raw field names.
 
 - science quicklooks show the curated Meteorology summary
 - housekeeping quicklooks show `HK_Met`
+- `HK_Met` now also includes `KT15 ambient temperature` from the ASFS logger
+  support dataset, while staying otherwise centered on the Vaisala MET
+  housekeeping fields
 
 ## Backing data products
 
