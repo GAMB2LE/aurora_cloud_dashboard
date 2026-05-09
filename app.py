@@ -189,6 +189,8 @@ PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().
 PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
 PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
 PERF_LOG_BACKUP_COUNT = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT", "5"))
+SESSION_HEARTBEAT_MS = int(os.environ.get("AURORA_DASHBOARD_SESSION_HEARTBEAT_MS", "60000"))
+_SESSION_BOOT_TS = datetime.now(timezone.utc)
 
 
 def _session_id() -> str | None:
@@ -202,6 +204,77 @@ def _session_id() -> str | None:
         return session_context.id
     except Exception:
         return None
+
+
+def _request_header(name: str) -> str | None:
+    try:
+        headers = pn.state.headers or {}
+    except Exception:
+        return None
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() != wanted:
+            continue
+        if isinstance(value, list):
+            return ",".join(str(item) for item in value)
+        return str(value)
+    return None
+
+
+def _request_path() -> str | None:
+    try:
+        doc = pn.state.curdoc
+        if doc and doc.session_context and doc.session_context.request:
+            return str(doc.session_context.request.path)
+    except Exception:
+        return None
+    return None
+
+
+def _client_ip() -> str | None:
+    forwarded = _request_header("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = _request_header("X-Real-Ip")
+    if real_ip:
+        return real_ip.strip()
+    try:
+        doc = pn.state.curdoc
+        if doc and doc.session_context and doc.session_context.request:
+            remote_ip = getattr(doc.session_context.request, "remote_ip", None)
+            if remote_ip:
+                return str(remote_ip)
+    except Exception:
+        return None
+    return None
+
+
+def _server_session_count() -> int | None:
+    try:
+        doc = pn.state.curdoc
+        if doc and doc.session_context and doc.session_context.server_context:
+            return int(len(doc.session_context.server_context.sessions))
+    except Exception:
+        return None
+    return None
+
+
+def _live_session_count() -> int | None:
+    try:
+        return int((pn.state.session_info or {}).get("live", 0))
+    except Exception:
+        return None
+
+
+def _total_session_count() -> int | None:
+    try:
+        return int((pn.state.session_info or {}).get("total", 0))
+    except Exception:
+        return None
+
+
+def _session_age_seconds() -> float:
+    return round((datetime.now(timezone.utc) - _SESSION_BOOT_TS).total_seconds(), 3)
 
 
 def _normalize_perf_value(value):
@@ -247,12 +320,18 @@ def _perf_log(event: str, duration_ms: float | None = None, **fields) -> None:
     if not _PERF_LOG_READY:
         return
     instrument = fields.get("instrument", globals().get("CURRENT_INSTRUMENT"))
+    session_id = fields.get("session_id", _session_id())
     record = {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
         "event": event,
         "duration_ms": None if duration_ms is None else round(float(duration_ms), 3),
-        "session_id": _session_id(),
+        "session_id": session_id,
         "instrument": instrument,
+        "live_sessions": fields.get("live_sessions", _live_session_count()),
+        "server_sessions": fields.get("server_sessions", _server_session_count()),
+        "total_sessions": fields.get("total_sessions", _total_session_count()),
+        "session_age_s": fields.get("session_age_s", _session_age_seconds()),
+        "busy": fields.get("busy", bool(getattr(pn.state, "busy", False))),
     }
     for key, value in fields.items():
         record[key] = _normalize_perf_value(value)
@@ -1674,6 +1753,10 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
         CURRENT_INSTRUMENT = instrument
     print(f"[update-view] instrument param={instrument} current={CURRENT_INSTRUMENT}")
     with _timed_perf("interactive_view_update", instrument=instrument, start=start, end=end) as perf:
+        perf["top_var"] = var1_name
+        perf["bottom_var"] = var2_name
+        perf["bottom_m"] = bottom_val
+        perf["top_m"] = top_val
         if instrument == "Scanning Microwave Radiometer":
             perf["view_type"] = "hatpro"
             _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax)
@@ -1894,6 +1977,16 @@ def _on_relayout(event):
             y0, y1 = y1, y0
     if start is None and end is None and y0 is None and y1 is None:
         return
+    _perf_log(
+        "plot_relayout",
+        instrument=CURRENT_INSTRUMENT,
+        start=start,
+        end=end,
+        y0=y0,
+        y1=y1,
+        request_path=_request_path(),
+        **_selection_snapshot(),
+    )
     _relayout_guard = True
     try:
         _set_live(False)
@@ -2036,6 +2129,125 @@ _ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=300
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
 _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
+
+
+def _safe_widget_value(widget_name: str):
+    widget = globals().get(widget_name)
+    return getattr(widget, "value", None) if widget is not None else None
+
+
+def _selection_snapshot() -> dict[str, object]:
+    return {
+        "current_instrument": _safe_widget_value("instrument_select"),
+        "calendar_instrument": _safe_widget_value("calendar_instrument"),
+        "calendar_date": _safe_widget_value("ql_date"),
+        "calendar_image_type": _safe_widget_value("calendar_image_type"),
+        "wxcam_image_type": _safe_widget_value("wxcam_image_type"),
+        "wxcam_date": _safe_widget_value("wxcam_date"),
+        "wxcam_selected_hour_path": getattr(wxcam_calendar_state, "selected_hour_path", ""),
+        "live_mode": _safe_widget_value("live_toggle"),
+    }
+
+
+def _log_control_change(control: str, event, context: str, instrument: str | None = None) -> None:
+    old = getattr(event, "old", None)
+    new = getattr(event, "new", None)
+    if old == new:
+        return
+    fields = _selection_snapshot()
+    fields.update(
+        {
+            "control": control,
+            "context": context,
+            "old": old,
+            "new": new,
+            "request_path": _request_path(),
+        }
+    )
+    _perf_log("ui_selection_change", instrument=instrument or CURRENT_INSTRUMENT, **fields)
+
+
+def _log_session_loaded() -> None:
+    fields = _selection_snapshot()
+    fields.update(
+        {
+            "request_path": _request_path(),
+            "client_ip": _client_ip(),
+            "user_agent": _request_header("User-Agent"),
+            "status": "loaded",
+        }
+    )
+    _perf_log("session_loaded", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
+
+
+def _log_session_heartbeat() -> None:
+    fields = _selection_snapshot()
+    fields.update(
+        {
+            "request_path": _request_path(),
+            "status": "alive",
+        }
+    )
+    _perf_log("session_heartbeat", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
+
+
+def _log_session_destroyed(session_context) -> None:
+    request = getattr(session_context, "request", None)
+    path = str(getattr(request, "path", "")) or None
+    server_context = getattr(session_context, "server_context", None)
+    server_sessions = None
+    if server_context is not None:
+        try:
+            server_sessions = int(len(server_context.sessions))
+        except Exception:
+            server_sessions = None
+    fields = _selection_snapshot()
+    fields.update(
+        {
+            "request_path": path,
+            "status": "destroyed",
+            "session_id": getattr(session_context, "id", None),
+            "server_sessions": server_sessions,
+        }
+    )
+    _perf_log("session_destroyed", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
+
+
+instrument_select.param.watch(
+    lambda event: _log_control_change("instrument_select", event, context="interactive", instrument=event.new),
+    "value",
+)
+calendar_instrument.param.watch(
+    lambda event: _log_control_change("calendar_instrument", event, context="calendar", instrument=event.new),
+    "value",
+)
+ql_date.param.watch(
+    lambda event: _log_control_change("ql_date", event, context="calendar", instrument=calendar_instrument.value),
+    "value",
+)
+calendar_image_type.param.watch(
+    lambda event: _log_control_change("calendar_image_type", event, context="calendar", instrument="wxcam"),
+    "value",
+)
+wxcam_image_type.param.watch(
+    lambda event: _log_control_change("wxcam_image_type", event, context="wxcam_interactive", instrument="wxcam"),
+    "value",
+)
+wxcam_date.param.watch(
+    lambda event: _log_control_change("wxcam_date", event, context="wxcam_interactive", instrument="wxcam"),
+    "value",
+)
+live_toggle.param.watch(
+    lambda event: _log_control_change("live_toggle", event, context="interactive", instrument=instrument_select.value),
+    "value",
+)
+wxcam_calendar_state.param.watch(
+    lambda event: _log_control_change("wxcam_selected_hour_path", event, context="wxcam_calendar", instrument="wxcam"),
+    "selected_hour_path",
+)
+pn.state.onload(_log_session_loaded)
+pn.state.on_session_destroyed(_log_session_destroyed)
+_session_heartbeat_cb = pn.state.add_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
 
 
 def _sync_wxcam_calendar_hour(*_events):

@@ -101,6 +101,7 @@ The log rotates automatically. You can change the path and rotation settings wit
 - `AURORA_DASHBOARD_PERF_LOG_MAX_BYTES`
 - `AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT`
 - `AURORA_DASHBOARD_PERF_ENABLED`
+- `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS`
 
 Useful commands:
 
@@ -121,6 +122,27 @@ The main event families currently logged are:
 - `calendar_render`
 - `wxcam_interactive_render`
 - `wxcam_calendar_day_view`
+- `wxcam_calendar_sync`
+- `session_loaded`
+- `session_heartbeat`
+- `session_destroyed`
+- `ui_selection_change`
+- `plot_relayout`
+
+Each event also carries session and concurrency context when available, including:
+
+- `session_id`
+- `live_sessions`
+- `server_sessions`
+- `total_sessions`
+- `session_age_s`
+- `busy`
+
+The session events and UI-selection events are especially useful for understanding:
+
+- Radar, VaisalaMET, ASFS logger, and Power browsing behavior in real use
+- WXcam calendar usage patterns
+- multi-user overlap and concurrent browsing on the live dashboard
 
 ## Running locally
 

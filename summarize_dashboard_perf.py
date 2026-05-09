@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import json
 import math
@@ -93,6 +93,55 @@ def _print_group_summary(records: list[dict]) -> None:
         )
 
 
+def _print_session_summary(records: list[dict]) -> None:
+    session_ids = {row.get("session_id") for row in records if row.get("session_id")}
+    loaded = [row for row in records if row.get("event") == "session_loaded"]
+    destroyed = [row for row in records if row.get("event") == "session_destroyed"]
+    heartbeats = [row for row in records if row.get("event") == "session_heartbeat"]
+    live_counts = [int(row["live_sessions"]) for row in records if row.get("live_sessions") is not None]
+    server_counts = [int(row["server_sessions"]) for row in records if row.get("server_sessions") is not None]
+    control_changes: Counter[tuple[str, str]] = Counter(
+        (str(row.get("instrument", "")), str(row.get("control", "")))
+        for row in records
+        if row.get("event") == "ui_selection_change"
+    )
+    print("\nSession summary")
+    print("===============")
+    print(f"unique session ids: {len(session_ids)}")
+    print(f"sessions loaded:   {len(loaded)}")
+    print(f"sessions closed:   {len(destroyed)}")
+    print(f"heartbeats:        {len(heartbeats)}")
+    if live_counts:
+        print(f"max live sessions:   {max(live_counts)}")
+    if server_counts:
+        print(f"max server sessions: {max(server_counts)}")
+    if control_changes:
+        print("\nTop control changes")
+        for (instrument, control), count in control_changes.most_common(10):
+            print(f"{instrument:18} {control:24} {count}")
+
+
+def _print_instrument_coverage(records: list[dict]) -> None:
+    browse_counts: Counter[str] = Counter()
+    for row in records:
+        event = str(row.get("event", ""))
+        instrument = str(row.get("instrument", ""))
+        if event in {
+            "interactive_view_update",
+            "stacked_timeseries_render",
+            "calendar_render",
+            "wxcam_interactive_render",
+            "wxcam_calendar_day_view",
+        }:
+            browse_counts[instrument] += 1
+    if not browse_counts:
+        return
+    print("\nInstrument coverage")
+    print("===================")
+    for instrument, count in browse_counts.most_common():
+        print(f"{instrument:18} {count}")
+
+
 def _print_slowest(records: list[dict], limit: int) -> None:
     timed = [row for row in records if row.get("duration_ms") is not None]
     if not timed:
@@ -121,6 +170,8 @@ def main() -> None:
         return
     print(f"Loaded {len(records)} events from {args.log} over the last {args.hours:g} hours.")
     _print_group_summary(records)
+    _print_session_summary(records)
+    _print_instrument_coverage(records)
     _print_slowest(records, args.limit)
 
 
