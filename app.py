@@ -17,6 +17,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from time import perf_counter
+from urllib.parse import urlencode
 
 import numpy as np
 import pandas as pd
@@ -51,6 +52,7 @@ from extra_housekeeping import (
 from wxcam_catalog import (
     available_days,
     catalog_time_bounds,
+    latest_record,
     records_for_day,
     representative_hourly_records,
 )
@@ -251,6 +253,33 @@ def _request_path() -> str | None:
     except Exception:
         return None
     return None
+
+
+def _request_query_args() -> dict[str, str]:
+    try:
+        doc = pn.state.curdoc
+        if not doc or not doc.session_context or not doc.session_context.request:
+            return {}
+        query_args = getattr(doc.session_context.request, "query_arguments", {}) or {}
+    except Exception:
+        return {}
+    parsed: dict[str, str] = {}
+    for key, values in query_args.items():
+        if not values:
+            continue
+        raw = values[0]
+        if isinstance(raw, bytes):
+            parsed[str(key)] = raw.decode("utf-8", errors="ignore")
+        else:
+            parsed[str(key)] = str(raw)
+    return parsed
+
+
+def _request_base_url() -> str:
+    proto = _request_header("X-Forwarded-Proto") or "http"
+    host = _request_header("Host") or "127.0.0.1:5006"
+    path = _request_path() or "/app"
+    return f"{proto}://{host}{path}"
 
 
 def _client_ip() -> str | None:
@@ -671,6 +700,151 @@ def _dataset_time_bounds(inst: str | None = None):
         perf["time_start"] = lower
         perf["time_end"] = upper
         return lower, upper
+
+
+def _instrument_time_index(inst: str) -> pd.DatetimeIndex:
+    if inst == "wxcam":
+        return pd.DatetimeIndex([])
+    ds = _get_base_dataset(inst)
+    if ds is None or "time" not in ds:
+        return pd.DatetimeIndex([])
+    times = np.asarray(ds["time"].values)
+    if times.size == 0:
+        return pd.DatetimeIndex([])
+    valid = _valid_time_mask(times)
+    return pd.DatetimeIndex(times[valid])
+
+
+def _format_status_time(dt: datetime | None) -> str:
+    if dt is None:
+        return "No data"
+    stamp = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return stamp.strftime("%H:%M UTC")
+
+
+def _format_duration(delta: timedelta | None) -> str:
+    if delta is None:
+        return "n/a"
+    total_seconds = max(int(delta.total_seconds()), 0)
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _seconds = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _hourly_coverage_summary(times: pd.DatetimeIndex, start: datetime | None, end: datetime | None) -> tuple[list[bool], int, int]:
+    if start is None or end is None or end < start:
+        return [], 0, 0
+    start_ts = pd.Timestamp(start).floor("h")
+    end_ts = pd.Timestamp(end).floor("h")
+    expected = pd.date_range(start=start_ts, end=end_ts, freq="1h")
+    if len(expected) == 0:
+        return [], 0, 0
+    covered = set(pd.DatetimeIndex(times).floor("h"))
+    bits = [stamp in covered for stamp in expected]
+    missing = sum(1 for bit in bits if not bit)
+    return bits, missing, len(expected)
+
+
+def _binned_time_coverage(times: pd.DatetimeIndex, start: datetime | None, end: datetime | None, segments: int = 64) -> list[bool]:
+    if start is None or end is None or end <= start or len(times) == 0:
+        return []
+    start_ns = pd.Timestamp(start).value
+    end_ns = pd.Timestamp(end).value
+    if end_ns <= start_ns:
+        return []
+    time_ns = pd.DatetimeIndex(times).asi8
+    mask = (time_ns >= start_ns) & (time_ns <= end_ns)
+    if not np.any(mask):
+        return [False] * segments
+    window = time_ns[mask]
+    edges = np.linspace(start_ns, end_ns, segments + 1)
+    bits: list[bool] = []
+    for idx in range(segments):
+        lo = edges[idx]
+        hi = edges[idx + 1]
+        if idx == segments - 1:
+            bits.append(bool(np.any((window >= lo) & (window <= hi))))
+        else:
+            bits.append(bool(np.any((window >= lo) & (window < hi))))
+    return bits
+
+
+def _wxcam_hour_bits(selection: str, day_token: str) -> list[bool]:
+    rows_by_hour = _wxcam_hourly_image_rows(selection, day_token)
+    return [hour in rows_by_hour for hour in range(24)]
+
+
+def _wxcam_combined_hour_states(day_token: str) -> list[int]:
+    day_utc = _wxcam_day_token_to_utc(day_token)
+    if not day_utc:
+        return [0] * 24
+    fish = representative_hourly_records(_wxcam_catalog_path("wxcam"), "fish_hdr", day_utc, media_kind="image")
+    pano = representative_hourly_records(_wxcam_catalog_path("wxcam"), "pano_hdr", day_utc, media_kind="image")
+    states: list[int] = []
+    for hour in range(24):
+        have_fish = hour in fish
+        have_pano = hour in pano
+        states.append(2 if (have_fish and have_pano) else 1 if (have_fish or have_pano) else 0)
+    return states
+
+
+def _availability_bar_markup(
+    states: list[int | bool],
+    start_label: str,
+    end_label: str,
+    caption: str,
+) -> str:
+    if not states:
+        return "<div class='availability-shell'><div class='availability-empty'>No availability information</div></div>"
+    parts = []
+    for state in states:
+        if state in (True, 2):
+            cls = "availability-segment availability-segment--full"
+        elif state == 1:
+            cls = "availability-segment availability-segment--partial"
+        else:
+            cls = "availability-segment availability-segment--empty"
+        parts.append(f"<span class='{cls}'></span>")
+    return (
+        "<div class='availability-shell'>"
+        f"<div class='availability-caption'>{escape(caption)}</div>"
+        f"<div class='availability-bar'>{''.join(parts)}</div>"
+        f"<div class='availability-scale'><span>{escape(start_label)}</span><span>{escape(end_label)}</span></div>"
+        "</div>"
+    )
+
+
+def _status_strip_markup(items: list[tuple[str, str, str]]) -> str:
+    pills = []
+    for label, value, tone in items:
+        pills.append(
+            f"<span class='status-pill status-pill--{escape(tone)}'><strong>{escape(label)}</strong> {escape(value)}</span>"
+        )
+    return f"<div class='status-strip'>{''.join(pills)}</div>" if pills else ""
+
+
+def _selected_token_window(selected: str | None) -> tuple[datetime | None, datetime | None, str | None]:
+    if not selected:
+        return None, None, None
+    if selected == "Today (latest)":
+        day_token = datetime.now(timezone.utc).strftime("%Y%m%d")
+    elif selected == "latest":
+        day_token = datetime.now(timezone.utc).strftime("%Y%m%d")
+    elif len(selected) == 8 and selected.isdigit():
+        day_token = selected
+    else:
+        return None, None, None
+    start = datetime.strptime(day_token, "%Y%m%d")
+    if day_token == datetime.now(timezone.utc).strftime("%Y%m%d"):
+        end = datetime.now(timezone.utc).replace(tzinfo=None)
+    else:
+        end = start + timedelta(days=1) - timedelta(seconds=1)
+    return start, end, day_token
 
 
 def _coarsen_targets(duration: timedelta | None, height_span: float | None):
@@ -2010,13 +2184,13 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
     """Build a mapping of label -> quicklook asset token/path for a quicklook mode."""
     inst = inst or CURRENT_INSTRUMENT
     cfg = _cfg(inst)
+    opts = {}
     if _is_wxcam_instrument(inst):
         if mode == "housekeeping":
             return _empty_quicklook_options(mode)
         return _wxcam_calendar_options(wxcam_selection or _cfg("wxcam")["default_top"])
     if _is_stacked_timeseries_instrument(inst):
         quick_dir = cfg["quicklook_dir"]
-        opts = {}
         if mode == "science" and quick_dir.exists():
             for token in calendar_date_tokens(quick_dir, inst):
                 if summary_daily_png(quick_dir, inst, token).exists():
@@ -2045,7 +2219,6 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
         return opts or _empty_quicklook_options(mode)
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
-    opts = {}
     # Collect dated quicklooks (sorted ascending), then append "Today" last.
     date_labels = []
     if quick_dir.exists():
@@ -2265,6 +2438,9 @@ def _log_session_heartbeat() -> None:
 
 
 def _log_session_destroyed(session_context) -> None:
+    perf_logger = globals().get("_perf_log")
+    if not callable(perf_logger):
+        return
     request = getattr(session_context, "request", None)
     path = str(getattr(request, "path", "")) or None
     server_context = getattr(session_context, "server_context", None)
@@ -2311,7 +2487,7 @@ def _log_session_destroyed(session_context) -> None:
         }
     )
     current_instrument = fields.get("current_instrument") or globals().get("CURRENT_INSTRUMENT")
-    _perf_log("session_destroyed", instrument=current_instrument, **fields)
+    perf_logger("session_destroyed", instrument=current_instrument, **fields)
 
 
 instrument_select.param.watch(
@@ -2554,12 +2730,422 @@ def _housekeeping_quicklook_image(selected, hk_inst):
         return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
 
 
+def _current_interactive_status_markup() -> str:
+    inst = instrument_select.value
+    if _is_wxcam_instrument(inst):
+        selection = wxcam_image_type.value or _cfg("wxcam")["default_top"]
+        selected = wxcam_date.value
+        day_token = _wxcam_calendar_day_token(selected)
+        bits = _wxcam_hour_bits(selection, day_token or "")
+        missing = sum(1 for bit in bits if not bit)
+        latest_row = latest_record(_wxcam_catalog_path("wxcam"), _image_type_from_selection(selection), media_kind="image")
+        latest_dt = pd.Timestamp(str(latest_row["time_utc"])).to_pydatetime(warn=False) if latest_row else None
+        lag = datetime.now() - latest_dt if latest_dt is not None else None
+        items = [
+            ("Last sample", _format_status_time(latest_dt), "info"),
+            ("Hourly gaps", str(missing), "warn" if missing else "ok"),
+            ("Lag", _format_duration(lag), "warn" if lag and lag > timedelta(hours=1) else "ok"),
+        ]
+        return _status_strip_markup(items)
+    latest = _dataset_time_bounds(inst)[1]
+    lag = datetime.now() - latest if latest is not None else None
+    times = _instrument_time_index(inst)
+    bits, missing, total = _hourly_coverage_summary(times, _ensure_utc(range_start.value), _ensure_utc(range_end.value))
+    items = [
+        ("Last sample", _format_status_time(latest), "info"),
+        ("Hourly gaps", str(missing), "warn" if missing else "ok"),
+        ("Lag", _format_duration(lag), "warn" if lag and lag > timedelta(hours=1) else "ok"),
+    ]
+    if total:
+        items.insert(2, ("Coverage", f"{total - missing}/{total} h", "info"))
+    return _status_strip_markup(items)
+
+
+def _current_interactive_availability_markup() -> str:
+    inst = instrument_select.value
+    if _is_wxcam_instrument(inst):
+        selection = wxcam_image_type.value or _cfg("wxcam")["default_top"]
+        selected = wxcam_date.value
+        day_token = _wxcam_calendar_day_token(selected)
+        bits = _wxcam_hour_bits(selection, day_token or "")
+        start_label = "00:00"
+        end_label = "23:00"
+        if day_token == datetime.now(timezone.utc).strftime("%Y%m%d"):
+            end_label = datetime.now(timezone.utc).strftime("%H:00")
+        return _availability_bar_markup(bits, start_label, end_label, "HDR image availability by hour")
+    start = _ensure_utc(range_start.value)
+    end = _ensure_utc(range_end.value)
+    bits = _binned_time_coverage(_instrument_time_index(inst), start, end, segments=72)
+    start_label = start.strftime("%m-%d %H:%M") if start else "--"
+    end_label = end.strftime("%m-%d %H:%M") if end else "--"
+    return _availability_bar_markup(bits, start_label, end_label, "Availability across the selected time window")
+
+
+def _current_science_status_markup() -> str:
+    inst = science_instrument.value
+    if _is_wxcam_instrument(inst):
+        selection = science_image_type.value or _cfg("wxcam")["default_top"]
+        day_token = _wxcam_calendar_day_token(ql_date.value)
+        bits = _wxcam_hour_bits(selection, day_token or "")
+        missing = sum(1 for bit in bits if not bit)
+        latest_row = latest_record(_wxcam_catalog_path("wxcam"), _image_type_from_selection(selection), media_kind="image")
+        latest_dt = pd.Timestamp(str(latest_row["time_utc"])).to_pydatetime(warn=False) if latest_row else None
+        lag = datetime.now() - latest_dt if latest_dt is not None else None
+        items = [
+            ("Last sample", _format_status_time(latest_dt), "info"),
+            ("Hourly gaps", str(missing), "warn" if missing else "ok"),
+            ("Lag", _format_duration(lag), "warn" if lag and lag > timedelta(hours=1) else "ok"),
+        ]
+        return _status_strip_markup(items)
+    start, end, _day_token = _selected_token_window(ql_date.value)
+    times = _instrument_time_index(inst)
+    if start is not None and end is not None:
+        mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
+        window_times = times[mask]
+    else:
+        window_times = times
+    latest_dt = window_times.max().to_pydatetime(warn=False) if len(window_times) else _dataset_time_bounds(inst)[1]
+    bits, missing, total = _hourly_coverage_summary(window_times, start, end)
+    lag = datetime.now() - latest_dt if latest_dt is not None and start and start.date() == datetime.utcnow().date() else None
+    items = [("Last sample", _format_status_time(latest_dt), "info")]
+    if total:
+        items.append(("Hourly gaps", str(missing), "warn" if missing else "ok"))
+        items.append(("Coverage", f"{total - missing}/{total} h", "info"))
+    if lag is not None:
+        items.append(("Lag", _format_duration(lag), "warn" if lag > timedelta(hours=1) else "ok"))
+    return _status_strip_markup(items)
+
+
+def _current_science_availability_markup() -> str:
+    inst = science_instrument.value
+    if _is_wxcam_instrument(inst):
+        selection = science_image_type.value or _cfg("wxcam")["default_top"]
+        day_token = _wxcam_calendar_day_token(ql_date.value)
+        bits = _wxcam_hour_bits(selection, day_token or "")
+        end_label = datetime.now(timezone.utc).strftime("%H:00") if day_token == datetime.now(timezone.utc).strftime("%Y%m%d") else "23:00"
+        return _availability_bar_markup(bits, "00:00", end_label, "HDR image availability by hour")
+    start, end, _day_token = _selected_token_window(ql_date.value)
+    times = _instrument_time_index(inst)
+    if start is None or end is None:
+        return _availability_bar_markup([], "--", "--", "Availability by hour")
+    mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
+    bits, _missing, _total = _hourly_coverage_summary(times[mask], start, end)
+    end_label = end.strftime("%H:%M")
+    return _availability_bar_markup(bits, "00:00", end_label, "Availability by hour")
+
+
+def _current_hk_status_markup() -> str:
+    inst = hk_instrument.value
+    start, end, day_token = _selected_token_window(hk_date.value)
+    if inst == "wxcam":
+        states = _wxcam_combined_hour_states(day_token or "")
+        missing = sum(1 for state in states if state != 2)
+        latest_dt = _dataset_time_bounds("wxcam")[1]
+        lag = datetime.now() - latest_dt if latest_dt is not None else None
+        items = [
+            ("Last sample", _format_status_time(latest_dt), "info"),
+            ("Partial/Missing hours", str(missing), "warn" if missing else "ok"),
+            ("Lag", _format_duration(lag), "warn" if lag and lag > timedelta(hours=1) else "ok"),
+        ]
+        return _status_strip_markup(items)
+    times = _instrument_time_index(inst)
+    if start is not None and end is not None:
+        mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
+        window_times = times[mask]
+    else:
+        window_times = times
+    latest_dt = window_times.max().to_pydatetime(warn=False) if len(window_times) else _dataset_time_bounds(inst)[1]
+    bits, missing, total = _hourly_coverage_summary(window_times, start, end)
+    lag = datetime.now() - latest_dt if latest_dt is not None and start and start.date() == datetime.utcnow().date() else None
+    items = [("Last sample", _format_status_time(latest_dt), "info")]
+    if total:
+        items.append(("Hourly gaps", str(missing), "warn" if missing else "ok"))
+        items.append(("Coverage", f"{total - missing}/{total} h", "info"))
+    if lag is not None:
+        items.append(("Lag", _format_duration(lag), "warn" if lag > timedelta(hours=1) else "ok"))
+    return _status_strip_markup(items)
+
+
+def _current_hk_availability_markup() -> str:
+    inst = hk_instrument.value
+    start, end, day_token = _selected_token_window(hk_date.value)
+    if inst == "wxcam":
+        states = _wxcam_combined_hour_states(day_token or "")
+        end_label = datetime.now(timezone.utc).strftime("%H:00") if day_token == datetime.now(timezone.utc).strftime("%Y%m%d") else "23:00"
+        return _availability_bar_markup(states, "00:00", end_label, "HDR availability by hour (full or partial)")
+    if start is None or end is None:
+        return _availability_bar_markup([], "--", "--", "Availability by hour")
+    times = _instrument_time_index(inst)
+    mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
+    bits, _missing, _total = _hourly_coverage_summary(times[mask], start, end)
+    return _availability_bar_markup(bits, "00:00", end.strftime("%H:%M"), "Availability by hour")
+
+
+interactive_status = pn.bind(
+    lambda *_deps: _current_interactive_status_markup(),
+    instrument_select.param.value,
+    range_start.param.value,
+    range_end.param.value,
+    live_toggle.param.value,
+    wxcam_image_type.param.value,
+    wxcam_date.param.value,
+    var1_select.param.value,
+    var2_select.param.value,
+    bottom_range_m.param.value,
+    top_range_m.param.value,
+)
+interactive_availability = pn.bind(
+    lambda *_deps: _current_interactive_availability_markup(),
+    instrument_select.param.value,
+    range_start.param.value,
+    range_end.param.value,
+    live_toggle.param.value,
+    wxcam_image_type.param.value,
+    wxcam_date.param.value,
+    var1_select.param.value,
+    var2_select.param.value,
+    bottom_range_m.param.value,
+    top_range_m.param.value,
+)
+science_status = pn.bind(
+    lambda *_deps: _current_science_status_markup(),
+    science_instrument.param.value,
+    ql_date.param.value,
+    science_image_type.param.value,
+    wxcam_calendar_state.param.selected_hour_path,
+)
+science_availability = pn.bind(
+    lambda *_deps: _current_science_availability_markup(),
+    science_instrument.param.value,
+    ql_date.param.value,
+    science_image_type.param.value,
+    wxcam_calendar_state.param.selected_hour_path,
+)
+hk_status = pn.bind(
+    lambda *_deps: _current_hk_status_markup(),
+    hk_instrument.param.value,
+    hk_date.param.value,
+)
+hk_availability = pn.bind(
+    lambda *_deps: _current_hk_availability_markup(),
+    hk_instrument.param.value,
+    hk_date.param.value,
+)
+
+
+interactive_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
+science_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
+hk_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
+interactive_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
+science_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
+hk_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
+interactive_download = pn.widgets.Button(name="Download PNG", button_type="default", width=130)
+science_download = pn.widgets.FileDownload(name="Download PNG", button_type="default", auto=False, embed=False, width=130)
+hk_download = pn.widgets.FileDownload(name="Download PNG", button_type="default", auto=False, embed=False, width=130)
+
+
+for button, widget in (
+    (interactive_copy, interactive_share_url),
+    (science_copy, science_share_url),
+    (hk_copy, hk_share_url),
+):
+    button.js_on_click(
+        args={"share": widget},
+        code="""
+        const text = share.value || '';
+        if (!text) { return; }
+        navigator.clipboard.writeText(text);
+        """,
+    )
+
+
+interactive_download.js_on_click(
+    args={"inst": instrument_select},
+    code="""
+    const plot = Array.from(document.querySelectorAll('.js-plotly-plot')).find((el) => el.offsetParent !== null);
+    if (!plot || !window.Plotly) { return; }
+    const base = (inst.value || 'aurora').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    window.Plotly.downloadImage(plot, {format: 'png', filename: `${base}_interactive`});
+    """,
+)
+
+
+def _science_download_path() -> Path | None:
+    inst = science_instrument.value
+    if _is_wxcam_instrument(inst):
+        if wxcam_calendar_state.selected_hour_path:
+            path = Path(wxcam_calendar_state.selected_hour_path)
+            return path if path.exists() else None
+        return None
+    if _is_stacked_timeseries_instrument(inst):
+        token = _quicklook_options(inst, mode="science").get(ql_date.value)
+        if token is None:
+            return None
+        quick_dir = _cfg(inst)["quicklook_dir"]
+        return summary_latest_png(quick_dir, inst) if token == "latest" else summary_daily_png(quick_dir, inst, token)
+    raw_path = _quicklook_options(inst, mode="science").get(ql_date.value)
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    return path if path.exists() else None
+
+
+def _hk_download_path() -> Path | None:
+    inst = hk_instrument.value
+    token = _quicklook_options(inst, mode="housekeeping").get(hk_date.value)
+    if token is None:
+        return None
+    quick_dir = _cfg(inst)["quicklook_dir"]
+    path = _housekeeping_latest_path(inst, quick_dir) if token == "latest" else _housekeeping_daily_path(inst, quick_dir, token)
+    return path if path and path.exists() else None
+
+
+def _build_share_url(tab_slug: str) -> str:
+    params: dict[str, str] = {
+        "tab": tab_slug,
+        "instrument": instrument_select.value,
+    }
+    if tab_slug == "interactive":
+        params["start"] = range_start.value.isoformat() if range_start.value else ""
+        params["end"] = range_end.value.isoformat() if range_end.value else ""
+        params["live"] = "1" if live_toggle.value else "0"
+        if _is_wxcam_instrument(instrument_select.value):
+            params["wxcam_image_type"] = wxcam_image_type.value or ""
+            params["wxcam_date"] = wxcam_date.value or ""
+        else:
+            params["top_var"] = var1_select.value or ""
+            params["bottom_var"] = var2_select.value or ""
+            params["bottom_m"] = str(bottom_range_m.value)
+            params["top_m"] = str(top_range_m.value)
+    elif tab_slug == "science":
+        params["science_instrument"] = science_instrument.value
+        params["science_date"] = ql_date.value or ""
+        params["science_image_type"] = science_image_type.value or ""
+        if wxcam_calendar_state.selected_hour_path:
+            params["science_selected_hour"] = wxcam_calendar_state.selected_hour_path
+    elif tab_slug == "housekeeping":
+        params["hk_instrument"] = hk_instrument.value
+        params["hk_date"] = hk_date.value or ""
+    query = urlencode({k: v for k, v in params.items() if v not in ("", None)})
+    return f"{_request_base_url()}?{query}" if query else _request_base_url()
+
+
+def _refresh_share_and_download_state(*_events) -> None:
+    interactive_share_url.value = _build_share_url("interactive")
+    science_share_url.value = _build_share_url("science")
+    hk_share_url.value = _build_share_url("housekeeping")
+
+    interactive_download.visible = not _is_wxcam_instrument(instrument_select.value)
+
+    science_path = _science_download_path()
+    science_download.file = science_path
+    science_download.filename = science_path.name if science_path else "science_quicklook.png"
+    science_download.disabled = science_path is None
+
+    hk_path = _hk_download_path()
+    hk_download.file = hk_path
+    hk_download.filename = hk_path.name if hk_path else "housekeeping_quicklook.png"
+    hk_download.disabled = hk_path is None
+
+
+def _apply_query_state() -> None:
+    args = _request_query_args()
+    if not args:
+        return
+    instrument = args.get("instrument")
+    if instrument in INSTRUMENTS:
+        instrument_select.value = instrument
+    start_raw = args.get("start")
+    end_raw = args.get("end")
+    if start_raw and end_raw and not _is_wxcam_instrument(instrument_select.value):
+        try:
+            range_start.value = pd.Timestamp(start_raw).to_pydatetime(warn=False)
+            range_end.value = pd.Timestamp(end_raw).to_pydatetime(warn=False)
+            _set_live(args.get("live", "0") == "1")
+        except Exception:
+            pass
+    if args.get("bottom_m"):
+        try:
+            bottom_range_m.value = int(args["bottom_m"])
+        except Exception:
+            pass
+    if args.get("top_m"):
+        try:
+            top_range_m.value = int(args["top_m"])
+        except Exception:
+            pass
+    if args.get("top_var") in _cfg(instrument_select.value)["vars"]:
+        var1_select.value = args["top_var"]
+    if args.get("bottom_var") in _cfg(instrument_select.value)["vars"]:
+        var2_select.value = args["bottom_var"]
+    if args.get("wxcam_image_type") in list(wxcam_image_type.options):
+        wxcam_image_type.value = args["wxcam_image_type"]
+    if args.get("wxcam_date") in list(wxcam_date.options):
+        wxcam_date.value = args["wxcam_date"]
+    if args.get("science_instrument") in INSTRUMENTS:
+        science_instrument.value = args["science_instrument"]
+    if args.get("science_image_type") in list(science_image_type.options):
+        science_image_type.value = args["science_image_type"]
+    if args.get("science_date") in list(ql_date.options):
+        ql_date.value = args["science_date"]
+    if args.get("science_selected_hour"):
+        wxcam_calendar_state.selected_hour_path = args["science_selected_hour"]
+    if args.get("hk_instrument") in INSTRUMENTS:
+        hk_instrument.value = args["hk_instrument"]
+    if args.get("hk_date") in list(hk_date.options):
+        hk_date.value = args["hk_date"]
+
+
+for widget, parameter in (
+    (instrument_select, "value"),
+    (range_start, "value"),
+    (range_end, "value"),
+    (live_toggle, "value"),
+    (var1_select, "value"),
+    (var2_select, "value"),
+    (bottom_range_m, "value"),
+    (top_range_m, "value"),
+    (wxcam_image_type, "value"),
+    (wxcam_date, "value"),
+    (science_instrument, "value"),
+    (ql_date, "value"),
+    (science_image_type, "value"),
+    (hk_instrument, "value"),
+    (hk_date, "value"),
+):
+    widget.param.watch(_refresh_share_and_download_state, parameter)
+
+wxcam_calendar_state.param.watch(_refresh_share_and_download_state, "selected_hour_path")
+
+
 ACCENT = "#0b7285"  # header/accent color
 css = """
 # Global font override for a clean, consistent look.
 body, .bk {
     font-family: "SF Pro Display","SF Pro","-apple-system","BlinkMacSystemFont","Segoe UI",sans-serif;
     font-size: 15px;
+    background: #ffffff;
+    color: #1f2933;
+}
+.bk.card, .bk-panel-models-card {
+    border: 1px solid #d8dee4;
+    border-radius: 8px;
+    box-shadow: none;
+    background: #ffffff;
+}
+.bk-btn, button.bk-btn {
+    border-radius: 6px;
+    border: 1px solid #cfd8df;
+    box-shadow: none;
+}
+.bk-btn-primary, button.bk-btn-primary {
+    background: #0b7285;
+    border-color: #0b7285;
+    color: #ffffff;
+}
+.bk-input {
+    border-radius: 6px;
+    border-color: #cfd8df;
 }
 .mobile-stack {
     flex-wrap: wrap !important;
@@ -2574,6 +3160,88 @@ body, .bk {
 }
 .small-card .bk-card-body {
     padding: 6px 8px;
+}
+.status-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid #d8dee4;
+    background: #f8fafb;
+    color: #334155;
+    font-size: 12px;
+    line-height: 1.2;
+}
+.status-pill--ok {
+    border-color: #b7e4dc;
+    background: #f1fbf8;
+    color: #0b6b5d;
+}
+.status-pill--warn {
+    border-color: #f1d4b5;
+    background: #fff8ef;
+    color: #9a5b16;
+}
+.status-pill--info {
+    border-color: #d8dee4;
+    background: #f8fafb;
+    color: #334155;
+}
+.availability-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+}
+.availability-caption {
+    font-size: 12px;
+    color: #566370;
+}
+.availability-bar {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(4px, 1fr);
+    gap: 2px;
+    align-items: center;
+}
+.availability-segment {
+    height: 8px;
+    border-radius: 3px;
+    border: 1px solid #d8dee4;
+    background: #ffffff;
+}
+.availability-segment--full {
+    background: #0b7285;
+    border-color: #0b7285;
+}
+.availability-segment--partial {
+    background: #e0b15c;
+    border-color: #e0b15c;
+}
+.availability-segment--empty {
+    background: #eef2f5;
+    border-color: #d8dee4;
+}
+.availability-scale {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #6b7280;
+}
+.availability-empty {
+    font-size: 12px;
+    color: #6b7280;
+}
+.action-row {
+    align-items: center;
+    gap: 8px;
 }
 .wxcam-player {
     display: flex;
@@ -2727,6 +3395,15 @@ body, .bk {
 controls = pn.Card(
     pn.Column(
         pn.Row(instrument_select, range_start, range_end, live_toggle, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(
+            interactive_copy,
+            interactive_download,
+            interactive_share_url,
+            sizing_mode="stretch_width",
+            css_classes=["mobile-stack", "action-row"],
+        ),
+        interactive_status,
+        interactive_availability,
         pn.Row(var1_select, var2_select, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(bottom_range_m, top_range_m, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(beta_vmin, beta_vmax, ldr_vmin, ldr_vmax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
@@ -2755,6 +3432,15 @@ science_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(science_instrument, science_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
+        pn.Row(
+            science_copy,
+            science_download,
+            science_share_url,
+            sizing_mode="stretch_width",
+            css_classes=["mobile-stack", "action-row"],
+        ),
+        science_status,
+        science_availability,
         title="",
         collapsible=False,
         sizing_mode="stretch_width",
@@ -2766,6 +3452,15 @@ housekeeping_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(hk_instrument, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(hk_prev, hk_date, hk_next, sizing_mode="stretch_width"),
+        pn.Row(
+            hk_copy,
+            hk_download,
+            hk_share_url,
+            sizing_mode="stretch_width",
+            css_classes=["mobile-stack", "action-row"],
+        ),
+        hk_status,
+        hk_availability,
         title="",
         collapsible=False,
         sizing_mode="stretch_width",
@@ -2779,6 +3474,14 @@ tabs = pn.Tabs(
     ("House Keeping Quicklooks", housekeeping_quicklooks_tab),
     sizing_mode="stretch_both",
 )
+
+_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2}
+
+_apply_query_state()
+requested_tab = _request_query_args().get("tab")
+if requested_tab in _QUERY_TAB_INDEX:
+    tabs.active = _QUERY_TAB_INDEX[requested_tab]
+_refresh_share_and_download_state()
 
 template.main[:] = [tabs]
 
