@@ -10,7 +10,7 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`.
 - `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`.
 - `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` shows rolling latest and per-day MP4s. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
-- `Operations` - fixed multi-panel monitoring view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Operations` products on `House Keeping Quicklooks`. It tracks source-host disk usage, local and GWS storage, mirror coverage and lag, prune gates, and transfer/service health using a locally collected operations snapshot stream.
+- `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, processing health, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream.
 
 Additional housekeeping products now exist for:
 
@@ -27,8 +27,8 @@ Additional housekeeping products now exist for:
 - `extra_housekeeping.py` - housekeeping quicklook helpers for Ceilometer, Cloud Radar, and WXcam.
 - `append_new_wxcam_to_zarr.py` - appends local WXcam HDR JPGs into per-stream pixel Zarr groups.
 - `collect_operations_snapshot.py` - samples source-host disk state, local/GWS storage, mirror manifests, and systemd health into raw Operations snapshots.
-- `append_new_ops_monitor_to_zarr.py` - appends Operations snapshots into the monitoring Zarr.
-- `generate_ops_monitor_quicklooks.py` - builds summary and housekeeping quicklooks for the Operations instrument.
+- `append_new_ops_monitor_to_zarr.py` - appends Operations snapshots into the monitoring Zarr used for archived monitoring products.
+- `generate_ops_monitor_quicklooks.py` - builds summary and housekeeping quicklooks for the archived Operations monitor products.
 - `append_new_*_to_zarr.py` - appenders for the numeric instruments.
 - `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
 - `grouped_timeseries.py` - shared summary-layout, labeling, downsampling, and quicklook helpers for the 1D instruments.
@@ -257,17 +257,18 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
 - `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab.
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store.
-- The dashboard UI now uses three top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, and `House Keeping Quicklooks`.
+- The dashboard UI now uses four top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, `House Keeping Quicklooks`, and `Operations Dashboard`.
 - Availability bars, freshness/status chips, and share/download controls are shown beneath the rendered content in each tab so the data view stays visually primary.
 - Summary-plot legends are kept per panel in a dedicated right-side gutter beyond the right y-axis labels instead of sharing one global legend.
 - `Science Quicklooks` and `House Keeping Quicklooks` use separate tab state. Science quicklooks show one product at a time, while housekeeping quicklooks only appear for instruments that actually have HK images.
+- `Operations Dashboard` is a dedicated status surface rather than a selectable instrument inside the other tabs. It reads the latest Operations snapshot JSON directly so the traffic lights reflect current service and transfer state even when archived monitoring quicklooks lag behind.
 - `HK_Ceilometer` excludes the main science fields (`beta_att`, `linear_depol_ratio`) and focuses on non-science diagnostics such as gain, noise, tilt, detections, and cloud-layer metadata.
 - `HK_Radar` excludes the main science quicklook fields and instead shows the remaining radar moments: `ZE45_dBZ`, `ZDR`, `PhiDP`, `KDP`, and `DiffAtt`.
 - `HK_WXcam` is catalog-driven rather than pixel-driven. It summarizes hourly HDR image/video counts, median HDR JPG size, and the offset of the representative hourly image from the `:30` target used by the science grid.
 - `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
 - WXcam keeps the stitched MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
-- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, and systemd unit state. The quicklook generator waits until at least two samples exist before it writes line-plot PNGs, so a fresh deployment can show an empty quicklook directory for the first few minutes.
+- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, and systemd unit state. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the quicklook generator still waits until at least two samples exist before it writes archived line-plot PNGs. A fresh deployment can therefore show a live Operations tab before the archived monitoring quicklook directory fills in.
 
 ## Zarr data products
 

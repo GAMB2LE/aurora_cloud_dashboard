@@ -209,6 +209,7 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
+OPS_SNAPSHOT_PATH = Path(os.environ.get("OPS_MONITOR_SNAPSHOT_PATH", "/project/aurora/raw/ops_monitor/latest.json"))
 PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
 PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
@@ -576,7 +577,7 @@ INSTRUMENTS = {
 INSTRUMENT_OPTIONS = {
     ("WXcam" if name == "wxcam" else display_name(name)): name
     for name in INSTRUMENTS.keys()
-    if name != "asfs-fast-sonic"
+    if name not in {"asfs-fast-sonic", "ops-monitor"}
 }
 
 DEFAULT_WINDOW = timedelta(hours=24)
@@ -914,6 +915,582 @@ def _status_strip_markup(items: list[tuple[str, str, str]]) -> str:
             f"<span class='status-pill status-pill--{escape(tone)}'><strong>{escape(label)}</strong> {escape(value)}</span>"
         )
     return f"<div class='status-strip'>{''.join(pills)}</div>" if pills else ""
+
+
+OPS_STREAM_SPECS = (
+    {
+        "label": "Ceilometer",
+        "stream_prefix": "cl61",
+        "source_key": "cl61_source_sync_service_healthy_state",
+        "processing_keys": (
+            "ceilometer_append_service_healthy_state",
+            "ceilometer_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "Cloud Radar",
+        "stream_prefix": "radar",
+        "source_key": "radar_source_sync_service_healthy_state",
+        "processing_keys": (
+            "radar_append_service_healthy_state",
+            "radar_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "Meteorology",
+        "stream_prefix": "vaisalamet",
+        "source_key": "vaisalamet_source_sync_service_healthy_state",
+        "processing_keys": (
+            "vaisalamet_append_service_healthy_state",
+            "vaisalamet_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "Radiation",
+        "stream_prefix": "asfs_logger",
+        "source_key": "asfs_logger_source_sync_service_healthy_state",
+        "processing_keys": (
+            "asfs_logger_append_service_healthy_state",
+            "asfs_logger_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "ASFS Fast Sonic",
+        "stream_prefix": "asfs_fast_sonic",
+        "source_key": "asfs_fast_sonic_source_sync_service_healthy_state",
+        "processing_keys": (
+            "asfs_fast_sonic_append_service_healthy_state",
+            "asfs_fast_sonic_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "Aurora Power Supply",
+        "stream_prefix": "power",
+        "source_key": "power_source_sync_service_healthy_state",
+        "processing_keys": (
+            "power_append_service_healthy_state",
+            "power_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "WXcam",
+        "stream_prefix": "wxcam",
+        "source_key": "wxcam_source_sync_service_healthy_state",
+        "processing_keys": (
+            "wxcam_append_service_healthy_state",
+            "wxcam_catalog_service_healthy_state",
+            "wxcam_daily_videos_service_healthy_state",
+        ),
+    },
+)
+
+
+def _ops_snapshot_path() -> Path:
+    return OPS_SNAPSHOT_PATH
+
+
+def _ops_read_snapshot() -> dict:
+    path = _ops_snapshot_path()
+    if not path.exists():
+        return {"_missing": True, "_path": str(path)}
+    try:
+        snapshot = json.loads(path.read_text())
+    except Exception as exc:
+        return {"_error": str(exc), "_path": str(path)}
+    snapshot["_path"] = str(path)
+    return snapshot
+
+
+def _ops_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _ops_bool(value) -> bool | None:
+    number = _ops_float(value)
+    if number is None:
+        return None
+    return bool(number)
+
+
+def _ops_timestamp(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.to_pydatetime(warn=False)
+
+
+def _ops_level_value(level: str) -> int:
+    order = {"green": 0, "amber": 1, "red": 2, "gray": -1}
+    return order.get(level, -1)
+
+
+def _ops_worst_level(levels: list[str]) -> str:
+    meaningful = [level for level in levels if level != "gray"]
+    if not meaningful:
+        return "gray"
+    return max(meaningful, key=_ops_level_value)
+
+
+def _ops_level_from_bool(value) -> str:
+    state = _ops_bool(value)
+    if state is None:
+        return "gray"
+    return "green" if state else "red"
+
+
+def _ops_level_from_count(value, amber_at: float = 1.0) -> str:
+    count = _ops_float(value)
+    if count is None:
+        return "gray"
+    if count <= 0:
+        return "green"
+    if count <= amber_at:
+        return "amber"
+    return "red"
+
+
+def _ops_level_from_used_pct(value) -> str:
+    used_pct = _ops_float(value)
+    if used_pct is None:
+        return "gray"
+    if used_pct < 75.0:
+        return "green"
+    if used_pct < 90.0:
+        return "amber"
+    return "red"
+
+
+def _ops_level_from_age_minutes(value) -> str:
+    age_min = _ops_float(value)
+    if age_min is None:
+        return "gray"
+    if age_min <= 10.0:
+        return "green"
+    if age_min <= 30.0:
+        return "amber"
+    return "red"
+
+
+def _ops_level_from_source_probes(fail_count_value, total_hosts: int = 3) -> str:
+    fail_count = _ops_float(fail_count_value)
+    if fail_count is None:
+        return "gray"
+    if fail_count <= 0:
+        return "green"
+    if fail_count < total_hosts:
+        return "amber"
+    return "red"
+
+
+def _ops_storage_text(snapshot: dict, key_prefix: str) -> str:
+    used = _ops_float(snapshot.get(f"{key_prefix}_used_gb"))
+    total = _ops_float(snapshot.get(f"{key_prefix}_total_gb"))
+    used_pct = _ops_float(snapshot.get(f"{key_prefix}_used_pct"))
+    if used is None or total is None:
+        return "No data"
+    if used_pct is None:
+        return f"{used:.1f} / {total:.1f} GB"
+    return f"{used:.1f} / {total:.1f} GB ({used_pct:.0f}%)"
+
+
+def _ops_manifest_ready(snapshot: dict) -> bool:
+    for spec in OPS_STREAM_SPECS:
+        prefix = spec["stream_prefix"]
+        if _ops_float(snapshot.get(f"{prefix}_source_count")) not in (None, 0.0):
+            return True
+        if _ops_float(snapshot.get(f"{prefix}_local_count")) not in (None, 0.0):
+            return True
+        if _ops_float(snapshot.get(f"{prefix}_gws_count")) not in (None, 0.0):
+            return True
+        if _ops_float(snapshot.get(f"{prefix}_local_coverage_pct")) is not None:
+            return True
+        if _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct")) is not None:
+            return True
+    return False
+
+
+def _ops_archive_level(snapshot: dict, prefix: str) -> str:
+    gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
+    if gws_coverage is None:
+        if _ops_bool(snapshot.get("gws_probe_ok_state")):
+            return "amber"
+        return "gray"
+    if gws_coverage >= 99.9:
+        return "green"
+    if gws_coverage >= 95.0:
+        return "amber"
+    return "red"
+
+
+def _ops_archive_text(snapshot: dict, prefix: str) -> str:
+    gws_coverage = _ops_float(snapshot.get(f"{prefix}_gws_coverage_pct"))
+    if gws_coverage is None:
+        return "Pending manifest sync"
+    return f"{gws_coverage:.0f}% mirrored"
+
+
+def _ops_prune_level(snapshot: dict, prefix: str, manifest_ready: bool) -> str:
+    if not manifest_ready:
+        return "amber"
+    prune_ready = _ops_bool(snapshot.get(f"{prefix}_prune_ready_state"))
+    if prune_ready is None:
+        return "gray"
+    return "green" if prune_ready else "red"
+
+
+def _ops_prune_text(snapshot: dict, prefix: str, manifest_ready: bool) -> str:
+    if not manifest_ready:
+        return "Pending verification"
+    prune_ready = _ops_bool(snapshot.get(f"{prefix}_prune_ready_state"))
+    if prune_ready is None:
+        return "Unknown"
+    return "Ready" if prune_ready else "Hold"
+
+
+def _ops_failed_service_names(snapshot: dict) -> list[str]:
+    names: list[str] = []
+    for key, value in sorted(snapshot.items()):
+        if not key.endswith("_service_healthy_state"):
+            continue
+        if _ops_bool(value) is not False:
+            continue
+        label = key.removesuffix("_service_healthy_state").replace("_", " ")
+        names.append(label)
+    return names
+
+
+def _ops_light_markup(level: str, text: str) -> str:
+    return (
+        f"<span class='ops-light ops-light--{escape(level)}' aria-hidden='true'></span>"
+        f"<span class='ops-light-text'>{escape(text)}</span>"
+    )
+
+
+def _ops_card_markup(title: str, level: str, value: str, meta: str = "") -> str:
+    meta_markup = f"<div class='ops-card__meta'>{escape(meta)}</div>" if meta else ""
+    return (
+        "<div class='ops-card'>"
+        f"<div class='ops-card__head'>{_ops_light_markup(level, title)}</div>"
+        f"<div class='ops-card__value'>{escape(value)}</div>"
+        f"{meta_markup}"
+        "</div>"
+    )
+
+
+def _ops_table_cell(level: str, label: str, detail: str = "") -> str:
+    detail_markup = f"<div class='ops-table__detail'>{escape(detail)}</div>" if detail else ""
+    return (
+        "<td class='ops-table__cell'>"
+        f"<div class='ops-table__state'>{_ops_light_markup(level, label)}</div>"
+        f"{detail_markup}"
+        "</td>"
+    )
+
+
+def _ops_operations_markup() -> str:
+    snapshot = _ops_read_snapshot()
+    with _timed_perf("operations_dashboard_render", instrument="ops-monitor", snapshot_path=snapshot.get("_path")) as perf:
+        if snapshot.get("_missing"):
+            perf["status"] = "missing_snapshot"
+            missing_meta = f"Expected {snapshot.get('_path', 'unknown path')}"
+            return (
+                "<div class='ops-shell'>"
+                "<div class='ops-section-title'>Operations Dashboard</div>"
+                f"{_ops_card_markup('Operations snapshot', 'red', 'Missing', missing_meta)}"
+                "</div>"
+            )
+        if snapshot.get("_error"):
+            perf["status"] = "snapshot_error"
+            return (
+                "<div class='ops-shell'>"
+                "<div class='ops-section-title'>Operations Dashboard</div>"
+                f"{_ops_card_markup('Operations snapshot', 'red', 'Unreadable', snapshot.get('_error', 'Unknown error'))}"
+                "</div>"
+            )
+
+        updated_at = _ops_timestamp(snapshot.get("time_utc"))
+        snapshot_age_min = None
+        if updated_at is not None:
+            snapshot_age_min = max((datetime.now(timezone.utc) - updated_at).total_seconds() / 60.0, 0.0)
+        manifest_ready = _ops_manifest_ready(snapshot)
+        failed_services = _ops_failed_service_names(snapshot)
+
+        snapshot_level = _ops_level_from_age_minutes(snapshot_age_min)
+        source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
+        processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
+        transfer_level = _ops_worst_level(
+            [
+                _ops_level_from_count(snapshot.get("failed_transfer_unit_count"), amber_at=1.0),
+                _ops_level_from_bool(snapshot.get("gws_probe_ok_state")),
+            ]
+        )
+        if not manifest_ready:
+            mirror_level = "amber"
+        else:
+            mirror_level = _ops_worst_level(
+                [
+                    _ops_level_from_bool(snapshot.get("mirror_verify_service_healthy_state")),
+                    _ops_level_from_count(snapshot.get("streams_local_issue_count"), amber_at=1.0),
+                    _ops_level_from_count(snapshot.get("streams_gws_issue_count"), amber_at=1.0),
+                ]
+            )
+        overall_level = _ops_worst_level([snapshot_level, source_level, processing_level, transfer_level, mirror_level])
+
+        overall_value = "Healthy"
+        if overall_level == "amber":
+            overall_value = "Attention needed"
+        elif overall_level == "red":
+            overall_value = "Action needed"
+        elif overall_level == "gray":
+            overall_value = "Waiting for data"
+
+        updated_label = updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "Unknown"
+        age_label = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
+
+        summary_cards = [
+            _ops_card_markup(
+                "Overall",
+                overall_level,
+                overall_value,
+                f"Snapshot {age_label}; {len(failed_services)} unhealthy services",
+            ),
+            _ops_card_markup(
+                "Snapshot freshness",
+                snapshot_level,
+                age_label,
+                f"Last operations sample {updated_label}",
+            ),
+            _ops_card_markup(
+                "Source hosts",
+                source_level,
+                f"{max(0, 3 - int(_ops_float(snapshot.get('source_host_probe_fail_count')) or 0))}/3 reachable",
+                f"{int(_ops_float(snapshot.get('source_host_probe_fail_count')) or 0)} probe failures",
+            ),
+            _ops_card_markup(
+                "Processing pipeline",
+                processing_level,
+                f"{int(_ops_float(snapshot.get('failed_processing_unit_count')) or 0)} failed services",
+                ", ".join(failed_services[:3]) if failed_services else "Append and quicklook services healthy",
+            ),
+            _ops_card_markup(
+                "Transfers and GWS",
+                transfer_level,
+                "Reachable" if _ops_bool(snapshot.get("gws_probe_ok_state")) else "Unreachable",
+                f"{int(_ops_float(snapshot.get('failed_transfer_unit_count')) or 0)} transfer failures",
+            ),
+            _ops_card_markup(
+                "Mirror verification",
+                mirror_level,
+                "Pending manifest seed" if not manifest_ready else "Active",
+                (
+                    "Waiting for raw/GWS manifests to populate"
+                    if not manifest_ready
+                    else (
+                        f"Local issues: {int(_ops_float(snapshot.get('streams_local_issue_count')) or 0)}, "
+                        f"GWS issues: {int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)}"
+                    )
+                ),
+            ),
+        ]
+
+        storage_cards = [
+            _ops_card_markup(
+                "CL61 source disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_celine_source_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_celine_source_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_celine_source"),
+                "100.117.101.84 /",
+            ),
+            _ops_card_markup(
+                "ASS data disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_ass_data_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_ass_data_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_ass_data"),
+                "100.124.55.22 /home/aurora/data",
+            ),
+            _ops_card_markup(
+                "ASS root disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_ass_root_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_ass_root_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_ass_root"),
+                "100.124.55.22 /",
+            ),
+            _ops_card_markup(
+                "APS source disk",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("host_aps_source_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("host_aps_source_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "host_aps_source"),
+                "100.81.226.30 /",
+            ),
+            _ops_card_markup(
+                "Aurora product disk",
+                _ops_level_from_used_pct(snapshot.get("aurora_data_used_pct")),
+                _ops_storage_text(snapshot, "aurora_data"),
+                "/data/aurora products",
+            ),
+            _ops_card_markup(
+                "Aurora root disk",
+                _ops_level_from_used_pct(snapshot.get("aurora_root_used_pct")),
+                _ops_storage_text(snapshot, "aurora_root"),
+                "Dashboard host /",
+            ),
+            _ops_card_markup(
+                "JASMIN GWS",
+                _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get("gws_probe_ok_state")),
+                        _ops_level_from_used_pct(snapshot.get("gws_storage_used_pct")),
+                    ]
+                ),
+                _ops_storage_text(snapshot, "gws_storage"),
+                "/gws/ssde/j25b/gamb2le",
+            ),
+        ]
+
+        manifest_cards = [
+            _ops_card_markup(
+                "Local raw mirror",
+                "amber" if not manifest_ready else _ops_level_from_count(snapshot.get("streams_local_issue_count"), amber_at=1.0),
+                "Pending seed" if not manifest_ready else f"{int(_ops_float(snapshot.get('streams_local_issue_count')) or 0)} issues",
+                "Mirror against source-host manifests",
+            ),
+            _ops_card_markup(
+                "GWS archive mirror",
+                "amber" if not manifest_ready else _ops_level_from_count(snapshot.get("streams_gws_issue_count"), amber_at=1.0),
+                "Pending seed" if not manifest_ready else f"{int(_ops_float(snapshot.get('streams_gws_issue_count')) or 0)} issues",
+                "Mirror against JASMIN manifests",
+            ),
+            _ops_card_markup(
+                "Product gates",
+                "amber"
+                if not manifest_ready
+                else ("green" if int(_ops_float(snapshot.get("streams_product_gate_ok_count")) or 0) == len(OPS_STREAM_SPECS) else "red"),
+                (
+                    "Pending seed"
+                    if not manifest_ready
+                    else f"{int(_ops_float(snapshot.get('streams_product_gate_ok_count')) or 0)}/{len(OPS_STREAM_SPECS)} streams ready"
+                ),
+                "Processing success through candidate prune windows",
+            ),
+            _ops_card_markup(
+                "Prune readiness",
+                "amber"
+                if not manifest_ready
+                else ("green" if int(_ops_float(snapshot.get("streams_prune_ready_count")) or 0) == len(OPS_STREAM_SPECS) else "red"),
+                (
+                    "Pending seed"
+                    if not manifest_ready
+                    else f"{int(_ops_float(snapshot.get('streams_prune_ready_count')) or 0)}/{len(OPS_STREAM_SPECS)} streams deletable"
+                ),
+                "Only prune upstream when source, local, and GWS agree",
+            ),
+        ]
+
+        table_rows = []
+        for spec in OPS_STREAM_SPECS:
+            source_level_stream = _ops_level_from_bool(snapshot.get(spec["source_key"]))
+            processing_level_stream = _ops_worst_level([_ops_level_from_bool(snapshot.get(key)) for key in spec["processing_keys"]])
+            processing_ok = sum(1 for key in spec["processing_keys"] if _ops_bool(snapshot.get(key)) is True)
+            archive_level_stream = _ops_archive_level(snapshot, spec["stream_prefix"])
+            prune_level_stream = _ops_prune_level(snapshot, spec["stream_prefix"], manifest_ready)
+            processing_detail = f"{processing_ok}/{len(spec['processing_keys'])} healthy"
+            table_rows.append(
+                "<tr>"
+                f"<th class='ops-table__rowlabel'>{escape(spec['label'])}</th>"
+                f"{_ops_table_cell(source_level_stream, 'Source sync', 'Healthy' if source_level_stream == 'green' else 'Check source sync')}"
+                f"{_ops_table_cell(processing_level_stream, 'Processing', processing_detail)}"
+                f"{_ops_table_cell(archive_level_stream, _ops_archive_text(snapshot, spec['stream_prefix']), 'Raw mirror to GWS')}"
+                f"{_ops_table_cell(prune_level_stream, _ops_prune_text(snapshot, spec['stream_prefix'], manifest_ready), 'Deletion gate')}"
+                "</tr>"
+            )
+
+        failed_markup = ""
+        if failed_services:
+            failed_items = "".join(f"<li>{escape(name)}</li>" for name in failed_services[:8])
+            failed_markup = (
+                "<div class='ops-section'>"
+                "<div class='ops-section-title'>Current service issues</div>"
+                f"<div class='ops-callout ops-callout--red'><ul>{failed_items}</ul></div>"
+                "</div>"
+            )
+
+        perf["status"] = "ok"
+        perf["failed_services"] = len(failed_services)
+        perf["manifest_ready"] = manifest_ready
+        perf["snapshot_age_min"] = snapshot_age_min
+
+        return (
+            "<div class='ops-shell'>"
+            "<div class='ops-headline'>"
+            "<div class='ops-headline__main'>"
+            f"<div class='ops-section-title ops-section-title--headline'>{_ops_light_markup(overall_level, 'Operations Dashboard')}</div>"
+            "<div class='ops-headline__text'>Traffic lights summarize service health, storage pressure, archive transfer status, and prune readiness from the latest operations snapshot.</div>"
+            "</div>"
+            "<div class='ops-legend'>"
+            f"{_ops_light_markup('green', 'Healthy')}"
+            f"{_ops_light_markup('amber', 'Attention or pending')}"
+            f"{_ops_light_markup('red', 'Failing or blocked')}"
+            f"{_ops_light_markup('gray', 'Unknown')}"
+            "</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>System summary</div>"
+            f"<div class='ops-grid ops-grid--summary'>{''.join(summary_cards)}</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Storage</div>"
+            f"<div class='ops-grid ops-grid--storage'>{''.join(storage_cards)}</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Archive and pruning</div>"
+            f"<div class='ops-grid ops-grid--summary'>{''.join(manifest_cards)}</div>"
+            "</div>"
+            f"{failed_markup}"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Per-stream health</div>"
+            "<div class='ops-table-wrap'>"
+            "<table class='ops-table'>"
+            "<thead><tr><th>Stream</th><th>Source sync</th><th>Processing</th><th>Archive</th><th>Prune gate</th></tr></thead>"
+            f"<tbody>{''.join(table_rows)}</tbody>"
+            "</table>"
+            "</div>"
+            "<div class='ops-footnote'>Amber can mean an expected wait state, such as a manifest seed or verification window that has not completed yet. Red indicates a failing service, blocked gate, or critical storage pressure.</div>"
+            "</div>"
+            "</div>"
+        )
 
 
 def _selected_token_window(selected: str | None) -> tuple[datetime | None, datetime | None, str | None]:
@@ -3195,8 +3772,9 @@ def _apply_query_state() -> None:
     args = _request_query_args()
     if not args:
         return
+    visible_instruments = set(INSTRUMENT_OPTIONS.values())
     instrument = args.get("instrument")
-    if instrument in INSTRUMENTS:
+    if instrument in visible_instruments:
         instrument_select.value = instrument
     start_raw = args.get("start")
     end_raw = args.get("end")
@@ -3225,7 +3803,7 @@ def _apply_query_state() -> None:
         wxcam_image_type.value = args["wxcam_image_type"]
     if args.get("wxcam_date") in list(wxcam_date.options):
         wxcam_date.value = args["wxcam_date"]
-    if args.get("science_instrument") in INSTRUMENTS:
+    if args.get("science_instrument") in visible_instruments:
         science_instrument.value = args["science_instrument"]
     if args.get("science_image_type") in list(science_image_type.options):
         science_image_type.value = args["science_image_type"]
@@ -3233,7 +3811,7 @@ def _apply_query_state() -> None:
         ql_date.value = args["science_date"]
     if args.get("science_selected_hour"):
         wxcam_calendar_state.selected_hour_path = args["science_selected_hour"]
-    if args.get("hk_instrument") in INSTRUMENTS:
+    if args.get("hk_instrument") in visible_instruments:
         hk_instrument.value = args["hk_instrument"]
     if args.get("hk_date") in list(hk_date.options):
         hk_date.value = args["hk_date"]
@@ -3410,6 +3988,169 @@ body, .bk {
 .action-row {
     align-items: center;
     gap: 8px;
+}
+.ops-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+.ops-headline {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.ops-headline__main {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.ops-headline__text,
+.ops-footnote {
+    font-size: 12px;
+    color: #5b6673;
+    line-height: 1.45;
+}
+.ops-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.ops-section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #243b53;
+}
+.ops-section-title--headline {
+    font-size: 16px;
+}
+.ops-grid {
+    display: grid;
+    gap: 12px;
+}
+.ops-grid--summary {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.ops-grid--storage {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+.ops-card {
+    border: 1px solid #d8dee4;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.ops-card__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.ops-card__value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1f2933;
+}
+.ops-card__meta {
+    font-size: 11px;
+    color: #6b7280;
+    line-height: 1.4;
+}
+.ops-light {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    flex: 0 0 auto;
+}
+.ops-light--green {
+    background: #2a9d8f;
+    border-color: #2a9d8f;
+}
+.ops-light--amber {
+    background: #e9c46a;
+    border-color: #e9c46a;
+}
+.ops-light--red {
+    background: #e76f51;
+    border-color: #e76f51;
+}
+.ops-light--gray {
+    background: #cbd5e1;
+    border-color: #cbd5e1;
+}
+.ops-light-text {
+    font-size: 12px;
+    color: #243b53;
+}
+.ops-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+}
+.ops-table-wrap {
+    overflow-x: auto;
+    border: 1px solid #d8dee4;
+    border-radius: 8px;
+    background: #ffffff;
+}
+.ops-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 760px;
+}
+.ops-table th,
+.ops-table td {
+    border-bottom: 1px solid #e6ebf1;
+    padding: 10px 12px;
+    vertical-align: top;
+    text-align: left;
+}
+.ops-table thead th {
+    background: #f8fafb;
+    color: #3b4a5a;
+    font-size: 12px;
+    font-weight: 600;
+}
+.ops-table__rowlabel {
+    font-size: 12px;
+    font-weight: 600;
+    color: #243b53;
+    white-space: nowrap;
+}
+.ops-table__state {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.ops-table__detail {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #6b7280;
+}
+.ops-callout {
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: #fff8ef;
+    border: 1px solid #f1d4b5;
+    color: #7c4a12;
+}
+.ops-callout--red {
+    background: #fff5f4;
+    border-color: #f3c1bb;
+    color: #8a2f24;
+}
+.ops-callout ul {
+    margin: 0;
+    padding-left: 18px;
 }
 .wxcam-player {
     display: flex;
@@ -3634,6 +4375,15 @@ hk_footer = pn.Card(
     css_classes=["small-card"],
 )
 
+operations_dashboard = pn.pane.HTML(_ops_operations_markup(), sizing_mode="stretch_width", margin=0)
+
+
+def _refresh_operations_dashboard() -> None:
+    operations_dashboard.object = _ops_operations_markup()
+
+
+_operations_timer = pn.state.add_periodic_callback(_refresh_operations_dashboard, period=60_000, start=True)
+
 interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_both")
 science_quicklooks_tab = pn.Column(
     pn.Card(
@@ -3661,14 +4411,16 @@ housekeeping_quicklooks_tab = pn.Column(
     hk_footer,
     sizing_mode="stretch_both",
 )
+operations_tab = pn.Column(operations_dashboard, sizing_mode="stretch_both")
 tabs = pn.Tabs(
     ("Interactive Data Browser", interactive_tab),
     ("Science Quicklooks", science_quicklooks_tab),
     ("House Keeping Quicklooks", housekeeping_quicklooks_tab),
+    ("Operations Dashboard", operations_tab),
     sizing_mode="stretch_both",
 )
 
-_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2}
+_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "operations": 3}
 
 _apply_query_state()
 requested_tab = _request_query_args().get("tab")
