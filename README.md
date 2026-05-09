@@ -235,6 +235,18 @@ source venv/bin/activate
 panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<host>
 ```
 
+## Documentation publishing
+
+- The repo still builds a standalone MkDocs site through GitHub Pages.
+- It also publishes a machine-readable portal manifest at `docs/portal.json`,
+  which ends up at `/portal.json` in the built site.
+- The docs workflow includes an optional `portal-export` job that can push the
+  built site and `portal.json` into `GAMB2LE/mkdocs-portal` when the repository
+  secret `DOCS_PORTAL_SSH_KEY` is configured.
+- The current export target inside the portal repo is:
+  - site: `sites/aurora-cloud-dashboard`
+  - manifest: `catalog/aurora-cloud-dashboard.json`
+
 ## Notes
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
