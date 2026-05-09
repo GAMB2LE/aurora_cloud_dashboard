@@ -10,6 +10,7 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`.
 - `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`.
 - `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` shows rolling latest and per-day MP4s. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
+- `Operations` - fixed multi-panel monitoring view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Operations` products on `House Keeping Quicklooks`. It tracks source-host disk usage, local and GWS storage, mirror coverage and lag, prune gates, and transfer/service health using a locally collected operations snapshot stream.
 
 Additional housekeeping products now exist for:
 
@@ -25,6 +26,9 @@ Additional housekeeping products now exist for:
 - `build_wxcam_daily_videos.py` - builds daily wxcam MP4 products and hourly thumbnails from raw hourly clips.
 - `extra_housekeeping.py` - housekeeping quicklook helpers for Ceilometer, Cloud Radar, and WXcam.
 - `append_new_wxcam_to_zarr.py` - appends local WXcam HDR JPGs into per-stream pixel Zarr groups.
+- `collect_operations_snapshot.py` - samples source-host disk state, local/GWS storage, mirror manifests, and systemd health into raw Operations snapshots.
+- `append_new_ops_monitor_to_zarr.py` - appends Operations snapshots into the monitoring Zarr.
+- `generate_ops_monitor_quicklooks.py` - builds summary and housekeeping quicklooks for the Operations instrument.
 - `append_new_*_to_zarr.py` - appenders for the numeric instruments.
 - `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
 - `grouped_timeseries.py` - shared summary-layout, labeling, downsampling, and quicklook helpers for the 1D instruments.
@@ -109,6 +113,9 @@ Important products:
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - WXcam daily videos: `/data/aurora/products/wxcam/daily_videos`
 - WXcam hourly thumbnails: `/data/aurora/products/wxcam/hourly_thumbnails`
+- Operations raw snapshots: `/project/aurora/raw/ops_monitor`
+- Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`
+- Operations quicklooks: `/data/aurora/products/quicklooks/ops_monitor`
 
 The dashboard reads WXcam products from the HDR subsets, but the current raw
 mirror under `/project/aurora/raw/wxcam` now copies the full upstream `FISH/`
@@ -150,6 +157,11 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
   - `aurora-wxcam-catalog.timer`
   - `aurora-wxcam-daily-videos.timer` (daily MP4s plus hourly thumbnails)
   - `aurora-wxcam-append.timer`
+- Operations:
+  - `aurora-ops-monitor-collect.timer`
+  - `aurora-ops-monitor-append.timer`
+  - `aurora-ops-monitor-quicklooks.timer`
+  - `aurora-mirror-verify.timer`
 
 Useful commands:
 
@@ -238,6 +250,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
 - WXcam keeps the stitched MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
+- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, and systemd unit state. The quicklook generator waits until at least two samples exist before it writes line-plot PNGs, so a fresh deployment can show an empty quicklook directory for the first few minutes.
 
 ## Zarr data products
 
