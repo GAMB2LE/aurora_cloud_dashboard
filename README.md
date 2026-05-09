@@ -6,12 +6,11 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 
 - `Ceilometer` - CL61 backscatter/depolarization Zarr with interactive height-time plots and calendar quicklooks.
 - `Cloud Radar` - RPG FMCW 94 GHz Zarr with interactive height-time plots and calendar quicklooks.
-- `vaisalamet` - stacked 1D time-series plots for all retained variables, plus daily quicklooks.
-- `asfs-logger` - stacked 1D time-series plots for all retained variables, plus daily quicklooks.
-- `power` - stacked 1D time-series plots for all retained non-wind variables, plus daily quicklooks.
+- `vaisalamet` - grouped 1D time-series views with `Core Met`, `Probe Comparison`, `Sensor Status`, and `HK_Met` calendar/housekeeping quicklooks.
+- `asfs-logger` - grouped 1D time-series views with `Power/HK`, `Wind/T`, `Radiation/Surface`, `LICOR`, and `HK_ASFS` calendar/housekeeping quicklooks.
+- `asfs-fast-sonic` - grouped 1D time-series views with `Wind Components`, `Tilt/Temperature`, and `Quality` in both Interactive and Calendar.
+- `power` - grouped 1D time-series views with `AC Output`, `Battery/DC`, `Solar`, `Thermal/Status`, and `HK_APS` calendar/housekeeping quicklooks.
 - `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. The Interactive tab shows rolling latest and per-day MP4s. The Calendar tab shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
-
-`asfs-fast-sonic` is processed into its own Zarr store for downstream analysis, but it is not exposed in the dashboard UI.
 
 ## Core files
 
@@ -22,6 +21,7 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 - `append_new_wxcam_to_zarr.py` - appends local WXcam HDR JPGs into per-stream pixel Zarr groups.
 - `append_new_*_to_zarr.py` - appenders for the numeric instruments.
 - `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
+- `grouped_timeseries.py` - shared grouping, downsampling, and plotting helpers for the 1D instruments.
 
 ## Deployed paths
 
@@ -71,6 +71,7 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
 - ASFS fast-sonic:
   - `aurora-asfs-fast-sonic-source-sync.timer`
   - `aurora-asfs-fast-sonic-append.timer`
+  - `aurora-asfs-fast-sonic-quicklooks.timer`
 - Power:
   - `aurora-power-source-sync.timer`
   - `aurora-power-append.timer`
@@ -155,6 +156,8 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 ## Notes
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
+- `vaisalamet`, `asfs-logger`, `asfs-fast-sonic`, and `power` now use presentation-layer plot groups only. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just selects different subsets of the same 1D variables for Interactive and Calendar plots.
+- The existing all-variable calendar products remain available as housekeeping quicklooks under the labels `HK_Met`, `HK_ASFS`, and `HK_APS`.
 - WXcam keeps the stitched MP4 player on the Interactive tab. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
 - The WXcam Calendar tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
 

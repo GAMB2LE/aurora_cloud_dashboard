@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render grouped Vaisala met time-series PNGs."""
+"""Render grouped ASFS fast-sonic time-series PNGs."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from grouped_timeseries import (
     plot_last_24h,
 )
 
-INSTRUMENT = "vaisalamet"
-ZARR_DEFAULT = Path("/data/aurora/products/vaisalamet/vaisalamet.zarr")
-OUTPUT_DEFAULT = Path("latest_vaisalamet.png")
+INSTRUMENT = "asfs-fast-sonic"
+ZARR_DEFAULT = Path("/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr")
+OUTPUT_DEFAULT = Path("latest_asfs_fast_sonic.png")
 
 
 def plot_timeseries(ds: xr.Dataset, title: str, output: Path, group: str | None = None) -> None:
@@ -28,7 +28,7 @@ def plot_last_24h_group(zarr_path: Path, output: Path, group: str | None = None)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render grouped Vaisala met latest-24h PNGs")
+    parser = argparse.ArgumentParser(description="Render grouped ASFS fast-sonic latest-24h PNGs")
     parser.add_argument("zarr_path", nargs="?", type=Path, default=ZARR_DEFAULT)
     parser.add_argument("output", nargs="?", type=Path, default=OUTPUT_DEFAULT)
     parser.add_argument("--group", default=default_calendar_label(INSTRUMENT), help="Display label or group key to render")

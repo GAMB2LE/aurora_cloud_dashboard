@@ -26,6 +26,16 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+from grouped_timeseries import (
+    default_calendar_label,
+    default_interactive_label,
+    downsample_time,
+    grouped_numeric_time_vars,
+    group_spec_for_selection,
+    is_status_like_var,
+    quicklook_prefix,
+    widget_group_options,
+)
 from wxcam_catalog import (
     available_days,
     catalog_time_bounds,
@@ -412,16 +422,10 @@ INSTRUMENTS = {
         "consolidated": True,
         "height_load_max": 1,
         "top_range_default": 1,
-        "vars": {
-            "all": {
-                "label": "All Variables",
-                "clim": (0.0, 1.0),
-                "log": False,
-                "colorscale": "Viridis",
-            },
-        },
-        "default_top": "all",
-        "default_bottom": "all",
+        "vars": widget_group_options("vaisalamet"),
+        "default_top": default_interactive_label("vaisalamet"),
+        "default_bottom": default_interactive_label("vaisalamet"),
+        "default_calendar": default_calendar_label("vaisalamet"),
         "quicklook_dir": _path_from_env("VAISALAMET_QUICKLOOK_DIR", QUICKLOOK_ROOT / "vaisalamet"),
         "latest_image": _path_from_env("VAISALAMET_LATEST_IMAGE", QUICKLOOK_ROOT / "vaisalamet" / "latest.png"),
     },
@@ -432,18 +436,26 @@ INSTRUMENTS = {
         "consolidated": True,
         "height_load_max": 1,
         "top_range_default": 1,
-        "vars": {
-            "all": {
-                "label": "All Variables",
-                "clim": (0.0, 1.0),
-                "log": False,
-                "colorscale": "Viridis",
-            },
-        },
-        "default_top": "all",
-        "default_bottom": "all",
+        "vars": widget_group_options("asfs-logger"),
+        "default_top": default_interactive_label("asfs-logger"),
+        "default_bottom": default_interactive_label("asfs-logger"),
+        "default_calendar": default_calendar_label("asfs-logger"),
         "quicklook_dir": _path_from_env("ASFS_LOGGER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "asfs_logger"),
         "latest_image": _path_from_env("ASFS_LOGGER_LATEST_IMAGE", QUICKLOOK_ROOT / "asfs_logger" / "latest.png"),
+    },
+    "asfs-fast-sonic": {
+        "zarr_env": "ASFS_FAST_SONIC_ZARR_PATH",
+        "zarr_default": "/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr",
+        "chunk_spec": {"time": 24000},
+        "consolidated": True,
+        "height_load_max": 1,
+        "top_range_default": 1,
+        "vars": widget_group_options("asfs-fast-sonic"),
+        "default_top": default_interactive_label("asfs-fast-sonic"),
+        "default_bottom": default_interactive_label("asfs-fast-sonic"),
+        "default_calendar": default_calendar_label("asfs-fast-sonic"),
+        "quicklook_dir": _path_from_env("ASFS_FAST_SONIC_QUICKLOOK_DIR", QUICKLOOK_ROOT / "asfs_fast_sonic"),
+        "latest_image": _path_from_env("ASFS_FAST_SONIC_LATEST_IMAGE", QUICKLOOK_ROOT / "asfs_fast_sonic" / "latest.png"),
     },
     "power": {
         "zarr_env": "POWER_ZARR_PATH",
@@ -452,16 +464,10 @@ INSTRUMENTS = {
         "consolidated": True,
         "height_load_max": 1,
         "top_range_default": 1,
-        "vars": {
-            "all": {
-                "label": "All Variables",
-                "clim": (0.0, 1.0),
-                "log": False,
-                "colorscale": "Viridis",
-            },
-        },
-        "default_top": "all",
-        "default_bottom": "all",
+        "vars": widget_group_options("power"),
+        "default_top": default_interactive_label("power"),
+        "default_bottom": default_interactive_label("power"),
+        "default_calendar": default_calendar_label("power"),
         "quicklook_dir": _path_from_env("POWER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "power"),
         "latest_image": _path_from_env("POWER_LATEST_IMAGE", QUICKLOOK_ROOT / "power" / "latest.png"),
     },
@@ -801,7 +807,7 @@ def _numeric_time_vars(ds: xr.Dataset) -> list[str]:
 
 
 def _is_stacked_timeseries_instrument(inst: str) -> bool:
-    return inst in {"vaisalamet", "asfs-logger", "power"}
+    return inst in {"vaisalamet", "asfs-logger", "asfs-fast-sonic", "power"}
 
 
 def _is_wxcam_instrument(inst: str) -> bool:
@@ -856,11 +862,12 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         is_wxcam = _is_wxcam_instrument(inst)
         var1_name = cfg["default_top"]
         var2_name = cfg["default_bottom"]
+        calendar_selection = cfg.get("default_calendar", var1_name)
         var1_select.options = list(vars_cfg.keys())
         var2_select.options = list(vars_cfg.keys())
         var1_select.value = var1_name
         var2_select.value = var2_name
-        var1_select.name = "Top var"
+        var1_select.name = "Plot group" if is_stacked_timeseries else "Top var"
         var2_select.name = "Bottom var"
         var1 = vars_cfg[var1_name]
         var2 = vars_cfg[var2_name]
@@ -900,7 +907,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         range_start.visible = not is_wxcam
         range_end.visible = not is_wxcam
         live_toggle.visible = not is_wxcam
-        var1_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
+        var1_select.visible = not is_hatpro and not is_wxcam
         var2_select.visible = not is_hatpro and not is_stacked_timeseries and not is_wxcam
         bottom_range_m.visible = not is_stacked_timeseries and not is_wxcam
         top_range_m.visible = not is_stacked_timeseries and not is_wxcam
@@ -910,14 +917,20 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
-        calendar_image_type.visible = is_wxcam
+        calendar_image_type.visible = is_wxcam or is_stacked_timeseries
         if is_wxcam:
+            calendar_image_type.name = "Image type"
             calendar_image_type.options = list(vars_cfg.keys())
             calendar_image_type.value = var1_name
             wxcam_image_type.options = list(vars_cfg.keys())
             wxcam_image_type.value = var1_name
             _refresh_wxcam_ql_options(preserve_current=False)
+        elif is_stacked_timeseries:
+            calendar_image_type.name = "Plot"
+            calendar_image_type.options = list(vars_cfg.keys())
+            calendar_image_type.value = calendar_selection
         else:
+            calendar_image_type.name = "Image type"
             calendar_image_type.options = []
         if is_hatpro:
             beta_vmin.name = "T_PROF min (K)"
@@ -1028,6 +1041,10 @@ def _on_var_change(event):
         if calendar_image_type.value != var1_select.value:
             calendar_image_type.value = var1_select.value
         return
+    if _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT):
+        if calendar_image_type.value != var1_select.value:
+            calendar_image_type.value = var1_select.value
+        return
     var1 = vars_cfg.get(var1_select.value, None)
     var2 = vars_cfg.get(var2_select.value, None)
     if var1:
@@ -1045,7 +1062,7 @@ var2_select.param.watch(_on_var_change, "value")
 
 
 def _on_calendar_image_type_change(event):
-    if not _is_wxcam_instrument(CURRENT_INSTRUMENT):
+    if not (_is_wxcam_instrument(CURRENT_INSTRUMENT) or _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT)):
         return
     _refresh_ql_options(preserve_current=False)
     ql_date.param.trigger("value")
@@ -1607,13 +1624,17 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
     print(f"[{instrument}] render window {start} -> {end}")
     with _timed_perf("stacked_timeseries_render", instrument=instrument, start=start, end=end) as perf:
         ds = open_window(start, end, instrument=instrument)
+        selection = var1_select.value
+        spec = group_spec_for_selection(instrument, selection)
+        ds = downsample_time(ds, max_time_samples=3500)
         bg = "white"
         fg = "#222222"
         grid = "#dddddd"
         times = pd.to_datetime(ds["time"].values) if "time" in ds else None
-        names = _numeric_time_vars(ds) if ds is not None else []
+        names = grouped_numeric_time_vars(ds, instrument, selection) if ds is not None else []
         perf["time_count"] = 0 if times is None else int(len(times))
         perf["variable_count"] = int(len(names))
+        perf["plot_group"] = spec.key
         if times is None or len(times) == 0 or not names:
             perf["status"] = "no_data"
             fig = go.Figure()
@@ -1673,7 +1694,11 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
                     y=values,
                     mode="lines",
                     name=name,
-                    line=dict(color=colors[(idx - 1) % len(colors)], width=1.4),
+                    line=dict(
+                        color=colors[(idx - 1) % len(colors)],
+                        width=1.4,
+                        shape="hv" if is_status_like_var(name) else "linear",
+                    ),
                     hovertemplate=f"Time=%{{x}}<br>{name}=%{{y:.6g}}<extra></extra>",
                     connectgaps=False,
                 ),
@@ -1716,6 +1741,7 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
             plot_bgcolor=bg,
             font=dict(color=fg, size=13),
             annotations=tuple(noon_annots),
+            title=dict(text=f"{instrument} - {spec.label}", x=0.01, xanchor="left", font=dict(size=16, color=fg)),
         )
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
@@ -2035,6 +2061,29 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
     cfg = _cfg(inst)
     if _is_wxcam_instrument(inst):
         return _wxcam_calendar_options(wxcam_selection or _cfg("wxcam")["default_top"])
+    if _is_stacked_timeseries_instrument(inst):
+        selection = wxcam_selection or cfg.get("default_calendar", cfg["default_top"])
+        spec = group_spec_for_selection(inst, selection)
+        quick_dir = cfg["quicklook_dir"]
+        opts = {}
+        date_labels = []
+        latest_path = None
+        prefix = quicklook_prefix(inst)
+        if quick_dir.exists():
+            for png in sorted(quick_dir.glob(f"{prefix}__{spec.key}__*.png")):
+                stem_parts = png.stem.split("__")
+                if len(stem_parts) != 3:
+                    continue
+                suffix = stem_parts[-1]
+                if suffix == "latest":
+                    latest_path = str(png)
+                    continue
+                date_labels.append((suffix, str(png)))
+        for label, path in date_labels:
+            opts[label] = path
+        if latest_path:
+            opts["Today (latest)"] = latest_path
+        return opts or {"No images available": None}
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -2083,7 +2132,7 @@ def _refresh_ql_options(preserve_current: bool = True):
         return
     if preserve_current and current in opts:
         ql_date.value = current
-    elif _is_wxcam_instrument(calendar_instrument.value):
+    elif _is_wxcam_instrument(calendar_instrument.value) or _is_stacked_timeseries_instrument(calendar_instrument.value):
         ql_date.value = "Today (latest)" if "Today (latest)" in opts else opts[-1]
     else:
         ql_date.value = opts[-1]
@@ -2149,6 +2198,16 @@ def _selection_snapshot() -> dict[str, object]:
     }
 
 
+def _selection_snapshot_safe() -> dict[str, object]:
+    try:
+        snapshot_fn = globals().get("_selection_snapshot")
+        if callable(snapshot_fn):
+            return snapshot_fn()
+    except Exception:
+        pass
+    return {}
+
+
 def _log_control_change(control: str, event, context: str, instrument: str | None = None) -> None:
     old = getattr(event, "old", None)
     new = getattr(event, "new", None)
@@ -2168,7 +2227,7 @@ def _log_control_change(control: str, event, context: str, instrument: str | Non
 
 
 def _log_session_loaded() -> None:
-    fields = _selection_snapshot()
+    fields = _selection_snapshot_safe()
     fields.update(
         {
             "request_path": _request_path(),
@@ -2181,7 +2240,7 @@ def _log_session_loaded() -> None:
 
 
 def _log_session_heartbeat() -> None:
-    fields = _selection_snapshot()
+    fields = _selection_snapshot_safe()
     fields.update(
         {
             "request_path": _request_path(),
@@ -2201,7 +2260,7 @@ def _log_session_destroyed(session_context) -> None:
             server_sessions = int(len(server_context.sessions))
         except Exception:
             server_sessions = None
-    fields = _selection_snapshot()
+    fields = _selection_snapshot_safe()
     fields.update(
         {
             "request_path": path,

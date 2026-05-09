@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate grouped daily and latest Vaisala met quicklook PNGs."""
+"""Generate grouped daily and latest ASFS fast-sonic quicklook PNGs."""
 
 from __future__ import annotations
 
@@ -13,20 +13,17 @@ import xarray as xr
 
 from grouped_timeseries import (
     clear_grouped_quicklooks,
-    default_calendar_label,
     group_daily_png,
     group_latest_png,
     group_specs,
     plot_grouped_timeseries,
-    quicklook_prefix,
-    refresh_legacy_aliases,
 )
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
-ZARR_PATH = Path(os.environ.get("VAISALAMET_ZARR_PATH", "/data/aurora/products/vaisalamet/vaisalamet.zarr"))
-QUICKLOOK_DIR = Path(os.environ.get("VAISALAMET_QUICKLOOK_DIR", QUICKLOOK_ROOT / "vaisalamet"))
-INSTRUMENT = "vaisalamet"
+ZARR_PATH = Path(os.environ.get("ASFS_FAST_SONIC_ZARR_PATH", "/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr"))
+QUICKLOOK_DIR = Path(os.environ.get("ASFS_FAST_SONIC_QUICKLOOK_DIR", QUICKLOOK_ROOT / "asfs_fast_sonic"))
+INSTRUMENT = "asfs-fast-sonic"
 
 
 def main(force: bool = False) -> None:
@@ -43,7 +40,7 @@ def main(force: bool = False) -> None:
     QUICKLOOK_DIR.mkdir(parents=True, exist_ok=True)
     if force:
         clear_grouped_quicklooks(QUICKLOOK_DIR, INSTRUMENT)
-        print("Deleted existing grouped Vaisala met quicklook PNGs.")
+        print("Deleted existing grouped ASFS fast-sonic quicklook PNGs.")
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
@@ -53,8 +50,6 @@ def main(force: bool = False) -> None:
         for spec in group_specs(INSTRUMENT):
             out = group_latest_png(QUICKLOOK_DIR, INSTRUMENT, spec.label)
             plot_grouped_timeseries(latest_day, INSTRUMENT, spec.label, f"{spec.label} - Latest 24 hours", out)
-            if spec.label == default_calendar_label(INSTRUMENT):
-                refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, latest_png=out)
 
     for day in dates:
         start = pd.Timestamp(day)
@@ -71,12 +66,10 @@ def main(force: bool = False) -> None:
                 continue
             title = pd.Timestamp(day).strftime(f"{spec.label} - %Y-%m-%d")
             plot_grouped_timeseries(ds_day, INSTRUMENT, spec.label, title, out)
-            if spec.label == default_calendar_label(INSTRUMENT):
-                refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, day_png=out)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate grouped Vaisala met quicklook PNGs")
+    parser = argparse.ArgumentParser(description="Generate grouped ASFS fast-sonic quicklook PNGs")
     parser.add_argument("--force", action="store_true", help="Regenerate all quicklooks")
     args = parser.parse_args()
     main(force=args.force)
