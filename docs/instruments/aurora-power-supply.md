@@ -12,6 +12,10 @@ Typical panels include:
 
 - **Batteries**
 - **Renewables**
+- **Cumulative Solar Power Generated**
+  - `East`
+  - `South`
+  - `West`
 - **Output**
 
 Legends are placed in a consistent right-side gutter rather than collected into

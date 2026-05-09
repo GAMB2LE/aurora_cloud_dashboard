@@ -436,6 +436,17 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
+            "cumulative_solar_power_generated",
+            "Cumulative Solar Power Generated",
+            "Solar Yield [kWh]",
+            None,
+            (
+                TraceSpec("SolarYield_East", "East", COLOR["brown"]),
+                TraceSpec("SolarYield_South", "South", COLOR["purple"]),
+                TraceSpec("SolarYield_West", "West", COLOR["magenta"]),
+            ),
+        ),
+        PanelSpec(
             "output",
             "Output",
             "Output Power [W]",
