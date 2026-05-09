@@ -30,10 +30,12 @@ from grouped_timeseries import (
     build_summary_plotly,
     calendar_date_tokens,
     calendar_product_paths,
+    combine_summary_datasets,
     default_calendar_label,
     default_interactive_label,
     display_name,
     is_summary_instrument,
+    summary_source_instruments,
     widget_group_options,
 )
 from wxcam_catalog import (
@@ -1617,7 +1619,12 @@ def _update_stacked_timeseries_view(instrument: str, start, end):
     """Render a 1D summary instrument with fixed multi-panel layouts."""
     print(f"[{instrument}] render window {start} -> {end}")
     with _timed_perf("stacked_timeseries_render", instrument=instrument, start=start, end=end) as perf:
-        ds = open_window(start, end, instrument=instrument)
+        source_instruments = summary_source_instruments(instrument)
+        perf["source_instruments"] = list(source_instruments)
+        ds = combine_summary_datasets(
+            instrument,
+            *(open_window(start, end, instrument=source_inst) for source_inst in source_instruments),
+        )
         times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
         perf["time_count"] = 0 if times is None else int(len(times))
         if times is None or len(times) == 0:

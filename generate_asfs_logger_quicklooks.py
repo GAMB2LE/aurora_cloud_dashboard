@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate ASFS summary and housekeeping quicklook PNGs."""
+"""Generate Radiation summary and housekeeping quicklook PNGs."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def main(force: bool = False) -> None:
     QUICKLOOK_DIR.mkdir(parents=True, exist_ok=True)
     if force:
         clear_generated_quicklooks(QUICKLOOK_DIR, INSTRUMENT)
-        print("Deleted existing ASFS quicklook PNGs.")
+        print("Deleted existing Radiation quicklook PNGs.")
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
@@ -52,7 +52,7 @@ def main(force: bool = False) -> None:
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
-        save_summary_png(latest_day, INSTRUMENT, "ASFS - Latest 24 hours", summary_out)
+        save_summary_png(latest_day, INSTRUMENT, "Radiation - Latest 24 hours", summary_out)
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
@@ -70,7 +70,7 @@ def main(force: bool = False) -> None:
             continue
         summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if force or not summary_out.exists():
-            title = pd.Timestamp(day).strftime("ASFS - %Y-%m-%d")
+            title = pd.Timestamp(day).strftime("Radiation - %Y-%m-%d")
             save_summary_png(ds_day, INSTRUMENT, title, summary_out)
         hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if hk_out is not None and (force or not hk_out.exists()):
@@ -80,7 +80,7 @@ def main(force: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate ASFS summary and housekeeping quicklook PNGs")
+    parser = argparse.ArgumentParser(description="Generate Radiation summary and housekeeping quicklook PNGs")
     parser.add_argument("--force", action="store_true", help="Regenerate all quicklooks")
     args = parser.parse_args()
     main(force=args.force)

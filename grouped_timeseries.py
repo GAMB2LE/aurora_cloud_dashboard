@@ -64,7 +64,7 @@ SUMMARY_INSTRUMENTS = ("vaisalamet", "asfs-logger", "asfs-fast-sonic", "power")
 
 DISPLAY_NAMES = {
     "vaisalamet": "Meteorology",
-    "asfs-logger": "ASFS",
+    "asfs-logger": "Radiation",
     "asfs-fast-sonic": "ASFS Fast Sonic",
     "power": "Aurora Power Supply",
 }
@@ -288,6 +288,13 @@ DISPLAY_SCALE = {
     "BatteryState": 100.0,
 }
 
+SUMMARY_SOURCE_INSTRUMENTS = {
+    "vaisalamet": ("vaisalamet", "asfs-logger"),
+    "asfs-logger": ("asfs-logger",),
+    "asfs-fast-sonic": ("asfs-fast-sonic",),
+    "power": ("power",),
+}
+
 SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
     "vaisalamet": (
         PanelSpec(
@@ -298,6 +305,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("h1_t", "HMP1 Air Temperature", COLOR["teal"]),
                 TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
+                TraceSpec("metek_T_out_Avg", "Sonic Temperature", COLOR["brown"]),
+                TraceSpec("kt15_amb_Avg", "KT15 Ambient Temperature", COLOR["olive"]),
             ),
         ),
         PanelSpec(
@@ -319,10 +328,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("baro_hPa", "Pressure", COLOR["green"]),
             ),
         ),
-    ),
-    "asfs-logger": (
         PanelSpec(
-            "metek_wind",
+            "met",
             "Met",
             "Metek U / V Wind [m/s]",
             "Metek W Wind [m/s]",
@@ -332,25 +339,25 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("metek_z_out_Avg", "Metek W Wind", COLOR["purple"], axis="right"),
             ),
         ),
+    ),
+    "asfs-logger": (
         PanelSpec(
-            "surface_temperature",
-            "Met",
-            "Surface / Sonic Temperature [C]",
-            None,
-            (
-                TraceSpec("metek_T_out_Avg", "Sonic Temperature", COLOR["brown"]),
-                TraceSpec("kt15_amb_Avg", "KT15 Ambient Temperature", COLOR["olive"]),
-                TraceSpec("kt15_tem_Avg", "KT15 Surface Temperature", COLOR["magenta"]),
-            ),
-        ),
-        PanelSpec(
-            "radiation",
+            "metek_wind",
             "Radiation",
             "Radiation [W m^-2]",
             None,
             (
                 TraceSpec("spn1_tot_Avg", "Total Radiation", COLOR["brown"]),
                 TraceSpec("spn1_dif_Avg", "Diffuse Radiation", COLOR["purple"]),
+            ),
+        ),
+        PanelSpec(
+            "surface_temperature",
+            "Surface Temperature",
+            "KT15 Surface Temperature [C]",
+            None,
+            (
+                TraceSpec("kt15_tem_Avg", "KT15 Surface Temperature", COLOR["magenta"]),
             ),
         ),
     ),
@@ -439,6 +446,10 @@ def display_name(instrument: str) -> str:
 
 def housekeeping_label(instrument: str) -> str | None:
     return HOUSEKEEPING_LABELS.get(instrument)
+
+
+def summary_source_instruments(instrument: str) -> tuple[str, ...]:
+    return SUMMARY_SOURCE_INSTRUMENTS.get(instrument, (instrument,))
 
 
 def default_interactive_label(instrument: str) -> str:
@@ -624,6 +635,24 @@ def human_axis_label(name: str) -> str:
 
 def display_scale(name: str) -> float:
     return DISPLAY_SCALE.get(name, 1.0)
+
+
+def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> xr.Dataset:
+    merged_inputs: list[xr.Dataset] = []
+    for ds in datasets:
+        if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
+            continue
+        keep_names = [name for name, da in ds.data_vars.items() if da.dims == ("time",)]
+        if not keep_names:
+            continue
+        subset = ds[keep_names].sortby("time")
+        merged_inputs.append(subset)
+    if not merged_inputs:
+        return xr.Dataset()
+    merged = xr.merge(merged_inputs, join="outer", compat="override", combine_attrs="drop_conflicts")
+    merged = merged.sortby("time")
+    merged.attrs["summary_instrument"] = instrument
+    return merged
 
 
 def numeric_time_vars(ds: xr.Dataset) -> list[str]:
