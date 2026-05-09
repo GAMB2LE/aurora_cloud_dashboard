@@ -180,7 +180,7 @@ def _cl61_ssh_base() -> list[str]:
 
 
 def _gws_ssh_base() -> list[str]:
-    key_path = os.environ.get("GWS_SSH_PRIVATE_KEY", "/home/aurora/.ssh/id_ed25519_jasmin_gws")
+    key_path = os.environ.get("GWS_SSH_PRIVATE_KEY", "/home/aurora/.ssh/id_rsa_jasmin_20200514")
     return [
         "ssh",
         "-i",
