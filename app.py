@@ -3989,6 +3989,42 @@ body, .bk {
     align-items: center;
     gap: 8px;
 }
+.site-footer {
+    margin-top: 8px;
+    padding: 12px 14px;
+    border-top: 1px solid #d8dee4;
+    background: #ffffff;
+}
+.site-footer__title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #243b53;
+    margin-bottom: 8px;
+}
+.site-footer__links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.site-footer__link {
+    min-width: 240px;
+    flex: 1 1 280px;
+}
+.site-footer__link a {
+    color: #0b7285;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+}
+.site-footer__link a:hover {
+    text-decoration: underline;
+}
+.site-footer__desc {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #5b6673;
+    line-height: 1.4;
+}
 .ops-shell {
     display: flex;
     flex-direction: column;
@@ -4420,6 +4456,26 @@ tabs = pn.Tabs(
     sizing_mode="stretch_both",
 )
 
+site_footer = pn.pane.HTML(
+    """
+    <div class="site-footer">
+      <div class="site-footer__title">More Aurora project information</div>
+      <div class="site-footer__links">
+        <div class="site-footer__link">
+          <a href="https://gamb2le.pages.dev/" target="_blank" rel="noopener noreferrer">gamb2le.pages.dev</a>
+          <div class="site-footer__desc">Project documentation portal with dashboard, infrastructure, and operational notes.</div>
+        </div>
+        <div class="site-footer__link">
+          <a href="https://www.gamb2le.co.uk/" target="_blank" rel="noopener noreferrer">gamb2le.co.uk</a>
+          <div class="site-footer__desc">Main Gamb2le website with broader project context and public-facing information.</div>
+        </div>
+      </div>
+    </div>
+    """,
+    sizing_mode="stretch_width",
+    margin=0,
+)
+
 _QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "operations": 3}
 
 _apply_query_state()
@@ -4428,7 +4484,7 @@ if requested_tab in _QUERY_TAB_INDEX:
     tabs.active = _QUERY_TAB_INDEX[requested_tab]
 _refresh_share_and_download_state()
 
-template.main[:] = [tabs]
+template.main[:] = [tabs, site_footer]
 
 def _apply_theme(dark: bool):
     """No-op placeholder (dark mode removed)."""
