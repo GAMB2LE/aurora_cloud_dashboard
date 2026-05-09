@@ -579,6 +579,11 @@ INSTRUMENT_OPTIONS = {
     for name in INSTRUMENTS.keys()
     if name not in {"asfs-fast-sonic", "ops-monitor"}
 }
+HK_INSTRUMENT_OPTIONS = {
+    ("WXcam" if name == "wxcam" else display_name(name)): name
+    for name in INSTRUMENTS.keys()
+    if name != "asfs-fast-sonic"
+}
 
 DEFAULT_WINDOW = timedelta(hours=24)
 LIVE_REFRESH_MS = 60_000  # how often to snap to latest when live is on (ms)
@@ -1725,7 +1730,7 @@ live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="prim
 instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 science_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
-hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
+hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=HK_INSTRUMENT_OPTIONS)
 
 _live_guard = False
 _instrument_guard = False
@@ -3806,6 +3811,7 @@ def _apply_query_state() -> None:
     if not args:
         return
     visible_instruments = set(INSTRUMENT_OPTIONS.values())
+    hk_visible_instruments = set(HK_INSTRUMENT_OPTIONS.values())
     instrument = args.get("instrument")
     if instrument in visible_instruments:
         instrument_select.value = instrument
@@ -3844,7 +3850,7 @@ def _apply_query_state() -> None:
         ql_date.value = args["science_date"]
     if args.get("science_selected_hour"):
         wxcam_calendar_state.selected_hour_path = args["science_selected_hour"]
-    if args.get("hk_instrument") in visible_instruments:
+    if args.get("hk_instrument") in hk_visible_instruments:
         hk_instrument.value = args["hk_instrument"]
     if args.get("hk_date") in list(hk_date.options):
         hk_date.value = args["hk_date"]
@@ -4509,6 +4515,8 @@ site_footer = pn.pane.HTML(
     margin=0,
 )
 
+main_layout = pn.Column(tabs, site_footer, sizing_mode="stretch_width", margin=0)
+
 _QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "operations": 3}
 
 _apply_query_state()
@@ -4517,7 +4525,8 @@ if requested_tab in _QUERY_TAB_INDEX:
     tabs.active = _QUERY_TAB_INDEX[requested_tab]
 _refresh_share_and_download_state()
 
-template.main[:] = [tabs, site_footer]
+tabs.sizing_mode = "stretch_width"
+template.main[:] = [main_layout]
 
 def _apply_theme(dark: bool):
     """No-op placeholder (dark mode removed)."""
