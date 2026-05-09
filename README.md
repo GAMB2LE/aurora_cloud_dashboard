@@ -272,7 +272,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
 - WXcam keeps the stitched MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
-- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, and systemd unit state. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the quicklook generator still waits until at least two samples exist before it writes archived line-plot PNGs. A fresh deployment can therefore show a live Operations tab before the archived monitoring quicklook directory fills in.
+- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, and systemd unit state. They now also mark each stream red when the source has not produced data in the last 1.5 hours. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the quicklook generator still waits until at least two samples exist before it writes archived line-plot PNGs. A fresh deployment can therefore show a live Operations tab before the archived monitoring quicklook directory fills in.
 
 ## Zarr data products
 

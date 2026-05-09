@@ -13,6 +13,8 @@ quicklook products.
 These snapshots capture:
 
 - source-host disk usage and probe reachability
+- per-stream source recency, with a red operational state if a source has not
+  produced data in the last 1.5 hours
 - local `/project`, `/data`, and `/` filesystem usage
 - GWS usage and reachability
 - per-stream mirror coverage, lag, and mismatch counts

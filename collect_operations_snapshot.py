@@ -149,6 +149,7 @@ TRANSFER_UNITS = (
     "aurora-mirror-verify.timer",
     "aurora-mirror-verify.service",
 )
+SOURCE_RECENT_THRESHOLD_MINUTES = 90.0
 
 
 def _path_from_env(name: str, default: str | Path) -> Path:
@@ -316,6 +317,18 @@ def _lag_minutes(source_mtime: int | None, mirror_mtime: int | None) -> float | 
     return max(float(source_mtime - mirror_mtime), 0.0) / 60.0
 
 
+def _age_minutes(now_epoch: float, sample_epoch: int | None) -> float | None:
+    if sample_epoch is None:
+        return None
+    return max(now_epoch - float(sample_epoch), 0.0) / 60.0
+
+
+def _recent_state(age_minutes: float | None, threshold_minutes: float = SOURCE_RECENT_THRESHOLD_MINUTES) -> int:
+    if age_minutes is None:
+        return 0
+    return 1 if age_minutes <= threshold_minutes else 0
+
+
 def _unit_slug(unit: str) -> str:
     return unit.replace("aurora-", "").replace(".", "_").replace("-", "_")
 
@@ -397,6 +410,7 @@ def _probe_gws(gws_path: Path) -> tuple[str | None, dict[str, float] | None]:
 
 def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    now_epoch = now.timestamp()
     record: dict[str, Any] = {
         "time_utc": now.isoformat(),
     }
@@ -458,6 +472,8 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     prune_ready_count = 0
     product_gate_ok_count = 0
     backfill_pending_count = 0
+    source_stale_count = 0
+    source_recent_count = 0
     for stream_name, prefix in STREAM_PREFIXES.items():
         stream_dir = manifest_root / "latest" / stream_name
         source_stats = _manifest_stats(stream_dir / "source.tsv")
@@ -483,6 +499,14 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         record[f"{prefix}_local_lag_min"] = _lag_minutes(source_stats["latest_mtime"], local_stats["latest_mtime"])
         if gws_count is not None:
             record[f"{prefix}_gws_lag_min"] = _lag_minutes(source_stats["latest_mtime"], gws_stats["latest_mtime"])
+        source_age_min = _age_minutes(now_epoch, source_stats["latest_mtime"])
+        source_recent_state = _recent_state(source_age_min)
+        record[f"{prefix}_source_age_min"] = source_age_min
+        record[f"{prefix}_source_recent_state"] = source_recent_state
+        if source_recent_state:
+            source_recent_count += 1
+        else:
+            source_stale_count += 1
 
         local_missing = stream_summary.get("local_missing_count")
         local_mismatch = stream_summary.get("local_mismatch_count")
@@ -528,6 +552,8 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     record["streams_prune_ready_count"] = prune_ready_count
     record["streams_product_gate_ok_count"] = product_gate_ok_count
     record["streams_backfill_pending_count"] = backfill_pending_count
+    record["streams_source_stale_count"] = source_stale_count
+    record["streams_source_recent_count"] = source_recent_count
     record["streams_target_count"] = max(0, len(STREAM_PREFIXES) - backfill_pending_count)
 
     failed_source_sync, source_sync_timer_enabled = _collect_unit_metrics(SOURCE_SYNC_UNITS, record)

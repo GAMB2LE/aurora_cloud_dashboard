@@ -624,6 +624,22 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
+            "source_freshness",
+            "Source Freshness",
+            "Stale Streams [count]",
+            "Recent State",
+            (
+                TraceSpec("streams_source_stale_count", "Stale Streams", COLOR["red"], step=True, skip_if_all_zero=True),
+                TraceSpec("cl61_source_recent_state", "CL61 Recent", COLOR["teal"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("radar_source_recent_state", "Radar Recent", COLOR["blue"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("vaisalamet_source_recent_state", "Meteorology Recent", COLOR["green"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("asfs_logger_source_recent_state", "Radiation Recent", COLOR["purple"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("asfs_fast_sonic_source_recent_state", "ASFS Fast Sonic Recent", COLOR["magenta"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("power_source_recent_state", "APS Recent", COLOR["brown"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("wxcam_source_recent_state", "WXcam Recent", COLOR["olive"], axis="right", step=True, skip_if_all_zero=True),
+            ),
+        ),
+        PanelSpec(
             "service_problems",
             "Service / Transfer Problems",
             "Failure Count",

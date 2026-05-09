@@ -1123,6 +1123,17 @@ def _ops_level_from_source_probes(fail_count_value, total_hosts: int = 3) -> str
     return "red"
 
 
+def _ops_source_freshness_text(snapshot: dict, prefix: str) -> str:
+    recent = _ops_bool(snapshot.get(f"{prefix}_source_recent_state"))
+    age_min = _ops_float(snapshot.get(f"{prefix}_source_age_min"))
+    if recent is None:
+        return "No source timestamp"
+    if age_min is None:
+        return "Recent" if recent else "Stale"
+    age_text = _format_duration(timedelta(minutes=age_min))
+    return f"Recent ({age_text})" if recent else f"Stale ({age_text})"
+
+
 def _ops_storage_text(snapshot: dict, key_prefix: str) -> str:
     used = _ops_float(snapshot.get(f"{key_prefix}_used_gb"))
     total = _ops_float(snapshot.get(f"{key_prefix}_total_gb"))
@@ -1272,6 +1283,7 @@ def _ops_operations_markup() -> str:
 
         snapshot_level = _ops_level_from_age_minutes(snapshot_age_min)
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
+        source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
         transfer_level = _ops_worst_level(
             [
@@ -1291,7 +1303,7 @@ def _ops_operations_markup() -> str:
             )
             if mirror_level == "green" and backfill_pending_count > 0:
                 mirror_level = "amber"
-        overall_level = _ops_worst_level([snapshot_level, source_level, processing_level, transfer_level, mirror_level])
+        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, processing_level, transfer_level, mirror_level])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -1322,6 +1334,16 @@ def _ops_operations_markup() -> str:
                 source_level,
                 f"{max(0, 3 - int(_ops_float(snapshot.get('source_host_probe_fail_count')) or 0))}/3 reachable",
                 f"{int(_ops_float(snapshot.get('source_host_probe_fail_count')) or 0)} probe failures",
+            ),
+            _ops_card_markup(
+                "Source freshness",
+                source_freshness_level,
+                (
+                    f"{int(_ops_float(snapshot.get('streams_source_recent_count')) or 0)}/{len(OPS_STREAM_SPECS)} recent"
+                    if int(_ops_float(snapshot.get('streams_source_stale_count')) or 0) == 0
+                    else f"{int(_ops_float(snapshot.get('streams_source_stale_count')) or 0)} stale streams"
+                ),
+                "Source data seen within the last 1.5 hours",
             ),
             _ops_card_markup(
                 "Processing pipeline",
@@ -1549,7 +1571,12 @@ def _ops_operations_markup() -> str:
 
         table_rows = []
         for spec in OPS_STREAM_SPECS:
-            source_level_stream = _ops_level_from_bool(snapshot.get(spec["source_key"]))
+            source_level_stream = _ops_worst_level(
+                [
+                    _ops_level_from_bool(snapshot.get(spec["source_key"])),
+                    _ops_level_from_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")),
+                ]
+            )
             processing_level_stream = _ops_worst_level([_ops_level_from_bool(snapshot.get(key)) for key in spec["processing_keys"]])
             processing_ok = sum(1 for key in spec["processing_keys"] if _ops_bool(snapshot.get(key)) is True)
             archive_level_stream = _ops_archive_level(snapshot, spec["stream_prefix"])
@@ -1558,7 +1585,7 @@ def _ops_operations_markup() -> str:
             table_rows.append(
                 "<tr>"
                 f"<th class='ops-table__rowlabel'>{escape(spec['label'])}</th>"
-                f"{_ops_table_cell(source_level_stream, 'Source sync', 'Healthy' if source_level_stream == 'green' else 'Check source sync')}"
+                f"{_ops_table_cell(source_level_stream, 'Source', _ops_source_freshness_text(snapshot, spec['stream_prefix']))}"
                 f"{_ops_table_cell(processing_level_stream, 'Processing', processing_detail)}"
                 f"{_ops_table_cell(archive_level_stream, _ops_archive_text(snapshot, spec['stream_prefix']), 'Raw mirror to GWS')}"
                 f"{_ops_table_cell(prune_level_stream, _ops_prune_text(snapshot, spec['stream_prefix'], manifest_ready), 'Deletion gate')}"
