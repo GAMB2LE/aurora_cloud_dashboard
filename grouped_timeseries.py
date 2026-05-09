@@ -197,6 +197,7 @@ HUMAN_LABELS = {
     "SolarYield_East": "Solar East Yield",
     "SolarYield_South": "Solar South Yield",
     "SolarYield_West": "Solar West Yield",
+    "CumulativePowerUtilised": "Power Utilised",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -289,6 +290,7 @@ HUMAN_UNITS = {
     "SolarYield_East": "kWh",
     "SolarYield_South": "kWh",
     "SolarYield_West": "kWh",
+    "CumulativePowerUtilised": "kWh",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -426,14 +428,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "cumulative_solar_power_generated",
-            "Cumulative Solar Power Generated",
-            "Solar Yield [kWh]",
+            "cumulative_power",
+            "Cumulative Power",
+            "Cumulative Energy [kWh]",
             None,
             (
                 TraceSpec("SolarYield_East", "East", COLOR["brown"]),
                 TraceSpec("SolarYield_South", "South", COLOR["purple"]),
                 TraceSpec("SolarYield_West", "West", COLOR["magenta"]),
+                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
             ),
         ),
         PanelSpec(
@@ -447,15 +450,23 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "output",
-            "Output",
+            "output_power",
+            "Output Power",
             "Output Power [W]",
-            "Output Voltage [V]",
+            None,
             (
                 TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"]),
                 TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"]),
-                TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"], axis="right"),
-                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "output_voltage",
+            "Output Voltage",
+            "Output Voltage [V]",
+            None,
+            (
+                TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"]),
+                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"]),
             ),
         ),
     ),
@@ -940,6 +951,40 @@ def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> x
     return merged
 
 
+def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
+    if instrument != "power" or "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return ds
+    if "CumulativePowerUtilised" in ds:
+        return ds
+    if "ACOutputWatts" not in ds and "DCInverterWatts" not in ds:
+        return ds
+
+    times = pd.DatetimeIndex(ds["time"].values)
+    if len(times) == 0:
+        return ds
+
+    ac_power = np.asarray(ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.zeros(len(times)), dtype=np.float64)
+    dc_power = np.asarray(ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.zeros(len(times)), dtype=np.float64)
+    utilised_power_w = np.nan_to_num(ac_power, nan=0.0) + np.nan_to_num(dc_power, nan=0.0)
+    utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
+
+    cumulative_kwh = np.zeros(len(times), dtype=np.float64)
+    if len(times) > 1:
+        dt_hours = np.diff(times.asi8.astype(np.float64)) / 3.6e12
+        dt_hours = np.clip(dt_hours, a_min=0.0, a_max=None)
+        incremental_kwh = 0.5 * (utilised_power_w[1:] + utilised_power_w[:-1]) * dt_hours / 1000.0
+        cumulative_kwh[1:] = np.cumsum(incremental_kwh)
+
+    return ds.assign(
+        CumulativePowerUtilised=xr.DataArray(
+            cumulative_kwh,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "kWh"},
+        )
+    )
+
+
 def numeric_time_vars(ds: xr.Dataset) -> list[str]:
     names: list[str] = []
     for name, da in ds.data_vars.items():
@@ -1108,6 +1153,7 @@ def save_summary_png(
     output: Path,
     max_time_samples: int = MAX_TIME_SAMPLES,
 ) -> int:
+    ds = _prepare_summary_dataset(ds, instrument)
     ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
@@ -1209,6 +1255,7 @@ def build_summary_plotly(
     max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
 ) -> go.Figure:
     vertical_spacing = 0.04
+    ds = _prepare_summary_dataset(ds, instrument)
     ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
