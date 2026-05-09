@@ -20,6 +20,8 @@ import xarray as xr
 MAX_TIME_SAMPLES = 2200
 INTERACTIVE_MAX_TIME_SAMPLES = 3500
 OVERVIEW_LABEL = "Overview"
+# Reserve a fixed right-side gutter for per-panel legends so they sit beyond the
+# secondary-axis labels in both the interactive Plotly view and saved PNGs.
 MATPLOTLIB_PANEL_RIGHT = 0.72
 MATPLOTLIB_LEGEND_X = 1.12
 PLOTLY_PANEL_DOMAIN_END = 0.73

@@ -1588,9 +1588,9 @@ def _wxcam_interactive_media(selected, selection):
         return _build_wxcam_video_view(video_path, selection, selected)
 
 
-# wxcam now uses the Interactive tab as its primary browser/player so the
-# controls and playback state live in one place instead of competing with the
-# calendar quicklook flow used by the other instruments.
+# WXcam now uses the Interactive Data Browser as its primary browser/player so
+# the controls and playback state live in one place instead of competing with
+# the science-quicklook flow used by the other instruments.
 wxcam_interactive_browser = pn.Column(
     pn.Card(
         pn.Row(wxcam_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),

@@ -110,6 +110,10 @@ Important products:
 - WXcam daily videos: `/data/aurora/products/wxcam/daily_videos`
 - WXcam hourly thumbnails: `/data/aurora/products/wxcam/hourly_thumbnails`
 
+The dashboard reads WXcam products from the HDR subsets, but the current raw
+mirror under `/project/aurora/raw/wxcam` now copies the full upstream `FISH/`
+and `PANO/` tree for retention and archive verification.
+
 ## Services
 
 Systemd services are installed system-wide under `/etc/systemd/system/`.
@@ -224,6 +228,9 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
 - `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab.
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store.
+- The dashboard UI now uses three top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, and `House Keeping Quicklooks`.
+- Availability bars, freshness/status chips, and share/download controls are shown beneath the rendered content in each tab so the data view stays visually primary.
+- Summary-plot legends are kept per panel in a dedicated right-side gutter beyond the right y-axis labels instead of sharing one global legend.
 - `Science Quicklooks` and `House Keeping Quicklooks` use separate tab state. Science quicklooks show one product at a time, while housekeeping quicklooks only appear for instruments that actually have HK images.
 - `HK_Ceilometer` excludes the main science fields (`beta_att`, `linear_depol_ratio`) and focuses on non-science diagnostics such as gain, noise, tilt, detections, and cloud-layer metadata.
 - `HK_Radar` excludes the main science quicklook fields and instead shows the remaining radar moments: `ZE45_dBZ`, `ZDR`, `PhiDP`, `KDP`, and `DiffAtt`.
