@@ -1,84 +1,25 @@
 # Aurora Cloud Dashboard
 
-The Aurora Cloud Dashboard is the live Panel application and data-product
-tooling for the Aurora observing stack.
+The Aurora Cloud Dashboard repo contains the live Panel application, derived
+data-product builders, WXcam media tooling, and operations monitoring for the
+Aurora observing stack.
 
-## What this repo covers
+This documentation is now organized into real sections instead of a single long
+landing page:
 
-- the public dashboard served at `data.gamb2le.co.uk`
-- Zarr appenders and quicklook generation for the deployed instruments
-- WXcam cataloging, daily-video generation, thumbnails, and pixel Zarr writes
-- operations monitoring, archived monitoring quicklooks, and dashboard
-  performance logging
+- **Overview** explains the dashboard layout, tabs, and core code structure.
+- **Instruments** describes how each instrument is presented in the UI.
+- **Runtime and storage** covers deployed paths, services, storage, logging,
+  and local development.
+- **Data products** documents the Zarr stores, WXcam media products, and
+  operations-monitor products in detail.
 
-## Dashboard structure
+If you are orienting yourself quickly, start with:
 
-The deployed interface is organized into four top-level views:
+1. [Dashboard at a glance](overview/index.md)
+2. [Instruments overview](instruments/index.md)
+3. [Zarr overview](data-products/index.md)
 
-- **Interactive Data Browser**
-- **Science Quicklooks**
-- **House Keeping Quicklooks**
-- **Operations Dashboard**
+The source repository for this documentation is:
 
-## Main instruments
-
-- **Ceilometer**
-- **Cloud Radar**
-- **Meteorology**
-- **Radiation**
-- **Aurora Power Supply**
-- **WXcam**
-
-The Operations Dashboard is also backed by this repo through the `ops_monitor`
-collector, Zarr, and quicklook pipeline.
-
-## Storage model
-
-The deployed host deliberately separates raw mirrored inputs from derived
-products:
-
-- `/project/aurora/raw` contains raw mirrored source data from the upstream
-  instrument hosts
-- `/data/aurora/products` contains Zarrs, quicklooks, WXcam media products,
-  the WXcam SQLite catalog, operations products, and performance logs
-
-This split keeps regeneratable products separate from the raw mirror and lets
-the dashboard serve smaller local products without reading directly from the
-source-style trees.
-
-## Important paths
-
-- Dashboard application: `/opt/aurora-cloud-dashboard`
-- Raw data root: `/project/aurora/raw`
-- Product root: `/data/aurora/products`
-- Quicklook root: `/data/aurora/products/quicklooks`
-- Dashboard environment file: `/etc/aurora-dashboard.env`
-
-## Key entry points
-
-- `app.py` - main Panel application
-- `grouped_timeseries.py` - shared 1D summary plot and quicklook helpers
-- `append_new_*_to_zarr.py` - numeric instrument appenders
-- `generate_*_quicklooks.py` - archived quicklook generators
-- `wxcam_catalog.py` - shared WXcam catalog helpers
-- `collect_operations_snapshot.py` - operations snapshot collector
-
-## Operations and performance
-
-This repo also contains:
-
-- performance logging to
-  `/data/aurora/products/dashboard/dashboard_perf.jsonl`
-- operations snapshots in `/project/aurora/raw/ops_monitor`
-- operations Zarr and quicklooks under `/data/aurora/products/ops_monitor`
-  and `/data/aurora/products/quicklooks/ops_monitor`
-
-## Related documentation
-
-- Infrastructure and rebuild docs live in the
-  **Aurora Cloud Infrastructure** documentation section
-- Source sync and deployment details live in the infra repo, not here
-
-## Source repository
-
-- GitHub: <https://github.com/GAMB2LE/aurora_cloud_dashboard>
+- <https://github.com/GAMB2LE/aurora_cloud_dashboard>

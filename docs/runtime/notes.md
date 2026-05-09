@@ -1,0 +1,29 @@
+# Notes
+
+This page captures dashboard-specific caveats that are important operationally.
+
+## Cloud Radar timestamps
+
+The radar data has previously contained obviously bogus far-future timestamps.
+`app.py` filters clearly invalid future times when computing bounds and recent
+plot windows so the interactive view stays usable even if the underlying store
+contains bad samples.
+
+## Curated 1D instruments
+
+`Meteorology`, `Radiation`, and `Aurora Power Supply` use fixed summary layouts.
+Their ingest, local retention, and Zarr schemas are not changed by those
+presentation choices; the dashboard simply renders curated subsets of the same
+stored variables.
+
+## Meteorology display merge
+
+The Meteorology summary view merges selected ASFS logger met traces into the
+Meteorology presentation layer without changing either underlying Zarr store.
+
+## WXcam science behavior
+
+- WXcam interactive uses stitched MP4 products
+- WXcam science quicklooks use HDR JPGs nearest the `:30` mark of each UTC hour
+- WXcam operations and archive verification may track the full mirrored raw tree
+  even though the dashboard-facing products only use the HDR subset

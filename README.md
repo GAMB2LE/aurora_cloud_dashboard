@@ -240,8 +240,11 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - This repo carries the three repo-side pieces described in
   `https://gamb2le.pages.dev/documentation-docs/`:
   - `mkdocs.yml`
-  - `docs/index.md`
+  - `docs/`
   - `.github/workflows/trigger-docs.yml`
+- The repo documentation is now split into sectioned MkDocs pages so the portal
+  left navigation can expose instruments, runtime/storage details, and per-Zarr
+  product pages directly.
 - The standalone `docs.yml` workflow still builds this repo's own MkDocs site.
 - The `trigger-docs.yml` workflow asks the central `GAMB2LE/mkdocs-portal`
   repo to rebuild the unified site at `https://gamb2le.pages.dev/`.
@@ -540,14 +543,13 @@ Chunking:
 
 ### Local raw mirror
 
-The deployed WXcam raw mirror only retains HDR assets locally:
+The deployed WXcam raw mirror now copies the full upstream `FISH/` and `PANO/`
+tree locally for retention and archive verification:
 
-- `FISH/HDR_*.jpg`
-- `FISH/HDR_*.mp4`
-- `PANO/HDR_*_PANO.jpg`
-- `PANO/HDR_*_PANO.mp4`
+- `/project/aurora/raw/wxcam/FISH`
+- `/project/aurora/raw/wxcam/PANO`
 
-Non-HDR WXcam files may still exist on the remote source host, but they are not mirrored into the local dashboard raw tree.
+The dashboard-facing products still only use the HDR JPG and HDR MP4 subsets.
 
 ### Catalog
 

@@ -1,0 +1,29 @@
+# Deployed Paths
+
+Primary runtime paths come from `/etc/aurora-dashboard.env`.
+
+## Main application paths
+
+- dashboard app checkout: `/opt/aurora-cloud-dashboard`
+- raw data root: `/project/aurora/raw`
+- product root: `/data/aurora/products`
+- quicklook root: `/data/aurora/products/quicklooks`
+
+## Important deployed products
+
+- CL61 Zarr:
+  `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr`
+- Cloud Radar Zarr: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
+- Meteorology Zarr: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
+- ASFS Logger Zarr: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
+- ASFS Fast Sonic Zarr:
+  `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
+- Power Zarr: `/data/aurora/products/power/power.zarr`
+- WXcam Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
+- WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
+- Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`
+
+## Related docs
+
+- [Storage layout](storage-layout.md)
+- [Services and timers](services-and-timers.md)

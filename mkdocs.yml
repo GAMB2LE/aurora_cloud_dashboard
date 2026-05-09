@@ -27,3 +27,35 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Overview:
+      - Dashboard at a glance: overview/index.md
+      - Tabs and views: overview/tabs-and-views.md
+      - Core files: overview/core-files.md
+  - Instruments:
+      - Instrument summary: instruments/index.md
+      - Ceilometer: instruments/ceilometer.md
+      - Cloud Radar: instruments/cloud-radar.md
+      - Meteorology: instruments/meteorology.md
+      - Radiation: instruments/radiation.md
+      - Aurora Power Supply: instruments/aurora-power-supply.md
+      - WXcam: instruments/wxcam.md
+      - Operations Dashboard: instruments/operations-dashboard.md
+  - Runtime and storage:
+      - Deployed paths: runtime/deployed-paths.md
+      - Storage layout: runtime/storage-layout.md
+      - Services and timers: runtime/services-and-timers.md
+      - Performance logging: runtime/performance-logging.md
+      - Running locally: runtime/running-locally.md
+      - Documentation publishing: runtime/documentation-publishing.md
+      - Notes: runtime/notes.md
+  - Data products:
+      - Zarr and product overview: data-products/index.md
+      - Ceilometer Zarr: data-products/ceilometer-zarr.md
+      - Cloud Radar Zarr: data-products/cloud-radar-zarr.md
+      - Meteorology Zarr: data-products/meteorology-zarr.md
+      - ASFS Logger Zarr: data-products/asfs-logger-zarr.md
+      - ASFS Fast Sonic Zarr: data-products/asfs-fast-sonic-zarr.md
+      - Power Zarr: data-products/power-zarr.md
+      - WXcam products: data-products/wxcam-products.md
+      - WXcam Zarr: data-products/wxcam-zarr.md
+      - Operations products: data-products/operations-products.md
