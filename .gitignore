@@ -3,8 +3,16 @@
 !README.md
 !LICENSE
 !.gitignore
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!docs/
+!docs/**
+!mkdocs.yml
+!requirements-docs.txt
 # Ignore generated quicklook images and last-24h output
 quicklooks/
 last24h.png
+site/
 __pycache__/
 *.pyc
