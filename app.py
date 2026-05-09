@@ -3395,15 +3395,6 @@ body, .bk {
 controls = pn.Card(
     pn.Column(
         pn.Row(instrument_select, range_start, range_end, live_toggle, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(
-            interactive_copy,
-            interactive_download,
-            interactive_share_url,
-            sizing_mode="stretch_width",
-            css_classes=["mobile-stack", "action-row"],
-        ),
-        interactive_status,
-        interactive_availability,
         pn.Row(var1_select, var2_select, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(bottom_range_m, top_range_m, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(beta_vmin, beta_vmax, ldr_vmin, ldr_vmax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
@@ -3427,45 +3418,79 @@ template = pn.template.MaterialTemplate(
     main_max_width="1800px",  # wide but keeps a valid string
 )
 
-interactive_tab = pn.Column(controls, interactive_content, sizing_mode="stretch_both")
+interactive_footer = pn.Card(
+    pn.Row(
+        interactive_copy,
+        interactive_download,
+        interactive_share_url,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-stack", "action-row"],
+    ),
+    interactive_status,
+    interactive_availability,
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+    css_classes=["small-card"],
+)
+
+science_footer = pn.Card(
+    pn.Row(
+        science_copy,
+        science_download,
+        science_share_url,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-stack", "action-row"],
+    ),
+    science_status,
+    science_availability,
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+    css_classes=["small-card"],
+)
+
+hk_footer = pn.Card(
+    pn.Row(
+        hk_copy,
+        hk_download,
+        hk_share_url,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-stack", "action-row"],
+    ),
+    hk_status,
+    hk_availability,
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+    css_classes=["small-card"],
+)
+
+interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_both")
 science_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(science_instrument, science_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
-        pn.Row(
-            science_copy,
-            science_download,
-            science_share_url,
-            sizing_mode="stretch_width",
-            css_classes=["mobile-stack", "action-row"],
-        ),
-        science_status,
-        science_availability,
         title="",
         collapsible=False,
         sizing_mode="stretch_width",
+        css_classes=["small-card"],
     ),
     _science_quicklook_image,
+    science_footer,
     sizing_mode="stretch_both",
 )
 housekeeping_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(hk_instrument, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(hk_prev, hk_date, hk_next, sizing_mode="stretch_width"),
-        pn.Row(
-            hk_copy,
-            hk_download,
-            hk_share_url,
-            sizing_mode="stretch_width",
-            css_classes=["mobile-stack", "action-row"],
-        ),
-        hk_status,
-        hk_availability,
         title="",
         collapsible=False,
         sizing_mode="stretch_width",
+        css_classes=["small-card"],
     ),
     _housekeeping_quicklook_image,
+    hk_footer,
     sizing_mode="stretch_both",
 )
 tabs = pn.Tabs(
