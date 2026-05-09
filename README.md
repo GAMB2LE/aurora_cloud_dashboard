@@ -4,12 +4,12 @@ Panel dashboard and data-product scripts for the Aurora observing stack.
 
 ## Instruments
 
-- `Ceilometer` - CL61 backscatter/depolarization Zarr with interactive height-time plots and calendar quicklooks.
-- `Cloud Radar` - RPG FMCW 94 GHz Zarr with interactive height-time plots and calendar quicklooks.
-- `Meteorology` - fixed multi-panel 1D summary view on Interactive, plus `Meteorology` and `HK_Met` calendar quicklooks. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only.
-- `Radiation` - fixed multi-panel 1D summary view on Interactive, plus `Radiation` and `HK_ASFS` calendar quicklooks from the ASFS logger Zarr.
-- `Aurora Power Supply` - fixed multi-panel 1D summary view on Interactive, plus `Aurora Power Supply` and `HK_APS` calendar quicklooks from the same Zarr.
-- `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. The Interactive tab shows rolling latest and per-day MP4s. The Calendar tab shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
+- `Ceilometer` - CL61 backscatter/depolarization Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
+- `Cloud Radar` - RPG FMCW 94 GHz Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
+- `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only.
+- `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`.
+- `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`.
+- `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` shows rolling latest and per-day MP4s. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
 
 ## Core files
 
@@ -119,7 +119,8 @@ The main event families currently logged are:
 - `interactive_view_update`
 - `hatpro_render`
 - `stacked_timeseries_render`
-- `calendar_render`
+- `science_quicklook_render`
+- `housekeeping_quicklook_render`
 - `wxcam_interactive_render`
 - `wxcam_calendar_day_view`
 - `wxcam_calendar_sync`
@@ -141,7 +142,7 @@ Each event also carries session and concurrency context when available, includin
 The session events and UI-selection events are especially useful for understanding:
 
 - Radar, VaisalaMET, ASFS logger, and Power browsing behavior in real use
-- WXcam calendar usage patterns
+- WXcam science-quicklook usage patterns
 - multi-user overlap and concurrent browsing on the live dashboard
 
 ## Running locally
@@ -155,12 +156,12 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 ## Notes
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
-- `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the Interactive page.
+- `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab.
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store.
-- `Meteorology`, `Radiation`, and `Aurora Power Supply` stack their summary quicklook together with the existing all-variable housekeeping quicklook on the Calendar tab under the labels `HK_Met`, `HK_ASFS`, and `HK_APS`.
-- `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the Interactive and Calendar selectors.
-- WXcam keeps the stitched MP4 player on the Interactive tab. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
-- The WXcam Calendar tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
+- `Science Quicklooks` and `House Keeping Quicklooks` use separate tab state. Science quicklooks show one product at a time, while housekeeping quicklooks only appear for instruments that actually have HK images.
+- `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
+- WXcam keeps the stitched MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
+- The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
 
 ## Zarr data products
 
@@ -234,7 +235,7 @@ Path: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`
-- deployed shape: `time=207382`, `range=262`
+- deployed shape: `time=6807`, `range=312`
 - coordinates:
   - `time` - derived from `Time + Timems`
   - `range` - concatenated chirp range gates from `C1Range` and `C2Range`
@@ -260,6 +261,7 @@ Conversion notes:
 - reflectivity-style fields are converted to dBZ during ingest
 - fill values at or below the radar missing-data sentinel are converted to `NaN`
 - the dashboard masks obviously bogus far-future timestamps when plotting or choosing the latest time window
+- append runs now track the `range` layout; if new raw files arrive with a different radar geometry, the appender backs up the existing store and rebuilds a fresh store from the newest contiguous geometry run
 
 Chunking:
 

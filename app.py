@@ -29,12 +29,15 @@ import xarray as xr
 from grouped_timeseries import (
     build_summary_plotly,
     calendar_date_tokens,
-    calendar_product_paths,
     combine_summary_datasets,
     default_calendar_label,
     default_interactive_label,
     display_name,
+    housekeeping_daily_png,
+    housekeeping_latest_png,
     is_summary_instrument,
+    summary_daily_png,
+    summary_latest_png,
     summary_source_instruments,
     widget_group_options,
 )
@@ -841,8 +844,9 @@ prev_btn = pn.widgets.Button(name="Previous Day", button_type="default")
 next_btn = pn.widgets.Button(name="Next Day/Current Day", button_type="default")
 live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="primary", value=True)
 instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
-calendar_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
-calendar_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
+science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
+science_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
+hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 
 _live_guard = False
 _instrument_guard = False
@@ -893,7 +897,8 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         bottom_range_m.value = 0
         top_range_m.value = cfg["top_range_default"]
 
-        calendar_instrument.value = inst
+        science_instrument.value = inst
+        hk_instrument.value = inst
 
         if reset_time:
             tmin, tmax = _dataset_time_bounds(inst)
@@ -919,17 +924,17 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
-        calendar_image_type.visible = is_wxcam
+        science_image_type.visible = is_wxcam
         if is_wxcam:
-            calendar_image_type.name = "Image type"
-            calendar_image_type.options = list(vars_cfg.keys())
-            calendar_image_type.value = var1_name
+            science_image_type.name = "Image type"
+            science_image_type.options = list(vars_cfg.keys())
+            science_image_type.value = var1_name
             wxcam_image_type.options = list(vars_cfg.keys())
             wxcam_image_type.value = var1_name
             _refresh_wxcam_ql_options(preserve_current=False)
         else:
-            calendar_image_type.name = "Image type"
-            calendar_image_type.options = []
+            science_image_type.name = "Image type"
+            science_image_type.options = []
         if is_hatpro:
             beta_vmin.name = "T_PROF min (K)"
             beta_vmax.name = "T_PROF max (K)"
@@ -948,8 +953,10 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
             irr_ymin.visible = irr_ymax.visible = False
 
         _refresh_ql_options(preserve_current=False)
-        # Force quicklook pane refresh even if selection string didn't change
+        _refresh_hk_options(preserve_current=False)
+        # Force quicklook panes to refresh even if the selection string did not change.
         ql_date.param.trigger("value")
+        hk_date.param.trigger("value")
     _instrument_guard = False
     # Run a single consolidated refresh after batching widget changes
     _update_view(
@@ -1021,14 +1028,24 @@ def _on_instrument_change(event):
 instrument_select.param.watch(_on_instrument_change, "value")
 
 
-def _on_calendar_instrument_change(event):
-    """Sync calendar instrument dropdown back to the main instrument selector."""
+def _on_science_instrument_change(event):
+    """Sync science quicklook instrument dropdown back to the main instrument selector."""
     if _instrument_guard:
         return
     instrument_select.value = event.new
 
 
-calendar_instrument.param.watch(_on_calendar_instrument_change, "value")
+science_instrument.param.watch(_on_science_instrument_change, "value")
+
+
+def _on_hk_instrument_change(event):
+    """Sync housekeeping quicklook instrument dropdown back to the main selector."""
+    if _instrument_guard:
+        return
+    instrument_select.value = event.new
+
+
+hk_instrument.param.watch(_on_hk_instrument_change, "value")
 
 
 def _on_var_change(event):
@@ -1036,8 +1053,8 @@ def _on_var_change(event):
     cfg = _cfg()
     vars_cfg = cfg["vars"]
     if _is_wxcam_instrument(CURRENT_INSTRUMENT):
-        if calendar_image_type.value != var1_select.value:
-            calendar_image_type.value = var1_select.value
+        if science_image_type.value != var1_select.value:
+            science_image_type.value = var1_select.value
         return
     if _is_stacked_timeseries_instrument(CURRENT_INSTRUMENT):
         return
@@ -1057,14 +1074,14 @@ var1_select.param.watch(_on_var_change, "value")
 var2_select.param.watch(_on_var_change, "value")
 
 
-def _on_calendar_image_type_change(event):
+def _on_science_image_type_change(event):
     if not _is_wxcam_instrument(CURRENT_INSTRUMENT):
         return
     _refresh_ql_options(preserve_current=False)
     ql_date.param.trigger("value")
 
 
-calendar_image_type.param.watch(_on_calendar_image_type_change, "value")
+science_image_type.param.watch(_on_science_image_type_change, "value")
 
 
 def _on_wxcam_image_type_change(event):
@@ -1953,23 +1970,42 @@ _update_view(
 
 
 
-# -------- Calendar quicklooks --------
+# -------- Science / housekeeping quicklooks --------
 
-def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = None):
-    """Build a mapping of label -> quicklook asset token/path."""
+def _empty_quicklook_options(mode: str) -> dict[str, None]:
+    if mode == "housekeeping":
+        return {"No housekeeping quicklooks available": None}
+    return {"No images available": None}
+
+
+def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = None, mode: str = "science"):
+    """Build a mapping of label -> quicklook asset token/path for a quicklook mode."""
     inst = inst or CURRENT_INSTRUMENT
     cfg = _cfg(inst)
     if _is_wxcam_instrument(inst):
+        if mode == "housekeeping":
+            return _empty_quicklook_options(mode)
         return _wxcam_calendar_options(wxcam_selection or _cfg("wxcam")["default_top"])
     if _is_stacked_timeseries_instrument(inst):
         quick_dir = cfg["quicklook_dir"]
         opts = {}
-        if quick_dir.exists():
+        if mode == "science" and quick_dir.exists():
             for token in calendar_date_tokens(quick_dir, inst):
-                opts[token] = token
-            if calendar_product_paths(quick_dir, inst, "latest"):
+                if summary_daily_png(quick_dir, inst, token).exists():
+                    opts[token] = token
+            if summary_latest_png(quick_dir, inst).exists():
                 opts["Today (latest)"] = "latest"
-        return opts or {"No images available": None}
+        elif mode == "housekeeping" and quick_dir.exists():
+            hk_latest = housekeeping_latest_png(quick_dir, inst)
+            for token in calendar_date_tokens(quick_dir, inst):
+                hk_path = housekeeping_daily_png(quick_dir, inst, token)
+                if hk_path and hk_path.exists():
+                    opts[token] = token
+            if hk_latest and hk_latest.exists():
+                opts["Today (latest)"] = "latest"
+        return opts or _empty_quicklook_options(mode)
+    if mode == "housekeeping":
+        return _empty_quicklook_options(mode)
     quick_dir = cfg["quicklook_dir"]
     latest = cfg["latest_image"]
     opts = {}
@@ -1997,20 +2033,25 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
         opts[label] = path
     if latest.exists():
         opts["Today (latest)"] = str(latest)
-    return opts or {"No images available": None}
+    return opts or _empty_quicklook_options(mode)
 
 
-_ql_options = _quicklook_options()
+_ql_options = _quicklook_options(mode="science")
 ql_date = pn.widgets.Select(name="Date", options=list(_ql_options.keys()))
 if _ql_options:
     ql_date.value = list(_ql_options.keys())[-1]
 
+_hk_options = _quicklook_options(mode="housekeeping")
+hk_date = pn.widgets.Select(name="Date", options=list(_hk_options.keys()))
+if _hk_options:
+    hk_date.value = list(_hk_options.keys())[-1]
+
 
 def _refresh_ql_options(preserve_current: bool = True):
-    """Refresh available quicklook options, optionally preserving current selection."""
+    """Refresh available science quicklook options, optionally preserving current selection."""
     global _ql_options
     current = ql_date.value if preserve_current else None
-    _ql_options = _quicklook_options(calendar_instrument.value, calendar_image_type.value)
+    _ql_options = _quicklook_options(science_instrument.value, science_image_type.value, mode="science")
     opts = list(_ql_options.keys())
     ql_date.options = opts
     if not opts:
@@ -2018,14 +2059,34 @@ def _refresh_ql_options(preserve_current: bool = True):
         return
     if preserve_current and current in opts:
         ql_date.value = current
-    elif _is_wxcam_instrument(calendar_instrument.value) or _is_stacked_timeseries_instrument(calendar_instrument.value):
+    elif _is_wxcam_instrument(science_instrument.value) or _is_stacked_timeseries_instrument(science_instrument.value):
         ql_date.value = "Today (latest)" if "Today (latest)" in opts else opts[-1]
     else:
         ql_date.value = opts[-1]
 
-# Calendar navigation buttons
+
+def _refresh_hk_options(preserve_current: bool = True):
+    """Refresh available housekeeping quicklook options, optionally preserving current selection."""
+    global _hk_options
+    current = hk_date.value if preserve_current else None
+    _hk_options = _quicklook_options(hk_instrument.value, mode="housekeeping")
+    opts = list(_hk_options.keys())
+    hk_date.options = opts
+    if not opts:
+        hk_date.value = None
+        return
+    if preserve_current and current in opts:
+        hk_date.value = current
+    elif _is_stacked_timeseries_instrument(hk_instrument.value):
+        hk_date.value = "Today (latest)" if "Today (latest)" in opts else opts[-1]
+    else:
+        hk_date.value = opts[-1]
+
+# Quicklook navigation buttons
 ql_prev = pn.widgets.Button(name="<<", button_type="default")
 ql_next = pn.widgets.Button(name=">>", button_type="default")
+hk_prev = pn.widgets.Button(name="<<", button_type="default")
+hk_next = pn.widgets.Button(name=">>", button_type="default")
 
 
 def _shift_ql(delta: int):
@@ -2046,23 +2107,51 @@ def _shift_ql(delta: int):
 ql_prev.on_click(lambda _e: _shift_ql(-1))
 ql_next.on_click(lambda _e: _shift_ql(1))
 
+
+def _shift_hk(delta: int):
+    """Move housekeeping selection by delta steps in the refreshed options list."""
+    _refresh_hk_options(preserve_current=True)
+    opts = list(hk_date.options)
+    if not opts or hk_date.value not in opts:
+        return
+    idx = opts.index(hk_date.value)
+    new_idx = max(0, min(len(opts) - 1, idx + delta))
+    if new_idx != idx:
+        hk_date.value = opts[new_idx]
+    else:
+        hk_date.param.trigger("value")
+
+
+hk_prev.on_click(lambda _e: _shift_hk(-1))
+hk_next.on_click(lambda _e: _shift_hk(1))
+
 # Periodically refresh the "Today (latest)" selection to pick up new PNGs.
 def _refresh_latest_if_needed():
-    """If viewing the latest image, reload the mapping and redraw without changing selection."""
-    if _is_wxcam_instrument(calendar_instrument.value):
+    """If viewing the latest science quicklook, reload the mapping and redraw."""
+    if _is_wxcam_instrument(science_instrument.value):
         return
     if ql_date.value == "Today (latest)":
-        # Update the cached option map, but do not touch the selector options
-        # to avoid snapping the current calendar state while browsing.
         global _ql_options
-        _ql_options = _quicklook_options(calendar_instrument.value, calendar_image_type.value)
+        _ql_options = _quicklook_options(science_instrument.value, science_image_type.value, mode="science")
         ql_date.param.trigger("value")
 
 
 _ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=300_000, start=True)
 
+
+def _refresh_hk_latest_if_needed():
+    """If viewing the latest housekeeping quicklook, reload the mapping and redraw."""
+    if hk_date.value == "Today (latest)":
+        global _hk_options
+        _hk_options = _quicklook_options(hk_instrument.value, mode="housekeeping")
+        hk_date.param.trigger("value")
+
+
+_hk_timer = pn.state.add_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=True)
+
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
+_refresh_hk_options(preserve_current=True)
 _apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
 
 
@@ -2074,9 +2163,11 @@ def _safe_widget_value(widget_name: str):
 def _selection_snapshot() -> dict[str, object]:
     return {
         "current_instrument": _safe_widget_value("instrument_select"),
-        "calendar_instrument": _safe_widget_value("calendar_instrument"),
-        "calendar_date": _safe_widget_value("ql_date"),
-        "calendar_image_type": _safe_widget_value("calendar_image_type"),
+        "science_instrument": _safe_widget_value("science_instrument"),
+        "science_date": _safe_widget_value("ql_date"),
+        "science_image_type": _safe_widget_value("science_image_type"),
+        "hk_instrument": _safe_widget_value("hk_instrument"),
+        "hk_date": _safe_widget_value("hk_date"),
         "wxcam_image_type": _safe_widget_value("wxcam_image_type"),
         "wxcam_date": _safe_widget_value("wxcam_date"),
         "wxcam_selected_hour_path": getattr(wxcam_calendar_state, "selected_hour_path", ""),
@@ -2149,9 +2240,11 @@ def _log_session_destroyed(session_context) -> None:
     fields = {}
     try:
         instrument_widget = globals().get("instrument_select")
-        calendar_widget = globals().get("calendar_instrument")
+        science_widget = globals().get("science_instrument")
         ql_widget = globals().get("ql_date")
-        calendar_type_widget = globals().get("calendar_image_type")
+        science_type_widget = globals().get("science_image_type")
+        hk_widget = globals().get("hk_instrument")
+        hk_date_widget = globals().get("hk_date")
         wxcam_type_widget = globals().get("wxcam_image_type")
         wxcam_date_widget = globals().get("wxcam_date")
         wxcam_state = globals().get("wxcam_calendar_state")
@@ -2159,9 +2252,11 @@ def _log_session_destroyed(session_context) -> None:
         fields.update(
             {
                 "current_instrument": getattr(instrument_widget, "value", None),
-                "calendar_instrument": getattr(calendar_widget, "value", None),
-                "calendar_date": getattr(ql_widget, "value", None),
-                "calendar_image_type": getattr(calendar_type_widget, "value", None),
+                "science_instrument": getattr(science_widget, "value", None),
+                "science_date": getattr(ql_widget, "value", None),
+                "science_image_type": getattr(science_type_widget, "value", None),
+                "hk_instrument": getattr(hk_widget, "value", None),
+                "hk_date": getattr(hk_date_widget, "value", None),
                 "wxcam_image_type": getattr(wxcam_type_widget, "value", None),
                 "wxcam_date": getattr(wxcam_date_widget, "value", None),
                 "wxcam_selected_hour_path": getattr(wxcam_state, "selected_hour_path", ""),
@@ -2186,16 +2281,24 @@ instrument_select.param.watch(
     lambda event: _log_control_change("instrument_select", event, context="interactive", instrument=event.new),
     "value",
 )
-calendar_instrument.param.watch(
-    lambda event: _log_control_change("calendar_instrument", event, context="calendar", instrument=event.new),
+science_instrument.param.watch(
+    lambda event: _log_control_change("science_instrument", event, context="science_quicklooks", instrument=event.new),
     "value",
 )
 ql_date.param.watch(
-    lambda event: _log_control_change("ql_date", event, context="calendar", instrument=calendar_instrument.value),
+    lambda event: _log_control_change("ql_date", event, context="science_quicklooks", instrument=science_instrument.value),
     "value",
 )
-calendar_image_type.param.watch(
-    lambda event: _log_control_change("calendar_image_type", event, context="calendar", instrument="wxcam"),
+science_image_type.param.watch(
+    lambda event: _log_control_change("science_image_type", event, context="science_quicklooks", instrument="wxcam"),
+    "value",
+)
+hk_instrument.param.watch(
+    lambda event: _log_control_change("hk_instrument", event, context="housekeeping_quicklooks", instrument=event.new),
+    "value",
+)
+hk_date.param.watch(
+    lambda event: _log_control_change("hk_date", event, context="housekeeping_quicklooks", instrument=hk_instrument.value),
     "value",
 )
 wxcam_image_type.param.watch(
@@ -2224,14 +2327,14 @@ def _sync_wxcam_calendar_hour(*_events):
         "wxcam_calendar_sync",
         instrument="wxcam",
         selected_day=ql_date.value,
-        selection=calendar_image_type.value,
+        selection=science_image_type.value,
     ) as perf:
-        if not _is_wxcam_instrument(calendar_instrument.value):
+        if not _is_wxcam_instrument(science_instrument.value):
             perf["status"] = "non_wxcam"
             wxcam_calendar_state.selected_hour_path = ""
             return
         selected_day = ql_date.value
-        selection = calendar_image_type.value or _cfg("wxcam")["default_top"]
+        selection = science_image_type.value or _cfg("wxcam")["default_top"]
         day_token = _wxcam_calendar_day_token(selected_day)
         day_utc = _wxcam_day_token_to_utc(day_token or "")
         if not day_utc:
@@ -2256,8 +2359,8 @@ def _sync_wxcam_calendar_hour(*_events):
         perf["status"] = "ok"
 
 
-calendar_instrument.param.watch(_sync_wxcam_calendar_hour, "value")
-calendar_image_type.param.watch(_sync_wxcam_calendar_hour, "value")
+science_instrument.param.watch(_sync_wxcam_calendar_hour, "value")
+science_image_type.param.watch(_sync_wxcam_calendar_hour, "value")
 ql_date.param.watch(_sync_wxcam_calendar_hour, "value")
 
 
@@ -2356,30 +2459,32 @@ def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour
 
 @pn.depends(
     ql_date.param.value,
-    calendar_instrument.param.value,
-    calendar_image_type.param.value,
+    science_instrument.param.value,
+    science_image_type.param.value,
     wxcam_calendar_state.param.selected_hour_path,
 )
-def _quicklook_image(selected, calendar_inst, wxcam_selection, selected_hour_path):
-    """Show the selected quicklook asset (or a message if missing)."""
-    instrument = calendar_inst or CURRENT_INSTRUMENT
-    with _timed_perf("calendar_render", instrument=instrument, selected=selected) as perf:
+def _science_quicklook_image(selected, science_inst, wxcam_selection, selected_hour_path):
+    """Show the selected science quicklook asset (or a message if missing)."""
+    instrument = science_inst or CURRENT_INSTRUMENT
+    with _timed_perf("science_quicklook_render", instrument=instrument, selected=selected) as perf:
         if _is_wxcam_instrument(instrument):
             selection = wxcam_selection or _cfg("wxcam")["default_top"]
             perf["selection"] = selection
             day_token = _wxcam_calendar_day_token(selected)
             return _build_wxcam_calendar_day_view(selection, day_token or "", selected_hour_path)
         if _is_stacked_timeseries_instrument(instrument):
-            token = _quicklook_options(instrument).get(selected)
+            token = _quicklook_options(instrument, mode="science").get(selected)
             quick_dir = _cfg(instrument)["quicklook_dir"]
-            products = [] if token is None else calendar_product_paths(quick_dir, instrument, token)
-            perf["product_count"] = len(products)
-            if not products:
+            if token is None:
+                perf["status"] = "missing_file"
+                return pn.pane.Markdown("No image available for this selection.")
+            path = summary_latest_png(quick_dir, instrument) if token == "latest" else summary_daily_png(quick_dir, instrument, token)
+            perf["path"] = path
+            if not path.exists():
                 perf["status"] = "missing_file"
                 return pn.pane.Markdown("No image available for this selection.")
             perf["status"] = "ok"
-            panes = [pn.pane.PNG(path, sizing_mode="stretch_width") for _label, path in products if path.exists()]
-            return pn.Column(*panes, sizing_mode="stretch_width") if panes else pn.pane.Markdown("No image available for this selection.")
+            return pn.pane.PNG(path, sizing_mode="stretch_width")
         path = _quicklook_options(instrument).get(selected)
         perf["path"] = path
         if path and Path(path).exists():
@@ -2387,6 +2492,28 @@ def _quicklook_image(selected, calendar_inst, wxcam_selection, selected_hour_pat
             return _media_pane(path)
         perf["status"] = "missing_file"
         return pn.pane.Markdown("No image available for this selection.")
+
+
+@pn.depends(hk_date.param.value, hk_instrument.param.value)
+def _housekeeping_quicklook_image(selected, hk_inst):
+    """Show the selected housekeeping quicklook asset (or a message if missing)."""
+    instrument = hk_inst or CURRENT_INSTRUMENT
+    with _timed_perf("housekeeping_quicklook_render", instrument=instrument, selected=selected) as perf:
+        if not _is_stacked_timeseries_instrument(instrument):
+            perf["status"] = "unsupported"
+            return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
+        token = _quicklook_options(instrument, mode="housekeeping").get(selected)
+        quick_dir = _cfg(instrument)["quicklook_dir"]
+        if token is None:
+            perf["status"] = "missing_file"
+            return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
+        path = housekeeping_latest_png(quick_dir, instrument) if token == "latest" else housekeeping_daily_png(quick_dir, instrument, token)
+        perf["path"] = path
+        if path and path.exists():
+            perf["status"] = "ok"
+            return pn.pane.PNG(path, sizing_mode="stretch_width")
+        perf["status"] = "missing_file"
+        return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
 
 
 ACCENT = "#0b7285"  # header/accent color
@@ -2577,7 +2704,7 @@ controls = pn.Card(
 
 pn.extension(raw_css=[css])
 
-# Template layout: header + tabs (Interactive, Calendar placeholder)
+# Template layout: header + tabs
 template = pn.template.MaterialTemplate(
     title="AURORA Data Viewer",
     header_background=ACCENT,
@@ -2586,22 +2713,32 @@ template = pn.template.MaterialTemplate(
 )
 
 interactive_tab = pn.Column(controls, interactive_content, sizing_mode="stretch_both")
-tabs = pn.Tabs(
-    ("Interactive", interactive_tab),
-    (
-        "Calendar",
-        pn.Column(
-            pn.Card(
-                pn.Row(calendar_instrument, calendar_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-                pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
-                title="",
-                collapsible=False,
-                sizing_mode="stretch_width",
-            ),
-            _quicklook_image,
-            sizing_mode="stretch_both",
-        ),
+science_quicklooks_tab = pn.Column(
+    pn.Card(
+        pn.Row(science_instrument, science_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(ql_prev, ql_date, ql_next, sizing_mode="stretch_width"),
+        title="",
+        collapsible=False,
+        sizing_mode="stretch_width",
     ),
+    _science_quicklook_image,
+    sizing_mode="stretch_both",
+)
+housekeeping_quicklooks_tab = pn.Column(
+    pn.Card(
+        pn.Row(hk_instrument, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(hk_prev, hk_date, hk_next, sizing_mode="stretch_width"),
+        title="",
+        collapsible=False,
+        sizing_mode="stretch_width",
+    ),
+    _housekeeping_quicklook_image,
+    sizing_mode="stretch_both",
+)
+tabs = pn.Tabs(
+    ("Interactive Data Browser", interactive_tab),
+    ("Science Quicklooks", science_quicklooks_tab),
+    ("House Keeping Quicklooks", housekeeping_quicklooks_tab),
     sizing_mode="stretch_both",
 )
 
