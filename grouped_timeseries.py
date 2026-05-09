@@ -20,6 +20,10 @@ import xarray as xr
 MAX_TIME_SAMPLES = 2200
 INTERACTIVE_MAX_TIME_SAMPLES = 3500
 OVERVIEW_LABEL = "Overview"
+MATPLOTLIB_PANEL_RIGHT = 0.72
+MATPLOTLIB_LEGEND_X = 1.12
+PLOTLY_PANEL_DOMAIN_END = 0.73
+PLOTLY_LEGEND_X = 0.84
 
 
 @dataclass(frozen=True)
@@ -870,14 +874,23 @@ def save_summary_png(
         handles = handles_left + handles_right
         labels = labels_left + labels_right
         if handles:
-            ax.legend(handles, labels, loc="upper right", fontsize=8, frameon=False, ncol=max(1, min(3, len(labels))))
+            ax.legend(
+                handles,
+                labels,
+                loc="upper left",
+                bbox_to_anchor=(MATPLOTLIB_LEGEND_X, 1.0),
+                borderaxespad=0.0,
+                fontsize=8,
+                frameon=False,
+                ncol=1,
+            )
 
     _apply_time_axis_matplotlib(axes[-1], times)
     start_stamp = times.min().strftime("%b %d, %Y")
     axes[-1].set_xlabel(f"Hours after 00:00 UTC on {start_stamp}", fontsize=12)
     fig.suptitle(title, fontsize=15)
     fig.tight_layout()
-    fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.95, hspace=0.05)
+    fig.subplots_adjust(left=0.08, right=MATPLOTLIB_PANEL_RIGHT, bottom=0.08, top=0.95, hspace=0.05)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
     plt.close(fig)
@@ -935,8 +948,8 @@ def build_summary_plotly(
         legend_name = "legend" if row_index == 1 else f"legend{row_index}"
         panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
         legend_layouts[legend_name] = dict(
-            x=0.985,
-            xanchor="right",
+            x=PLOTLY_LEGEND_X,
+            xanchor="left",
             y=max(0.02, panel_top - 0.02),
             yanchor="top",
             bgcolor="rgba(255,255,255,0.85)",
@@ -1006,6 +1019,7 @@ def build_summary_plotly(
             tickvals.append(stamp.to_pydatetime())
             ticktext.append(stamp.strftime("%H:%M"))
     fig.update_xaxes(
+        domain=[0.0, PLOTLY_PANEL_DOMAIN_END],
         tickmode="array",
         tickvals=tickvals,
         ticktext=ticktext,
