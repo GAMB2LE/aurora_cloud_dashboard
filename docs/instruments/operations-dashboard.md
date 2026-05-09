@@ -14,6 +14,17 @@ stack.
 - mirror verification and prune-readiness indicators
 - per-stream archive state, including WXcam backfill progress
 
+The storage cards are intentionally broken out as:
+
+- CL61 root and CL61 data
+- ASS data and ASS root
+- APS data and APS root
+- AURORA Cloud product and AURORA Cloud root
+- JASMIN GWS
+
+Each card subtitle uses the resolved `pwd -P` path that was actually probed for
+filesystem usage.
+
 ## Display model
 
 This tab reads the latest operations snapshot directly rather than waiting for

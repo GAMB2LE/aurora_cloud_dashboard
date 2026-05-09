@@ -28,8 +28,7 @@ SOURCE_HOSTS = {
         "host_id": "celine",
         "user_env": "CL61_SOURCE_USER",
         "host_env": "CL61_SOURCE_HOST",
-        "path_env": "CL61_SOURCE_PATH",
-        "path_default": "/home/aurora/data/cl61",
+        "path_default": "/",
         "auth": "cl61",
     },
     "host_celine_data": {
@@ -57,8 +56,7 @@ SOURCE_HOSTS = {
         "host_id": "aps",
         "user_env": "POWER_SOURCE_USER",
         "host_env": "POWER_SOURCE_HOST",
-        "path_env": "POWER_SOURCE_PATH",
-        "path_default": "/data/power/level1",
+        "path_default": "/",
         "auth": "tailscale",
     },
     "host_aps_data": {
@@ -234,25 +232,37 @@ def _gws_ssh_base() -> list[str]:
     ]
 
 
-def _remote_df(base_cmd: list[str], target: str, path: str) -> dict[str, float]:
+def _remote_df(base_cmd: list[str], target: str, path: str) -> dict[str, Any]:
     quoted = json.dumps(path)
     remote = (
-        f"df -PB1 {quoted} | tail -1; "
-        f"df -Pi {quoted} | tail -1"
+        f"cd {quoted} && pwd -P && "
+        "df -PB1 . | tail -1; "
+        "df -Pi . | tail -1"
     )
     proc = _run(base_cmd + [target, remote])
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
-    if len(lines) < 2:
+    if len(lines) < 3:
         raise ValueError(f"Unexpected df output for {target}:{path}")
-    return _parse_df_lines(lines[0], lines[1])
+    metrics = _parse_df_lines(lines[1], lines[2])
+    metrics["resolved_path"] = lines[0].strip()
+    return metrics
 
 
-def _local_df(path: str | Path) -> dict[str, float]:
-    proc = _run(["bash", "-lc", f"df -PB1 {json.dumps(str(path))} | tail -1 && df -Pi {json.dumps(str(path))} | tail -1"])
+def _local_df(path: str | Path) -> dict[str, Any]:
+    quoted = json.dumps(str(path))
+    proc = _run(
+        [
+            "bash",
+            "-lc",
+            f"cd {quoted} && pwd -P && df -PB1 . | tail -1 && df -Pi . | tail -1",
+        ]
+    )
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
-    if len(lines) < 2:
+    if len(lines) < 3:
         raise ValueError(f"Unexpected local df output for {path}")
-    return _parse_df_lines(lines[0], lines[1])
+    metrics = _parse_df_lines(lines[1], lines[2])
+    metrics["resolved_path"] = lines[0].strip()
+    return metrics
 
 
 def _parse_df_lines(space_line: str, inode_line: str) -> dict[str, float]:
@@ -493,8 +503,8 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     record["source_host_probe_fail_count"] = sum(1 for ok in host_reachability.values() if not ok)
 
     for prefix, path in (
-        ("aurora_project", "/project"),
-        ("aurora_data", "/data"),
+        ("aurora_project", "/project/aurora"),
+        ("aurora_data", "/data/aurora"),
         ("aurora_root", "/"),
     ):
         try:

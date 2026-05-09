@@ -1168,6 +1168,13 @@ def _ops_storage_text(snapshot: dict, key_prefix: str) -> str:
     return f"{used:.1f} / {total:.1f} GB ({used_pct:.0f}%)"
 
 
+def _ops_storage_location(snapshot: dict, key_prefix: str, host_label: str, fallback_path: str) -> str:
+    resolved = snapshot.get(f"{key_prefix}_resolved_path")
+    if resolved:
+        return f"{host_label} {resolved}"
+    return f"{host_label} {fallback_path}"
+
+
 def _ops_manifest_ready(snapshot: dict) -> bool:
     for spec in OPS_STREAM_SPECS:
         prefix = spec["stream_prefix"]
@@ -1406,7 +1413,7 @@ def _ops_operations_markup() -> str:
 
         storage_cards = [
             _ops_card_markup(
-                "CL61 source disk",
+                "CL61 root disk",
                 _ops_worst_level(
                     [
                         _ops_level_from_bool(snapshot.get("host_celine_source_probe_ok_state")),
@@ -1414,7 +1421,7 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_celine_source"),
-                "100.117.101.84 /home/aurora/data/cl61",
+                _ops_storage_location(snapshot, "host_celine_source", "100.117.101.84", "/"),
             ),
             _ops_card_markup(
                 "CL61 data disk",
@@ -1425,7 +1432,7 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_celine_data"),
-                "100.117.101.84 /home/aurora/data",
+                _ops_storage_location(snapshot, "host_celine_data", "100.117.101.84", "/home/aurora/data"),
             ),
             _ops_card_markup(
                 "ASS data disk",
@@ -1436,7 +1443,7 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_ass_data"),
-                "100.124.55.22 /home/aurora/data",
+                _ops_storage_location(snapshot, "host_ass_data", "100.124.55.22", "/home/aurora/data"),
             ),
             _ops_card_markup(
                 "ASS root disk",
@@ -1447,18 +1454,7 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_ass_root"),
-                "100.124.55.22 /",
-            ),
-            _ops_card_markup(
-                "APS source disk",
-                _ops_worst_level(
-                    [
-                        _ops_level_from_bool(snapshot.get("host_aps_source_probe_ok_state")),
-                        _ops_level_from_used_pct(snapshot.get("host_aps_source_used_pct")),
-                    ]
-                ),
-                _ops_storage_text(snapshot, "host_aps_source"),
-                "100.81.226.30 /data/power/level1",
+                _ops_storage_location(snapshot, "host_ass_root", "100.124.55.22", "/"),
             ),
             _ops_card_markup(
                 "APS data disk",
@@ -1469,7 +1465,7 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_aps_data"),
-                "100.81.226.30 /data",
+                _ops_storage_location(snapshot, "host_aps_data", "100.81.226.30", "/data"),
             ),
             _ops_card_markup(
                 "APS root disk",
@@ -1480,19 +1476,19 @@ def _ops_operations_markup() -> str:
                     ]
                 ),
                 _ops_storage_text(snapshot, "host_aps_root"),
-                "100.81.226.30 /",
+                _ops_storage_location(snapshot, "host_aps_root", "100.81.226.30", "/"),
             ),
             _ops_card_markup(
-                "Aurora product disk",
+                "AURORA Cloud product disk",
                 _ops_level_from_used_pct(snapshot.get("aurora_data_used_pct")),
                 _ops_storage_text(snapshot, "aurora_data"),
-                "/data/aurora products",
+                _ops_storage_location(snapshot, "aurora_data", "AURORA Cloud", "/data/aurora"),
             ),
             _ops_card_markup(
-                "Aurora root disk",
+                "AURORA Cloud root disk",
                 _ops_level_from_used_pct(snapshot.get("aurora_root_used_pct")),
                 _ops_storage_text(snapshot, "aurora_root"),
-                "Dashboard host /",
+                _ops_storage_location(snapshot, "aurora_root", "AURORA Cloud", "/"),
             ),
             _ops_card_markup(
                 "JASMIN GWS",
