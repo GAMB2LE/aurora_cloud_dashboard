@@ -38,6 +38,65 @@ Primary paths come from `/etc/aurora-dashboard.env`.
 - Product root: `/data/aurora/products`
 - Quicklook root: `/data/aurora/products/quicklooks`
 
+## Storage layout
+
+The deployed host keeps raw mirrored inputs and derived dashboard products in
+separate trees on purpose.
+
+### `/project/aurora`
+
+- Function: raw mirrored source data
+- What lives there: synced instrument files coming from the remote source
+  machines
+- Examples:
+  - `/project/aurora/raw/cl61`
+  - `/project/aurora/raw/rpgfmcw94`
+  - `/project/aurora/raw/vaisalamet`
+  - `/project/aurora/raw/asfs/loggernet`
+  - `/project/aurora/raw/power/level1`
+  - `/project/aurora/raw/wxcam`
+- Storage type: shared Ceph network filesystem
+- Current filesystem size on `2026-05-09`: `4.0T`
+- Current used on `2026-05-09`: `36G`
+- Current available on `2026-05-09`: `3.9T`
+
+So `/project/aurora` is the raw landing and mirror area.
+
+### `/data/aurora`
+
+- Function: processed products and dashboard-serving outputs
+- What lives there:
+  - Zarr stores
+  - quicklook PNGs
+  - WXcam catalog SQLite
+  - WXcam daily videos and thumbnails
+  - performance logs and other dashboard products
+- Examples:
+  - `/data/aurora/products/cl61/...zarr`
+  - `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
+  - `/data/aurora/products/quicklooks/...`
+  - `/data/aurora/products/wxcam/...`
+- Storage type: local disk on `/dev/vdb`
+- Current filesystem size on `2026-05-09`: `983G`
+- Current used on `2026-05-09`: `117G`
+- Current available on `2026-05-09`: `816G`
+
+So `/data/aurora` is the product, work, and output area.
+
+Short version:
+
+- `/project/aurora` = raw source data, shared/networked, large, meant for
+  mirrored inputs
+- `/data/aurora` = derived products, local, faster/closer to the app, meant
+  for Zarrs, plots, catalogs, and media outputs
+
+Why the split is useful:
+
+- raw files stay separate from regenerated products
+- products can be deleted and rebuilt without touching the source mirror
+- the dashboard reads smaller processed artifacts from local disk instead of
+  always working directly from the raw mirror
+
 Important products:
 
 - CL61 Zarr: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr`
