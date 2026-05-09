@@ -467,6 +467,8 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     now_epoch = now.timestamp()
     record: dict[str, Any] = {
         "time_utc": now.isoformat(),
+        "snapshot_time_utc": now.isoformat(),
+        "snapshot_epoch": now_epoch,
     }
 
     summary_path = manifest_root / "latest" / "summary.json"

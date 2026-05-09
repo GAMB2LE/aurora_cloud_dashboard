@@ -12,6 +12,7 @@ quicklook products.
 
 These snapshots capture:
 
+- snapshot collection time as both `time_utc` and `snapshot_time_utc`
 - source-host disk usage and probe reachability
 - resolved `pwd -P` paths for the filesystem locations that were actually probed
 - per-stream source recency, with a red operational state if a source has not
