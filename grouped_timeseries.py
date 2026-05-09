@@ -462,11 +462,11 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         PanelSpec(
             "output_voltage",
             "Output Voltage",
-            "Output Voltage [V]",
-            None,
+            "AC Output Voltage [V]",
+            "DC Inverter Voltage [V]",
             (
                 TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"]),
-                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"]),
+                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"], axis="right"),
             ),
         ),
     ),
