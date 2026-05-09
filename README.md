@@ -237,15 +237,20 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 
 ## Documentation publishing
 
-- The repo still builds a standalone MkDocs site through GitHub Pages.
-- It also publishes a machine-readable portal manifest at `docs/portal.json`,
-  which ends up at `/portal.json` in the built site.
-- The docs workflow includes an optional `portal-export` job that can push the
-  built site and `portal.json` into `GAMB2LE/mkdocs-portal` when the repository
-  secret `DOCS_PORTAL_SSH_KEY` is configured.
-- The current export target inside the portal repo is:
-  - site: `sites/aurora-cloud-dashboard`
-  - manifest: `catalog/aurora-cloud-dashboard.json`
+- This repo carries the three repo-side pieces described in
+  `https://gamb2le.pages.dev/documentation-docs/`:
+  - `mkdocs.yml`
+  - `docs/index.md`
+  - `.github/workflows/trigger-docs.yml`
+- The standalone `docs.yml` workflow still builds this repo's own MkDocs site.
+- The `trigger-docs.yml` workflow asks the central `GAMB2LE/mkdocs-portal`
+  repo to rebuild the unified site at `https://gamb2le.pages.dev/`.
+- That trigger workflow expects two GitHub Actions secrets in this repo:
+  - `APP_ID = 2899200`
+  - `APP_PRIVATE_KEY = <the GitHub App private key from the docs process>`
+- The central portal repo still has to include this repository in its own
+  `mkdocs.yml` nav and its docs-clone workflow, exactly as described in the
+  unified docs instructions.
 
 ## Notes
 

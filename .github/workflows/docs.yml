@@ -46,13 +46,6 @@ jobs:
         with:
           path: site
 
-      - name: Upload portal manifest artifact
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: aurora-cloud-dashboard-portal-manifest
-          path: docs/portal.json
-
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
@@ -64,56 +57,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-  portal-export:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install documentation dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-docs.txt
-
-      - name: Build MkDocs site
-        run: mkdocs build --strict
-
-      - name: Start SSH agent for portal export
-        if: ${{ secrets.DOCS_PORTAL_SSH_KEY != '' }}
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DOCS_PORTAL_SSH_KEY }}
-
-      - name: Export site to docs portal
-        if: ${{ secrets.DOCS_PORTAL_SSH_KEY != '' }}
-        env:
-          PORTAL_REPO: GAMB2LE/mkdocs-portal
-          PORTAL_SITE_PATH: sites/aurora-cloud-dashboard
-          PORTAL_MANIFEST_PATH: catalog/aurora-cloud-dashboard.json
-        run: |
-          git clone "git@github.com:${PORTAL_REPO}.git" portal
-          mkdir -p "portal/${PORTAL_SITE_PATH}" "$(dirname "portal/${PORTAL_MANIFEST_PATH}")"
-          rsync -a --delete site/ "portal/${PORTAL_SITE_PATH}/"
-          cp docs/portal.json "portal/${PORTAL_MANIFEST_PATH}"
-          cd portal
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${PORTAL_SITE_PATH}" "${PORTAL_MANIFEST_PATH}"
-          if git diff --cached --quiet; then
-            echo "No portal changes to publish."
-            exit 0
-          fi
-          git commit -m "Update aurora-cloud-dashboard docs from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
-          git push
-
-      - name: Skip portal export when secret is missing
-        if: ${{ secrets.DOCS_PORTAL_SSH_KEY == '' }}
-        run: echo "DOCS_PORTAL_SSH_KEY is not configured; skipping mkdocs-portal export."

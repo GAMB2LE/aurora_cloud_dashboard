@@ -2,7 +2,6 @@ site_name: Aurora Cloud Dashboard
 site_description: Panel dashboard and data-product scripts for the Aurora observing stack
 repo_name: GAMB2LE/aurora_cloud_dashboard
 repo_url: https://github.com/GAMB2LE/aurora_cloud_dashboard
-site_url: https://gamb2le.github.io/aurora_cloud_dashboard/
 docs_dir: docs
 site_dir: site
 
@@ -26,15 +25,6 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
-
-extra:
-  portal:
-    slug: aurora-cloud-dashboard
-    title: Aurora Cloud Dashboard
-    docs_url: https://gamb2le.github.io/aurora_cloud_dashboard/
-    repo_url: https://github.com/GAMB2LE/aurora_cloud_dashboard
-    export_site_path: sites/aurora-cloud-dashboard
-    export_manifest_path: catalog/aurora-cloud-dashboard.json
 
 nav:
   - Home: index.md
