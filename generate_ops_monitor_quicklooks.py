@@ -66,6 +66,7 @@ def _ops_housekeeping_dataset(ds: xr.Dataset) -> xr.Dataset:
         ("mirror_verify_service_healthy_state", "mirror_verify_problem_state"),
         ("ops_monitor_append_service_healthy_state", "ops_monitor_append_problem_state"),
         ("ops_monitor_quicklooks_service_healthy_state", "ops_monitor_quicklooks_problem_state"),
+        ("dashboard_perf_log_recent_state", "dashboard_perf_log_stale_state"),
     ):
         if healthy_name in hk:
             hk[problem_name] = 1.0 - hk[healthy_name].fillna(1.0)

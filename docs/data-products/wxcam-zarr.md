@@ -13,12 +13,11 @@ separately.
 
 - `instrument = "wxcam"`
 - `title = "Aurora wxcam HDR images"`
-- `storage_policy = "Contains locally retained HDR JPG image data for fish_hdr and pano_hdr with timestamps derived from filenames; MP4 products are stored separately."`
+- `storage_policy = "Contains locally retained FISH HDR JPG image data with timestamps derived from filenames; MP4 products are stored separately."`
 
 ## Root groups
 
 - `fish_hdr`
-- `pano_hdr`
 
 ## Group dataset structure
 
@@ -45,11 +44,6 @@ When checked on `2026-05-09`:
   - shape: `time=6606, y=3040, x=3120, channel=3`
   - image geometry: `3120 x 3040`
   - chunks: `(1, 1024, 1024, 3)`
-- `pano_hdr`
-  - shape: `time=6603, y=750, x=2880, channel=3`
-  - image geometry: `2880 x 750`
-  - chunks: `(1, 750, 1024, 3)`
-
 ## Important note
 
 The dashboard does not render WXcam directly from this Zarr:

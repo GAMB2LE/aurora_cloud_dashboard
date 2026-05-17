@@ -21,6 +21,7 @@ RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
 MANIFEST_ROOT_DEFAULT = Path("/data/aurora/internal/mirror_manifests")
 GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
+DASHBOARD_PERF_LOG_DEFAULT = Path("/data/aurora/products/dashboard/dashboard_perf.jsonl")
 KNOWN_HOSTS = Path("/home/aurora/.ssh/known_hosts")
 
 SOURCE_HOSTS = {
@@ -343,6 +344,26 @@ def _recent_state(age_minutes: float | None, threshold_minutes: float = SOURCE_R
     return 1 if age_minutes <= threshold_minutes else 0
 
 
+def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: float) -> dict[str, float | int | str | None]:
+    if not path.exists():
+        return {
+            "path": str(path),
+            "exists_state": 0,
+            "age_min": None,
+            "size_mb": None,
+            "recent_state": 0,
+        }
+    stat_result = path.stat()
+    age_min = _age_minutes(now_epoch, int(stat_result.st_mtime))
+    return {
+        "path": str(path),
+        "exists_state": 1,
+        "age_min": age_min,
+        "size_mb": float(stat_result.st_size) / (1024.0 ** 2),
+        "recent_state": _recent_state(age_min, recent_threshold_minutes),
+    }
+
+
 def _latest_finite_zarr_value(
     zarr_path: Path,
     var_name: str,
@@ -515,6 +536,14 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
                 record[f"{prefix}_{key}"] = value
         except Exception:
             continue
+
+    perf_log_stats = _file_freshness(
+        _path_from_env("AURORA_DASHBOARD_PERF_LOG", DASHBOARD_PERF_LOG_DEFAULT),
+        now_epoch,
+        recent_threshold_minutes=30.0,
+    )
+    for key, value in perf_log_stats.items():
+        record[f"dashboard_perf_log_{key}"] = value
 
     gws_host, gws_metrics = _probe_gws(gws_path)
     record["gws_available_state"] = 1 if gws_metrics else 0

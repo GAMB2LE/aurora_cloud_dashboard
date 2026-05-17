@@ -7,19 +7,20 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-09`:
-  - `time=1087554`
+- deployed shape after the CRD parser update, checked on `2026-05-17`:
+  - `time=1909149`
 
 ## Time coordinate
 
 - `time` is parsed from `TIMESTAMP`
 - `metek_msec_out` is used to preserve sub-second timing
+- both old daily LoggerNet files and newer chunked CRD files are supported
 
 ## Useful root attributes
 
 - `instrument = "asfs-fast-sonic"`
-- `title = "ASFS LoggerNet fast-sonic data"`
-- `source = "asfs-logger_fast_sonic_DD_MM_YYYY.dat"`
+- `title = "ASFS fast-sonic data"`
+- `source = "asfs-logger_fast_sonic_DD_MM_YYYY.dat or aurora_asfs_data_fast_sonic_YYYYMMDDHHMM.dat"`
 
 ## Variable layout
 
@@ -40,6 +41,9 @@ The deployed store currently contains these 10 variables:
 
 - append runs keep the existing variable set fixed in the same way as
   `asfs-logger`
+- the May 17, 2026 rebuild spans the old daily LoggerNet files and the newer
+  CRD chunks; missing values for variables that do not exist in a given source
+  format are stored as `NaN`
 
 ## Chunking
 

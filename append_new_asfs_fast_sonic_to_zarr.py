@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Append ASFS fast-sonic LoggerNet TOA5 .dat files into a Zarr store."""
+"""Append ASFS fast-sonic TOA5 .dat files into a Zarr store."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -15,31 +16,45 @@ import pandas as pd
 import xarray as xr
 import zarr
 
-ROOT_DEFAULT = Path("/project/aurora/raw/asfs/loggernet")
+ROOT_DEFAULT = Path("/project/aurora/raw/asfs")
 ZARR_DEFAULT = Path("/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr")
-FILE_REGEX = re.compile(r"asfs-logger_fast_sonic_(\d{2})_(\d{2})_(\d{4})\.dat$")
+MIN_TIME_DEFAULT = os.environ.get("ASFS_ZARR_MIN_TIME", "2026-05-02T00:00:00")
+LOGGERNET_FILE_REGEX = re.compile(r"asfs-logger_fast_sonic_(\d{2})_(\d{2})_(\d{4})\.dat$")
+CRD_FILE_REGEX = re.compile(r"aurora_asfs_data_fast_sonic_(\d{12})\.dat$")
+FILE_PATTERNS = ("asfs-logger_fast_sonic_*.dat", "aurora_asfs_data_fast_sonic_*.dat")
 
 
-def _parse_file_date(path: Path) -> date | None:
-    match = FILE_REGEX.match(path.name)
+def _parse_file_time(path: Path) -> datetime | None:
+    match = LOGGERNET_FILE_REGEX.match(path.name)
     if not match:
-        return None
+        crd_match = CRD_FILE_REGEX.match(path.name)
+        if not crd_match:
+            return None
+        try:
+            return datetime.strptime(crd_match.group(1), "%Y%m%d%H%M")
+        except ValueError:
+            return None
     day, month, year = match.groups()
     try:
-        return date(int(year), int(month), int(day))
+        return datetime(int(year), int(month), int(day))
     except ValueError:
         return None
 
 
 def _list_files(root: Path, start_date: date | None = None) -> list[Path]:
-    files: list[tuple[date, Path]] = []
-    for path in root.glob("asfs-logger_fast_sonic_*.dat"):
-        file_date = _parse_file_date(path)
-        if file_date is None:
-            continue
-        if start_date is None or file_date >= start_date:
-            files.append((file_date, path))
-    files.sort(key=lambda item: (item[0], item[1].name))
+    files: list[tuple[datetime, Path]] = []
+    seen: set[Path] = set()
+    for pattern in FILE_PATTERNS:
+        for path in root.rglob(pattern):
+            if path in seen:
+                continue
+            seen.add(path)
+            file_time = _parse_file_time(path)
+            if file_time is None:
+                continue
+            if start_date is None or file_time.date() >= start_date:
+                files.append((file_time, path))
+    files.sort(key=lambda item: (item[0], str(item[1])))
     return [path for _, path in files]
 
 
@@ -47,7 +62,8 @@ def _deduplicate_time(ds: xr.Dataset) -> xr.Dataset:
     if "time" not in ds.coords:
         return ds
     times = np.asarray(ds["time"].values)
-    _, unique_idx = np.unique(times, return_index=True)
+    _, reverse_idx = np.unique(times[::-1], return_index=True)
+    unique_idx = len(times) - 1 - reverse_idx
     if len(unique_idx) != len(times):
         print(f"Dropping {len(times) - len(unique_idx)} duplicate time samples")
         ds = ds.isel(time=np.sort(unique_idx))
@@ -112,11 +128,13 @@ def _load_files(files: Iterable[Path], chunks: dict[str, int] | None = None) -> 
         return xr.Dataset()
     combined = xr.concat(datasets, dim="time", join="outer").sortby("time")
     combined = _deduplicate_time(combined)
+    if MIN_TIME_DEFAULT:
+        combined = combined.sel(time=slice(np.datetime64(MIN_TIME_DEFAULT), None))
     combined.attrs.update(
         {
             "instrument": "asfs-fast-sonic",
-            "title": "ASFS LoggerNet fast-sonic data",
-            "source": "asfs-logger_fast_sonic_DD_MM_YYYY.dat",
+            "title": "ASFS fast-sonic data",
+            "source": "asfs-logger_fast_sonic_DD_MM_YYYY.dat or aurora_asfs_data_fast_sonic_YYYYMMDDHHMM.dat",
         }
     )
     if chunks:
@@ -145,7 +163,7 @@ def _consolidate(zarr_path: Path) -> None:
 
 def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None, lookback_days: int = 2) -> None:
     if not root.exists():
-        print(f"Raw ASFS LoggerNet directory does not exist: {root}")
+        print(f"Raw ASFS directory does not exist: {root}")
         return
 
     if not zarr_path.exists():

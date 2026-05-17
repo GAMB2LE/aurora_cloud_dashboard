@@ -22,14 +22,6 @@ WXCAM_IMAGE_TYPES: dict[str, dict[str, str]] = {
         "width": "3120",
         "height": "3040",
     },
-    "pano_hdr": {
-        "label": "PANO HDR",
-        "stream": "PANO",
-        "image_glob": "HDR_*_PANO.jpg",
-        "video_glob": "HDR_*_PANO.mp4",
-        "width": "2880",
-        "height": "750",
-    },
 }
 
 _TIMESTAMP_REGEX = re.compile(r"^HDR_(\d{8})_(\d{6})(?:_PANO)?\.(jpg|mp4)$", re.IGNORECASE)
@@ -169,8 +161,6 @@ def image_type_from_relative_path(relative_path: str) -> str:
     rel = relative_path.strip("/")
     if rel.startswith("FISH/"):
         return "fish_hdr"
-    if rel.startswith("PANO/"):
-        return "pano_hdr"
     raise ValueError(f"Could not infer wxcam image type from {relative_path}")
 
 

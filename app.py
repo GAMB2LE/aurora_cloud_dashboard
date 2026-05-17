@@ -1180,6 +1180,20 @@ def _ops_level_from_internal_temp(value) -> str:
     return "red"
 
 
+def _ops_level_from_perf_log(snapshot: dict) -> str:
+    exists = _ops_bool(snapshot.get("dashboard_perf_log_exists_state"))
+    age_min = _ops_float(snapshot.get("dashboard_perf_log_age_min"))
+    if exists is False:
+        return "red"
+    if age_min is None:
+        return "gray"
+    if age_min <= 30.0:
+        return "green"
+    if age_min <= 360.0:
+        return "amber"
+    return "red"
+
+
 def _ops_source_freshness_text(snapshot: dict, prefix: str) -> str:
     recent = _ops_bool(snapshot.get(f"{prefix}_source_recent_state"))
     age_min = _ops_float(snapshot.get(f"{prefix}_source_age_min"))
@@ -1213,6 +1227,20 @@ def _ops_internal_temp_text(snapshot: dict) -> tuple[str, str]:
         return value, "Aurora Power Supply internal temperature"
     age_text = _format_duration(timedelta(minutes=age_min))
     return value, f"Aurora Power Supply internal temperature, {age_text} old"
+
+
+def _ops_perf_log_text(snapshot: dict) -> tuple[str, str]:
+    exists = _ops_bool(snapshot.get("dashboard_perf_log_exists_state"))
+    age_min = _ops_float(snapshot.get("dashboard_perf_log_age_min"))
+    size_mb = _ops_float(snapshot.get("dashboard_perf_log_size_mb"))
+    path = snapshot.get("dashboard_perf_log_path") or "/data/aurora/products/dashboard/dashboard_perf.jsonl"
+    if exists is False:
+        return "Missing", f"Expected {path}"
+    size_text = "" if size_mb is None else f", {size_mb:.1f} MB"
+    if age_min is None:
+        return "Unknown", f"{path}{size_text}"
+    age_text = _format_duration(timedelta(minutes=age_min))
+    return f"{age_text} old", f"{path}{size_text}"
 
 
 def _ops_storage_text(snapshot: dict, key_prefix: str) -> str:
@@ -1382,6 +1410,7 @@ def _ops_operations_markup() -> str:
         source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         internal_temp_level = _ops_level_from_internal_temp(snapshot.get("aps_internal_temp_c"))
+        perf_log_level = _ops_level_from_perf_log(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
         transfer_level = _ops_worst_level(
             [
@@ -1401,7 +1430,7 @@ def _ops_operations_markup() -> str:
             )
             if mirror_level == "green" and backfill_pending_count > 0:
                 mirror_level = "amber"
-        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, battery_level, internal_temp_level, processing_level, transfer_level, mirror_level])
+        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, battery_level, internal_temp_level, perf_log_level, processing_level, transfer_level, mirror_level])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -1415,6 +1444,7 @@ def _ops_operations_markup() -> str:
         age_label = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
         battery_value, battery_meta = _ops_battery_text(snapshot)
         internal_temp_value, internal_temp_meta = _ops_internal_temp_text(snapshot)
+        perf_log_value, perf_log_meta = _ops_perf_log_text(snapshot)
 
         summary_cards = [
             _ops_card_markup(
@@ -1456,6 +1486,12 @@ def _ops_operations_markup() -> str:
                 internal_temp_level,
                 internal_temp_value,
                 f"{internal_temp_meta}; green <35 C, amber 35-40 C, red >=40 C",
+            ),
+            _ops_card_markup(
+                "Dashboard perf log",
+                perf_log_level,
+                perf_log_value,
+                perf_log_meta,
             ),
             _ops_card_markup(
                 "Processing pipeline",

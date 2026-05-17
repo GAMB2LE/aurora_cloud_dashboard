@@ -6,6 +6,11 @@ The dashboard writes structured JSONL timing events to:
 
 The log rotates automatically.
 
+Operations monitoring records whether this log exists, how large it is, and
+when it was last written. The Operations Dashboard shows that as the
+`Dashboard perf log` card so stale browsing telemetry is visible alongside the
+source-transfer checks.
+
 ## Environment controls
 
 - `AURORA_DASHBOARD_PERF_LOG`
