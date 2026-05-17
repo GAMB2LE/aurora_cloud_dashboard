@@ -57,6 +57,16 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
 - `aurora-ops-monitor-quicklooks.timer`
 - `aurora-mirror-verify.timer`
 
+## JASMIN GWS Sync
+
+- `aurora-gws-rsync-raw.timer`
+- `aurora-gws-rsync-products.timer` for non-WXcam products
+- `aurora-gws-rsync-products-wxcam.timer` for the larger WXcam product tree
+- `aurora-gws-rsync-manifests.timer`
+
+The products sync is intentionally split so the large WXcam media/Zarr tree can
+run independently from the smaller Zarr and quicklook products.
+
 ## Useful commands
 
 ```bash

@@ -14,6 +14,8 @@ stack.
 - source sync and processing health
 - dashboard performance-log freshness, including whether browser activity is
   still being written to `/data/aurora/products/dashboard/dashboard_perf.jsonl`
+- recent dashboard render-performance statistics, including p50, p95, slowest
+  timed event, and live-session counts
 - GWS transfer status
 - mirror verification and prune-readiness indicators
 - per-stream archive state, including WXcam backfill progress

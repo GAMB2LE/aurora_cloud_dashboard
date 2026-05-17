@@ -1243,6 +1243,65 @@ def _ops_perf_log_text(snapshot: dict) -> tuple[str, str]:
     return f"{age_text} old", f"{path}{size_text}"
 
 
+def _ops_perf_summary(path: Path, hours: float = 24.0, max_rows: int = 5000) -> dict:
+    if not path.exists():
+        return {"level": "red", "value": "Missing", "meta": f"Expected {path}"}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines()[-max_rows:]:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            ts = _ops_timestamp(row.get("ts_utc"))
+            if ts is None or ts < cutoff:
+                continue
+            rows.append(row)
+    except Exception as exc:
+        return {"level": "red", "value": "Unreadable", "meta": str(exc)}
+
+    durations = sorted(float(row["duration_ms"]) for row in rows if isinstance(row.get("duration_ms"), (int, float)))
+    if not durations:
+        return {"level": "gray", "value": "No timing samples", "meta": f"No timed events in the last {hours:g} h"}
+
+    def quantile(q: float) -> float:
+        if len(durations) == 1:
+            return durations[0]
+        position = (len(durations) - 1) * q
+        low = int(np.floor(position))
+        high = int(np.ceil(position))
+        if low == high:
+            return durations[low]
+        return durations[low] * (high - position) + durations[high] * (position - low)
+
+    p50 = quantile(0.50)
+    p95 = quantile(0.95)
+    max_duration = durations[-1]
+    max_live = max((int(row["live_sessions"]) for row in rows if row.get("live_sessions") is not None), default=0)
+    slowest = max((row for row in rows if isinstance(row.get("duration_ms"), (int, float))), key=lambda row: float(row["duration_ms"]))
+    slow_label = str(slowest.get("event") or "event")
+    slow_instrument = str(slowest.get("instrument") or "").strip()
+    if slow_instrument:
+        slow_label = f"{slow_label} / {slow_instrument}"
+
+    if p95 <= 1000.0:
+        level = "green"
+    elif p95 <= 3000.0:
+        level = "amber"
+    else:
+        level = "red"
+    return {
+        "level": level,
+        "value": f"p95 {p95 / 1000.0:.1f}s",
+        "meta": (
+            f"{len(durations)} timed events in {hours:g} h; "
+            f"p50 {p50 / 1000.0:.1f}s; max {max_duration / 1000.0:.1f}s ({slow_label}); "
+            f"max live sessions {max_live}"
+        ),
+    }
+
+
 def _ops_storage_text(snapshot: dict, key_prefix: str) -> str:
     used = _ops_float(snapshot.get(f"{key_prefix}_used_gb"))
     total = _ops_float(snapshot.get(f"{key_prefix}_total_gb"))
@@ -1445,6 +1504,7 @@ def _ops_operations_markup() -> str:
         battery_value, battery_meta = _ops_battery_text(snapshot)
         internal_temp_value, internal_temp_meta = _ops_internal_temp_text(snapshot)
         perf_log_value, perf_log_meta = _ops_perf_log_text(snapshot)
+        perf_summary = _ops_perf_summary(Path(snapshot.get("dashboard_perf_log_path") or PERF_LOG_PATH))
 
         summary_cards = [
             _ops_card_markup(
@@ -1492,6 +1552,12 @@ def _ops_operations_markup() -> str:
                 perf_log_level,
                 perf_log_value,
                 perf_log_meta,
+            ),
+            _ops_card_markup(
+                "Render performance",
+                perf_summary["level"],
+                perf_summary["value"],
+                perf_summary["meta"],
             ),
             _ops_card_markup(
                 "Processing pipeline",

@@ -147,6 +147,8 @@ TRANSFER_UNITS = (
     "aurora-gws-rsync-raw.service",
     "aurora-gws-rsync-products.timer",
     "aurora-gws-rsync-products.service",
+    "aurora-gws-rsync-products-wxcam.timer",
+    "aurora-gws-rsync-products-wxcam.service",
     "aurora-gws-rsync-manifests.timer",
     "aurora-gws-rsync-manifests.service",
     "aurora-mirror-verify.timer",

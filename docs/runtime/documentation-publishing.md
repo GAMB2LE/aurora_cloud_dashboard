@@ -14,9 +14,12 @@ This repo carries the required repo-side pieces:
 
 ## How publishing works
 
-- this repo's own docs workflow can still build the repo-local MkDocs site
 - `trigger-docs.yml` asks the central `GAMB2LE/mkdocs-portal` repo to rebuild
   the unified site at `https://gamb2le.pages.dev/`
+- this repo no longer carries a repo-local GitHub Pages deployment workflow;
+  the central portal is the only intended public documentation destination
+- local checks can be run with `python3 check_docs.py`, which builds the MkDocs
+  site in an isolated `.venv-docs` environment
 
 ## Required GitHub Actions secrets
 
@@ -25,7 +28,7 @@ This repo carries the required repo-side pieces:
 
 ## Current portal model
 
-The central portal repo still has to:
+The central portal repo must:
 
 - include this repository in its own `mkdocs.yml` navigation
 - clone this repository inside its docs workflow before building the portal

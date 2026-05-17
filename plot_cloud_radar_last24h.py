@@ -32,6 +32,48 @@ KURT_VMIN, KURT_VMAX = 0.0, 8.0
 RANGE_MAX = 9000
 
 
+def _write_no_data_png(output: Path, start_time: pd.Timestamp, end_time: pd.Timestamp, latest_time: pd.Timestamp | None) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    latest_text = "No samples are present in the selected 24 hour window."
+    if latest_time is not None:
+        latest_text = f"Latest radar sample in the Zarr is {latest_time:%Y-%m-%d %H:%M UTC}."
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.set_axis_off()
+    ax.text(
+        0.5,
+        0.62,
+        "No cloud radar data in the last 24 hours",
+        ha="center",
+        va="center",
+        fontsize=18,
+        fontweight="bold",
+        color="#22313f",
+    )
+    ax.text(
+        0.5,
+        0.44,
+        f"Window: {start_time:%Y-%m-%d %H:%M UTC} to {end_time:%Y-%m-%d %H:%M UTC}",
+        ha="center",
+        va="center",
+        fontsize=11,
+        color="#5f6c7b",
+    )
+    ax.text(
+        0.5,
+        0.32,
+        latest_text,
+        ha="center",
+        va="center",
+        fontsize=11,
+        color="#5f6c7b",
+    )
+    fig.tight_layout()
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+    print(f"Wrote no-data placeholder {output}")
+
+
 def plot_last_24h(zarr_path: Path, output: Path):
     ds = xr.open_zarr(zarr_path, chunks={})
     needed = ["ZE_dBZ", "MeanVel", "SpecWidth", "SLDR", "RHV", "SRCX", "Skew", "Kurt"]
@@ -45,7 +87,12 @@ def plot_last_24h(zarr_path: Path, output: Path):
 
     mask = (time_index >= start_time) & (time_index <= end_time)
     if not mask.any():
-        raise ValueError("No data in last 24h")
+        latest_time = time_index.max() if len(time_index) else None
+        _write_no_data_png(output, start_time, end_time, latest_time)
+        hk_output = extra_housekeeping_latest_png(output.parent, "Cloud Radar")
+        if hk_output is not None:
+            _write_no_data_png(hk_output, start_time, end_time, latest_time)
+        return
     window = ds.isel(time=mask).sortby("time")
     window = window.sel({"range": slice(0, RANGE_MAX)})
 
