@@ -8,6 +8,7 @@
 
 import os
 from base64 import b64encode
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
 from functools import lru_cache
@@ -1249,7 +1250,9 @@ def _ops_perf_summary(path: Path, hours: float = 24.0, max_rows: int = 5000) -> 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     rows: list[dict] = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines()[-max_rows:]:
+        with path.open("r", encoding="utf-8") as handle:
+            tail = deque(handle, maxlen=max_rows)
+        for line in tail:
             try:
                 row = json.loads(line)
             except Exception:
