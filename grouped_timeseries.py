@@ -157,8 +157,24 @@ HUMAN_LABELS = {
     "spn1_dif_Avg": "Diffuse Radiation",
     "sr30_swd_Irr_Avg": "Downwelling Shortwave",
     "sr30_swu_Irr_Avg": "Upwelling Shortwave",
+    "sr30_swd_DegC_Avg": "Downwelling SR30 Body Temperature",
+    "sr30_swu_DegC_Avg": "Upwelling SR30 Body Temperature",
+    "sr30_swd_tilt_Avg": "Downwelling SR30 Tilt",
+    "sr30_swu_tilt_Avg": "Upwelling SR30 Tilt",
+    "sr30_swd_rot_Avg": "Downwelling SR30 Rotation",
+    "sr30_swu_rot_Avg": "Upwelling SR30 Rotation",
+    "sr30_swd_fantach_Avg": "Downwelling SR30 Fan Tach",
+    "sr30_swu_fantach_Avg": "Upwelling SR30 Fan Tach",
+    "sr30_swd_fanstate_Avg": "Downwelling SR30 Fan State",
+    "sr30_swu_fanstate_Avg": "Upwelling SR30 Fan State",
+    "sr30_swd_heatstate_Avg": "Downwelling SR30 Heater State",
+    "sr30_swu_heatstate_Avg": "Upwelling SR30 Heater State",
     "ir20_lwd_Wm2_Avg": "Downwelling Longwave",
     "ir20_lwu_Wm2_Avg": "Upwelling Longwave",
+    "ir20_lwd_DegC_Avg": "Downwelling IR20 Body Temperature",
+    "ir20_lwu_DegC_Avg": "Upwelling IR20 Body Temperature",
+    "ir20_lwd_fan_Avg": "Downwelling IR20 Fan",
+    "ir20_lwu_fan_Avg": "Upwelling IR20 Fan",
     "fp_A_Wm2_Avg": "Flux Plate A",
     "fp_B_Wm2_Avg": "Flux Plate B",
     "sr50_dist_Avg": "SR50 Distance",
@@ -169,6 +185,9 @@ HUMAN_LABELS = {
     "licor_h2o_out_Avg": "LI-COR H2O",
     "licor_t_out_Avg": "LI-COR Temperature",
     "licor_co2_str_out_Avg": "LI-COR CO2 Strength",
+    "vaisala_T_Avg": "ASFS Vaisala Temperature",
+    "vaisala_RH_Avg": "ASFS Vaisala Relative Humidity",
+    "vaisala_P_Avg": "ASFS Vaisala Pressure",
     "metek_x_out": "Metek U Wind",
     "metek_y_out": "Metek V Wind",
     "metek_z_out": "Metek W Wind",
@@ -246,8 +265,24 @@ HUMAN_UNITS = {
     "spn1_dif_Avg": "W m^-2",
     "sr30_swd_Irr_Avg": "W m^-2",
     "sr30_swu_Irr_Avg": "W m^-2",
+    "sr30_swd_DegC_Avg": "C",
+    "sr30_swu_DegC_Avg": "C",
+    "sr30_swd_tilt_Avg": "deg",
+    "sr30_swu_tilt_Avg": "deg",
+    "sr30_swd_rot_Avg": "deg",
+    "sr30_swu_rot_Avg": "deg",
+    "sr30_swd_fantach_Avg": "Hz",
+    "sr30_swu_fantach_Avg": "Hz",
+    "sr30_swd_fanstate_Avg": "state",
+    "sr30_swu_fanstate_Avg": "state",
+    "sr30_swd_heatstate_Avg": "state",
+    "sr30_swu_heatstate_Avg": "state",
     "ir20_lwd_Wm2_Avg": "W m^-2",
     "ir20_lwu_Wm2_Avg": "W m^-2",
+    "ir20_lwd_DegC_Avg": "C",
+    "ir20_lwu_DegC_Avg": "C",
+    "ir20_lwd_fan_Avg": "Hz",
+    "ir20_lwu_fan_Avg": "Hz",
     "fp_A_Wm2_Avg": "W m^-2",
     "fp_B_Wm2_Avg": "W m^-2",
     "sr50_dist_Avg": "m",
@@ -258,6 +293,9 @@ HUMAN_UNITS = {
     "licor_h2o_out_Avg": "mmol mol^-1",
     "licor_t_out_Avg": "C",
     "licor_co2_str_out_Avg": "%",
+    "vaisala_T_Avg": "C",
+    "vaisala_RH_Avg": "%",
+    "vaisala_P_Avg": "hPa",
     "metek_x_out": "m s^-1",
     "metek_y_out": "m s^-1",
     "metek_z_out": "m s^-1",
@@ -338,6 +376,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("h1_t", "HMP1 Air Temperature", COLOR["teal"]),
                 TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
+                TraceSpec("vaisala_T_Avg", "ASFS Vaisala Temperature", COLOR["green"]),
                 TraceSpec("metek_T_out_Avg", "Sonic Temperature", COLOR["brown"]),
                 TraceSpec("kt15_amb_Avg", "KT15 Ambient Temperature", COLOR["olive"]),
             ),
@@ -350,6 +389,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("h1_td", "Dew Point", COLOR["purple"]),
                 TraceSpec("h1_rh", "Relative Humidity", COLOR["brown"], axis="right"),
+                TraceSpec("vaisala_RH_Avg", "ASFS Vaisala Relative Humidity", COLOR["green"], axis="right"),
             ),
         ),
         PanelSpec(
@@ -359,6 +399,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             None,
             (
                 TraceSpec("baro_hPa", "Pressure", COLOR["green"]),
+                TraceSpec("vaisala_P_Avg", "ASFS Vaisala Pressure", COLOR["teal"]),
             ),
         ),
         PanelSpec(
@@ -375,8 +416,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
     ),
     "asfs-logger": (
         PanelSpec(
-            "metek_wind",
-            "Radiation",
+            "shortwave_radiation",
+            "Shortwave Radiation",
             "Radiation [W m^-2]",
             None,
             (
@@ -397,12 +438,96 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "surface_temperature",
-            "Surface Temperature",
-            "KT15 Surface Temperature [C]",
+            "flux_plates",
+            "Flux Plates",
+            "Flux [W m^-2]",
             None,
             (
+                TraceSpec("fp_A_Wm2_Avg", "Flux Plate A", COLOR["teal"]),
+                TraceSpec("fp_B_Wm2_Avg", "Flux Plate B", COLOR["light_blue"]),
+            ),
+        ),
+        PanelSpec(
+            "surface_temperature",
+            "Surface / Snow",
+            "KT15 Surface Temperature [C]",
+            "SR50 Distance [m]",
+            (
                 TraceSpec("kt15_tem_Avg", "KT15 Surface Temperature", COLOR["magenta"]),
+                TraceSpec("sr50_dist_Avg", "SR50 Distance", COLOR["olive"], axis="right"),
+            ),
+        ),
+    ),
+    "asfs-logger-hk": (
+        PanelSpec(
+            "logger_power",
+            "Logger Power",
+            "Voltage [V]",
+            "Current [A] / Power [W]",
+            (
+                TraceSpec("batt_volt_Avg", "Battery Voltage", COLOR["teal"]),
+                TraceSpec("amp_meter_48vdc_Avg", "48 V Current", COLOR["purple"], axis="right"),
+                TraceSpec("watts_on_48vdc_Avg", "48 V Power", COLOR["brown"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "logger_thermal_scan",
+            "Logger Thermal / Scan",
+            "Panel Temperature [C]",
+            "Scan Time [s]",
+            (
+                TraceSpec("PTemp_Avg", "Panel Temperature", COLOR["brown"]),
+                TraceSpec("scantime", "Scan Time", COLOR["slate"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "shortwave_mechanics",
+            "SR30 Orientation",
+            "Tilt [deg]",
+            "Rotation [deg]",
+            (
+                TraceSpec("sr30_swd_tilt_Avg", "Downwelling Tilt", COLOR["teal"], valid_min=-5.0, valid_max=20.0),
+                TraceSpec("sr30_swu_tilt_Avg", "Upwelling Tilt", COLOR["light_blue"], valid_min=150.0, valid_max=200.0),
+                TraceSpec("sr30_swd_rot_Avg", "Downwelling Rotation", COLOR["purple"], axis="right", valid_min=-20.0, valid_max=360.0),
+                TraceSpec("sr30_swu_rot_Avg", "Upwelling Rotation", COLOR["olive"], axis="right", valid_min=-20.0, valid_max=360.0),
+            ),
+        ),
+        PanelSpec(
+            "shortwave_support",
+            "SR30 Fans / Heaters",
+            "Fan Tach [Hz]",
+            "State",
+            (
+                TraceSpec("sr30_swd_fantach_Avg", "Downwelling Fan Tach", COLOR["teal"]),
+                TraceSpec("sr30_swu_fantach_Avg", "Upwelling Fan Tach", COLOR["light_blue"]),
+                TraceSpec("sr30_swd_fanstate_Avg", "Downwelling Fan State", COLOR["green"], axis="right", step=True),
+                TraceSpec("sr30_swu_fanstate_Avg", "Upwelling Fan State", COLOR["olive"], axis="right", step=True),
+                TraceSpec("sr30_swd_heatstate_Avg", "Downwelling Heater State", COLOR["purple"], axis="right", step=True),
+                TraceSpec("sr30_swu_heatstate_Avg", "Upwelling Heater State", COLOR["brown"], axis="right", step=True),
+            ),
+        ),
+        PanelSpec(
+            "longwave_support",
+            "IR20 Support",
+            "Fan Tach [Hz]",
+            "Body Temperature [C]",
+            (
+                TraceSpec("ir20_lwd_fan_Avg", "Downwelling IR20 Fan", COLOR["teal"]),
+                TraceSpec("ir20_lwu_fan_Avg", "Upwelling IR20 Fan", COLOR["light_blue"]),
+                TraceSpec("ir20_lwd_DegC_Avg", "Downwelling IR20 Body Temp", COLOR["purple"], axis="right"),
+                TraceSpec("ir20_lwu_DegC_Avg", "Upwelling IR20 Body Temp", COLOR["brown"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "sensor_variability",
+            "Sensor Variability",
+            "Standard Deviation",
+            "SR50 QC",
+            (
+                TraceSpec("kt15_tem_Std", "KT15 Surface Std", COLOR["magenta"]),
+                TraceSpec("spn1_tot_Std", "SPN1 Total Std", COLOR["brown"]),
+                TraceSpec("sr50_dist_Std", "SR50 Distance Std", COLOR["teal"]),
+                TraceSpec("sr50_qc_Avg", "SR50 Quality", COLOR["olive"], axis="right", step=True),
             ),
         ),
     ),
@@ -738,6 +863,10 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
     ),
+}
+
+CURATED_HOUSEKEEPING_LAYOUTS = {
+    "asfs-logger": "asfs-logger-hk",
 }
 
 
@@ -1156,6 +1285,11 @@ def plot_housekeeping_timeseries(
     max_time_samples: int = MAX_TIME_SAMPLES,
     exclude_vars: set[str] | None = None,
 ) -> list[str]:
+    curated_layout = CURATED_HOUSEKEEPING_LAYOUTS.get(instrument)
+    if curated_layout:
+        save_summary_png(ds, curated_layout, title, output, max_time_samples=max_time_samples)
+        return sorted(summary_trace_vars(curated_layout))
+
     ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     names = [name for name in numeric_time_vars(ds) if not exclude_vars or name not in exclude_vars]

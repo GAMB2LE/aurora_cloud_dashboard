@@ -6,6 +6,7 @@ This page describes what each top-level dashboard tab is responsible for.
 
 This is the primary live-browsing surface.
 
+- The default instrument is **Aurora Power Supply**.
 - **Ceilometer** and **Cloud Radar** show recent height-time plots.
 - **Meteorology**, **Radiation**, and **Aurora Power Supply** show fixed
   summary layouts rather than a freeform variable picker.
@@ -17,6 +18,11 @@ the content area so the data surface stays visually primary.
 The interactive browser keeps the last rendered pane warm per instrument,
 remembers the instrument-specific control state, and shows a small loading
 notice or skeleton while a refresh is in progress.
+
+The current tab, instrument, and important control values are also kept in the
+browser URL. This makes mobile recovery less painful: if the phone backgrounds
+or reloads the page, the URL can restore the selected view even when the
+original websocket session is gone.
 
 ## Science Quicklooks
 
@@ -40,6 +46,9 @@ This tab contains archived operational or diagnostic products such as:
 
 These products are intentionally separate from the science quicklooks so the
 science tab can stay focused on the most interpretable instrument products.
+`HK_Ceilometer` and `HK_Radar` are real diagnostic views: Ceilometer uses CL61
+time-only support variables, while Radar reads RPG LV1 housekeeping variables
+from the raw mirror.
 
 ## Operations Dashboard
 

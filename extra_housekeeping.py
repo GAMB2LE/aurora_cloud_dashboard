@@ -6,6 +6,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
+import re
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -22,6 +23,8 @@ EXTRA_HK_SPECS = {
 }
 
 RANGE_MAX = 9000
+RADAR_TIME_ZERO = np.datetime64("2001-01-01T00:00:00")
+RADAR_NC_REGEX = re.compile(r"_(\d{6})_(\d{6})")
 
 
 def extra_housekeeping_label(instrument: str) -> str | None:
@@ -84,132 +87,350 @@ def _has_finite(data: np.ndarray) -> bool:
         return False
 
 
-def plot_ceilometer_housekeeping(ds: xr.Dataset, title: str, output: Path) -> None:
-    time_index = pd.DatetimeIndex(ds["time"].values)
-    panels: list[tuple[str, str | None, list[tuple[str, np.ndarray, bool]]]] = []
+def _sample_interval_seconds(time_index: pd.DatetimeIndex) -> np.ndarray:
+    intervals = np.full(len(time_index), np.nan, dtype=np.float64)
+    if len(time_index) > 1:
+        intervals[1:] = np.diff(time_index.asi8.astype(np.float64)) / 1.0e9
+    return intervals
 
-    series_specs = [
-        ("receiver_gain", "Receiver Gain", None, False),
-        ("beta_att_noise_level", "Backscatter Noise Level", None, False),
-        ("beta_att_sum", "Backscatter Sum", None, False),
-        ("vertical_visibility", "Vertical Visibility [m]", "m", False),
-        ("height_offset", "Height Offset [m]", "m", False),
-        ("tilt_angle", "Tilt Angle [deg]", "deg", False),
-        ("tilt_correction", "Tilt Correction", None, True),
-        ("sky_condition_total_cloud_cover", "Total Cloud Cover", None, True),
-        ("fog_detection", "Fog Detection", None, True),
-        ("precipitation_detection", "Precipitation Detection", None, True),
-    ]
-    layer_specs = [
-        ("cloud_base_heights", "Cloud Base Heights [m]", "m"),
-        ("cloud_thickness", "Cloud Thickness [m]", "m"),
-        ("cloud_penetration_depth", "Cloud Penetration Depth [m]", "m"),
-        ("sky_condition_cloud_layer_heights", "Sky Condition Layer Heights [m]", "m"),
-        ("sky_condition_cloud_layer_covers", "Sky Condition Layer Covers", None),
-    ]
 
-    for name, label, unit, step in series_specs:
-        if name not in ds:
-            continue
-        values = np.asarray(ds[name].values, dtype=np.float64)
-        if not _has_finite(values):
-            continue
-        panels.append((label, unit, [(label, values, step)]))
+def _downsample_frame(times: pd.DatetimeIndex, arrays: dict[str, np.ndarray], max_samples: int = 2500) -> tuple[pd.DatetimeIndex, dict[str, np.ndarray]]:
+    if len(times) <= max_samples:
+        return times, arrays
+    step = int(np.ceil(len(times) / max_samples))
+    return times[::step], {name: values[::step] for name, values in arrays.items()}
 
-    for name, label, unit in layer_specs:
-        if name not in ds:
-            continue
-        values = np.asarray(ds[name].values, dtype=np.float64)
-        if values.ndim != 2 or not _has_finite(values):
-            continue
-        traces = []
-        for idx in range(values.shape[1]):
-            layer_values = values[:, idx]
-            if not _has_finite(layer_values):
-                continue
-            traces.append((f"Layer {idx + 1}", layer_values, False))
-        if traces:
-            panels.append((label, unit, traces))
 
+def _plot_grouped_housekeeping(
+    time_index: pd.DatetimeIndex,
+    panels: list[dict[str, object]],
+    title: str,
+    output: Path,
+    max_samples: int = 2500,
+) -> None:
     if len(time_index) == 0 or not panels:
-        raise ValueError("No ceilometer housekeeping variables available")
+        raise ValueError("No housekeeping variables available")
 
-    fig, axes = plt.subplots(len(panels), 1, figsize=(14, max(8.5, 1.9 * len(panels))), sharex=True, squeeze=False)
+    arrays: dict[str, np.ndarray] = {}
+    active_panels: list[dict[str, object]] = []
+    for panel in panels:
+        traces = []
+        for trace in panel["traces"]:
+            name = trace["name"]
+            values = np.asarray(trace["values"], dtype=np.float64)
+            if not _has_finite(values):
+                continue
+            arrays[name] = values
+            traces.append(trace)
+        if traces:
+            active = dict(panel)
+            active["traces"] = traces
+            active_panels.append(active)
+
+    if not active_panels:
+        raise ValueError("No finite housekeeping variables available")
+
+    time_index, arrays = _downsample_frame(time_index, arrays, max_samples=max_samples)
+    fig, axes = plt.subplots(
+        len(active_panels),
+        1,
+        figsize=(14, max(8.0, 2.35 * len(active_panels))),
+        sharex=True,
+        squeeze=False,
+    )
     axes = axes[:, 0]
-    colors = ["#2bb3b1", "#b52020", "#4b66c4", "#7a52c7", "#aa5a2a", "#c43aa7"]
-    for ax, (label, unit, traces) in zip(axes, panels):
-        for idx, (trace_label, values, step) in enumerate(traces):
+    for ax, panel in zip(axes, active_panels):
+        right_ax = ax.twinx() if panel.get("right_label") else None
+        left_color = "#22313f"
+        right_color = "#22313f"
+        for trace in panel["traces"]:
+            values = arrays[trace["name"]]
             finite = np.isfinite(values)
             if not finite.any():
                 continue
-            drawstyle = "steps-post" if step else "default"
-            ax.plot(
+            target = right_ax if trace.get("axis") == "right" and right_ax is not None else ax
+            color = trace.get("color", "#0b7285")
+            drawstyle = "steps-post" if trace.get("step") else "default"
+            target.plot(
                 time_index[finite],
                 values[finite],
-                linewidth=1.0,
-                color=colors[idx % len(colors)],
+                color=color,
+                linewidth=1.05,
                 drawstyle=drawstyle,
-                label=trace_label,
+                label=trace.get("label", trace["name"]),
             )
-        ax.set_ylabel(unit or "", fontsize=8)
-        ax.set_title(label, loc="left", fontsize=10, pad=2)
-        ax.grid(True, color="#dddddd", linewidth=0.45)
-        ax.tick_params(axis="y", labelsize=8)
-        if len(traces) > 1:
-            ax.legend(loc="upper right", fontsize=7, ncol=min(3, len(traces)))
+            if target is right_ax:
+                right_color = color
+            else:
+                left_color = color
+        ax.set_ylabel(str(panel.get("left_label") or ""), color=left_color, fontsize=9)
+        ax.tick_params(axis="y", colors=left_color, labelsize=8)
+        if right_ax is not None:
+            right_ax.set_ylabel(str(panel.get("right_label") or ""), color=right_color, fontsize=9)
+            right_ax.tick_params(axis="y", colors=right_color, labelsize=8)
+        ax.grid(True, color="#e5eaef", linewidth=0.5)
+        ax.text(
+            0.01,
+            0.94,
+            str(panel["title"]),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=11,
+            bbox=dict(facecolor="white", edgecolor="#22313f", linewidth=0.9, boxstyle="square,pad=0.25"),
+        )
+        handles_left, labels_left = ax.get_legend_handles_labels()
+        handles_right, labels_right = right_ax.get_legend_handles_labels() if right_ax is not None else ([], [])
+        handles = handles_left + handles_right
+        labels = labels_left + labels_right
+        if handles:
+            ax.legend(handles, labels, loc="upper right", fontsize=8, frameon=False, ncol=1)
+
     for ax in axes:
         _apply_time_axis(ax, time_index)
     axes[-1].set_xlabel("Time (UTC)")
-    fig.suptitle(title)
+    fig.suptitle(title, fontsize=14)
     fig.tight_layout()
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.97, bottom=0.06, hspace=0.28)
+    fig.subplots_adjust(left=0.08, right=0.91, top=0.95, bottom=0.07, hspace=0.14)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
     plt.close(fig)
     print(f"Wrote {output}")
+
+
+def plot_ceilometer_housekeeping(ds: xr.Dataset, title: str, output: Path) -> None:
+    time_index = pd.DatetimeIndex(ds["time"].values)
+    panels = [
+        {
+            "title": "Sample Cadence",
+            "left_label": "Interval [s]",
+            "traces": [
+                {"name": "sample_interval_s", "label": "Sample Interval", "values": _sample_interval_seconds(time_index), "color": "#0b7285"},
+            ],
+        },
+        {
+            "title": "Receiver / Signal",
+            "left_label": "Receiver Gain",
+            "right_label": "Signal Diagnostic",
+            "traces": [
+                {"name": "receiver_gain", "label": "Receiver Gain", "values": ds["receiver_gain"].values, "color": "#4f8c63", "step": True}
+                if "receiver_gain" in ds
+                else None,
+                {"name": "beta_att_noise_level", "label": "Noise Level", "values": ds["beta_att_noise_level"].values, "color": "#c05647", "axis": "right"}
+                if "beta_att_noise_level" in ds
+                else None,
+                {"name": "beta_att_sum", "label": "Backscatter Sum", "values": ds["beta_att_sum"].values, "color": "#4d6fb3", "axis": "right"}
+                if "beta_att_sum" in ds
+                else None,
+            ],
+        },
+        {
+            "title": "Alignment / Reference",
+            "left_label": "Tilt [deg]",
+            "right_label": "Offset [m]",
+            "traces": [
+                {"name": "tilt_angle", "label": "Tilt Angle", "values": ds["tilt_angle"].values, "color": "#7768b8"}
+                if "tilt_angle" in ds
+                else None,
+                {"name": "height_offset", "label": "Height Offset", "values": ds["height_offset"].values, "color": "#4f7d8d", "axis": "right"}
+                if "height_offset" in ds
+                else None,
+                {"name": "tilt_correction", "label": "Tilt Correction", "values": ds["tilt_correction"].values, "color": "#718195", "axis": "right", "step": True}
+                if "tilt_correction" in ds
+                else None,
+            ],
+        },
+        {
+            "title": "Weather Flags",
+            "left_label": "State",
+            "right_label": "Cloud Cover [oktas]",
+            "traces": [
+                {"name": "precipitation_detection", "label": "Precipitation", "values": ds["precipitation_detection"].values, "color": "#c05647", "step": True}
+                if "precipitation_detection" in ds
+                else None,
+                {"name": "fog_detection", "label": "Fog", "values": ds["fog_detection"].values, "color": "#7768b8", "step": True}
+                if "fog_detection" in ds
+                else None,
+                {"name": "sky_condition_total_cloud_cover", "label": "Cloud Cover", "values": ds["sky_condition_total_cloud_cover"].values, "color": "#0b7285", "axis": "right", "step": True}
+                if "sky_condition_total_cloud_cover" in ds
+                else None,
+            ],
+        },
+        {
+            "title": "Vertical Visibility",
+            "left_label": "Visibility [m]",
+            "traces": [
+                {"name": "vertical_visibility", "label": "Vertical Visibility", "values": ds["vertical_visibility"].values, "color": "#0b7285"}
+                if "vertical_visibility" in ds
+                else None,
+            ],
+        },
+    ]
+    for panel in panels:
+        panel["traces"] = [trace for trace in panel["traces"] if trace is not None]
+    _plot_grouped_housekeeping(time_index, panels, title, output)
+
+
+def _parse_radar_file_time(path: Path) -> pd.Timestamp | None:
+    match = RADAR_NC_REGEX.search(path.name)
+    if not match:
+        return None
+    date_part, time_part = match.groups()
+    try:
+        return pd.to_datetime(date_part + time_part, format="%y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def _radar_raw_files(root: Path, start: pd.Timestamp, end: pd.Timestamp) -> list[Path]:
+    files: list[tuple[pd.Timestamp, Path]] = []
+    scan_start = start - pd.Timedelta(hours=2)
+    for path in root.rglob("*.NC"):
+        if not path.name.upper().endswith("LV1.NC"):
+            continue
+        stamp = _parse_radar_file_time(path)
+        if stamp is None:
+            continue
+        if scan_start <= stamp <= end:
+            files.append((stamp, path))
+    files.sort(key=lambda item: item[0])
+    return [path for _stamp, path in files]
+
+
+def _load_radar_hk_file(path: Path) -> xr.Dataset:
+    with xr.open_dataset(path, decode_times=False) as raw:
+        time = RADAR_TIME_ZERO + raw["Time"].astype("timedelta64[s]") + raw["Timems"].astype("timedelta64[ms]")
+        time_vals = np.asarray(time.values)
+        names = [
+            "Rain",
+            "SurfRelHum",
+            "SurfTemp",
+            "SurfPres",
+            "SurfWS",
+            "SurfWD",
+            "DDVolt",
+            "DDTb",
+            "LWP",
+            "PowIF",
+            "Elv",
+            "Azm",
+            "Status",
+            "TPow",
+            "TTemp",
+            "RTemp",
+            "PCTemp",
+            "CBH",
+            "Inc_El",
+            "Inc_ElA",
+        ]
+        data_vars = {}
+        for name in names:
+            if name not in raw:
+                continue
+            data_vars[name] = (("time",), np.asarray(raw[name].values, dtype=np.float32))
+    if not data_vars:
+        return xr.Dataset()
+    return xr.Dataset(data_vars, coords={"time": time_vals}).sortby("time")
+
+
+def load_cloud_radar_housekeeping_from_raw(root: Path, start: pd.Timestamp, end: pd.Timestamp) -> xr.Dataset:
+    datasets = []
+    for path in _radar_raw_files(root, start, end):
+        try:
+            ds = _load_radar_hk_file(path)
+        except Exception as exc:
+            print(f"Skipping unreadable radar housekeeping file {path}: {exc}")
+            continue
+        if ds.sizes.get("time", 0):
+            datasets.append(ds)
+    if not datasets:
+        return xr.Dataset()
+    combined = xr.concat(datasets, dim="time", join="outer").sortby("time")
+    times = np.asarray(combined["time"].values)
+    _, unique_idx = np.unique(times, return_index=True)
+    if len(unique_idx) != len(times):
+        combined = combined.isel(time=np.sort(unique_idx))
+    mask = (pd.DatetimeIndex(combined["time"].values) >= start) & (pd.DatetimeIndex(combined["time"].values) <= end)
+    return combined.isel(time=mask)
 
 
 def plot_cloud_radar_housekeeping(ds: xr.Dataset, title: str, output: Path) -> None:
-    vars_titles = [
-        ("ZE45_dBZ", "ZE45 (dBZ)", -30.0, 10.0, "ZE45 (dBZ)", "cividis"),
-        ("ZDR", "ZDR (dB)", -10.0, 6.0, "ZDR (dB)", "RdBu_r"),
-        ("PhiDP", "PhiDP (rad)", -2.0, 2.0, "PhiDP (rad)", "RdBu_r"),
-        ("KDP", "KDP (rad/km)", -4.0, 4.0, "KDP (rad/km)", "RdBu_r"),
-        ("DiffAtt", "Differential Attenuation (dB/km)", -5.0, 5.0, "DiffAtt (dB/km)", "RdBu_r"),
-    ]
-    available = [(var, text, vmin, vmax, cbar, cmap) for var, text, vmin, vmax, cbar, cmap in vars_titles if var in ds]
-    if not available or ds.sizes.get("time", 0) == 0:
+    if ds.sizes.get("time", 0) == 0:
         raise ValueError("No cloud radar housekeeping variables available")
-    ds = ds.sel({"range": slice(0, RANGE_MAX)})
-    fig, axes = plt.subplots(len(available), 1, figsize=(12, max(9.0, 3.1 * len(available))), sharex=True, sharey=True, squeeze=False)
-    axes = axes[:, 0]
-    for ax, (var, label, vmin, vmax, cbar_label, cmap) in zip(axes, available):
-        da = ds[var].transpose("time", "range")
-        mesh = ax.pcolormesh(
-            da["time"].values,
-            da["range"].values,
-            da.values.T,
-            shading="auto",
-            vmin=vmin,
-            vmax=vmax,
-            cmap=cmap,
-        )
-        cbar = fig.colorbar(mesh, ax=ax, pad=0.01)
-        cbar.set_label(cbar_label)
-        ax.set_ylabel("Range (m)")
-        ax.set_title(label, loc="left", fontsize=10, pad=2)
-        ax.set_ylim(0, RANGE_MAX)
-    times = pd.DatetimeIndex(ds["time"].values)
-    for ax in axes:
-        _apply_time_axis(ax, times)
-    axes[-1].set_xlabel("Time (UTC)")
-    fig.suptitle(title)
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.97, bottom=0.08, hspace=0.22)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=150)
-    plt.close(fig)
-    print(f"Wrote {output}")
+    time_index = pd.DatetimeIndex(ds["time"].values)
+
+    def trace(name: str, label: str, color: str, axis: str = "left", step: bool = False) -> dict[str, object] | None:
+        if name not in ds:
+            return None
+        return {"name": name, "label": label, "values": ds[name].values, "color": color, "axis": axis, "step": step}
+
+    panels = [
+        {
+            "title": "Sample Cadence / Status",
+            "left_label": "Interval [s]",
+            "right_label": "State",
+            "traces": [
+                {"name": "sample_interval_s", "label": "Sample Interval", "values": _sample_interval_seconds(time_index), "color": "#0b7285"},
+                trace("Status", "Radar Status", "#c05647", axis="right", step=True),
+            ],
+        },
+        {
+            "title": "Power / Receiver Chain",
+            "left_label": "Voltage [V]",
+            "right_label": "IF / Brightness",
+            "traces": [
+                trace("DDVolt", "DD Voltage", "#4f8c63"),
+                trace("PowIF", "IF Power", "#7768b8", axis="right"),
+                trace("DDTb", "DD Brightness Temp", "#4d6fb3", axis="right"),
+            ],
+        },
+        {
+            "title": "Thermal State",
+            "left_label": "Temperature [C]",
+            "right_label": "Transmitter Power",
+            "traces": [
+                trace("TTemp", "Transmitter Temp", "#c05647"),
+                trace("RTemp", "Receiver Temp", "#0b7285"),
+                trace("PCTemp", "PC Temp", "#7768b8"),
+                trace("TPow", "Transmitter Power", "#4f8c63", axis="right"),
+            ],
+        },
+        {
+            "title": "Antenna Pointing",
+            "left_label": "Elevation [deg]",
+            "right_label": "Azimuth / Inclination [deg]",
+            "traces": [
+                trace("Elv", "Elevation", "#0b7285"),
+                trace("Azm", "Azimuth", "#4f7d8d", axis="right"),
+                trace("Inc_El", "Inclination Elevation", "#7768b8", axis="right"),
+                trace("Inc_ElA", "Inclination Elevation A", "#718195", axis="right"),
+            ],
+        },
+        {
+            "title": "Surface Met At Radar",
+            "left_label": "Temperature [C] / Wind [m s^-1]",
+            "right_label": "RH [%] / Pressure [hPa]",
+            "traces": [
+                trace("SurfTemp", "Surface Temp", "#c05647"),
+                trace("SurfWS", "Surface Wind Speed", "#0b7285"),
+                trace("SurfRelHum", "Surface RH", "#7768b8", axis="right"),
+                trace("SurfPres", "Surface Pressure", "#4f8c63", axis="right"),
+            ],
+        },
+        {
+            "title": "Ancillary Retrievals",
+            "left_label": "Rain / LWP",
+            "right_label": "Cloud Base [m]",
+            "traces": [
+                trace("Rain", "Rain", "#0b7285", step=True),
+                trace("LWP", "Liquid Water Path", "#7768b8"),
+                trace("CBH", "Cloud Base Height", "#4f8c63", axis="right"),
+            ],
+        },
+    ]
+    for panel in panels:
+        panel["traces"] = [item for item in panel["traces"] if item is not None]
+    _plot_grouped_housekeeping(time_index, panels, title, output)
 
 
 def _wxcam_query_dataframe(catalog_path: Path, where_sql: str, params: tuple[object, ...]) -> pd.DataFrame:

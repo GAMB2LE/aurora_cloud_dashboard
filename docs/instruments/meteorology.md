@@ -9,7 +9,8 @@ Meteorology is not a one-to-one reflection of a single source file layout. The
 presentation layer combines:
 
 - the **VaisalaMET** Zarr as the main atmospheric source
-- selected **ASFS logger** met traces for wind and temperature context
+- selected **ASFS logger** met traces for wind, temperature, humidity, and
+  pressure context
 
 This merge happens at display time only. The underlying Zarr stores remain
 separate.
@@ -21,10 +22,16 @@ The Meteorology instrument currently groups:
 - **Air Temperature**
   - HMP1
   - T2
+  - ASFS Vaisala temperature
   - Sonic temperature
   - KT15 ambient temperature
 - **Humidity / Dew Point**
+  - dew point
+  - VaisalaMET relative humidity
+  - ASFS Vaisala relative humidity
 - **Pressure**
+  - VaisalaMET pressure
+  - ASFS Vaisala pressure
 - **Met**
   - Metek `x` and `y` on the left axis
   - Metek `z` on the right axis

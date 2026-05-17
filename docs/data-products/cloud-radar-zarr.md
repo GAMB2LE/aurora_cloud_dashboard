@@ -34,6 +34,11 @@ This store currently contains 13 `float32` `time x range` fields:
 - `KDP`
 - `DiffAtt`
 
+Radar housekeeping fields such as `Status`, `DDVolt`, `PowIF`, `TTemp`,
+`RTemp`, `PCTemp`, `Elv`, `Azm`, `SurfTemp`, and `SurfRelHum` are not stored in
+this science Zarr. The `HK_Radar` quicklook reads those support variables from
+the mirrored raw RPG LV1 files under `/project/aurora/raw/rpgfmcw94`.
+
 ## Conversion notes
 
 - reflectivity-style fields are converted to dBZ during ingest

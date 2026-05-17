@@ -15,6 +15,9 @@ The deployed interface is organized into four top-level tabs:
 - **Operations Dashboard** for source-host status, storage, transfers, mirror
   verification, and prune-readiness checks
 
+The default first view is **Aurora Power Supply** on the interactive browser,
+so the dashboard opens on the most direct power-health summary.
+
 ## Instrument families
 
 - **Ceilometer** and **Cloud Radar** render height-time plots from Zarr stores.

@@ -13,8 +13,16 @@ is presented as a height-time plot in the interactive dashboard.
 
 - science quicklooks show archived daily CL61 products
 - housekeeping quicklooks include `HK_Ceilometer`, which focuses on
-  non-science diagnostics and layer metadata rather than the main backscatter
-  field
+  non-science diagnostics rather than the main backscatter/depolarization
+  fields
+
+`HK_Ceilometer` currently groups:
+
+- sample cadence
+- receiver gain and backscatter signal diagnostics
+- tilt, height offset, and tilt-correction state
+- precipitation, fog, and total-cloud-cover flags
+- vertical visibility
 
 ## Backing data product
 

@@ -15,11 +15,16 @@ from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
-from extra_housekeeping import extra_housekeeping_daily_png, plot_cloud_radar_housekeeping
+from extra_housekeeping import (
+    extra_housekeeping_daily_png,
+    load_cloud_radar_housekeeping_from_raw,
+    plot_cloud_radar_housekeeping,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
-ZARR_PATH = Path(os.environ.get("CLOUD_RADAR_ZARR_PATH", "/mnt/data/ass/rpgfmcw94/cloud_radar.zarr"))
+ZARR_PATH = Path(os.environ.get("CLOUD_RADAR_ZARR_PATH", "/data/aurora/products/rpgfmcw94/cloud_radar.zarr"))
+RAW_ROOT = Path(os.environ.get("CLOUD_RADAR_RAW_ROOT", "/project/aurora/raw/rpgfmcw94"))
 QUICKLOOK_DIR = Path(os.environ.get("CLOUD_RADAR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "cloud_radar"))
 
 ZE_VMIN, ZE_VMAX = -30.0, 10.0
@@ -109,6 +114,15 @@ def main(force: bool = False):
             png.unlink()
         print("Deleted existing quicklook PNGs.")
 
+    current_times = time_index[time_index <= pd.Timestamp.utcnow().replace(tzinfo=None)]
+    if len(current_times):
+        end_time = current_times.max()
+        start_time = end_time - timedelta(hours=24)
+        hk_latest_out = QUICKLOOK_DIR / "cloud_radar__hk_radar__latest.png"
+        hk_latest = load_cloud_radar_housekeeping_from_raw(RAW_ROOT, start_time, end_time)
+        if hk_latest.sizes.get("time", 0) >= 2:
+            plot_cloud_radar_housekeeping(hk_latest, "HK_Radar - Latest 24 hours", hk_latest_out)
+
     for d in dates:
         out = QUICKLOOK_DIR / f"cloud_radar_{pd.Timestamp(d).strftime('%Y%m%d')}.png"
         hk_out = extra_housekeeping_daily_png(QUICKLOOK_DIR, "Cloud Radar", d)
@@ -127,7 +141,9 @@ def main(force: bool = False):
             _plot_day(ds_day, pd.Timestamp(d).strftime("%Y-%m-%d"), out)
         if hk_out is not None and not hk_out.exists():
             hk_title = pd.Timestamp(d).strftime("HK_Radar - %Y-%m-%d")
-            plot_cloud_radar_housekeeping(ds_day, hk_title, hk_out)
+            hk_day = load_cloud_radar_housekeeping_from_raw(RAW_ROOT, start, end)
+            if hk_day.sizes.get("time", 0) >= 2:
+                plot_cloud_radar_housekeeping(hk_day, hk_title, hk_out)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@
 #   on the heavier interactive plots to keep the UI responsive.
 
 import os
+import asyncio
 from base64 import b64encode
 from collections import deque
 from contextlib import contextmanager
@@ -446,7 +447,7 @@ def _path_from_env(env_name: str, default: Path) -> Path:
 INSTRUMENTS = {
     "Ceilometer": {
         "zarr_env": "CEILOMETER_ZARR_PATH",
-        "zarr_default": "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
+        "zarr_default": "/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr",
         "chunk_spec": {"time": 600},
         "consolidated": True,
         "height_load_max": 10_000,
@@ -458,11 +459,11 @@ INSTRUMENTS = {
         "default_top": "beta_att",
         "default_bottom": "linear_depol_ratio",
         "quicklook_dir": _path_from_env("CEILOMETER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "ceilometer"),
-        "latest_image": _path_from_env("CEILOMETER_LATEST_IMAGE", APP_DIR / "last24h.png"),
+        "latest_image": _path_from_env("CEILOMETER_LATEST_IMAGE", QUICKLOOK_ROOT / "ceilometer" / "latest.png"),
     },
     "Cloud Radar": {
         "zarr_env": "CLOUD_RADAR_ZARR_PATH",
-        "zarr_default": "/mnt/data/ass/rpgfmcw94/cloud_radar.zarr",
+        "zarr_default": "/data/aurora/products/rpgfmcw94/cloud_radar.zarr",
         "chunk_spec": {"time": 400},
         "consolidated": True,
         "height_load_max": 9_000,
@@ -485,7 +486,7 @@ INSTRUMENTS = {
         "default_top": "ZE_dBZ",
         "default_bottom": "MeanVel",
         "quicklook_dir": _path_from_env("CLOUD_RADAR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "cloud_radar"),
-        "latest_image": _path_from_env("CLOUD_RADAR_LATEST_IMAGE", APP_DIR / "last24h_cloudradar.png"),
+        "latest_image": _path_from_env("CLOUD_RADAR_LATEST_IMAGE", QUICKLOOK_ROOT / "cloud_radar" / "latest.png"),
     },
     "vaisalamet": {
         "zarr_env": "VAISALAMET_ZARR_PATH",
@@ -631,10 +632,28 @@ _BASE_DS: dict[str, xr.Dataset | None] = {}
 _TIME_BOUNDS_CACHE: dict[str, dict[str, object]] = {}
 _INTERACTIVE_FIGURE_CACHE: dict[str, go.Figure] = {}
 _INSTRUMENT_VIEW_STATE: dict[str, dict[str, object]] = {}
-CURRENT_INSTRUMENT = "Ceilometer"
+CURRENT_INSTRUMENT = "power"
 _RENDER_REQUEST_COUNTER = 0
 _ACTIVE_RENDER_REQUEST_ID = 0
 _DISPLAYED_INTERACTIVE_INSTRUMENT: str | None = None
+
+
+def _safe_periodic_callback(callback, period: int, start: bool = True):
+    """Register a Panel timer, but allow plain Python imports for smoke tests."""
+    timer = pn.state.add_periodic_callback(callback, period=period, start=False)
+    if start:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return timer
+        try:
+            timer.start()
+        except RuntimeError as exc:
+            # A normal `python -c "import app"` has no running asyncio loop.
+            # `panel serve` provides one, so this only affects local smoke tests.
+            if "no running event loop" not in str(exc):
+                raise
+    return timer
 
 
 def _cfg(inst: str | None = None):
@@ -2064,7 +2083,7 @@ _live_guard = False
 _instrument_guard = False
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
-pn.state.add_periodic_callback(_refresh_base_dataset, period=DATA_REFRESH_MS, start=True)
+_base_dataset_timer = _safe_periodic_callback(_refresh_base_dataset, period=DATA_REFRESH_MS, start=True)
 
 
 def _capture_current_instrument_state(inst: str | None = None) -> None:
@@ -2373,7 +2392,7 @@ def _auto_refresh():
 
 
 # Kick off periodic live refresh.
-_live_cb = pn.state.add_periodic_callback(_auto_refresh, period=LIVE_REFRESH_MS, start=True)
+_live_cb = _safe_periodic_callback(_auto_refresh, period=LIVE_REFRESH_MS, start=True)
 
 
 def _shift_previous(_event=None):
@@ -2933,7 +2952,7 @@ def _refresh_wxcam_latest_if_needed():
     return
 
 
-_wxcam_ql_timer = pn.state.add_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
+_wxcam_ql_timer = _safe_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
 
 
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
@@ -3920,7 +3939,7 @@ def _refresh_latest_if_needed():
         ql_date.param.trigger("value")
 
 
-_ql_timer = pn.state.add_periodic_callback(_refresh_latest_if_needed, period=300_000, start=True)
+_ql_timer = _safe_periodic_callback(_refresh_latest_if_needed, period=300_000, start=True)
 
 
 def _refresh_hk_latest_if_needed():
@@ -3931,7 +3950,7 @@ def _refresh_hk_latest_if_needed():
         hk_date.param.trigger("value")
 
 
-_hk_timer = pn.state.add_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=True)
+_hk_timer = _safe_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=True)
 
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
@@ -4106,7 +4125,7 @@ wxcam_calendar_state.param.watch(
 )
 pn.state.onload(_log_session_loaded)
 pn.state.on_session_destroyed(_log_session_destroyed)
-_session_heartbeat_cb = pn.state.add_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
+_session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
 
 
 def _sync_wxcam_calendar_hour(*_events):
@@ -4629,7 +4648,7 @@ def _hk_download_path() -> Path | None:
     return path if path and path.exists() else None
 
 
-def _build_share_url(tab_slug: str) -> str:
+def _view_query_params(tab_slug: str) -> dict[str, str]:
     params: dict[str, str] = {
         "tab": tab_slug,
         "instrument": instrument_select.value,
@@ -4655,14 +4674,38 @@ def _build_share_url(tab_slug: str) -> str:
     elif tab_slug == "housekeeping":
         params["hk_instrument"] = hk_instrument.value
         params["hk_date"] = hk_date.value or ""
-    query = urlencode({k: v for k, v in params.items() if v not in ("", None)})
+    return {k: v for k, v in params.items() if v not in ("", None)}
+
+
+def _build_share_url(tab_slug: str) -> str:
+    query = urlencode(_view_query_params(tab_slug))
     return f"{_request_base_url()}?{query}" if query else _request_base_url()
+
+
+def _active_tab_slug() -> str:
+    if "tabs" not in globals():
+        return "interactive"
+    return {0: "interactive", 1: "science", 2: "housekeeping", 3: "operations"}.get(getattr(tabs, "active", 0), "interactive")
+
+
+def _update_browser_location() -> None:
+    """Keep the address bar aligned with the current view for mobile reconnects."""
+    try:
+        location = pn.state.location
+    except Exception:
+        location = None
+    if location is None:
+        return
+    search = "?" + urlencode(_view_query_params(_active_tab_slug()))
+    if getattr(location, "search", None) != search:
+        location.search = search
 
 
 def _refresh_share_and_download_state(*_events) -> None:
     interactive_share_url.value = _build_share_url("interactive")
     science_share_url.value = _build_share_url("science")
     hk_share_url.value = _build_share_url("housekeeping")
+    _update_browser_location()
 
     interactive_download.visible = not _is_wxcam_instrument(instrument_select.value)
 
@@ -5527,7 +5570,7 @@ def _refresh_operations_dashboard() -> None:
     operations_dashboard.object = _ops_operations_markup()
 
 
-_operations_timer = pn.state.add_periodic_callback(_refresh_operations_dashboard, period=60_000, start=True)
+_operations_timer = _safe_periodic_callback(_refresh_operations_dashboard, period=60_000, start=True)
 
 interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_width")
 science_quicklooks_tab = pn.Column(
@@ -5564,6 +5607,7 @@ tabs = pn.Tabs(
     ("Operations Dashboard", operations_tab),
     sizing_mode="stretch_both",
 )
+tabs.param.watch(_refresh_share_and_download_state, "active")
 
 SITE_FOOTER_HTML = """
 <div class="site-footer">
@@ -5608,5 +5652,6 @@ def _apply_theme(dark: bool):
     """No-op placeholder (dark mode removed)."""
     return
 
-# Serve the app
-template.servable()
+# Serve the app. `location=True` installs Panel's Location model so the app can
+# keep the browser URL aligned with the selected view.
+template.servable(location=True)

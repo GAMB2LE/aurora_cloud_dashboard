@@ -6,11 +6,16 @@ Radiation is the curated surface-radiation view built from the ASFS logger Zarr.
 
 The current Radiation instrument intentionally stays compact:
 
-- **Radiation**
-  - Total radiation
-  - Diffuse radiation
+- **Shortwave Radiation**
+  - SPN1 total and diffuse radiation
+  - SR30 downwelling and upwelling shortwave radiation
+- **Longwave Radiation**
+  - IR20 downwelling and upwelling longwave radiation
+- **Flux Plates**
+  - flux plate A and B heat flux
 - **Surface Temperature**
   - KT15 surface temperature
+  - SR50 distance on the right axis
 
 This is a presentation-layer subset of the ASFS logger store rather than a
 separate ingest path.
@@ -18,7 +23,9 @@ separate ingest path.
 ## Quicklooks
 
 - science quicklooks show the Radiation summary
-- housekeeping quicklooks show `HK_ASFS`
+- housekeeping quicklooks show `HK_ASFS`, a curated support layout for logger
+  power, logger temperature/scan timing, SR30 orientation/fans/heaters, IR20
+  support, and sensor variability
 
 ## Backing data product
 

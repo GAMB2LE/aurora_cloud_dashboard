@@ -2,20 +2,25 @@
 
 Panel dashboard and data-product scripts for the Aurora observing stack.
 
+The default landing view is now the `Aurora Power Supply` instrument on the
+`Interactive Data Browser`, because power health is the quickest first check
+for whether the observing stack is behaving.
+
 ## Instruments
 
+- `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`. The science layout includes renewables, cumulative power, battery charging, and separate output power / output voltage views with grouped units.
 - `Ceilometer` - CL61 backscatter/depolarization Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
 - `Cloud Radar` - RPG FMCW 94 GHz Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
-- `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, and `HK_Met` also brings in `KT15 ambient temperature` from the ASFS logger support dataset.
-- `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`.
-- `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`. The science layout includes renewables, cumulative power, battery charging, and separate output power / output voltage views with grouped units.
+- `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.
+- `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`. The science layout uses the current ASFS logger schema, including SR30 shortwave, IR20 longwave, flux plates, KT15 surface temperature, and SR50 distance.
 - `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
 - `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, Aurora Power Supply battery voltage, Aurora Power Supply internal temperature, processing health, dashboard render performance, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. The storage section now breaks out the CL61 root/data views, ASS data/root views, APS data/root views, and the AURORA Cloud product/root views separately, with subtitles showing the resolved `pwd -P` path being measured. Archived `HK_Operations` quicklooks are still available from `House Keeping Quicklooks` and now use a curated diagnostics layout rather than plotting every numeric operations field.
 
 Additional housekeeping products now exist for:
 
-- `Ceilometer` as `HK_Ceilometer`
-- `Cloud Radar` as `HK_Radar`
+- `Ceilometer` as `HK_Ceilometer`, using CL61 time-only diagnostics such as sample cadence, receiver gain, backscatter noise/sum, alignment, visibility, and weather flags rather than duplicating the main backscatter/depolarization science fields.
+- `Cloud Radar` as `HK_Radar`, using raw RPG LV1 housekeeping variables such as status, DD voltage, IF power, transmitter/receiver/PC temperatures, pointing, surface met, rain, LWP, and cloud-base diagnostics rather than duplicating the radar science moments.
+- `ASFS Logger` as `HK_ASFS`, using a curated support layout for logger power, logger temperature/scan timing, SR30 orientation/fans/heaters, IR20 support, and sensor variability.
 - `WXcam` as `HK_WXcam`
 
 ## Core files
@@ -24,7 +29,7 @@ Additional housekeeping products now exist for:
 - `wxcam_catalog.py` - shared helpers for the wxcam SQLite catalog.
 - `index_wxcam_catalog.py` - indexes local WXcam HDR images and videos, with optional one-shot remote metadata bootstrap if explicitly requested.
 - `build_wxcam_daily_videos.py` - builds daily wxcam MP4 products and hourly thumbnails from raw hourly clips.
-- `extra_housekeeping.py` - housekeeping quicklook helpers for Ceilometer, Cloud Radar, and WXcam.
+- `extra_housekeeping.py` - housekeeping quicklook helpers for Ceilometer, Cloud Radar, and WXcam. Radar housekeeping is read from the raw RPG LV1 files because those support channels are not part of the radar science Zarr.
 - `append_new_wxcam_to_zarr.py` - appends local WXcam HDR JPGs into per-stream pixel Zarr groups.
 - `collect_operations_snapshot.py` - samples source-host disk state, local/GWS storage, mirror manifests, and systemd health into raw Operations snapshots.
 - `append_new_ops_monitor_to_zarr.py` - appends Operations snapshots into the monitoring Zarr used for archived monitoring products and rebuilds automatically if the schema expands.
@@ -274,15 +279,18 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
 - `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab.
-- `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store.
+- `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store. With the current ASFS CRD schema this includes ASFS Vaisala temperature, relative humidity, and pressure alongside the existing Metek wind and temperature context.
+- `Radiation` summary plots use the current ASFS CRD fields for SR30 shortwave radiation and support data, IR20 longwave radiation and support data, flux plates, KT15 surface temperature, and SR50 distance.
 - The dashboard UI now uses four top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, `House Keeping Quicklooks`, and `Operations Dashboard`.
+- The dashboard starts on `Aurora Power Supply` by default.
 - Availability bars, freshness/status chips, and share/download controls are shown beneath the rendered content in each tab so the data view stays visually primary.
 - Summary-plot legends are kept per panel in a dedicated right-side gutter beyond the right y-axis labels instead of sharing one global legend.
 - `Science Quicklooks` and `House Keeping Quicklooks` use separate tab state. Science quicklooks show one product at a time, while housekeeping quicklooks only appear for instruments that actually have HK images.
 - `Operations Dashboard` is the live status surface for current health, while archived `HK_Operations` quicklooks remain available from `House Keeping Quicklooks`. The live tab reads the latest Operations snapshot JSON directly so the traffic lights reflect current service and transfer state even when archived monitoring quicklooks lag behind. Archive traffic lights now treat a stream as healthy when the settled GWS mirror has zero missing or mismatched files, even if one or two brand-new files are still catching the next transfer cycle.
 - `WXcam` full-archive mirroring is treated as a backfill state rather than a hard failure when the historical copy is still catching up but the live tip is current.
-- `HK_Ceilometer` excludes the main science fields (`beta_att`, `linear_depol_ratio`) and focuses on non-science diagnostics such as gain, noise, tilt, detections, and cloud-layer metadata.
-- `HK_Radar` excludes the main science quicklook fields and instead shows the remaining radar moments: `ZE45_dBZ`, `ZDR`, `PhiDP`, `KDP`, and `DiffAtt`.
+- `HK_Ceilometer` excludes the main science fields (`beta_att`, `linear_depol_ratio`) and focuses on real housekeeping diagnostics such as sample cadence, gain, noise, tilt, visibility, and weather flags.
+- `HK_Radar` is generated from the raw RPG LV1 support variables instead of the radar science Zarr, so the housekeeping plot now reflects instrument state, thermal state, pointing, surface met, and ancillary retrieval health.
+- Browser state is reflected into the URL as controls change. The deployed Panel service also uses longer session retention and websocket keepalives so mobile browsers recover better after being backgrounded; if the phone still kills the tab, reopening the URL restores the selected tab, instrument, and key controls.
 - `HK_WXcam` is catalog-driven rather than pixel-driven. It summarizes hourly HDR image/video counts, median HDR JPG size, and the offset of the representative hourly image from the `:30` target used by the science grid.
 - `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
 - WXcam keeps the stitched MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.

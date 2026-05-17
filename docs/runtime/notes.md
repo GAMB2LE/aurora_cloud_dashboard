@@ -20,6 +20,26 @@ stored variables.
 
 The Meteorology summary view merges selected ASFS logger met traces into the
 Meteorology presentation layer without changing either underlying Zarr store.
+With the current ASFS CRD schema, those supporting traces include ASFS Vaisala
+temperature, relative humidity, and pressure in addition to the existing Metek
+wind and temperature context.
+
+## Housekeeping sources
+
+`HK_Ceilometer` uses CL61 time-only diagnostics from the ceilometer Zarr and
+does not duplicate the main backscatter/depolarization fields. `HK_Radar`
+reads raw RPG LV1 support variables from `/project/aurora/raw/rpgfmcw94`
+because the radar science Zarr intentionally only stores height-time science
+moments.
+
+## Mobile persistence
+
+Panel sessions still depend on an active browser websocket, so a phone can
+lose the live session when the operating system backgrounds the browser. The
+service is configured with longer unused-session retention and frequent
+keepalives, and the app updates the URL query string as controls change. That
+combination gives short backgrounding events a chance to reconnect and lets a
+killed tab reload into the same selected view.
 
 ## WXcam science behavior
 

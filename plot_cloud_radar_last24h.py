@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from datetime import timedelta
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -15,10 +16,15 @@ from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
-from extra_housekeeping import extra_housekeeping_latest_png, plot_cloud_radar_housekeeping
+from extra_housekeeping import (
+    extra_housekeeping_latest_png,
+    load_cloud_radar_housekeeping_from_raw,
+    plot_cloud_radar_housekeeping,
+)
 
-ZARR_DEFAULT = Path("/mnt/data/ass/rpgfmcw94/cloud_radar.zarr")
-OUTPUT_DEFAULT = Path("last24h_cloudradar.png")
+ZARR_DEFAULT = Path("/data/aurora/products/rpgfmcw94/cloud_radar.zarr")
+RAW_ROOT_DEFAULT = Path(os.environ.get("CLOUD_RADAR_RAW_ROOT", "/project/aurora/raw/rpgfmcw94"))
+OUTPUT_DEFAULT = Path("/data/aurora/products/quicklooks/cloud_radar/latest.png")
 
 # Limits aligned with dashboard defaults
 ZE_VMIN, ZE_VMAX = -30.0, 10.0
@@ -145,7 +151,12 @@ def plot_last_24h(zarr_path: Path, output: Path):
     print(f"Wrote {output}")
     hk_output = extra_housekeeping_latest_png(output.parent, "Cloud Radar")
     if hk_output is not None:
-        plot_cloud_radar_housekeeping(window, "HK_Radar - Latest 24 hours", hk_output)
+        hk_window = load_cloud_radar_housekeeping_from_raw(RAW_ROOT_DEFAULT, start_time, end_time)
+        if hk_window.sizes.get("time", 0) >= 2:
+            plot_cloud_radar_housekeeping(hk_window, "HK_Radar - Latest 24 hours", hk_output)
+        else:
+            latest_time = time_index.max() if len(time_index) else None
+            _write_no_data_png(hk_output, start_time, end_time, latest_time)
 
 
 def main():

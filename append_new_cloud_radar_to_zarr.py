@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-ROOT_DEFAULT = Path("/mnt/data/ass/rpgfmcw94")
-ZARR_DEFAULT = Path("/mnt/data/ass/rpgfmcw94/cloud_radar.zarr")
+ROOT_DEFAULT = Path("/project/aurora/raw/rpgfmcw94")
+ZARR_DEFAULT = Path("/data/aurora/products/rpgfmcw94/cloud_radar.zarr")
 TIME_ZERO = np.datetime64("2001-01-01T00:00:00")
 NC_REGEX = re.compile(r"_(\d{6})_(\d{6})")  # yymmdd_hhmmss
 FUTURE_TIME_TOLERANCE = timedelta(days=2)

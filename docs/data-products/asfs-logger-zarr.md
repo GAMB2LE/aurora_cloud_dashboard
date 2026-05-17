@@ -31,6 +31,9 @@ Examples include:
 - `PTemp_Avg`
 - `batt_volt_Avg`
 - `amp_meter_48vdc_Avg`
+- `vaisala_T_Avg`
+- `vaisala_RH_Avg`
+- `vaisala_P_Avg`
 - `kt15_amb_Avg`
 - `kt15_tem_Avg`
 - `licor_co2_out_Avg`
@@ -39,8 +42,19 @@ Examples include:
 - `metek_T_out_Avg`
 - `sr30_swd_Irr_Avg`
 - `sr30_swu_Irr_Avg`
+- `sr30_swd_tilt_Avg`
+- `sr30_swu_tilt_Avg`
+- `sr30_swd_fantach_Avg`
+- `sr30_swu_fantach_Avg`
+- `sr30_swd_heatstate_Avg`
+- `sr30_swu_heatstate_Avg`
 - `ir20_lwd_Wm2_Avg`
 - `ir20_lwu_Wm2_Avg`
+- `ir20_lwd_fan_Avg`
+- `ir20_lwu_fan_Avg`
+- `fp_A_Wm2_Avg`
+- `fp_B_Wm2_Avg`
+- `sr50_dist_Avg`
 - `RECORD`
 
 ## Schema note
@@ -61,5 +75,7 @@ Examples include:
 This Zarr underpins:
 
 - the **Radiation** instrument directly
-- parts of the **Meteorology** presentation layer
-- the `HK_ASFS` housekeeping quicklooks
+- parts of the **Meteorology** presentation layer, including ASFS Vaisala
+  temperature, relative humidity, and pressure
+- the curated `HK_ASFS` housekeeping quicklooks for logger power, logger
+  thermal/scan state, SR30 support, IR20 support, and sensor variability

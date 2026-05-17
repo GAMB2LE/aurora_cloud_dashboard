@@ -28,7 +28,7 @@ QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklo
 ZARR_PATH = Path(
     os.environ.get(
         "CEILOMETER_ZARR_PATH",
-        "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
+        "/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr",
     )
 )
 QUICKLOOK_DIR = Path(os.environ.get("CEILOMETER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "ceilometer"))
@@ -159,9 +159,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Generate daily ceilometer quicklook PNGs.")
-    parser.add_argument(
-        "--force", action="store_true", help="Delete existing quicklooks and regenerate all."
-    )
+    parser.add_argument("--force", action="store_true", help="Delete existing quicklooks and regenerate all.")
     args = parser.parse_args()
 
     if args.force and QUICKLOOK_DIR.exists():

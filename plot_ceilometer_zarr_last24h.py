@@ -143,8 +143,8 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
 
 if __name__ == "__main__":
     # EDIT THIS to point to your Zarr store
-    ZARR_PATH = "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr"
-    OUTPUT_PNG = "last24h.png"
+    ZARR_PATH = "/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr"
+    OUTPUT_PNG = "/data/aurora/products/quicklooks/ceilometer/latest.png"
 
     # Allow optional CLI args: zarr_path [output_png]
     if len(sys.argv) >= 2:
