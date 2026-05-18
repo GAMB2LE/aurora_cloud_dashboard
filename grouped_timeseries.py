@@ -1768,7 +1768,7 @@ def _add_plotly_power_balance_guides(
     trace_times: pd.DatetimeIndex,
     trace_values: np.ndarray,
 ) -> None:
-    """Add neutral zero reference and latest-value marker to the APS balance trace."""
+    """Add neutral zero reference and latest-value label to the APS balance trace."""
     finite = np.isfinite(trace_values)
     if not np.any(finite):
         return
@@ -1810,9 +1810,8 @@ def _add_plotly_power_balance_guides(
         go.Scatter(
             x=[last_time],
             y=[last_value],
-            mode="markers+text",
+            mode="text",
             name="Latest balance",
-            marker=dict(color=trace.color, size=8, line=dict(color="white", width=1)),
             text=[_balance_label(last_value)],
             textposition="middle left",
             textfont=dict(color=trace.color, size=11),
@@ -2150,18 +2149,14 @@ def build_summary_plotly(
                 left_axis_values.append(trace_values)
             if trace.var == POWER_BALANCE_TRACE:
                 balance_rendered = (trace, trace_times, trace_values)
-            marker_kwargs = {}
-            if trace.var == POWER_BALANCE_TRACE:
-                marker_kwargs = dict(marker=dict(color=trace.color, size=4, symbol="circle-open"))
             fig.add_trace(
                 go.Scatter(
                     x=trace_times,
                     y=trace_values,
-                    mode="lines+markers" if trace.var == POWER_BALANCE_TRACE else "lines",
+                    mode="lines",
                     name=trace.label,
                     legend=legend_name,
                     line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
-                    **marker_kwargs,
                     hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}}<extra></extra>",
                     connectgaps=False,
                     showlegend=True,
