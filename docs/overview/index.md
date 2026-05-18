@@ -22,7 +22,9 @@ so the dashboard opens on the most direct power-health summary.
 
 - **Ceilometer** and **Cloud Radar** render height-time plots from Zarr stores.
 - **Meteorology**, **Radiation**, and **Aurora Power Supply** render curated
-  multi-panel 1D summaries from fixed Zarr schemas.
+  multi-panel 1D summaries from fixed Zarr schemas. Their latest interactive
+  views can start from prewarmed Plotly JSON created by the quicklook
+  generators.
 - **WXcam** combines a SQLite catalog, stitched MP4 products, hourly
   representative thumbnails, and an HDR image Zarr. The deployed product
   streams are currently FISH HDR and PANO HDR.
@@ -35,5 +37,6 @@ so the dashboard opens on the most direct power-health summary.
 - raw mirror root: `/project/aurora/raw`
 - product root: `/data/aurora/products`
 - quicklooks root: `/data/aurora/products/quicklooks`
+- interactive prewarm root: `/data/aurora/products/dashboard/prewarm`
 
 For the full storage breakdown, see [Storage layout](../runtime/storage-layout.md).

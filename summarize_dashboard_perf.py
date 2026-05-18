@@ -126,6 +126,9 @@ def _print_instrument_coverage(records: list[dict]) -> None:
     for row in records:
         event = str(row.get("event", ""))
         instrument = str(row.get("instrument", ""))
+        # The WXcam Science Quicklook grid kept its original internal
+        # wxcam_calendar_* event names so older performance logs remain
+        # comparable.
         if event in {
             "interactive_view_update",
             "stacked_timeseries_render",

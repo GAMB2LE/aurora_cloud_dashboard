@@ -20,6 +20,11 @@ The current Radiation instrument intentionally stays compact:
 This is a presentation-layer subset of the ASFS logger store rather than a
 separate ingest path.
 
+The latest interactive view can be prewarmed as Plotly JSON by
+`generate_asfs_logger_quicklooks.py` under
+`/data/aurora/products/dashboard/prewarm/`, so the first latest-view paint does
+not have to rebuild the full figure.
+
 ## Quicklooks
 
 - science quicklooks show the Radiation summary

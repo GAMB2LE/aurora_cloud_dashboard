@@ -38,8 +38,8 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/wxcam/...`
 - **Storage type:** local disk on `/dev/vdb`
 - **Current filesystem size on `2026-05-18`:** `983G`
-- **Current used on `2026-05-18`:** `213G`
-- **Current available on `2026-05-18`:** `720G`
+- **Current used on `2026-05-18`:** `216G`
+- **Current available on `2026-05-18`:** `718G`
 
 So `/data/aurora` is the product, work, and output area.
 

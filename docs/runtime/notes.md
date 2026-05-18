@@ -16,6 +16,12 @@ Their ingest, local retention, and Zarr schemas are not changed by those
 presentation choices; the dashboard simply renders curated subsets of the same
 stored variables.
 
+The latest views for those three fixed-summary instruments can be served from
+prewarmed Plotly JSON written by the quicklook generators under
+`/data/aurora/products/dashboard/prewarm/`. If the selected 24 h window is not
+close enough to the latest data, the browser falls back to a normal interactive
+render.
+
 ## Power interactive performance
 
 The raw Power Zarr schema and chunks are unchanged. The dashboard uses larger
@@ -67,9 +73,16 @@ keepalives, and the app updates the URL query string as controls change. That
 combination gives short backgrounding events a chance to reconnect and lets a
 killed tab reload into the same selected view.
 
+The main interactive controls are collapsible on small screens and stack
+vertically so the data surface remains the primary scroll target.
+
 ## WXcam science behavior
 
 - WXcam interactive uses stitched MP4 products
 - WXcam science quicklooks use HDR JPGs nearest the `:30` mark of each UTC hour
 - WXcam operations and archive verification may track the full mirrored raw tree
   even though the dashboard-facing products only use the HDR subset
+
+Some code and performance events still use `wxcam_calendar_*` names because the
+WXcam day grid originally lived on a tab called Calendar. The visible UI is now
+Science Quicklooks.

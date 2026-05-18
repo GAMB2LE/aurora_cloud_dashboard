@@ -3,8 +3,9 @@
 This module hosts the multi-instrument Panel and Plotly browser for atmospheric
 curtains, station summaries, WXcam media, quicklooks, and operations monitoring.
 It keeps per-instrument state warm and uses cached bounds, stale-render
-protection, coarse-first rendering on heavier 2D plots, and Power-specific
-trace bucketing to keep the UI responsive during normal browsing.
+protection, prewarmed latest summary figures, coarse-first rendering on heavier
+2D plots, and instrument-specific trace-density controls to keep the UI
+responsive during normal browsing.
 """
 
 import asyncio
@@ -3503,7 +3504,11 @@ def _wxcam_interactive_video_options(selection: str) -> dict[str, str | None]:
 
 
 def _wxcam_calendar_options(selection: str) -> dict[str, str | None]:
-    """Return WXcam science-quicklook day choices for the HDR thumbnail grid."""
+    """Return WXcam Science Quicklook day choices for the HDR thumbnail grid.
+
+    Some internal state/event names still say "calendar" from the older tab
+    label. The visible UI is now Science Quicklooks.
+    """
     image_type = _image_type_from_selection(selection)
     with _timed_perf("wxcam_calendar_options", instrument="wxcam", image_type=image_type) as perf:
         day_values = available_days(_wxcam_catalog_path("wxcam"), image_type, media_kind="image")
@@ -5243,6 +5248,7 @@ def _wxcam_quicklook_header(selection: str, day_utc: str) -> pn.pane.HTML:
 
 
 def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour_path: str):
+    """Build the WXcam Science Quicklook hourly HDR-image grid."""
     with _timed_perf(
         "wxcam_calendar_day_view",
         instrument="wxcam",
@@ -6855,10 +6861,6 @@ pn.state.onload(_enable_browser_interactive_render)
 
 tabs.sizing_mode = "stretch_width"
 template.main[:] = [main_layout]
-
-def _apply_theme(dark: bool):
-    """No-op placeholder (dark mode removed)."""
-    return
 
 # Serve the app. `location=True` installs Panel's Location model so the app can
 # keep the browser URL aligned with the selected view.

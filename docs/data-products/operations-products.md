@@ -52,10 +52,10 @@ Path:
 When checked on `2026-05-18`:
 
 - dimension: `time`
-- shape: `time=2431`
+- shape: `time=2525`
 - data variables: `374`
 - time coverage when checked: `2026-05-09 16:01:00.181057` to
-  `2026-05-18 18:32:04.299819`
+  `2026-05-18 22:27:05.482458`
 - useful attrs:
   - `instrument = "ops-monitor"`
   - `source = "ops_monitor_YYYYMMDD.jsonl"`
@@ -82,6 +82,11 @@ plot of every numeric monitoring field.
 The top-level **Operations Dashboard** tab reads the latest snapshot directly,
 so the live status view can be useful even before enough archived samples exist
 to generate meaningful historical PNGs.
+
+The live tab also reads the Operations Zarr for cached seven-day trend cards
+covering worst storage pressure, APS state of charge, APS battery voltage,
+worst source lag, and worst GWS lag. Those cards are context for operators; the
+latest snapshot remains the authority for the traffic-light state.
 
 ## Phase 1 sentinel outputs
 

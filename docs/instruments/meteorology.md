@@ -37,6 +37,11 @@ The Meteorology instrument currently groups:
 
 Axes use human-readable labels with units rather than raw field names.
 
+The latest interactive view can be prewarmed as Plotly JSON by
+`generate_vaisalamet_quicklooks.py` under
+`/data/aurora/products/dashboard/prewarm/`, so the first latest-view paint does
+not have to rebuild the full figure.
+
 ## Quicklooks
 
 - science quicklooks show the curated Meteorology summary

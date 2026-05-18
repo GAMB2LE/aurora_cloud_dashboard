@@ -141,3 +141,7 @@ figure construction.
 
 These fields are useful for understanding real browser behavior, including
 multi-user overlap and concurrent browsing.
+
+The `wxcam_calendar_*` event names are retained for continuity with existing
+performance logs. In the visible dashboard those events now correspond to the
+WXcam hourly HDR grid on the **Science Quicklooks** tab.

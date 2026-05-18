@@ -36,7 +36,10 @@ stores.
 - `plot_*_last24h.py`
 
 These scripts generate the archived PNG products and the latest-view assets
-used by the dashboard.
+used by the dashboard. The Power, Meteorology, and Radiation quicklook
+generators also write prewarmed latest interactive Plotly JSON under
+`/data/aurora/products/dashboard/prewarm/` so those first interactive views can
+paint without rebuilding the whole figure.
 
 ## WXcam tooling
 
@@ -61,8 +64,3 @@ used by the dashboard.
 
 - `summarize_dashboard_perf.py` - summarizes JSONL performance timing logs
 - `consolidate_zarr_metadata.py` - metadata consolidation helper
-
-The repo also contains older experimental app variants preserved as reference:
-
-- `ceilo_app_dask_slow_20251028_212300.py`
-- `ceilo_app_no_dask_works_20251028_195400.py`

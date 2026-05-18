@@ -8,6 +8,7 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - raw data root: `/project/aurora/raw`
 - product root: `/data/aurora/products`
 - quicklook root: `/data/aurora/products/quicklooks`
+- interactive prewarm root: `/data/aurora/products/dashboard/prewarm`
 
 ## Important deployed products
 

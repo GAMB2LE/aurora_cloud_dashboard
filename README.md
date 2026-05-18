@@ -15,7 +15,7 @@ for whether the observing stack is behaving.
 - `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`. The science layout uses the current ASFS logger schema, including SR30 shortwave, IR20 longwave, flux plates, KT15 surface temperature, and SR50 distance.
 - `WXcam` - interactive stitched HDR video browser for the deployed `FISH HDR` and `PANO HDR` streams, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. MP4 files are served through the dashboard static media route instead of being embedded in the Panel websocket payload. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30 UTC` in each UTC hour. AUTO/LONG/SHORT files remain on the camera host and are not part of the current local product stream.
-- `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, Aurora Power Supply battery voltage, Aurora Power Supply internal temperature, processing health, dashboard render performance, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. The collector also writes Phase 1 observe-only health JSON and daily Markdown reports for service/code monitoring. The storage section now breaks out the CL61 root/data views, ASS data/root views, APS data/root views, and the AURORA Cloud product/root views separately, with subtitles showing the resolved `pwd -P` path being measured. Archived `HK_Operations` quicklooks are still available from `House Keeping Quicklooks` and now use a curated diagnostics layout rather than plotting every numeric operations field.
+- `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, Aurora Power Supply battery voltage/SOC/internal temperature, processing health, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. It also groups symptoms into source, sync/network, local processing, GWS transfer, and dashboard/render root-cause cards, and shows seven-day trends for storage, SOC, voltage, source lag, and GWS lag. Dashboard render performance is visible as diagnostic context, but it does not drive the top-level action state. The collector also writes Phase 1 observe-only health JSON and daily Markdown reports for service/code monitoring. The storage section breaks out the CL61 root/data views, ASS data/root views, APS data/root views, and AURORA Cloud product/root views separately, with subtitles showing the resolved `pwd -P` path being measured. Archived `HK_Operations` quicklooks are still available from `House Keeping Quicklooks` and now use a curated diagnostics layout rather than plotting every numeric operations field.
 
 Additional housekeeping products now exist for:
 
@@ -89,8 +89,8 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/wxcam/...`
 - Storage type: local disk on `/dev/vdb`
 - Current filesystem size on `2026-05-18`: `983G`
-- Current used on `2026-05-18`: `213G`
-- Current available on `2026-05-18`: `720G`
+- Current used on `2026-05-18`: `216G`
+- Current available on `2026-05-18`: `718G`
 
 So `/data/aurora` is the product, work, and output area.
 
@@ -221,6 +221,7 @@ The main event families currently logged are:
 - `interactive_render_deferred`
 - `interactive_render_cache_hit`
 - `interactive_render_debounced`
+- `interactive_prewarm_load`
 - `window_open`
 - `interactive_view_update`
 - `hatpro_render`
@@ -249,13 +250,18 @@ keep switching responsive:
   views
 - coarse-first rendering for the heavier 2D interactive plots before a full
   detail pass replaces them
-- Power interactive plots use the same display-time preparation and per-trace
-  time downsampling approach as the quicklooks, with sanity limits for
-  impossible APS values so isolated raw outliers do not dominate the browser
-  view. The Battery Charging panel also applies a display-only 30-minute
+- fixed-summary interactive plots use display-time preparation and
+  instrument-specific per-trace time downsampling. Power also applies sanity
+  limits for impossible APS values so isolated raw outliers do not dominate the
+  browser view. The Battery Charging panel applies a display-only 30-minute
   rolling mean to `BatteryAmps` and `BatteryWatts`.
+- latest Aurora Power Supply, Meteorology, and Radiation interactive figures
+  can be loaded from prewarmed Plotly JSON generated by their quicklook
+  pipelines
 - the live Power 24 h window is rounded to 5-minute cache buckets, avoiding a
   full rebuild for every tiny latest-timestamp nudge
+- empty interactive windows include the selected UTC window and suggest the
+  next useful check instead of showing a bare blank plot
 
 Each event also carries session and concurrency context when available, including:
 
@@ -313,7 +319,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - Availability bars, freshness/status chips, and share/download controls are shown beneath the rendered content in each tab so the data view stays visually primary.
 - Summary-plot legends are kept per panel in a dedicated right-side gutter beyond the right y-axis labels instead of sharing one global legend.
 - `Science Quicklooks` and `House Keeping Quicklooks` use separate tab state. Science quicklooks show one product at a time, while housekeeping quicklooks only appear for instruments that actually have HK images.
-- `Operations Dashboard` is the live status surface for current health, while archived `HK_Operations` quicklooks remain available from `House Keeping Quicklooks`. The live tab reads the latest Operations snapshot JSON directly so the traffic lights reflect current service and transfer state even when archived monitoring quicklooks lag behind. Archive traffic lights now treat a stream as healthy when the settled GWS mirror has zero missing or mismatched files, even if one or two brand-new files are still catching the next transfer cycle.
+- `Operations Dashboard` is the live status surface for current health, while archived `HK_Operations` quicklooks remain available from `House Keeping Quicklooks`. The live tab reads the latest Operations snapshot JSON directly so the traffic lights reflect current service and transfer state even when archived monitoring quicklooks lag behind. It also reads the Operations Zarr for cached seven-day trend cards. Archive traffic lights now treat a stream as healthy when the settled GWS mirror has zero missing or mismatched files, even if one or two brand-new files are still catching the next transfer cycle.
 - `WXcam` full-archive mirroring is treated as a backfill state rather than a hard failure when the historical copy is still catching up but the live tip is current.
 - `HK_Ceilometer` excludes the main science fields (`beta_att`, `linear_depol_ratio`) and focuses on real housekeeping diagnostics such as sample cadence, gain, noise, tilt, visibility, and weather flags.
 - `HK_Radar` is generated from the raw RPG LV1 support variables instead of the radar science Zarr, so the housekeeping plot now reflects instrument state, thermal state, pointing, surface met, and ancillary retrieval health.
@@ -337,7 +343,7 @@ Path: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape checked on `2026-05-18`: `time=104982`, `range=3276`, `layer=5`
+- deployed shape checked on `2026-05-18`: `time=106392`, `range=3276`, `layer=5`
 - coordinates:
   - `time` - profile timestamps
   - `range` - range gate center in meters
@@ -400,7 +406,7 @@ Path: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`
-- deployed shape checked on `2026-05-18`: `time=160760`, `range=312`
+- deployed shape checked on `2026-05-18`: `time=169783`, `range=312`
 - coordinates:
   - `time` - derived from `Time + Timems`
   - `range` - concatenated chirp range gates from `C1Range` and `C2Range`
@@ -439,7 +445,7 @@ Path: `/data/aurora/products/hatprog5/hatpro.zarr`
 This store is a consolidated time-indexed xarray product for the RPG HATPRO G5
 scanning microwave radiometer.
 
-- deployed shape checked on `2026-05-18`: `time=680374`, `range=94`
+- deployed shape checked on `2026-05-18`: `time=694062`, `range=94`
 - the deployed store currently contains 6 variables:
   - `LWP`
   - `IWV`
@@ -457,7 +463,7 @@ Path: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=227032`
+- deployed shape checked on `2026-05-18`: `time=229410`
 - coordinate:
   - `time` - parsed from the raw `timestamp` column, localized as `Europe/London`, then converted to UTC before storage
 
@@ -496,7 +502,7 @@ Path: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=20489`
+- deployed shape checked on `2026-05-18`: `time=20599`
 - coordinate:
   - `time` - parsed directly from the TOA5 `TIMESTAMP` column
 
@@ -534,7 +540,7 @@ Path: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=1978238`
+- deployed shape checked on `2026-05-18`: `time=1987921`
 - coordinate:
   - `time` - parsed from `TIMESTAMP` and offset by `metek_msec_out` to preserve sub-second timing
 
@@ -574,7 +580,7 @@ Path: `/data/aurora/products/power/power.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=874618`
+- deployed shape checked on `2026-05-18`: `time=887825`
 - coordinate:
   - `time` - parsed from the raw `aps_time` column
 
@@ -627,7 +633,8 @@ Dashboard performance note:
   Power Zarr authoritative while avoiding multi-day one-second reads during
   interactive plotting
 - the latest Power interactive figure is prewarmed as Plotly JSON under
-  `/data/aurora/products/dashboard/prewarm/`
+  `/data/aurora/products/dashboard/prewarm/`; the same prewarm directory also
+  holds latest Meteorology and Radiation interactive figures
 - live latest windows are rounded into 5-minute cache buckets so small timestamp
   advances do not force a complete Plotly rebuild
 
@@ -694,9 +701,9 @@ Each group stores one xarray dataset with:
 
 Group-specific image geometry checked on `2026-05-18`:
 
-- `fish_hdr`: `time=13416`, `3120 x 3040` pixels, `channel=3`,
+- `fish_hdr`: `time=13557`, `3120 x 3040` pixels, `channel=3`,
   chunked as `(1, 1024, 1024, 3)`, covering `2026-05-02 00:00:00` to
-  `2026-05-18 18:30:39`
-- `pano_hdr`: `time=2075`, `2880 x 750` pixels, `channel=3`, chunked as
+  `2026-05-18 22:25:39`
+- `pano_hdr`: `time=2214`, `2880 x 750` pixels, `channel=3`, chunked as
   `(1, 750, 1024, 3)`, covering `2026-01-12 02:25:00` to
-  `2026-05-18 18:30:39`
+  `2026-05-18 22:25:39`

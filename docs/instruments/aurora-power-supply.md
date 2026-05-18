@@ -57,6 +57,8 @@ live latest window is rounded into 5-minute cache buckets, and the latest Power
 interactive figure is prewarmed as Plotly JSON by `generate_power_quicklooks.py`
 so first paint can reuse the most recent quicklook-era render.
 
+That prewarmed JSON lives under `/data/aurora/products/dashboard/prewarm/`.
+
 The **Battery Charging** panel also applies a display-only 30-minute rolling
 mean to `BatteryAmps` and `BatteryWatts`. This keeps isolated charging
 transients from dominating the visual scale while leaving the stored Power Zarr

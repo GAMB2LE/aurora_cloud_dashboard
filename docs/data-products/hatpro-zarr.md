@@ -36,10 +36,10 @@ the `range` coordinate when present.
 
 When checked on `2026-05-18`, the deployed store had:
 
-- `time=680374`
+- `time=694062`
 - `range=94`
 - 6 data variables
-- time coverage: `2026-02-27 13:00:01` to `2026-05-18 17:59:56`
+- time coverage: `2026-02-27 13:00:01` to `2026-05-18 21:59:56`
 
 ## Variables
 

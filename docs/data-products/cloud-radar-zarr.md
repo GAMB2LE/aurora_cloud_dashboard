@@ -8,10 +8,10 @@ Path:
 
 - dimensions: `time`, `range`
 - deployed shape when checked on `2026-05-18`:
-  - `time=160760`
+  - `time=169783`
   - `range=312`
 - valid operational time coverage when checked: `2026-05-09 08:59:59.305` to
-  `2026-05-18 16:59:56.824`
+  `2026-05-18 21:59:54.668`
 - one known far-future raw timestamp is present in the coordinate; the dashboard
   excludes it when computing bounds and plotting
 

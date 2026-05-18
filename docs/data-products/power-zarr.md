@@ -8,9 +8,9 @@ Path:
 
 - dimension: `time`
 - deployed shape when checked on `2026-05-18`:
-  - `time=874618`
+  - `time=887825`
 - time coverage when checked: `2026-05-05 15:15:23.598658936` to
-  `2026-05-18 18:31:00.017739502`
+  `2026-05-18 22:30:08.950650635`
 
 ## Time coordinate
 
@@ -69,6 +69,8 @@ store with larger read chunks for interactive plotting, applies display-only
 sanity limits for impossible APS values, uses per-trace time downsampling, and
 rounds live latest windows into 5-minute cache buckets. Those choices are
 presentation-layer optimizations only; they do not change ingest or storage.
+The latest APS interactive figure is also prewarmed as Plotly JSON by the
+quicklook pipeline under `/data/aurora/products/dashboard/prewarm/`.
 
 ## Derived display-energy Zarr
 

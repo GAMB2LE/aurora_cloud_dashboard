@@ -30,6 +30,8 @@ The general rule is:
 - dashboard-facing products live under `/data/aurora/products`
 
 For most numeric instruments, that means a fixed-schema Zarr plus generated PNG
-quicklooks. WXcam adds media/catalog products on top of that pattern, while
-Operations Dashboard adds raw JSONL snapshots, a monitoring Zarr, archived PNG
-quicklooks, and observe-only health reports.
+quicklooks. The fixed-summary 1D instruments can also write prewarmed latest
+interactive Plotly JSON under `/data/aurora/products/dashboard/prewarm/`.
+WXcam adds media/catalog products on top of that pattern, while Operations
+Dashboard adds raw JSONL snapshots, a monitoring Zarr, archived PNG quicklooks,
+live trend cards, and observe-only health reports.
