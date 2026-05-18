@@ -50,6 +50,7 @@ POWER_DISPLAY_ENERGY_MAP = {
     "CumulativePowerUtilised": "PowerDisplayCumulativePowerUtilised",
     "PowerSurplusDeficit": "PowerDisplayPowerSurplusDeficit",
 }
+POWER_BALANCE_TRACE = "PowerSurplusDeficit"
 
 
 @dataclass(frozen=True)
@@ -1675,6 +1676,156 @@ def _trace_plot_values(
     return _insert_day_breaks(trace_times, trace_values, trace)
 
 
+def _include_zero_in_limits(limits: tuple[float, float] | None) -> tuple[float, float] | None:
+    """Expand an axis range just enough to keep the zero reference visible."""
+    if limits is None:
+        return None
+    lower, upper = limits
+    if lower <= 0.0 <= upper:
+        return limits
+    span = max(upper - lower, max(abs(lower), abs(upper), 1.0) * 0.1)
+    if lower > 0.0:
+        return -0.04 * span, upper
+    return lower, 0.08 * span
+
+
+def _balance_label(value: float) -> str:
+    if not np.isfinite(value):
+        return ""
+    if abs(value) < 0.05:
+        return "Balanced 0 kWh"
+    return f"Surplus +{value:.1f} kWh" if value > 0 else f"Deficit {value:.1f} kWh"
+
+
+def _power_balance_trace_values(
+    times: pd.DatetimeIndex,
+    rows: list[tuple[TraceSpec, np.ndarray]],
+    max_time_samples: int,
+) -> tuple[TraceSpec, pd.DatetimeIndex, np.ndarray] | None:
+    for trace, values in rows:
+        if trace.var != POWER_BALANCE_TRACE:
+            continue
+        trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
+        if len(trace_times):
+            return trace, trace_times, trace_values
+    return None
+
+
+def _last_finite_trace_point(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.Timestamp, float] | None:
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return None
+    idx = int(np.nonzero(finite)[0][-1])
+    return pd.Timestamp(times[idx]), float(values[idx])
+
+
+def _add_matplotlib_power_balance_guides(
+    ax,
+    rows: list[tuple[TraceSpec, np.ndarray]],
+    times: pd.DatetimeIndex,
+    max_time_samples: int,
+) -> None:
+    """Annotate the APS surplus/deficit right axis without changing stored data."""
+    balance = _power_balance_trace_values(times, rows, max_time_samples)
+    if balance is None:
+        return
+    trace, trace_times, trace_values = balance
+    ax.axhline(0.0, color=PLOT_GRID, linewidth=0.8, zorder=0)
+    ax.text(
+        0.99,
+        0.0,
+        "0 kWh balance",
+        transform=ax.get_yaxis_transform(),
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        color=PLOT_TEXT,
+        bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.5),
+    )
+    point = _last_finite_trace_point(trace_times, trace_values)
+    if point is None:
+        return
+    last_time, last_value = point
+    ax.scatter([last_time], [last_value], s=26, color=trace.color, edgecolor="white", linewidth=0.8, zorder=4)
+    annotation = ax.annotate(
+        _balance_label(last_value),
+        xy=(last_time, last_value),
+        xytext=(7, 0),
+        textcoords="offset points",
+        ha="left",
+        va="center",
+        fontsize=8,
+        color=trace.color,
+        bbox=dict(facecolor="white", edgecolor=trace.color, linewidth=0.6, alpha=0.9, pad=2),
+    )
+    annotation.set_clip_on(False)
+
+
+def _add_plotly_power_balance_guides(
+    fig: go.Figure,
+    row_index: int,
+    trace: TraceSpec,
+    trace_times: pd.DatetimeIndex,
+    trace_values: np.ndarray,
+) -> None:
+    """Add neutral zero reference and latest-value marker to the APS balance trace."""
+    finite = np.isfinite(trace_values)
+    if not np.any(finite):
+        return
+    first_time = pd.Timestamp(trace_times[finite][0])
+    last_point = _last_finite_trace_point(trace_times, trace_values)
+    if last_point is None:
+        return
+    last_time, last_value = last_point
+    fig.add_trace(
+        go.Scatter(
+            x=[first_time, last_time],
+            y=[0.0, 0.0],
+            mode="lines",
+            name="0 kWh balance",
+            line=dict(color=PLOT_GRID, width=1.0),
+            hoverinfo="skip",
+            showlegend=False,
+        ),
+        row=row_index,
+        col=1,
+        secondary_y=True,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[first_time],
+            y=[0.0],
+            mode="text",
+            text=["0 kWh balance"],
+            textposition="top right",
+            textfont=dict(color=PLOT_TEXT, size=10),
+            hoverinfo="skip",
+            showlegend=False,
+        ),
+        row=row_index,
+        col=1,
+        secondary_y=True,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[last_time],
+            y=[last_value],
+            mode="markers+text",
+            name="Latest balance",
+            marker=dict(color=trace.color, size=8, line=dict(color="white", width=1)),
+            text=[_balance_label(last_value)],
+            textposition="middle left",
+            textfont=dict(color=trace.color, size=11),
+            cliponaxis=False,
+            hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}} kWh<extra></extra>",
+            showlegend=False,
+        ),
+        row=row_index,
+        col=1,
+        secondary_y=True,
+    )
+
+
 def _padded_axis_limits(
     series: list[np.ndarray],
     headroom: float = MATPLOTLIB_Y_HEADROOM_FRACTION,
@@ -1818,7 +1969,25 @@ def save_summary_png(
             trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
-            target.plot(trace_times, trace_values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
+            marker_kwargs = {}
+            if trace.var == POWER_BALANCE_TRACE:
+                marker_kwargs = {
+                    "marker": "o",
+                    "markersize": 3.0,
+                    "markerfacecolor": "white",
+                    "markeredgecolor": trace.color,
+                    "markeredgewidth": 0.7,
+                    "markevery": max(1, len(trace_times) // 24),
+                }
+            target.plot(
+                trace_times,
+                trace_values,
+                color=trace.color,
+                linewidth=1.25,
+                drawstyle=drawstyle,
+                label=trace.label,
+                **marker_kwargs,
+            )
             if target is right_ax:
                 right_axis_values.append(trace_values)
             else:
@@ -1838,6 +2007,10 @@ def save_summary_png(
                     right_ax.set_ylim(*common_limits)
             elif left_limits is not None and right_limits is None:
                 right_ax.set_ylim(*left_limits)
+            if panel.key == "cumulative_power":
+                right_limits = _include_zero_in_limits(right_limits)
+                if right_limits is not None:
+                    right_ax.set_ylim(*right_limits)
 
         ax.set_facecolor("white")
         ax.grid(True, color=PLOT_GRID, linewidth=0.5)
@@ -1847,7 +2020,8 @@ def save_summary_png(
             right_ax.tick_params(axis="y", colors=right_color or COLOR["black"], labelsize=9)
             right_ax.set_ylabel(panel.right_axis_label or "", color=right_color or COLOR["black"], fontsize=11)
             if panel.key == "cumulative_power":
-                right_ax.grid(True, axis="y", color=right_color or PLOT_GRID, linewidth=0.35, linestyle=":", alpha=0.35)
+                right_ax.grid(True, axis="y", color=PLOT_GRID, linewidth=0.35, linestyle=":", alpha=0.7)
+                _add_matplotlib_power_balance_guides(right_ax, rows, times, max_time_samples)
 
         ax.text(
             0.01,
@@ -1960,6 +2134,7 @@ def build_summary_plotly(
         right_color = None
         left_axis_values: list[np.ndarray] = []
         right_axis_values: list[np.ndarray] = []
+        balance_rendered: tuple[TraceSpec, pd.DatetimeIndex, np.ndarray] | None = None
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
             if secondary and right_color is None:
@@ -1973,14 +2148,20 @@ def build_summary_plotly(
                 right_axis_values.append(trace_values)
             else:
                 left_axis_values.append(trace_values)
+            if trace.var == POWER_BALANCE_TRACE:
+                balance_rendered = (trace, trace_times, trace_values)
+            marker_kwargs = {}
+            if trace.var == POWER_BALANCE_TRACE:
+                marker_kwargs = dict(marker=dict(color=trace.color, size=4, symbol="circle-open"))
             fig.add_trace(
                 go.Scatter(
                     x=trace_times,
                     y=trace_values,
-                    mode="lines",
+                    mode="lines+markers" if trace.var == POWER_BALANCE_TRACE else "lines",
                     name=trace.label,
                     legend=legend_name,
                     line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                    **marker_kwargs,
                     hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}}<extra></extra>",
                     connectgaps=False,
                     showlegend=True,
@@ -1991,6 +2172,8 @@ def build_summary_plotly(
             )
         left_range = _padded_axis_limits(left_axis_values, headroom=0.08, footroom=0.04)
         right_range = _padded_axis_limits(right_axis_values, headroom=0.08, footroom=0.04)
+        if panel.key == "cumulative_power":
+            right_range = _include_zero_in_limits(right_range)
         if panel.right_axis_label == panel.left_axis_label:
             common_range = _padded_axis_limits(left_axis_values + right_axis_values, headroom=0.08, footroom=0.04)
             if common_range is not None:
@@ -2012,7 +2195,10 @@ def build_summary_plotly(
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
                 showgrid=panel.key == "cumulative_power",
-                gridcolor="rgba(192, 86, 71, 0.18)" if panel.key == "cumulative_power" else PLOT_GRID,
+                gridcolor=PLOT_GRID,
+                zeroline=panel.key == "cumulative_power",
+                zerolinecolor=PLOT_GRID,
+                zerolinewidth=1,
                 linecolor=PLOT_LINE,
                 tickfont=dict(color=right_color or COLOR["black"], size=10),
                 title_font=dict(color=right_color or COLOR["black"], size=11),
@@ -2021,6 +2207,8 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=True,
             )
+        if panel.key == "cumulative_power" and balance_rendered is not None:
+            _add_plotly_power_balance_guides(fig, row_index, *balance_rendered)
 
     tickvals = []
     ticktext = []
