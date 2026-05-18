@@ -391,15 +391,15 @@ def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: f
 
 def _probe_http(url: str) -> dict[str, float | int | str | None]:
     start = time.monotonic()
-    request = urllib.request.Request(url, headers={"User-Agent": "aurora-ops-monitor/1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": "aurora-ops-monitor/1.0"}, method="HEAD")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            response.read(256)
             status_code = int(response.status)
     except urllib.error.HTTPError as exc:
+        status_code = int(exc.code)
         return {
-            "ok_state": 0,
-            "status_code": int(exc.code),
+            "ok_state": 1 if 200 <= status_code < 400 or status_code == 405 else 0,
+            "status_code": status_code,
             "response_ms": (time.monotonic() - start) * 1000.0,
             "error": str(exc),
         }
@@ -411,7 +411,7 @@ def _probe_http(url: str) -> dict[str, float | int | str | None]:
             "error": str(exc),
         }
     return {
-        "ok_state": 1 if 200 <= status_code < 500 else 0,
+        "ok_state": 1 if 200 <= status_code < 400 or status_code == 405 else 0,
         "status_code": status_code,
         "response_ms": (time.monotonic() - start) * 1000.0,
         "error": "",
