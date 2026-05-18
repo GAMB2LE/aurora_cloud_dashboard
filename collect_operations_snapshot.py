@@ -12,16 +12,23 @@ import numpy as np
 import os
 from pathlib import Path
 import subprocess
+import time
 from typing import Any
+import urllib.error
+import urllib.request
 import pandas as pd
 import xarray as xr
 
 
 RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
+HEALTH_OUTPUT_ROOT_DEFAULT = Path("/data/aurora/products/ops_monitor/health")
 MANIFEST_ROOT_DEFAULT = Path("/data/aurora/internal/mirror_manifests")
 GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 DASHBOARD_PERF_LOG_DEFAULT = Path("/data/aurora/products/dashboard/dashboard_perf.jsonl")
+DASHBOARD_HTTP_URL_DEFAULT = "http://127.0.0.1:5006/app"
+INFRA_REPO_DEFAULT = Path("/tmp/aurora-cloud-infra-codex")
+ENV_FILE_DEFAULT = Path("/etc/aurora-dashboard.env")
 KNOWN_HOSTS = Path("/home/aurora/.ssh/known_hosts")
 
 SOURCE_HOSTS = {
@@ -155,10 +162,26 @@ TRANSFER_UNITS = (
     "aurora-mirror-verify.service",
 )
 SOURCE_RECENT_THRESHOLD_MINUTES = 90.0
+HEALTH_LEVELS = {"green": 0, "amber": 1, "red": 2, "gray": -1}
 
 
 def _path_from_env(name: str, default: str | Path) -> Path:
     return Path(os.environ.get(name, str(default)))
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -173,8 +196,8 @@ def _float_or_none(value: Any) -> float | None:
     return number
 
 
-def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+def _run(cmd: list[str], *, check: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=timeout)
 
 
 def _tailscale_ssh_base() -> list[str]:
@@ -366,6 +389,84 @@ def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: f
     }
 
 
+def _probe_http(url: str) -> dict[str, float | int | str | None]:
+    start = time.monotonic()
+    request = urllib.request.Request(url, headers={"User-Agent": "aurora-ops-monitor/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            response.read(256)
+            status_code = int(response.status)
+    except urllib.error.HTTPError as exc:
+        return {
+            "ok_state": 0,
+            "status_code": int(exc.code),
+            "response_ms": (time.monotonic() - start) * 1000.0,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "ok_state": 0,
+            "status_code": None,
+            "response_ms": (time.monotonic() - start) * 1000.0,
+            "error": str(exc),
+        }
+    return {
+        "ok_state": 1 if 200 <= status_code < 500 else 0,
+        "status_code": status_code,
+        "response_ms": (time.monotonic() - start) * 1000.0,
+        "error": "",
+    }
+
+
+def _git_value(repo: Path, args: list[str]) -> str | None:
+    try:
+        proc = _run(["git", "-C", str(repo), *args], check=False, timeout=5.0)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip()
+
+
+def _collect_git_metrics(prefix: str, repo: Path, record: dict[str, Any]) -> None:
+    record[f"{prefix}_repo_path"] = str(repo)
+    if not repo.exists():
+        record[f"{prefix}_repo_exists_state"] = 0
+        return
+    inside = _git_value(repo, ["rev-parse", "--is-inside-work-tree"])
+    if inside != "true":
+        record[f"{prefix}_repo_exists_state"] = 0
+        return
+
+    record[f"{prefix}_repo_exists_state"] = 1
+    record[f"{prefix}_git_branch"] = _git_value(repo, ["rev-parse", "--abbrev-ref", "HEAD"]) or ""
+    record[f"{prefix}_git_commit"] = _git_value(repo, ["rev-parse", "--short", "HEAD"]) or ""
+    upstream = _git_value(repo, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    record[f"{prefix}_git_upstream"] = upstream or ""
+
+    status = _git_value(repo, ["status", "--porcelain"])
+    dirty_count = len([line for line in (status or "").splitlines() if line.strip()])
+    record[f"{prefix}_git_dirty_count"] = dirty_count
+    record[f"{prefix}_git_clean_state"] = 1 if dirty_count == 0 else 0
+
+    commit_time = _git_value(repo, ["log", "-1", "--format=%ct"])
+    if commit_time:
+        try:
+            record[f"{prefix}_git_commit_epoch"] = int(commit_time)
+        except ValueError:
+            pass
+
+    if upstream:
+        divergence = _git_value(repo, ["rev-list", "--left-right", "--count", "@{u}...HEAD"])
+        if divergence:
+            try:
+                behind, ahead = divergence.split()
+                record[f"{prefix}_git_behind_count"] = int(behind)
+                record[f"{prefix}_git_ahead_count"] = int(ahead)
+            except ValueError:
+                pass
+
+
 def _latest_finite_zarr_value(
     zarr_path: Path,
     var_name: str,
@@ -547,6 +648,21 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     for key, value in perf_log_stats.items():
         record[f"dashboard_perf_log_{key}"] = value
 
+    dashboard_probe = _probe_http(os.environ.get("AURORA_DASHBOARD_HEALTH_URL", DASHBOARD_HTTP_URL_DEFAULT))
+    for key, value in dashboard_probe.items():
+        record[f"dashboard_http_{key}"] = value
+
+    _collect_git_metrics(
+        "dashboard_code",
+        _path_from_env("AURORA_DASHBOARD_REPO", Path(__file__).resolve().parent),
+        record,
+    )
+    _collect_git_metrics(
+        "infra_code",
+        _path_from_env("AURORA_INFRA_REPO", INFRA_REPO_DEFAULT),
+        record,
+    )
+
     gws_host, gws_metrics = _probe_gws(gws_path)
     record["gws_available_state"] = 1 if gws_metrics else 0
     if gws_metrics:
@@ -686,16 +802,388 @@ def write_snapshot(output_root: Path, snapshot: dict[str, Any]) -> Path:
     return path
 
 
+def _value(snapshot: dict[str, Any], key: str) -> float | None:
+    try:
+        number = float(snapshot[key])
+    except Exception:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _state(snapshot: dict[str, Any], key: str) -> bool | None:
+    number = _value(snapshot, key)
+    if number is None:
+        return None
+    return bool(round(number))
+
+
+def _worst_level(levels: list[str]) -> str:
+    meaningful = [level for level in levels if level != "gray"]
+    if not meaningful:
+        return "gray"
+    return max(meaningful, key=lambda level: HEALTH_LEVELS.get(level, -1))
+
+
+def _level_from_bool(value: bool | None) -> str:
+    if value is None:
+        return "gray"
+    return "green" if value else "red"
+
+
+def _level_from_count(value: float | None, *, amber_at: float = 1.0) -> str:
+    if value is None:
+        return "gray"
+    if value <= 0:
+        return "green"
+    if value <= amber_at:
+        return "amber"
+    return "red"
+
+
+def _level_from_used_pct(value: float | None) -> str:
+    if value is None:
+        return "gray"
+    if value < 75.0:
+        return "green"
+    if value < 90.0:
+        return "amber"
+    return "red"
+
+
+def _level_from_battery_voltage(value: float | None) -> str:
+    if value is None:
+        return "gray"
+    if value > 52.0:
+        return "green"
+    if value >= 50.0:
+        return "amber"
+    return "red"
+
+
+def _level_from_internal_temp(value: float | None) -> str:
+    if value is None:
+        return "gray"
+    if value < 35.0:
+        return "green"
+    if value < 40.0:
+        return "amber"
+    return "red"
+
+
+def _fmt(value: float | None, suffix: str = "", digits: int = 1) -> str:
+    if value is None:
+        return "unknown"
+    return f"{value:.{digits}f}{suffix}"
+
+
+def _health_check(
+    checks: list[dict[str, Any]],
+    level: str,
+    component: str,
+    message: str,
+    *,
+    details: str = "",
+    metrics: dict[str, Any] | None = None,
+) -> None:
+    checks.append(
+        {
+            "level": level,
+            "component": component,
+            "message": message,
+            "details": details,
+            "metrics": metrics or {},
+        }
+    )
+
+
+def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | None = None) -> dict[str, Any]:
+    """Convert the raw metric snapshot into an observe-only health assessment."""
+
+    checks: list[dict[str, Any]] = []
+
+    http_level = _level_from_bool(_state(snapshot, "dashboard_http_ok_state"))
+    _health_check(
+        checks,
+        http_level,
+        "dashboard",
+        "Dashboard HTTP endpoint",
+        details=f"status={snapshot.get('dashboard_http_status_code', 'unknown')}, response={_fmt(_value(snapshot, 'dashboard_http_response_ms'), ' ms', 0)}",
+    )
+
+    perf_log_recent = _state(snapshot, "dashboard_perf_log_recent_state")
+    perf_level = _level_from_bool(perf_log_recent)
+    _health_check(
+        checks,
+        perf_level,
+        "dashboard",
+        "Dashboard performance log freshness",
+        details=f"age={_fmt(_value(snapshot, 'dashboard_perf_log_age_min'), ' min')}",
+    )
+
+    for prefix, label in (
+        ("host_celine_source", "CL61 root disk"),
+        ("host_celine_data", "CL61 data disk"),
+        ("host_ass_root", "ASS root disk"),
+        ("host_ass_data", "ASS data disk"),
+        ("host_aps_root", "APS root disk"),
+        ("host_aps_data", "APS data disk"),
+        ("aurora_project", "Aurora raw mirror disk"),
+        ("aurora_data", "AURORA Cloud product disk"),
+        ("aurora_root", "AURORA Cloud root disk"),
+        ("gws_storage", "JASMIN GWS"),
+    ):
+        probe_level = "green"
+        if prefix.startswith("host_"):
+            probe_level = _level_from_bool(_state(snapshot, f"{prefix}_probe_ok_state"))
+        elif prefix == "gws_storage":
+            probe_level = _level_from_bool(_state(snapshot, "gws_probe_ok_state"))
+        used_level = _level_from_used_pct(_value(snapshot, f"{prefix}_used_pct"))
+        _health_check(
+            checks,
+            _worst_level([probe_level, used_level]),
+            "storage",
+            label,
+            details=(
+                f"used={_fmt(_value(snapshot, f'{prefix}_used_pct'), '%', 0)}, "
+                f"free={_fmt(_value(snapshot, f'{prefix}_free_gb'), ' GB')}, "
+                f"path={snapshot.get(f'{prefix}_resolved_path', '')}"
+            ),
+        )
+
+    battery_level = _level_from_battery_voltage(_value(snapshot, "aps_battery_voltage_v"))
+    _health_check(
+        checks,
+        battery_level,
+        "power",
+        "APS battery voltage",
+        details=f"DC inverter voltage={_fmt(_value(snapshot, 'aps_battery_voltage_v'), ' V', 2)}, age={_fmt(_value(snapshot, 'aps_battery_voltage_age_min'), ' min')}",
+    )
+    temp_level = _level_from_internal_temp(_value(snapshot, "aps_internal_temp_c"))
+    _health_check(
+        checks,
+        temp_level,
+        "power",
+        "APS internal temperature",
+        details=f"temperature={_fmt(_value(snapshot, 'aps_internal_temp_c'), ' C')}, age={_fmt(_value(snapshot, 'aps_internal_temp_age_min'), ' min')}",
+    )
+
+    for stream_name, prefix in STREAM_PREFIXES.items():
+        label = stream_name.replace("_", " ")
+        source_level = _level_from_bool(_state(snapshot, f"{prefix}_source_recent_state"))
+        local_level = _level_from_count(_value(snapshot, f"{prefix}_local_missing_count") or 0.0)
+        local_mismatch_level = _level_from_count(_value(snapshot, f"{prefix}_local_mismatch_count") or 0.0)
+        gws_level = _level_from_count(_value(snapshot, f"{prefix}_gws_missing_count") or 0.0)
+        gws_mismatch_level = _level_from_count(_value(snapshot, f"{prefix}_gws_mismatch_count") or 0.0)
+        product_level = _level_from_bool(_state(snapshot, f"{prefix}_product_gate_ok_state"))
+        prune_level = _level_from_bool(_state(snapshot, f"{prefix}_prune_ready_state"))
+        _health_check(
+            checks,
+            _worst_level([source_level, local_level, local_mismatch_level, gws_level, gws_mismatch_level, product_level, prune_level]),
+            "stream",
+            f"{label} stream",
+            details=(
+                f"source_age={_fmt(_value(snapshot, f'{prefix}_source_age_min'), ' min')}, "
+                f"local_coverage={_fmt(_value(snapshot, f'{prefix}_local_coverage_pct'), '%', 2)}, "
+                f"gws_coverage={_fmt(_value(snapshot, f'{prefix}_gws_coverage_pct'), '%', 2)}"
+            ),
+        )
+
+    for unit in (*SOURCE_SYNC_UNITS, *PROCESSING_UNITS, *TRANSFER_UNITS):
+        slug = _unit_slug(unit)
+        if unit.endswith(".timer"):
+            level = _level_from_bool(_state(snapshot, f"{slug}_active_state"))
+            message = "Timer active"
+        else:
+            level = _level_from_bool(_state(snapshot, f"{slug}_healthy_state"))
+            message = "Service healthy"
+        _health_check(checks, level, "systemd", unit, details=message)
+
+    for prefix, label in (
+        ("dashboard_code", "Dashboard repository"),
+        ("infra_code", "Infrastructure repository"),
+    ):
+        exists_level = _level_from_bool(_state(snapshot, f"{prefix}_repo_exists_state"))
+        dirty_count = _value(snapshot, f"{prefix}_git_dirty_count")
+        dirty_level = _level_from_count(dirty_count, amber_at=10.0)
+        behind_count = _value(snapshot, f"{prefix}_git_behind_count")
+        ahead_count = _value(snapshot, f"{prefix}_git_ahead_count")
+        behind_level = "gray" if behind_count is None else ("amber" if behind_count > 0 else "green")
+        ahead_level = "gray" if ahead_count is None else ("amber" if ahead_count > 0 else "green")
+        _health_check(
+            checks,
+            _worst_level([exists_level, dirty_level, behind_level, ahead_level]),
+            "code",
+            label,
+            details=(
+                f"branch={snapshot.get(f'{prefix}_git_branch', '')}, "
+                f"commit={snapshot.get(f'{prefix}_git_commit', '')}, "
+                f"dirty={int(dirty_count or 0)}, "
+                f"behind={int(_value(snapshot, f'{prefix}_git_behind_count') or 0)}, "
+                f"ahead={int(_value(snapshot, f'{prefix}_git_ahead_count') or 0)}"
+            ),
+        )
+
+    overall_level = _worst_level([check["level"] for check in checks])
+    observations = [check for check in checks if check["level"] in {"amber", "red", "gray"}]
+    return {
+        "generated_at_utc": snapshot.get("time_utc"),
+        "phase": "observe-only",
+        "automated_repairs_enabled": False,
+        "overall_level": overall_level,
+        "summary": {
+            "checks": len(checks),
+            "red": sum(1 for check in checks if check["level"] == "red"),
+            "amber": sum(1 for check in checks if check["level"] == "amber"),
+            "gray": sum(1 for check in checks if check["level"] == "gray"),
+            "green": sum(1 for check in checks if check["level"] == "green"),
+        },
+        "raw_snapshot_path": str(raw_snapshot_path) if raw_snapshot_path else "",
+        "observations": observations,
+        "checks": checks,
+    }
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def _max_metric(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [_value(row, key) for row in rows]
+    finite = [value for value in values if value is not None]
+    return max(finite) if finite else None
+
+
+def render_daily_report(snapshot: dict[str, Any], health: dict[str, Any], raw_snapshot_path: Path) -> str:
+    rows = _read_jsonl(raw_snapshot_path)
+    current_observations = health["observations"]
+    red_observations = [item for item in current_observations if item["level"] == "red"]
+    amber_observations = [item for item in current_observations if item["level"] == "amber"]
+    generated = snapshot.get("time_utc", "")
+    day = datetime.fromisoformat(str(generated).replace("Z", "+00:00")).strftime("%Y-%m-%d") if generated else "unknown"
+
+    first_time = rows[0].get("time_utc", "unknown") if rows else "unknown"
+    last_time = rows[-1].get("time_utc", "unknown") if rows else "unknown"
+    lines = [
+        f"# Aurora Health Report - {day} UTC",
+        "",
+        f"Generated: `{generated}`",
+        "",
+        f"Overall status: **{health['overall_level'].upper()}**",
+        "",
+        "This is an observe-only report. No automated repair, restart, deletion, or code change was attempted by this collector.",
+        "",
+        "## Current Issues",
+    ]
+    if not current_observations:
+        lines.append("- No current red, amber, or unknown checks.")
+    else:
+        for item in [*red_observations, *amber_observations, *[obs for obs in current_observations if obs["level"] == "gray"]][:20]:
+            details = f" - {item['details']}" if item.get("details") else ""
+            lines.append(f"- **{item['level'].upper()}** `{item['component']}`: {item['message']}{details}")
+
+    lines.extend(
+        [
+            "",
+            "## Today So Far",
+            "",
+            f"- Samples collected: `{len(rows)}`",
+            f"- First sample: `{first_time}`",
+            f"- Latest sample: `{last_time}`",
+            f"- Max source sync failures: `{_fmt(_max_metric(rows, 'failed_source_sync_unit_count'), '', 0)}`",
+            f"- Max processing failures: `{_fmt(_max_metric(rows, 'failed_processing_unit_count'), '', 0)}`",
+            f"- Max transfer failures: `{_fmt(_max_metric(rows, 'failed_transfer_unit_count'), '', 0)}`",
+            f"- Max stale source streams: `{_fmt(_max_metric(rows, 'streams_source_stale_count'), '', 0)}`",
+            f"- Max local mirror issue streams: `{_fmt(_max_metric(rows, 'streams_local_issue_count'), '', 0)}`",
+            f"- Max GWS mirror issue streams: `{_fmt(_max_metric(rows, 'streams_gws_issue_count'), '', 0)}`",
+            "",
+            "## Stream Freshness",
+            "",
+            "| Stream | Source age | Local coverage | GWS coverage | Product gate | Prune gate |",
+            "| --- | ---: | ---: | ---: | --- | --- |",
+        ]
+    )
+    for stream_name, prefix in STREAM_PREFIXES.items():
+        product = "ok" if _state(snapshot, f"{prefix}_product_gate_ok_state") else "blocked"
+        prune = "ok" if _state(snapshot, f"{prefix}_prune_ready_state") else "blocked"
+        lines.append(
+            f"| {stream_name.replace('_', ' ')} | "
+            f"{_fmt(_value(snapshot, f'{prefix}_source_age_min'), ' min')} | "
+            f"{_fmt(_value(snapshot, f'{prefix}_local_coverage_pct'), '%', 2)} | "
+            f"{_fmt(_value(snapshot, f'{prefix}_gws_coverage_pct'), '%', 2)} | "
+            f"{product} | {prune} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Code State",
+            "",
+            "| Repository | Branch | Commit | Dirty | Behind | Ahead |",
+            "| --- | --- | --- | ---: | ---: | ---: |",
+        ]
+    )
+    for prefix, label in (("dashboard_code", "dashboard"), ("infra_code", "infra")):
+        lines.append(
+            f"| {label} | `{snapshot.get(f'{prefix}_git_branch', '')}` | "
+            f"`{snapshot.get(f'{prefix}_git_commit', '')}` | "
+            f"{int(_value(snapshot, f'{prefix}_git_dirty_count') or 0)} | "
+            f"{int(_value(snapshot, f'{prefix}_git_behind_count') or 0)} | "
+            f"{int(_value(snapshot, f'{prefix}_git_ahead_count') or 0)} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_health_outputs(output_root: Path, snapshot: dict[str, Any], raw_snapshot_path: Path) -> tuple[Path, Path]:
+    output_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.fromisoformat(snapshot["time_utc"].replace("Z", "+00:00"))
+    health = build_health_assessment(snapshot, raw_snapshot_path)
+
+    latest_json = output_root / "latest_health.json"
+    day_json = output_root / f"health_{stamp:%Y%m%d}.json"
+    health_json = json.dumps(health, indent=2, sort_keys=True)
+    latest_json.write_text(health_json, encoding="utf-8")
+    day_json.write_text(health_json, encoding="utf-8")
+
+    report = render_daily_report(snapshot, health, raw_snapshot_path)
+    latest_report = output_root / "latest_report.md"
+    day_report = output_root / f"health_report_{stamp:%Y%m%d}.md"
+    latest_report.write_text(report, encoding="utf-8")
+    day_report.write_text(report, encoding="utf-8")
+    return latest_json, latest_report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Collect Aurora operations monitoring snapshots.")
+    parser.add_argument("--env-file", type=Path, default=_path_from_env("AURORA_DASHBOARD_ENV_FILE", ENV_FILE_DEFAULT))
     parser.add_argument("--output-root", type=Path, default=_path_from_env("OPS_MONITOR_RAW_ROOT", RAW_ROOT_DEFAULT))
+    parser.add_argument("--health-output-root", type=Path, default=_path_from_env("OPS_MONITOR_HEALTH_ROOT", HEALTH_OUTPUT_ROOT_DEFAULT))
     parser.add_argument("--manifest-root", type=Path, default=_path_from_env("GWS_MANIFEST_ROOT", MANIFEST_ROOT_DEFAULT))
     parser.add_argument("--gws-path", type=Path, default=_path_from_env("GWS_PATH", GWS_PATH_DEFAULT))
     args = parser.parse_args()
 
+    _load_env_file(args.env_file)
+
     snapshot = build_snapshot(args.manifest_root, args.gws_path)
     path = write_snapshot(args.output_root, snapshot)
     print(f"Wrote {path}")
+    health_json, health_report = write_health_outputs(args.health_output_root, snapshot, path)
+    print(f"Wrote {health_json}")
+    print(f"Wrote {health_report}")
 
 
 if __name__ == "__main__":

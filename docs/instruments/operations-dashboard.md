@@ -14,6 +14,8 @@ stack.
 - source sync and processing health
 - dashboard performance-log freshness, including whether browser activity is
   still being written to `/data/aurora/products/dashboard/dashboard_perf.jsonl`
+- dashboard HTTP endpoint health and response time
+- dashboard and infrastructure git cleanliness and local ahead/behind counts
 - recent dashboard render-performance statistics, including p50, p95, slowest
   timed event, and live-session counts
 - GWS transfer status
@@ -46,11 +48,13 @@ next transfer batch.
 The archived operations products live under:
 
 - `/data/aurora/products/quicklooks/ops_monitor`
+- `/data/aurora/products/ops_monitor/health`
 
 These include:
 
 - summary quicklooks
 - `HK_Operations`
+- observe-only health JSON and daily Markdown reports
 
 Detailed product documentation:
 

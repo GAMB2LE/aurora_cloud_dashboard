@@ -9,6 +9,10 @@ quicklook products.
   `/project/aurora/raw/ops_monitor/latest.json`
 - time-stamped JSONL snapshots:
   `/project/aurora/raw/ops_monitor/ops_monitor_YYYYMMDD.jsonl`
+- observe-only health assessment:
+  `/data/aurora/products/ops_monitor/health/latest_health.json`
+- human-readable daily health report:
+  `/data/aurora/products/ops_monitor/health/health_report_YYYYMMDD.md`
 
 These snapshots capture:
 
@@ -28,6 +32,13 @@ These snapshots capture:
 - per-stream mirror coverage, lag, and mismatch counts
 - prune-gate and product-gate summaries
 - systemd health for source sync, processing, and transfer units
+- dashboard HTTP health and response time
+- dashboard and infrastructure git branch, commit, dirty state, and local
+  ahead/behind counts
+
+The health assessment is deliberately observe-only. It summarizes the raw
+snapshot into green/amber/red checks, but it does not restart services, delete
+data, rebuild stores, or modify code.
 
 ## Operations Zarr
 
@@ -66,3 +77,13 @@ plot of every numeric monitoring field.
 The top-level **Operations Dashboard** tab reads the latest snapshot directly,
 so the live status view can be useful even before enough archived samples exist
 to generate meaningful historical PNGs.
+
+## Phase 1 sentinel outputs
+
+The collector now acts as the Phase 1 operations sentinel:
+
+- every run writes the raw JSONL record and `latest.json`
+- every run writes `latest_health.json`, a compact machine-readable health
+  assessment with `overall_level`, check counts, and current observations
+- every run refreshes `latest_report.md` and the date-stamped daily report
+- the report explicitly states that no automated healing actions were taken

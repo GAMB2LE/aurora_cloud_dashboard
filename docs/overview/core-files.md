@@ -44,8 +44,9 @@ used by the dashboard.
 
 ## Operations monitoring
 
-- `collect_operations_snapshot.py` - collects source-host, storage, mirror, and
-  systemd health into raw JSONL snapshots
+- `collect_operations_snapshot.py` - collects source-host, storage, mirror,
+  systemd, dashboard endpoint, and git health into raw JSONL snapshots plus
+  observe-only health JSON and Markdown reports
 - `append_new_ops_monitor_to_zarr.py` - appends or rebuilds the monitoring Zarr
 - `extra_housekeeping.py` - extra housekeeping quicklook helpers, including the
   Ceilometer, Cloud Radar, and WXcam HK products

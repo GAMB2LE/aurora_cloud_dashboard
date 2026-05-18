@@ -22,6 +22,9 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - WXcam Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`
+- Operations health outputs:
+  `/data/aurora/products/ops_monitor/health/latest_health.json` and
+  `/data/aurora/products/ops_monitor/health/latest_report.md`
 
 ## Related docs
 

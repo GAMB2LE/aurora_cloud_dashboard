@@ -74,6 +74,11 @@ browser over normal HTTP instead of being serialized into the Panel websocket.
 - `aurora-ops-monitor-quicklooks.timer`
 - `aurora-mirror-verify.timer`
 
+`aurora-ops-monitor-collect.timer` is observe-only. It writes raw JSONL
+snapshots under `/project/aurora/raw/ops_monitor` and compact health outputs
+under `/data/aurora/products/ops_monitor/health`; it does not restart services,
+delete files, rebuild data products, or change code.
+
 ## JASMIN GWS Sync
 
 - `aurora-gws-rsync-raw.timer`
