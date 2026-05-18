@@ -52,16 +52,19 @@ Path:
 When checked on `2026-05-18`:
 
 - dimension: `time`
-- shape: `time=2525`
+- shape: `time=2563`
 - data variables: `374`
 - time coverage when checked: `2026-05-09 16:01:00.181057` to
-  `2026-05-18 22:27:05.482458`
+  `2026-05-18 23:50:19.900361`
+- sorted unique `time` coordinate after the `2026-05-18` rebuild
 - useful attrs:
   - `instrument = "ops-monitor"`
   - `source = "ops_monitor_YYYYMMDD.jsonl"`
   - `title = "Aurora operations monitoring"`
 
-The appender can rebuild automatically if the collector schema expands.
+The appender can rebuild automatically if the collector schema expands. It also
+checks the existing store before append; if time samples are out of order or
+duplicated, the old store is backed up and rebuilt from the raw JSONL snapshots.
 
 ## Quicklooks
 

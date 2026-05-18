@@ -20,6 +20,9 @@ separately.
 - `fish_hdr`
 - `pano_hdr`
 
+The root Zarr group is only a container. Open one of these child groups to read
+image data and timestamps.
+
 ## Group dataset structure
 
 Each group stores one xarray dataset with:
@@ -42,14 +45,16 @@ Each group stores one xarray dataset with:
 When checked on `2026-05-18`:
 
 - `fish_hdr`
-  - shape: `time=13557`, `y=3040`, `x=3120`, `channel=3`
+  - shape: `time=13604`, `y=3040`, `x=3120`, `channel=3`
   - image geometry: `3120 x 3040`
-  - time coverage: `2026-05-02 00:00:00` to `2026-05-18 22:25:39`
+  - time coverage: `2026-05-02 00:00:00` to `2026-05-18 23:45:16`
+  - sorted unique `time` coordinate
   - chunks: `(1, 1024, 1024, 3)`
 - `pano_hdr`
-  - shape: `time=2214`, `y=750`, `x=2880`, `channel=3`
+  - shape: `time=2258`, `y=750`, `x=2880`, `channel=3`
   - image geometry: `2880 x 750`
-  - time coverage: `2026-01-12 02:25:00` to `2026-05-18 22:25:39`
+  - time coverage: `2026-01-12 02:25:00` to `2026-05-18 23:40:39`
+  - sorted unique `time` coordinate
   - chunks: `(1, 750, 1024, 3)`
 
 ## Important note

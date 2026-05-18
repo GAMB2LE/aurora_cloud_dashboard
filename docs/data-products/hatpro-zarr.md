@@ -15,6 +15,15 @@ The source tree is recursive by UTC-ish instrument date, for example:
 
 - `Y2026/M05/D18/HATPROG5-AURORA-ICELAND_260518_090208.LWP.NC`
 
+That dated tree is the authoritative local mirror layout. During the
+`2026-05-18` audit, older flattened duplicates in the root of
+`/project/aurora/raw/hatprog5` were moved out of the active mirror to:
+
+- `/project/aurora/quarantine/hatprog5_flattened_20260518T231857Z`
+
+The active mirror should therefore contain dated files under `Y*/M*/D*/` and no
+root-level HATPRO data files.
+
 The builder reads these NetCDF product families:
 
 - `*.LWP.NC` -> `LWP`
@@ -36,10 +45,11 @@ the `range` coordinate when present.
 
 When checked on `2026-05-18`, the deployed store had:
 
-- `time=694062`
+- `time=697482`
 - `range=94`
 - 6 data variables
-- time coverage: `2026-02-27 13:00:01` to `2026-05-18 21:59:56`
+- time coverage: `2026-02-27 13:00:01` to `2026-05-18 22:59:55`
+- sorted unique `time` coordinate
 
 ## Variables
 

@@ -6,8 +6,9 @@ shown as a height-time product in the interactive dashboard.
 ## Interactive behavior
 
 - interactive tab shows recent radar windows from the Zarr
-- the app masks obviously bogus far-future timestamps when choosing recent
-  windows and plot bounds
+- the builder drops invalid and clearly bogus future timestamps before writing
+  the Zarr; the app keeps a defensive future-time mask for recent windows and
+  plot bounds
 - availability bars make true data gaps visible across the selected time range
 
 ## Quicklooks

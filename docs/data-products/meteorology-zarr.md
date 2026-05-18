@@ -8,9 +8,10 @@ Path:
 
 - dimension: `time`
 - deployed shape when checked on `2026-05-18`:
-  - `time=229410`
+  - `time=230236`
 - time coverage when checked: `2026-05-02 00:00:02` to
-  `2026-05-18 22:25:29`
+  `2026-05-18 23:46:54`
+- sorted unique `time` coordinate
 
 ## Time coordinate
 

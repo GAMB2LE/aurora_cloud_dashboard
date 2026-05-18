@@ -171,7 +171,14 @@ def _load_nc(path: Path) -> xr.Dataset:
     ds = xr.Dataset(data_vars, coords={"time": time_vals, "range": ranges})
     ds.attrs["range_layout_key"] = _range_key(ranges)
     ds.attrs["range_count"] = int(ranges.size)
-    return ds.sortby("time")
+    ds = ds.sortby("time")
+    cutoff = np.datetime64((datetime.now(timezone.utc) + FUTURE_TIME_TOLERANCE).replace(tzinfo=None))
+    valid_time = (~np.isnat(ds["time"].values)) & (ds["time"].values <= cutoff)
+    dropped = int(ds.sizes.get("time", 0) - np.count_nonzero(valid_time))
+    if dropped:
+        print(f"Skipping {dropped} invalid or future radar samples in {path.name}")
+        ds = ds.isel(time=valid_time)
+    return ds
 
 
 def _deduplicate_time(ds: xr.Dataset) -> xr.Dataset:

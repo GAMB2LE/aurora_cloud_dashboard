@@ -28,7 +28,12 @@ Key fields include:
 - `media_kind` - `image` or `video`
 - `time_utc`, `time_epoch_ns`, `day_utc`
 - `raw_path`, `relative_path`, `filename`
-- `width`, `height`, `size_bytes`
+- `width`, `height`, `size_bytes`, `mtime_ns`, `indexed_at`
+
+Catalog queries should order records by `time_epoch_ns` and then `raw_path`.
+When checked on `2026-05-18`, the catalog had no null timestamp rows, all
+cataloged images were HDR files, and FISH/PANO image and video records were
+ordered cleanly by timestamp.
 
 ## Daily videos and hourly thumbnails
 

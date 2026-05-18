@@ -8,9 +8,10 @@ Path:
 
 - dimension: `time`
 - deployed shape when checked on `2026-05-18`:
-  - `time=887825`
+  - `time=892175`
 - time coverage when checked: `2026-05-05 15:15:23.598658936` to
-  `2026-05-18 22:30:08.950650635`
+  `2026-05-18 23:48:53.813775146`
+- sorted unique `time` coordinate
 
 ## Time coordinate
 
@@ -83,6 +84,10 @@ This is a compact dashboard-serving product built from `power.zarr` by
 but stores one-minute cumulative kWh traces so the interactive APS cumulative
 panel does not need to reopen several days of one-second samples for every
 browser render.
+
+When checked on `2026-05-18`, this derived store had `time=16118`, 6 data
+variables, sorted unique timestamps, and coverage from
+`2026-05-05 15:15:00` to `2026-05-18 23:39:00`.
 
 Variables:
 

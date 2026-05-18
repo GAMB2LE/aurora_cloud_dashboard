@@ -59,6 +59,16 @@ def _deduplicate_time(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+def _has_sorted_unique_time(ds: xr.Dataset) -> bool:
+    if "time" not in ds.coords:
+        return True
+    times = np.asarray(ds["time"].values)
+    if times.size < 2:
+        return True
+    diffs = np.diff(times.astype("datetime64[ns]").astype("int64"))
+    return bool(np.all(diffs > 0))
+
+
 def _read_file(path: Path) -> xr.Dataset:
     rows: list[dict[str, object]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -178,6 +188,10 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
         return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
     if "time" not in existing:
         raise KeyError("Zarr store missing time coordinate")
+    if not _has_sorted_unique_time(existing):
+        print("Existing operations Zarr has unsorted or duplicate time samples; rebuilding from raw snapshots.")
+        _backup_existing_store(zarr_path, "time_order")
+        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
     last_time = pd.to_datetime(existing["time"].max().values).to_pydatetime()
     print(f"Latest time in Zarr: {last_time}")
 

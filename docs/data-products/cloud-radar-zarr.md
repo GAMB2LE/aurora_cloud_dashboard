@@ -8,12 +8,11 @@ Path:
 
 - dimensions: `time`, `range`
 - deployed shape when checked on `2026-05-18`:
-  - `time=169783`
+  - `time=172045`
   - `range=312`
-- valid operational time coverage when checked: `2026-05-09 08:59:59.305` to
-  `2026-05-18 21:59:54.668`
-- one known far-future raw timestamp is present in the coordinate; the dashboard
-  excludes it when computing bounds and plotting
+- time coverage when checked: `2026-05-09 08:59:59.305` to
+  `2026-05-18 22:59:54.510`
+- sorted unique `time` coordinate
 
 ## Coordinates
 
@@ -47,8 +46,8 @@ the mirrored raw RPG LV1 files under `/project/aurora/raw/rpgfmcw94`.
 
 - reflectivity-style fields are converted to dBZ during ingest
 - fill values at or below the radar missing-data sentinel are converted to `NaN`
-- the dashboard masks obviously bogus far-future timestamps when plotting or
-  choosing recent windows
+- the builder drops `NaT` and clearly bogus future timestamps before writing;
+  the dashboard also keeps a defensive future-time mask for plot bounds
 - append runs track the `range` layout and automatically rebuild a fresh store
   when a new contiguous raw-file run arrives with a different radar geometry
 

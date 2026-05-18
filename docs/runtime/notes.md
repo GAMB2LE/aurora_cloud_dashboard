@@ -5,9 +5,19 @@ This page captures dashboard-specific caveats that are important operationally.
 ## Cloud Radar timestamps
 
 The radar data has previously contained obviously bogus far-future timestamps.
-`app.py` filters clearly invalid future times when computing bounds and recent
-plot windows so the interactive view stays usable even if the underlying store
-contains bad samples.
+The appender now drops `NaT` values and samples more than two days in the
+future while building or rebuilding the radar Zarr. `app.py` also keeps a
+defensive bound filter when computing recent plot windows so the interactive
+view stays usable if a bad sample is ever found before the next rebuild.
+
+## Time ordering policy
+
+Dashboard-facing time-series Zarr stores should be strictly increasing along
+their `time` coordinate, with duplicate timestamps removed by the relevant
+builder. The appenders sort and deduplicate newly read raw files before
+writing. The operations-monitor appender also checks the existing Zarr before
+append; if it finds an older manual/timer race that left time samples out of
+order, it backs up the store and rebuilds it from the raw JSONL snapshots.
 
 ## Curated 1D instruments
 
@@ -82,6 +92,8 @@ vertically so the data surface remains the primary scroll target.
 - WXcam science quicklooks use HDR JPGs nearest the `:30` mark of each UTC hour
 - WXcam operations and archive verification may track the full mirrored raw tree
   even though the dashboard-facing products only use the HDR subset
+- the WXcam catalog stores timestamps in `time_utc`, `time_epoch_ns`, and
+  `day_utc`; queries should order by `time_epoch_ns` and `raw_path`
 
 Some code and performance events still use `wxcam_calendar_*` names because the
 WXcam day grid originally lived on a tab called Calendar. The visible UI is now
