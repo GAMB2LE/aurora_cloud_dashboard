@@ -60,6 +60,20 @@ These include:
 - `HK_Operations`
 - observe-only health JSON and daily Markdown reports
 
+## Email Alerts
+
+Operations alert email is handled by `send_ops_alerts.py`, normally from
+`aurora-ops-monitor-alerts.timer`. It evaluates the same latest snapshot used by
+the dashboard and emails `gamb2le@ncas.ac.uk` for storage pressure at `80 %`,
+battery SOC at or below `20 %`, APS internal temperature at or above `45 C`,
+battery voltage below `50 V`, and stream-health problems that persist for
+`3 h`.
+
+The service keeps state under `/data/aurora/products/ops_monitor/alerts` so it
+can send initial, repeat, and recovery messages without spamming every timer
+tick. The deployed delivery path is intended to be `mailx` backed by `msmtp` or
+another sendmail-compatible outbound relay.
+
 Detailed product documentation:
 
 - [Operations products](../data-products/operations-products.md)

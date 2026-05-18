@@ -90,3 +90,50 @@ The collector now acts as the Phase 1 operations sentinel:
   assessment with `overall_level`, check counts, and current observations
 - every run refreshes `latest_report.md` and the date-stamped daily report
 - the report explicitly states that no automated healing actions were taken
+
+## Email Alerts
+
+`send_ops_alerts.py` evaluates the latest operations snapshot and sends email
+alerts to `gamb2le@ncas.ac.uk` when operational thresholds are crossed.
+
+Alert rules:
+
+- any monitored storage filesystem reaches `80 %` used
+- Aurora Power Supply battery state of charge is at or below `20 %`
+- Aurora Power Supply internal temperature is at or above `45 C`
+- Aurora Power Supply battery voltage from `DCInverterVolts` is below `50 V`
+- any stream source is stale for at least `3 h`
+- any stream service-health component remains off/unhealthy for at least `3 h`
+
+Alert state and logs:
+
+- state: `/data/aurora/products/ops_monitor/alerts/state.json`
+- event log: `/data/aurora/products/ops_monitor/alerts/alerts.jsonl`
+
+The state file records active alerts, first-seen time, last-seen time, and last
+sent time so the system does not send an email every five minutes. Alerts send
+when they first become active after any hold period, repeat every `12 h` while
+still active, and send a recovery email after a previously emailed alert clears.
+
+The recommended delivery stack for this headless VM is:
+
+- `bsd-mailx` as the script-facing command-line mail interface
+- `msmtp` / `msmtp-mta` as the lightweight outbound SMTP delivery layer
+
+In other words, dashboard scripts use `mailx` because it is a simple command
+line interface, while `msmtp` does the actual SMTP delivery through a relay. A
+full Sendmail MTA is intentionally not required unless the VM later needs to run
+a real mail server.
+
+The script prefers `mailx` when it is available, then a sendmail-compatible
+interface, then direct SMTP from `OPS_ALERT_SMTP_*` environment variables. Set
+`OPS_ALERT_TRANSPORT` to `mailx`, `sendmail`, `smtp`, or `auto` to force a
+specific path. The VM still needs a real SMTP relay configured for `msmtp`
+before real email can be delivered through the recommended `mailx` path.
+
+Useful checks:
+
+```bash
+python send_ops_alerts.py --dry-run
+python send_ops_alerts.py --test-email gamb2le@ncas.ac.uk
+```

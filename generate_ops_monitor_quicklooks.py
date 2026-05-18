@@ -65,6 +65,7 @@ def _ops_housekeeping_dataset(ds: xr.Dataset) -> xr.Dataset:
         ("gws_available_state", "gws_unavailable_state"),
         ("mirror_verify_service_healthy_state", "mirror_verify_problem_state"),
         ("ops_monitor_append_service_healthy_state", "ops_monitor_append_problem_state"),
+        ("ops_monitor_alerts_service_healthy_state", "ops_monitor_alerts_problem_state"),
         ("ops_monitor_quicklooks_service_healthy_state", "ops_monitor_quicklooks_problem_state"),
         ("dashboard_perf_log_recent_state", "dashboard_perf_log_stale_state"),
     ):

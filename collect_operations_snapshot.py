@@ -152,6 +152,8 @@ PROCESSING_UNITS = (
     "aurora-wxcam-daily-videos.service",
     "aurora-ops-monitor-append.timer",
     "aurora-ops-monitor-append.service",
+    "aurora-ops-monitor-alerts.timer",
+    "aurora-ops-monitor-alerts.service",
     "aurora-ops-monitor-quicklooks.timer",
     "aurora-ops-monitor-quicklooks.service",
 )

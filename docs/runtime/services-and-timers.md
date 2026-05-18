@@ -77,6 +77,7 @@ browser over normal HTTP instead of being serialized into the Panel websocket.
 
 - `aurora-ops-monitor-collect.timer`
 - `aurora-ops-monitor-append.timer`
+- `aurora-ops-monitor-alerts.timer`
 - `aurora-ops-monitor-quicklooks.timer`
 - `aurora-mirror-verify.timer`
 
@@ -84,6 +85,10 @@ browser over normal HTTP instead of being serialized into the Panel websocket.
 snapshots under `/project/aurora/raw/ops_monitor` and compact health outputs
 under `/data/aurora/products/ops_monitor/health`; it does not restart services,
 delete files, rebuild data products, or change code.
+
+`aurora-ops-monitor-alerts.timer` evaluates the latest operations snapshot
+after collection and sends threshold email alerts through `mailx` backed by an
+outbound relay such as `msmtp`.
 
 ## JASMIN GWS Sync
 

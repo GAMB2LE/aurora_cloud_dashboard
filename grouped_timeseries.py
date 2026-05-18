@@ -887,6 +887,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("gws_unavailable_state", "GWS Unavailable", COLOR["green"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("mirror_verify_problem_state", "Mirror Verify Problem", COLOR["teal"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("ops_monitor_append_problem_state", "Ops Append Problem", COLOR["blue"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("ops_monitor_alerts_problem_state", "Ops Alert Problem", COLOR["black"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("ops_monitor_quicklooks_problem_state", "Ops Quicklook Problem", COLOR["slate"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("dashboard_perf_log_stale_state", "Dashboard Perf Log Stale", COLOR["olive"], axis="right", step=True, skip_if_all_zero=True),
             ),
