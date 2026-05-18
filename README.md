@@ -620,8 +620,14 @@ Chunking:
 Dashboard performance note:
 
 - the stored Zarr chunking remains unchanged
-- the dashboard opens the Power store with larger read chunks and uses the same
-  per-trace time downsampling approach as the quicklooks
+- the dashboard opens the Power store with larger read chunks and per-trace
+  time downsampling
+- cumulative Power traces are also precomputed into the compact display product
+  `/data/aurora/products/power/power_display_energy.zarr`; this keeps the raw
+  Power Zarr authoritative while avoiding multi-day one-second reads during
+  interactive plotting
+- the latest Power interactive figure is prewarmed as Plotly JSON under
+  `/data/aurora/products/dashboard/prewarm/`
 - live latest windows are rounded into 5-minute cache buckets so small timestamp
   advances do not force a complete Plotly rebuild
 

@@ -42,13 +42,20 @@ one global legend block.
 
 ## Interactive performance behavior
 
-The interactive view reads from the same Power Zarr used by the append and
-quicklook pipelines. For browser performance, the app opens the store with
-larger read chunks and uses the same per-trace time downsampling approach as the
-quicklooks. Display-only sanity limits remove impossible APS values, such as
+The interactive view reads ordinary APS traces from the same Power Zarr used by
+the append and quicklook pipelines. For browser performance, the cumulative
+energy traces are read from
+`/data/aurora/products/power/power_display_energy.zarr`, a compact one-minute
+display product derived from the raw Power Zarr. The raw store remains
+authoritative; the compact product only avoids multi-day one-second reads when
+the browser needs the cumulative panel.
+
+The app opens the Power store with larger read chunks and uses per-trace time
+downsampling. Display-only sanity limits remove impossible APS values, such as
 single-sample charging-current/current-power outliers, before plotting. The
-live latest window is also rounded into 5-minute cache buckets so a small
-timestamp advance does not rebuild the whole Power figure.
+live latest window is rounded into 5-minute cache buckets, and the latest Power
+interactive figure is prewarmed as Plotly JSON by `generate_power_quicklooks.py`
+so first paint can reuse the most recent quicklook-era render.
 
 The **Battery Charging** panel also applies a display-only 30-minute rolling
 mean to `BatteryAmps` and `BatteryWatts`. This keeps isolated charging
@@ -61,15 +68,14 @@ power data are much denser. Downsampling after each trace has dropped merged
 NaN timestamps preserves the ASFS cadence instead of thinning it on the dense
 APS time grid.
 
-The cumulative panel is normalized at display time. The `SolarYield_*` counters
-are converted into positive UTC-day increments, so delayed controller resets
-just after midnight do not create false drops in the plotted generation lines.
-The utilised-energy line is integrated with lookback context before the view is
-cropped back to the selected/latest window, so the latest 24 h view can use
-recent full-SOC history as a baseline. The right-axis surplus/deficit trace is
-a carried cumulative energy balance in kWh. It is anchored with one constant
-offset from recent `BatterySOC >= 99.5 %` samples rather than being stepped at
-the moment the SOC threshold is crossed.
+The cumulative panel is normalized in the display-energy product. The
+`SolarYield_*` counters are converted into positive UTC-day increments, so
+delayed controller resets just after midnight do not create false drops in the
+plotted generation lines. The utilised-energy line is integrated from AC+DC
+output power. The right-axis surplus/deficit trace is a carried cumulative
+energy balance in kWh, anchored with one constant offset from recent
+`BatterySOC >= 99.5 %` samples rather than being stepped at the moment the SOC
+threshold is crossed.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 
@@ -86,6 +92,10 @@ Zarr schema are unchanged.
 Zarr path:
 
 - `/data/aurora/products/power/power.zarr`
+
+Derived display product:
+
+- `/data/aurora/products/power/power_display_energy.zarr`
 
 Presentation-layer overlay:
 

@@ -629,6 +629,7 @@ RENDER_DEBOUNCE_MS = int(os.environ.get("AURORA_RENDER_DEBOUNCE_MS", "150"))
 INTERACTIVE_RENDER_CACHE_SIZE = int(os.environ.get("AURORA_INTERACTIVE_RENDER_CACHE_SIZE", "12"))
 POWER_INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES", "700"))
 POWER_LATEST_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_LATEST_CACHE_ROUND_MINUTES", "5"))
+POWER_GENERAL_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES", "1"))
 POWER_LATEST_CACHE_TOLERANCE = timedelta(minutes=int(os.environ.get("AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES", "10")))
 # A small future tolerance keeps normal clock skew harmless while protecting
 # the dashboard from bogus outlier timestamps that can blank the latest window.
@@ -652,6 +653,8 @@ _PENDING_INTERACTIVE_RENDER_CB = None
 _APP_BOOTSTRAPPING = True
 _INTERACTIVE_RENDER_ENABLED = False
 _INTERACTIVE_FOOTER_LOADED = False
+_POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
+_POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
 
 
 def _safe_periodic_callback(callback, period: int, start: bool = True):
@@ -679,6 +682,19 @@ def _cfg(inst: str | None = None):
 def _zarr_path(inst: str | None = None):
     cfg = _cfg(inst)
     return os.environ.get(cfg["zarr_env"], cfg["zarr_default"])
+
+
+def _power_display_energy_path() -> Path:
+    return Path(os.environ.get("POWER_DISPLAY_ENERGY_ZARR_PATH", "/data/aurora/products/power/power_display_energy.zarr"))
+
+
+def _prewarmed_interactive_dir() -> Path:
+    return Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm"))
+
+
+def _prewarmed_interactive_path(inst: str) -> Path:
+    safe = inst.replace(" ", "_").replace("-", "_").lower()
+    return _prewarmed_interactive_dir() / f"{safe}_latest_interactive.json"
 
 
 def _wxcam_catalog_path(inst: str | None = None) -> Path:
@@ -769,6 +785,8 @@ def _refresh_base_dataset(inst: str | None = None):
     _TIME_BOUNDS_CACHE.pop(inst, None)
     _DATASET_VERSION[inst] = _DATASET_VERSION.get(inst, 0) + 1
     _DATASET_REFRESHED_AT[inst] = datetime.now(timezone.utc)
+    if inst == "power":
+        _refresh_power_display_energy_dataset()
 
 
 def _refresh_time_bounds_cache(inst: str | None = None):
@@ -783,6 +801,61 @@ def _dataset_cache_age(inst: str | None = None) -> timedelta:
     if refreshed_at is None or _BASE_DS.get(inst) is None:
         return timedelta.max
     return datetime.now(timezone.utc) - refreshed_at
+
+
+def _get_power_display_energy_dataset() -> xr.Dataset | None:
+    """Open the compact Power display-energy store when it is available."""
+    global _POWER_DISPLAY_ENERGY_DS, _POWER_DISPLAY_ENERGY_REFRESHED_AT
+    if _POWER_DISPLAY_ENERGY_DS is not None:
+        return _POWER_DISPLAY_ENERGY_DS
+    path = _power_display_energy_path()
+    if not path.exists():
+        return None
+    with _timed_perf("power_display_energy_open", instrument="power", zarr_path=str(path)) as perf:
+        try:
+            ds = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+        except Exception as exc:
+            perf["status"] = "unavailable"
+            perf["error"] = str(exc)
+            return None
+        perf["status"] = "ok"
+        perf["dims"] = dict(ds.sizes)
+    _POWER_DISPLAY_ENERGY_DS = ds
+    _POWER_DISPLAY_ENERGY_REFRESHED_AT = datetime.now(timezone.utc)
+    return ds
+
+
+def _refresh_power_display_energy_dataset() -> None:
+    """Drop the compact Power display-energy handle so latest products reopen."""
+    global _POWER_DISPLAY_ENERGY_DS, _POWER_DISPLAY_ENERGY_REFRESHED_AT
+    if _POWER_DISPLAY_ENERGY_DS is not None:
+        try:
+            _POWER_DISPLAY_ENERGY_DS.close()
+        except Exception:
+            pass
+    _POWER_DISPLAY_ENERGY_DS = None
+    _POWER_DISPLAY_ENERGY_REFRESHED_AT = None
+
+
+def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
+    ds = _get_power_display_energy_dataset()
+    if ds is None or "time" not in ds:
+        return None
+    start_dt = _as_naive_utc_datetime(start)
+    end_dt = _as_naive_utc_datetime(end)
+    if start_dt is None or end_dt is None:
+        return None
+    with _timed_perf("power_display_energy_window", instrument="power", start=start_dt, end=end_dt) as perf:
+        times = pd.DatetimeIndex(ds["time"].values)
+        mask = (times >= start_dt) & (times <= end_dt)
+        perf["matched_time_count"] = int(np.count_nonzero(mask))
+        if not mask.any():
+            perf["status"] = "empty"
+            return None
+        window = ds.isel(time=mask).sortby("time")
+        perf["status"] = "ok"
+        perf["output_time_count"] = int(window.sizes.get("time", 0))
+        return window
 
 
 def _remember_time_bounds(inst: str, lower: datetime | None, upper: datetime | None) -> tuple[datetime | None, datetime | None]:
@@ -2733,6 +2806,8 @@ def _summary_context_start(start, instrument: str):
     """Include Power lookback context for cumulative balance anchoring."""
     if instrument != "power":
         return start
+    if _power_display_energy_path().exists():
+        return start
     start_dt = _as_naive_utc_datetime(start)
     if start_dt is None:
         return start
@@ -2761,8 +2836,16 @@ def _interactive_render_cache_key(
     render_quality: str = "full",
 ) -> tuple[object, ...]:
     start, end, window_cache_mode = _canonical_interactive_window(start, end, instrument)
+    if instrument == "power" and window_cache_mode == "exact":
+        step = timedelta(minutes=max(1, POWER_GENERAL_CACHE_ROUND_MINUTES))
+        rounded_start = _floor_datetime(start, step)
+        rounded_end = _floor_datetime(end, step)
+        if rounded_start is not None and rounded_end is not None:
+            start = rounded_start
+            end = rounded_end
+            window_cache_mode = f"power_{POWER_GENERAL_CACHE_ROUND_MINUTES}min"
     dataset_version: object = _DATASET_VERSION.get(instrument, 0)
-    if window_cache_mode.startswith("power_latest_"):
+    if window_cache_mode.startswith("power_"):
         dataset_version = window_cache_mode
     return (
         instrument,
@@ -2802,11 +2885,37 @@ def _restore_exact_interactive_cache(cache_key: tuple[object, ...] | None, inst:
         return False
     cached = _INTERACTIVE_RENDER_CACHE.get(cache_key)
     if cached is None:
-        return False
+        cached = _load_prewarmed_interactive_figure(cache_key, inst)
+        if cached is None:
+            return False
+        _INTERACTIVE_RENDER_CACHE[cache_key] = go.Figure(cached)
+        _INTERACTIVE_RENDER_CACHE.move_to_end(cache_key)
     _INTERACTIVE_RENDER_CACHE.move_to_end(cache_key)
     _show_plot(go.Figure(cached), instrument=inst, cache_figure=False)
     _perf_log("interactive_render_cache_hit", instrument=inst)
     return True
+
+
+def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str) -> go.Figure | None:
+    """Load a latest-view Plotly JSON produced by the quicklook pipeline."""
+    if len(cache_key) < 4 or cache_key[0] != inst:
+        return None
+    window_mode = str(cache_key[3])
+    if not window_mode.startswith("power_latest_"):
+        return None
+    path = _prewarmed_interactive_path(inst)
+    if not path.exists():
+        return None
+    with _timed_perf("interactive_prewarm_load", instrument=inst, path=str(path)) as perf:
+        try:
+            fig = go.Figure(json.loads(path.read_text()))
+        except Exception as exc:
+            perf["status"] = "error"
+            perf["error"] = str(exc)
+            return None
+        perf["status"] = "ok"
+        perf["trace_count"] = len(fig.data)
+        return fig
 
 
 def _publish_plot_if_current(
@@ -2846,27 +2955,38 @@ def _restore_cached_interactive_view(inst: str) -> bool:
     return True
 
 
-def _latest_quicklook_path(inst: str) -> Path | None:
+def _science_quicklook_path_for_interactive(inst: str, start=None, end=None) -> Path | None:
     cfg = _cfg(inst)
     candidates: list[Path] = []
+    if _is_stacked_timeseries_instrument(inst):
+        quick_dir = Path(cfg["quicklook_dir"])
+        start_dt = _as_naive_utc_datetime(start)
+        end_dt = _as_naive_utc_datetime(end)
+        if start_dt is not None and end_dt is not None:
+            latest_path = summary_latest_png(quick_dir, inst)
+            _lower, latest = _dataset_time_bounds(inst)
+            latest_dt = _as_naive_utc_datetime(latest)
+            if latest_dt is not None and abs(end_dt - latest_dt) <= POWER_LATEST_CACHE_TOLERANCE and latest_path.exists():
+                candidates.append(latest_path)
+            elif start_dt.date() == end_dt.date() and start_dt.hour == 0:
+                candidates.append(summary_daily_png(quick_dir, inst, pd.Timestamp(start_dt)))
+        candidates.append(summary_latest_png(quick_dir, inst))
     latest_image = cfg.get("latest_image")
     if latest_image:
         candidates.append(Path(latest_image))
-    if _is_stacked_timeseries_instrument(inst):
-        candidates.append(summary_latest_png(Path(cfg["quicklook_dir"]), inst))
     for path in candidates:
         if path.exists():
             return path
     return None
 
 
-def _show_cached_quicklook_placeholder(inst: str) -> bool:
-    path = _latest_quicklook_path(inst)
+def _show_cached_quicklook_placeholder(inst: str, start=None, end=None) -> bool:
+    path = _science_quicklook_path_for_interactive(inst, start=start, end=end)
     if path is None:
         return False
     panel_obj = pn.Column(
         pn.pane.HTML(
-            "<div class='interactive-loading-note'>Showing the latest cached quicklook while the interactive view loads.</div>",
+            "<div class='interactive-loading-note'>Showing a cached Science Quicklook while the interactive view loads.</div>",
             sizing_mode="stretch_width",
             margin=(0, 0, 8, 0),
         ),
@@ -3595,14 +3715,33 @@ def _update_stacked_timeseries_view(
             return False
         source_instruments = summary_source_instruments(instrument)
         perf["source_instruments"] = list(source_instruments)
-        source_render_quality = "summary_full_time" if instrument == "power" else render_quality
+        power_display_available = instrument == "power" and _power_display_energy_path().exists()
+        # Power cumulative-energy traces now come from a compact display product.
+        # Only keep full raw time detail as a fallback when that product is absent.
+        if instrument == "power" and not power_display_available:
+            source_render_quality = "summary_full_time"
+        else:
+            source_render_quality = render_quality
         perf["source_render_quality"] = source_render_quality
+        perf["power_display_energy_available"] = bool(power_display_available)
         context_start = _summary_context_start(start, instrument)
         perf["context_start"] = context_start
-        ds = combine_summary_datasets(
-            instrument,
-            *(open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality) for source_inst in source_instruments),
-        )
+        source_open_started = perf_counter()
+        source_windows = [
+            open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
+            for source_inst in source_instruments
+        ]
+        if instrument == "power":
+            display_window = _open_power_display_energy_window(start, end)
+            if display_window is not None:
+                source_windows.append(display_window)
+                perf["power_display_energy"] = "used"
+            else:
+                perf["power_display_energy"] = "missing"
+        perf["source_open_ms"] = round((perf_counter() - source_open_started) * 1000, 3)
+        combine_started = perf_counter()
+        ds = combine_summary_datasets(instrument, *source_windows)
+        perf["combine_ms"] = round((perf_counter() - combine_started) * 1000, 3)
         if instrument == "power" and ds is not None:
             display_start = _as_naive_utc_datetime(start)
             display_end = _as_naive_utc_datetime(end)
@@ -3623,7 +3762,9 @@ def _update_stacked_timeseries_view(
             perf["max_time_samples"] = max_time_samples
             if instrument == "power":
                 perf["plot_density_mode"] = "time_downsampled"
+            fig_started = perf_counter()
             fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
+            perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
         except ValueError:
             perf["status"] = "no_data"
             empty = go.Figure()
@@ -4038,7 +4179,7 @@ def _start_interactive_render(
     loading_message = "Refreshing the current selection." if has_cached_view else "Preparing the latest view for this instrument."
     _set_interactive_loading(instrument, loading_message, phase="loading", visible=True)
     if not has_cached_view:
-        if not _show_cached_quicklook_placeholder(instrument):
+        if not _show_cached_quicklook_placeholder(instrument, start=start, end=end):
             _show_interactive_placeholder(instrument, "Loading the selected window and preparing the first pass of the plot.")
 
     _schedule_next_tick(
@@ -4111,7 +4252,7 @@ def _schedule_interactive_render(
     )
     if _APP_BOOTSTRAPPING or not _INTERACTIVE_RENDER_ENABLED:
         if _DISPLAYED_INTERACTIVE_INSTRUMENT is None:
-            if not _show_cached_quicklook_placeholder(instrument):
+            if not _show_cached_quicklook_placeholder(instrument, start=start, end=end):
                 _show_interactive_placeholder(instrument, "Preparing the initial dashboard view.")
         _perf_log("interactive_render_deferred", instrument=instrument)
         return

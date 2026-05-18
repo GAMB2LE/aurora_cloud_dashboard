@@ -29,6 +29,10 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES`
 - `AURORA_POWER_LATEST_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES`
+- `AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES`
+- `AURORA_POWER_DISPLAY_ENERGY_FREQ`
+- `POWER_DISPLAY_ENERGY_ZARR_PATH`
+- `AURORA_INTERACTIVE_PREWARM_DIR`
 - `AURORA_QUICKLOOK_MAX_TIME_SAMPLES`
 
 ## Useful commands
@@ -47,7 +51,10 @@ tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 - `interactive_render_deferred`
 - `interactive_render_cache_hit`
 - `interactive_render_debounced`
+- `interactive_prewarm_load`
 - `window_open`
+- `power_display_energy_open`
+- `power_display_energy_window`
 - `interactive_view_update`
 - `hatpro_render`
 - `stacked_timeseries_render`
@@ -79,8 +86,8 @@ events should be interpreted:
   data-refresh interval
 - stale-render protection drops older queued renders before they can repaint the
   page
-- a cached latest quicklook is shown first when available, otherwise a loading
-  skeleton is shown for uncached views
+- the matching cached Science Quicklook is shown first when available,
+  otherwise a loading skeleton is shown for uncached views
 - the initial interactive render is deferred until the browser session is
   loaded, which keeps application startup from blocking on a full Plotly build
 - the heavier 2D interactive plots use a coarse-first pass before a full detail
@@ -88,6 +95,9 @@ events should be interpreted:
 - Power interactive plots use the same display-time preparation and per-trace time
   downsampling approach as the quicklooks, with display-only sanity limits for
   impossible APS values
+- Power cumulative-energy traces are read from a compact one-minute display
+  Zarr when available, and the latest Power interactive figure can be loaded
+  from the prewarmed Plotly JSON created by `generate_power_quicklooks.py`
 - the live Power 24 h window is rounded into 5-minute cache buckets, so a small
   latest-timestamp change does not force an immediate full rebuild
 - inactive quicklook and operations tabs are lazy-loaded the first time the user
@@ -105,6 +115,16 @@ When available, events also carry:
 - `total_sessions`
 - `session_age_s`
 - `busy`
+
+`stacked_timeseries_render` events include phase timings for the main render
+path:
+
+- `source_open_ms`
+- `combine_ms`
+- `figure_build_ms`
+
+These fields make it easier to distinguish slow Zarr reads from slow Plotly
+figure construction.
 
 These fields are useful for understanding real browser behavior, including
 multi-user overlap and concurrent browsing.

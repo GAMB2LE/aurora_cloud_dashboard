@@ -13,6 +13,7 @@ import xarray as xr
 
 from grouped_timeseries import (
     clear_generated_quicklooks,
+    build_summary_plotly,
     combine_summary_datasets,
     housekeeping_daily_png,
     housekeeping_label,
@@ -22,16 +23,18 @@ from grouped_timeseries import (
     summary_daily_png,
     summary_latest_png,
     refresh_legacy_aliases,
-    POWER_BALANCE_LOOKBACK_DAYS,
     SUMMARY_DISPLAY_END_ATTR,
     SUMMARY_DISPLAY_START_ATTR,
 )
+from generate_power_display_energy import POWER_DISPLAY_ENERGY_ZARR_PATH, generate as generate_power_display_energy
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
 ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
 QUICKLOOK_DIR = Path(os.environ.get("POWER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "power"))
+PREWARM_DIR = Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm"))
+PREWARM_JSON = PREWARM_DIR / "power_latest_interactive.json"
 INSTRUMENT = "power"
 ASS_POWER_VAR = "watts_on_48vdc_Avg"
 
@@ -68,9 +71,19 @@ def _with_display_window(ds: xr.Dataset, start: pd.Timestamp, end: pd.Timestamp)
     return ds
 
 
-def _balance_context_start(start: pd.Timestamp) -> pd.Timestamp:
-    """Load prior APS history so surplus/deficit can anchor to full SOC."""
-    return (pd.Timestamp(start) - pd.Timedelta(days=max(0, POWER_BALANCE_LOOKBACK_DAYS))).normalize()
+def _optional_display_energy_dataset() -> xr.Dataset | None:
+    """Return the compact Power energy product used by the cumulative panel."""
+    try:
+        generate_power_display_energy()
+    except Exception as exc:
+        print(f"Could not refresh Power display-energy Zarr: {exc}")
+    if not POWER_DISPLAY_ENERGY_ZARR_PATH.exists():
+        return None
+    try:
+        return xr.open_zarr(POWER_DISPLAY_ENERGY_ZARR_PATH, chunks={})
+    except Exception as exc:
+        print(f"Could not open Power display-energy Zarr: {exc}")
+        return None
 
 
 def main(force: bool = False) -> None:
@@ -78,6 +91,7 @@ def main(force: bool = False) -> None:
     if "time" not in ds:
         raise KeyError("Dataset is missing a time coordinate")
     ass_power = _optional_ass_power_dataset()
+    display_energy = _optional_display_energy_dataset()
 
     time_index = pd.DatetimeIndex(ds["time"].values)
     if len(time_index) == 0:
@@ -92,18 +106,22 @@ def main(force: bool = False) -> None:
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
-    latest_context_start = _balance_context_start(pd.Timestamp(start_time))
-    latest_mask = (time_index >= latest_context_start) & (time_index <= end_time)
+    latest_mask = (time_index >= start_time) & (time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
         latest_summary = combine_summary_datasets(
             INSTRUMENT,
             latest_day,
-            _slice_window(ass_power, latest_context_start, pd.Timestamp(end_time)),
+            _slice_window(ass_power, pd.Timestamp(start_time), pd.Timestamp(end_time)),
+            _slice_window(display_energy, pd.Timestamp(start_time), pd.Timestamp(end_time)),
         )
         latest_summary = _with_display_window(latest_summary, pd.Timestamp(start_time), pd.Timestamp(end_time))
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         save_summary_png(latest_summary, INSTRUMENT, "Aurora Power Supply - Latest 24 hours", summary_out)
+        PREWARM_DIR.mkdir(parents=True, exist_ok=True)
+        fig = build_summary_plotly(latest_summary, INSTRUMENT, title="Aurora Power Supply", max_time_samples=700)
+        fig.write_json(PREWARM_JSON)
+        print(f"Wrote {PREWARM_JSON}")
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
@@ -121,13 +139,11 @@ def main(force: bool = False) -> None:
             continue
         summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if force or not summary_out.exists():
-            context_start = _balance_context_start(start)
-            context_mask = (time_index >= context_start) & (time_index <= end)
-            summary_context = ds.isel(time=context_mask).sortby("time")
             summary_day = combine_summary_datasets(
                 INSTRUMENT,
-                summary_context,
-                _slice_window(ass_power, context_start, end),
+                ds_day,
+                _slice_window(ass_power, start, end),
+                _slice_window(display_energy, start, end),
             )
             summary_day = _with_display_window(summary_day, start, end)
             title = pd.Timestamp(day).strftime("Aurora Power Supply - %Y-%m-%d")

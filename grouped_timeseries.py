@@ -40,6 +40,16 @@ SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
 FULL_SOC_DEFICIT_CLEAR_THRESHOLD = 99.5
 POWER_BALANCE_LOOKBACK_DAYS = int(os.environ.get("AURORA_POWER_BALANCE_LOOKBACK_DAYS", "7"))
+POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "1min")
+POWER_DISPLAY_ENERGY_ATTR = "power_display_energy_product"
+POWER_DISPLAY_ENERGY_MAP = {
+    "SolarYield_East": "PowerDisplaySolarYield_East",
+    "SolarYield_South": "PowerDisplaySolarYield_South",
+    "SolarYield_West": "PowerDisplaySolarYield_West",
+    "CumulativePowerGeneratedTotal": "PowerDisplayCumulativePowerGeneratedTotal",
+    "CumulativePowerUtilised": "PowerDisplayCumulativePowerUtilised",
+    "PowerSurplusDeficit": "PowerDisplayPowerSurplusDeficit",
+}
 
 
 @dataclass(frozen=True)
@@ -241,9 +251,15 @@ HUMAN_LABELS = {
     "SolarYield_East": "East Solar Generated",
     "SolarYield_South": "South Solar Generated",
     "SolarYield_West": "West Solar Generated",
+    "PowerDisplaySolarYield_East": "East Solar Generated",
+    "PowerDisplaySolarYield_South": "South Solar Generated",
+    "PowerDisplaySolarYield_West": "West Solar Generated",
     "CumulativePowerGeneratedTotal": "Total Generated",
     "CumulativePowerUtilised": "Power Utilised",
     "PowerSurplusDeficit": "Power Surplus / Deficit",
+    "PowerDisplayCumulativePowerGeneratedTotal": "Total Generated",
+    "PowerDisplayCumulativePowerUtilised": "Power Utilised",
+    "PowerDisplayPowerSurplusDeficit": "Power Surplus / Deficit",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -363,9 +379,15 @@ HUMAN_UNITS = {
     "SolarYield_East": "kWh",
     "SolarYield_South": "kWh",
     "SolarYield_West": "kWh",
+    "PowerDisplaySolarYield_East": "kWh",
+    "PowerDisplaySolarYield_South": "kWh",
+    "PowerDisplaySolarYield_West": "kWh",
     "CumulativePowerGeneratedTotal": "kWh",
     "CumulativePowerUtilised": "kWh",
     "PowerSurplusDeficit": "kWh",
+    "PowerDisplayCumulativePowerGeneratedTotal": "kWh",
+    "PowerDisplayCumulativePowerUtilised": "kWh",
+    "PowerDisplayPowerSurplusDeficit": "kWh",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -1276,6 +1298,104 @@ def _anchor_balance_to_full_soc(
     return balance - float(np.nanmin(balance[:count][full]))
 
 
+def _display_energy_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
+    """Map compact Power display-energy variables onto the standard plot names."""
+    assignments: dict[str, xr.DataArray] = {}
+    for target_name, source_name in POWER_DISPLAY_ENERGY_MAP.items():
+        if source_name not in ds:
+            continue
+        da = ds[source_name].copy(deep=False)
+        da.attrs = dict(da.attrs)
+        da.attrs["units"] = "kWh"
+        assignments[target_name] = da
+    return assignments
+
+
+def build_power_display_energy_dataset(
+    ds: xr.Dataset,
+    freq: str = POWER_DISPLAY_ENERGY_FREQ,
+) -> xr.Dataset:
+    """Build a compact Power display product for cumulative energy traces.
+
+    The raw APS Zarr stays authoritative. This derived product stores only the
+    one-minute cumulative kWh traces needed by the dashboard so interactive
+    plotting does not need to read many days of one-second samples just to
+    anchor the surplus/deficit baseline.
+    """
+    if "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return xr.Dataset()
+
+    ds = ds.sortby("time")
+    times = pd.DatetimeIndex(ds["time"].values)
+    frame: dict[str, np.ndarray] = {}
+    generated_arrays: list[np.ndarray] = []
+    for field_name in ("SolarYield_East", "SolarYield_South", "SolarYield_West"):
+        if field_name not in ds:
+            continue
+        generated = _daily_cumulative_counter_delta(times, np.asarray(ds[field_name].values, dtype=np.float64))
+        frame[POWER_DISPLAY_ENERGY_MAP[field_name]] = generated
+        generated_arrays.append(generated)
+
+    if generated_arrays:
+        valid_generated = np.zeros(len(times), dtype=bool)
+        for values in generated_arrays:
+            valid_generated |= np.isfinite(values)
+        total_generated = np.full(len(times), np.nan, dtype=np.float64)
+        if np.any(valid_generated):
+            summed = np.zeros(int(np.count_nonzero(valid_generated)), dtype=np.float64)
+            for values in generated_arrays:
+                summed += np.nan_to_num(values[valid_generated], nan=0.0)
+            total_generated[valid_generated] = summed
+        frame[POWER_DISPLAY_ENERGY_MAP["CumulativePowerGeneratedTotal"]] = total_generated
+    else:
+        total_generated = np.full(len(times), np.nan, dtype=np.float64)
+
+    if "ACOutputWatts" in ds or "DCInverterWatts" in ds:
+        ac_power = np.asarray(
+            ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.full(len(times), np.nan),
+            dtype=np.float64,
+        )
+        dc_power = np.asarray(
+            ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.full(len(times), np.nan),
+            dtype=np.float64,
+        )
+        valid_power = np.isfinite(ac_power) | np.isfinite(dc_power)
+        utilised = np.full(len(times), np.nan, dtype=np.float64)
+        if np.any(valid_power):
+            utilised_power_w = np.nan_to_num(ac_power[valid_power], nan=0.0) + np.nan_to_num(dc_power[valid_power], nan=0.0)
+            utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
+            utilised[valid_power] = _daily_cumulative_energy_kwh(times[valid_power], utilised_power_w)
+        frame[POWER_DISPLAY_ENERGY_MAP["CumulativePowerUtilised"]] = utilised
+    else:
+        utilised = np.full(len(times), np.nan, dtype=np.float64)
+
+    if generated_arrays or "ACOutputWatts" in ds or "DCInverterWatts" in ds:
+        balance = _carryover_energy_balance(times, total_generated, utilised)
+        if "BatterySOC" in ds:
+            balance = _anchor_balance_to_full_soc(balance, np.asarray(ds["BatterySOC"].values, dtype=np.float64))
+        frame[POWER_DISPLAY_ENERGY_MAP["PowerSurplusDeficit"]] = balance
+
+    if not frame:
+        return xr.Dataset()
+
+    display_frame = pd.DataFrame(frame, index=times).resample(freq).last().dropna(how="all")
+    if display_frame.empty:
+        return xr.Dataset()
+    out = xr.Dataset(
+        {name: (("time",), display_frame[name].to_numpy(dtype=np.float32)) for name in display_frame.columns},
+        coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
+        attrs={
+            POWER_DISPLAY_ENERGY_ATTR: "true",
+            "source": "derived from power.zarr",
+            "frequency": freq,
+            "description": "Display-only one-minute cumulative APS energy traces for dashboard plotting.",
+        },
+    )
+    for name in out.data_vars:
+        out[name].attrs["units"] = "kWh"
+    return out
+
+
 def _summary_display_timestamp(value: object) -> pd.Timestamp | None:
     if value in (None, ""):
         return None
@@ -1312,6 +1432,11 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
         return ds
 
     assignments: dict[str, xr.DataArray] = {}
+    display_assignments = _display_energy_assignments(ds)
+    if display_assignments:
+        prepared = ds.assign(**display_assignments)
+        prepared_times = pd.DatetimeIndex(prepared["time"].values)
+        return _crop_to_summary_display_window(prepared, prepared_times)
 
     generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
     for field_name in generated_fields:

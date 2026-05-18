@@ -18,27 +18,28 @@ stored variables.
 
 ## Power interactive performance
 
-The Power Zarr schema and chunks are unchanged, but the dashboard uses larger
-read chunks, display-only sanity limits, per-trace time downsampling, and 5-minute
-latest-window cache buckets for the interactive Power view. These choices
-improve browser responsiveness without changing the data product.
+The raw Power Zarr schema and chunks are unchanged. The dashboard uses larger
+read chunks, display-only sanity limits, per-trace time downsampling, and
+5-minute latest-window cache buckets for the interactive Power view. The
+cumulative-energy panel additionally reads from the compact derived store
+`/data/aurora/products/power/power_display_energy.zarr`, which is regenerated
+from `power.zarr` by the Power quicklook pipeline.
 
 The Battery Charging panel additionally applies a display-only 30-minute rolling
 mean to `BatteryAmps` and `BatteryWatts` so short charging transients do not
 dominate the plotted scale.
 
-The cumulative Power panel is also computed with UTC-day context before the
-selected window is displayed. Solar-yield counters are treated as daily counters
-and converted to positive increments, so delayed controller resets after
-midnight do not produce false generation drops in the latest 24 h view. The
-right-axis surplus/deficit trace is a carried cumulative kWh balance: each
-day's `Total Generated - Utilised` balance starts from the previous day's
-ending surplus or deficit. The utilised term remains the AC+DC output power
-integral. Power renders include a configurable lookback, currently 7 days by
-default, so the balance can be anchored to recent full-SOC history using one
-constant offset. That avoids both midnight discontinuities and artificial jumps
-at the SOC threshold. Daily generated and utilised traces are visually broken
-at UTC midnight so their resets are shown as new segments rather than connected
+The cumulative Power display product is computed with full available context.
+Solar-yield counters are treated as daily counters and converted to positive
+increments, so delayed controller resets after midnight do not produce false
+generation drops in the latest 24 h view. The right-axis surplus/deficit trace
+is a carried cumulative kWh balance: each day's
+`Total Generated - Utilised` balance starts from the previous day's ending
+surplus or deficit. The utilised term remains the AC+DC output power integral.
+The balance is anchored to recent full-SOC history using one constant offset.
+That avoids both midnight discontinuities and artificial jumps at the SOC
+threshold. Daily generated and utilised traces are visually broken at UTC
+midnight so their resets are shown as new segments rather than connected
 vertical jumps.
 
 ## Meteorology display merge
