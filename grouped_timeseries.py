@@ -29,6 +29,8 @@ MATPLOTLIB_PANEL_RIGHT = 0.72
 MATPLOTLIB_LEGEND_X = 1.12
 PLOTLY_PANEL_DOMAIN_END = 0.73
 PLOTLY_LEGEND_X = 0.84
+MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
+MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 
 
 @dataclass(frozen=True)
@@ -1339,6 +1341,29 @@ def _trace_time_values(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.
     return times[finite], values[finite]
 
 
+def _apply_matplotlib_axis_padding(ax, series: list[np.ndarray]) -> None:
+    """Add y-range headroom so boxed panel labels do not sit on top of traces."""
+    finite_parts = [np.asarray(values, dtype=np.float64)[np.isfinite(values)] for values in series]
+    finite_parts = [values for values in finite_parts if values.size]
+    if not finite_parts:
+        return
+    values = np.concatenate(finite_parts)
+    lower = float(np.nanmin(values))
+    upper = float(np.nanmax(values))
+    if not np.isfinite(lower) or not np.isfinite(upper):
+        return
+    span = upper - lower
+    if span <= 0:
+        scale = max(abs(upper), 1.0)
+        span = scale * 0.1
+        lower -= span * 0.5
+        upper += span * 0.5
+    ax.set_ylim(
+        lower - span * MATPLOTLIB_Y_FOOTROOM_FRACTION,
+        upper + span * MATPLOTLIB_Y_HEADROOM_FRACTION,
+    )
+
+
 def _window_title(suffix: str, instrument: str) -> str:
     return f"{display_name(instrument)} - {suffix}"
 
@@ -1441,6 +1466,8 @@ def save_summary_png(
         right_ax = ax.twinx() if panel.right_axis_label else None
         left_color = None
         right_color = None
+        left_axis_values: list[np.ndarray] = []
+        right_axis_values: list[np.ndarray] = []
         for trace, values in rows:
             target = right_ax if trace.axis == "right" and right_ax is not None else ax
             drawstyle = "steps-post" if trace.step else "default"
@@ -1448,10 +1475,18 @@ def save_summary_png(
             if len(trace_times) == 0:
                 continue
             target.plot(trace_times, trace_values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
+            if target is right_ax:
+                right_axis_values.append(trace_values)
+            else:
+                left_axis_values.append(trace_values)
             if trace.axis == "right" and right_color is None:
                 right_color = trace.color
             if trace.axis == "left" and left_color is None:
                 left_color = trace.color
+
+        _apply_matplotlib_axis_padding(ax, left_axis_values)
+        if right_ax is not None:
+            _apply_matplotlib_axis_padding(right_ax, right_axis_values)
 
         ax.set_facecolor("white")
         ax.grid(True, color=PLOT_GRID, linewidth=0.5)
