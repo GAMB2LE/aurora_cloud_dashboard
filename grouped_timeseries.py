@@ -38,6 +38,7 @@ MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
+FULL_SOC_DEFICIT_CLEAR_THRESHOLD = 99.5
 
 
 @dataclass(frozen=True)
@@ -1259,6 +1260,26 @@ def _carryover_energy_balance(
     return balance
 
 
+def _clear_deficit_when_soc_full(
+    balance_kwh: np.ndarray,
+    state_of_charge: np.ndarray,
+    threshold: float = FULL_SOC_DEFICIT_CLEAR_THRESHOLD,
+) -> np.ndarray:
+    """Retire carried negative energy debt once the battery reports full SOC."""
+    adjusted = np.asarray(balance_kwh, dtype=np.float64).copy()
+    soc = np.asarray(state_of_charge, dtype=np.float64)
+    offset = 0.0
+    for idx, value in enumerate(adjusted):
+        if not np.isfinite(value):
+            continue
+        corrected = value + offset
+        if idx < soc.size and np.isfinite(soc[idx]) and soc[idx] >= threshold and corrected < 0.0:
+            offset -= corrected
+            corrected = 0.0
+        adjusted[idx] = corrected
+    return adjusted
+
+
 def _summary_display_timestamp(value: object) -> pd.Timestamp | None:
     if value in (None, ""):
         return None
@@ -1366,6 +1387,8 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             dtype=np.float64,
         )
         energy_balance = _carryover_energy_balance(times, generated, utilised)
+        if "BatterySOC" in ds:
+            energy_balance = _clear_deficit_when_soc_full(energy_balance, np.asarray(ds["BatterySOC"].values, dtype=np.float64))
         assignments["PowerSurplusDeficit"] = xr.DataArray(
             energy_balance,
             coords={"time": ds["time"]},
