@@ -24,7 +24,6 @@ The Meteorology instrument currently groups:
   - T2
   - ASFS Vaisala temperature
   - Sonic temperature
-  - KT15 ambient temperature
 - **Humidity / Dew Point**
   - dew point
   - VaisalaMET relative humidity

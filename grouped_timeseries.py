@@ -384,7 +384,6 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("t2_t", "T2 Air Temperature", COLOR["light_blue"]),
                 TraceSpec("vaisala_T_Avg", "ASFS Vaisala Temperature", COLOR["green"]),
                 TraceSpec("metek_T_out_Avg", "Sonic Temperature", COLOR["brown"]),
-                TraceSpec("kt15_amb_Avg", "KT15 Ambient Temperature", COLOR["olive"]),
             ),
         ),
         PanelSpec(
@@ -1370,8 +1369,10 @@ def plot_housekeeping_timeseries(
     colors = [COLOR["teal"], COLOR["red"], COLOR["green"], COLOR["purple"], COLOR["brown"], COLOR["magenta"], COLOR["olive"], COLOR["blue"]]
     for idx, (ax, name) in enumerate(zip(axes, names)):
         values = np.asarray(ds[name].values, dtype=np.float64) * display_scale(name)
+        trace_times, trace_values = _trace_time_values(times, values)
         drawstyle = "steps-post" if is_status_like_var(name) else "default"
-        ax.plot(times, values, color=colors[idx % len(colors)], linewidth=0.8, drawstyle=drawstyle)
+        if len(trace_times):
+            ax.plot(trace_times, trace_values, color=colors[idx % len(colors)], linewidth=0.8, drawstyle=drawstyle)
         ax.set_ylabel(human_axis_label(name), fontsize=7, rotation=0, ha="right", va="center")
         ax.grid(True, color=PLOT_GRID, linewidth=0.4)
         ax.tick_params(axis="y", labelsize=7)
