@@ -49,6 +49,11 @@ single-sample charging-current/current-power outliers, before plotting. The
 live latest window is also rounded into 5-minute cache buckets so a small
 timestamp advance does not rebuild the whole Power figure.
 
+The **Battery Charging** panel also applies a display-only 30-minute rolling
+mean to `BatteryAmps` and `BatteryWatts`. This keeps isolated charging
+transients from dominating the visual scale while leaving the stored Power Zarr
+unchanged.
+
 Per-trace downsampling is important for the **ASS 48 V DC Power** overlay: that
 line comes from the ASFS logger at about one-minute cadence, while the APS
 power data are much denser. Downsampling after each trace has dropped merged

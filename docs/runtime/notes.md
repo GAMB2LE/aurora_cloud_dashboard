@@ -23,6 +23,10 @@ read chunks, display-only sanity limits, per-trace time downsampling, and 5-minu
 latest-window cache buckets for the interactive Power view. These choices
 improve browser responsiveness without changing the data product.
 
+The Battery Charging panel additionally applies a display-only 30-minute rolling
+mean to `BatteryAmps` and `BatteryWatts` so short charging transients do not
+dominate the plotted scale.
+
 The cumulative Power panel is also computed with UTC-day context before the
 selected window is displayed. Solar-yield counters are treated as daily counters
 and converted to positive increments, so delayed controller resets after

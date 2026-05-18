@@ -252,7 +252,8 @@ keep switching responsive:
 - Power interactive plots use the same display-time preparation and per-trace
   time downsampling approach as the quicklooks, with sanity limits for
   impossible APS values so isolated raw outliers do not dominate the browser
-  view
+  view. The Battery Charging panel also applies a display-only 30-minute
+  rolling mean to `BatteryAmps` and `BatteryWatts`.
 - the live Power 24 h window is rounded to 5-minute cache buckets, avoiding a
   full rebuild for every tiny latest-timestamp nudge
 

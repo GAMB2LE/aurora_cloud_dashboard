@@ -52,6 +52,7 @@ class TraceSpec:
     valid_min: float | None = None
     valid_max: float | None = None
     skip_if_all_zero: bool = False
+    smooth_minutes: float | None = None
 
 
 @dataclass(frozen=True)
@@ -600,8 +601,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "Charging Current In [A]",
             "Charging Power In [W]",
             (
-                TraceSpec("BatteryAmps", "Charging Current In", COLOR["teal"], valid_min=-250.0, valid_max=250.0),
-                TraceSpec("BatteryWatts", "Charging Power In", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0),
+                TraceSpec("BatteryAmps", "Charging Current In", COLOR["teal"], valid_min=-250.0, valid_max=250.0, smooth_minutes=30.0),
+                TraceSpec("BatteryWatts", "Charging Power In", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0, smooth_minutes=30.0),
             ),
         ),
         PanelSpec(
@@ -1452,12 +1453,27 @@ def _downsample_trace(
     return times[keep], values[keep]
 
 
+def _smooth_trace_values(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    trace: TraceSpec,
+) -> np.ndarray:
+    """Apply optional display-only smoothing before browser/PNG downsampling."""
+    if trace.smooth_minutes is None or trace.smooth_minutes <= 0 or len(times) < 3:
+        return values
+    series = pd.Series(np.asarray(values, dtype=np.float64), index=times)
+    window = f"{float(trace.smooth_minutes):g}min"
+    return series.rolling(window, center=True, min_periods=1).mean().to_numpy(dtype=np.float64)
+
+
 def _trace_plot_values(
     times: pd.DatetimeIndex,
     values: np.ndarray,
     max_time_samples: int,
+    trace: TraceSpec,
 ) -> tuple[pd.DatetimeIndex, np.ndarray]:
     trace_times, trace_values = _trace_time_values(times, values)
+    trace_values = _smooth_trace_values(trace_times, trace_values, trace)
     return _downsample_trace(trace_times, trace_values, max_time_samples)
 
 
@@ -1601,7 +1617,7 @@ def save_summary_png(
         for trace, values in rows:
             target = right_ax if trace.axis == "right" and right_ax is not None else ax
             drawstyle = "steps-post" if trace.step else "default"
-            trace_times, trace_values = _trace_plot_values(times, values, max_time_samples)
+            trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
             target.plot(trace_times, trace_values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
@@ -1747,7 +1763,7 @@ def build_summary_plotly(
                 right_color = trace.color
             if not secondary and left_color is None:
                 left_color = trace.color
-            trace_times, trace_values = _trace_plot_values(times, values, max_time_samples)
+            trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
             if secondary:
