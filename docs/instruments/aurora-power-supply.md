@@ -25,12 +25,14 @@ Typical panels include:
   - `West Solar Generated`
   - `Total Generated`
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
-  - `Surplus / Deficit` on the right axis
+  - `Power Surplus / Deficit` on the right axis, calculated as instantaneous
+    solar power minus AC plus DC output power
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
   - heatsink temperature
   - temperature sensors 1-4
+  - left and right y-axes both use the same `Temperature [C]` range
 - **State of Charge**
   - `BatterySOC` as battery state of charge in percent
 
@@ -41,17 +43,25 @@ one global legend block.
 
 The interactive view reads from the same Power Zarr used by the append and
 quicklook pipelines. For browser performance, the app opens the store with
-larger read chunks and reduces long traces with bucketed first/min/mean/max/last
-representatives. That keeps short spikes visible while avoiding very large
-Plotly payloads. The live latest window is also rounded into 5-minute cache
-buckets so a small timestamp advance does not rebuild the whole Power figure.
+larger read chunks and uses the same per-trace time downsampling approach as the
+quicklooks. Display-only sanity limits remove impossible APS values, such as
+single-sample charging-current/current-power outliers, before plotting. The
+live latest window is also rounded into 5-minute cache buckets so a small
+timestamp advance does not rebuild the whole Power figure.
+
+Per-trace downsampling is important for the **ASS 48 V DC Power** overlay: that
+line comes from the ASFS logger at about one-minute cadence, while the APS
+power data are much denser. Downsampling after each trace has dropped merged
+NaN timestamps preserves the ASFS cadence instead of thinning it on the dense
+APS time grid.
 
 The cumulative panel is normalized at display time. The `SolarYield_*` counters
 are converted into positive UTC-day increments, so delayed controller resets
 just after midnight do not create false drops in the plotted generation lines.
 The utilised-energy line is integrated with midnight context before the view is
 cropped back to the selected/latest window, so the latest 24 h view matches the
-daily cumulative solar counters.
+daily cumulative solar counters. The right-axis surplus/deficit trace is an
+instantaneous power balance in W, so it does not reset or jump at midnight.
 
 These are display-time optimizations only; ingest, retention, and the stored
 Zarr schema are unchanged.

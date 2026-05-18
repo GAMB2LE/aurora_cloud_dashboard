@@ -27,7 +27,6 @@ from quicklook_time_axis import apply_quicklook_time_axis
 
 MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
 INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600"))
-POWER_INTERACTIVE_BUCKET_REPRESENTATIVES = int(os.environ.get("AURORA_POWER_INTERACTIVE_BUCKET_REPRESENTATIVES", "5"))
 OVERVIEW_LABEL = "Overview"
 # Reserve a fixed right-side gutter for per-panel legends so they sit beyond the
 # secondary-axis labels in both the interactive Plotly view and saved PNGs.
@@ -239,8 +238,8 @@ HUMAN_LABELS = {
     "SolarYield_South": "South Solar Generated",
     "SolarYield_West": "West Solar Generated",
     "CumulativePowerGeneratedTotal": "Total Generated",
-    "CumulativePowerBalance": "Surplus / Deficit",
     "CumulativePowerUtilised": "Power Utilised",
+    "PowerSurplusDeficit": "Power Surplus / Deficit",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -361,8 +360,8 @@ HUMAN_UNITS = {
     "SolarYield_South": "kWh",
     "SolarYield_West": "kWh",
     "CumulativePowerGeneratedTotal": "kWh",
-    "CumulativePowerBalance": "kWh",
     "CumulativePowerUtilised": "kWh",
+    "PowerSurplusDeficit": "W",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -590,9 +589,9 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("SolarWatts_East", "Solar East Power", COLOR["brown"]),
                 TraceSpec("SolarWatts_South", "Solar South Power", COLOR["purple"]),
                 TraceSpec("SolarWatts_West", "Solar West Power", COLOR["magenta"]),
-                TraceSpec("SolarVolts_East", "Solar East Voltage", COLOR["olive"], axis="right"),
-                TraceSpec("SolarVolts_South", "Solar South Voltage", COLOR["green"], axis="right"),
-                TraceSpec("SolarVolts_West", "Solar West Voltage", COLOR["blue"], axis="right"),
+                TraceSpec("SolarVolts_East", "Solar East Voltage", COLOR["olive"], axis="right", valid_min=0.0, valid_max=200.0),
+                TraceSpec("SolarVolts_South", "Solar South Voltage", COLOR["green"], axis="right", valid_min=0.0, valid_max=200.0),
+                TraceSpec("SolarVolts_West", "Solar West Voltage", COLOR["blue"], axis="right", valid_min=0.0, valid_max=200.0),
             ),
         ),
         PanelSpec(
@@ -601,8 +600,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "Charging Current In [A]",
             "Charging Power In [W]",
             (
-                TraceSpec("BatteryAmps", "Charging Current In", COLOR["teal"]),
-                TraceSpec("BatteryWatts", "Charging Power In", COLOR["light_blue"], axis="right"),
+                TraceSpec("BatteryAmps", "Charging Current In", COLOR["teal"], valid_min=-250.0, valid_max=250.0),
+                TraceSpec("BatteryWatts", "Charging Power In", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0),
             ),
         ),
         PanelSpec(
@@ -611,8 +610,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "Output Power [W]",
             "ASS 48 V DC Power [W]",
             (
-                TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"]),
-                TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"]),
+                TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"], valid_min=0.0, valid_max=10000.0),
+                TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"], valid_min=0.0, valid_max=10000.0),
                 TraceSpec("watts_on_48vdc_Avg", "ASS 48 V DC Power", COLOR["purple"], axis="right"),
             ),
         ),
@@ -620,14 +619,14 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "cumulative_power",
             "Cumulative Power",
             "Cumulative Energy [kWh]",
-            "Surplus / Deficit [kWh]",
+            "Power Surplus / Deficit [W]",
             (
                 TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
                 TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
                 TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"]),
                 TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"]),
                 TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
-                TraceSpec("CumulativePowerBalance", "Surplus / Deficit", COLOR["red"], axis="right"),
+                TraceSpec("PowerSurplusDeficit", "Power Surplus / Deficit", COLOR["red"], axis="right"),
             ),
         ),
         PanelSpec(
@@ -636,22 +635,22 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "AC Output Voltage [V]",
             "DC Inverter Voltage [V]",
             (
-                TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"]),
-                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"], axis="right"),
+                TraceSpec("ACOutputVolts", "AC Output Voltage", COLOR["brown"], valid_min=180.0, valid_max=260.0),
+                TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["magenta"], axis="right", valid_min=40.0, valid_max=70.0),
             ),
         ),
         PanelSpec(
             "thermal_state",
             "Thermal State",
             "Temperature [C]",
-            None,
+            "Temperature [C]",
             (
-                TraceSpec("InternalTemperature", "Internal Temperature", COLOR["red"]),
-                TraceSpec("HeatsinkTemperature", "Heatsink Temperature", COLOR["brown"]),
-                TraceSpec("TempSensor1", "Temperature Sensor 1", COLOR["teal"]),
-                TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"]),
-                TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"]),
-                TraceSpec("TempSensor4", "Temperature Sensor 4", COLOR["olive"]),
+                TraceSpec("InternalTemperature", "Internal Temperature", COLOR["red"], valid_min=-40.0, valid_max=100.0),
+                TraceSpec("HeatsinkTemperature", "Heatsink Temperature", COLOR["brown"], valid_min=-40.0, valid_max=120.0),
+                TraceSpec("TempSensor1", "Temperature Sensor 1", COLOR["teal"], axis="right", valid_min=-40.0, valid_max=100.0),
+                TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"], axis="right", valid_min=-40.0, valid_max=100.0),
+                TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"], axis="right", valid_min=-40.0, valid_max=100.0),
+                TraceSpec("TempSensor4", "Temperature Sensor 4", COLOR["olive"], axis="right", valid_min=-40.0, valid_max=100.0),
             ),
         ),
         PanelSpec(
@@ -660,7 +659,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "SOC [%]",
             None,
             (
-                TraceSpec("BatterySOC", "State of Charge", COLOR["green"]),
+                TraceSpec("BatterySOC", "State of Charge", COLOR["green"], valid_min=0.0, valid_max=100.0),
             ),
         ),
     ),
@@ -1264,6 +1263,29 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
 
     assignments: dict[str, xr.DataArray] = {}
 
+    solar_power_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in ds]
+    output_power_fields = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in ds]
+    if solar_power_fields or output_power_fields:
+        power_balance = np.full(len(times), np.nan, dtype=np.float64)
+        valid_balance_power = np.zeros(len(times), dtype=bool)
+        solar_power = np.zeros(len(times), dtype=np.float64)
+        output_power = np.zeros(len(times), dtype=np.float64)
+        for field_name in solar_power_fields:
+            values = np.asarray(ds[field_name].values, dtype=np.float64)
+            valid_balance_power |= np.isfinite(values)
+            solar_power += np.nan_to_num(values, nan=0.0)
+        for field_name in output_power_fields:
+            values = np.asarray(ds[field_name].values, dtype=np.float64)
+            valid_balance_power |= np.isfinite(values)
+            output_power += np.nan_to_num(values, nan=0.0)
+        power_balance[valid_balance_power] = solar_power[valid_balance_power] - output_power[valid_balance_power]
+        assignments["PowerSurplusDeficit"] = xr.DataArray(
+            power_balance,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "W"},
+        )
+
     generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
     for field_name in generated_fields:
         generated = _daily_cumulative_counter_delta(times, np.asarray(ds[field_name].values, dtype=np.float64))
@@ -1315,21 +1337,6 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             total_generated[valid_generated] = summed
         assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
             total_generated,
-            coords={"time": ds["time"]},
-            dims=("time",),
-            attrs={"units": "kWh"},
-        )
-
-    generated_total_da = assignments.get("CumulativePowerGeneratedTotal", ds.get("CumulativePowerGeneratedTotal"))
-    utilised_da = assignments.get("CumulativePowerUtilised", ds.get("CumulativePowerUtilised"))
-    if generated_total_da is not None and utilised_da is not None:
-        generated_total = np.asarray(generated_total_da.values, dtype=np.float64)
-        utilised = np.asarray(utilised_da.values, dtype=np.float64)
-        balance = np.full(len(times), np.nan, dtype=np.float64)
-        valid_balance = np.isfinite(generated_total) & np.isfinite(utilised)
-        balance[valid_balance] = generated_total[valid_balance] - utilised[valid_balance]
-        assignments["CumulativePowerBalance"] = xr.DataArray(
-            balance,
             coords={"time": ds["time"]},
             dims=("time",),
             attrs={"units": "kWh"},
@@ -1422,81 +1429,70 @@ def _trace_time_values(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.
     return times[finite], values[finite]
 
 
-def _bucket_trace_extrema(
+def _downsample_trace(
     times: pd.DatetimeIndex,
     values: np.ndarray,
-    max_points: int,
+    max_time_samples: int,
 ) -> tuple[pd.DatetimeIndex, np.ndarray]:
-    """Reduce dense Power traces with first/min/mean/max/last points per bucket."""
-    values = np.asarray(values, dtype=np.float64)
+    """Downsample one trace after dropping merged-grid NaNs.
+
+    Summary datasets can merge one-second APS data with one-minute ASFS context.
+    Downsampling each rendered trace separately preserves the lower-cadence
+    context lines instead of skipping them on the dense merged time grid.
+    """
     count = min(len(times), values.size)
     if count == 0:
         return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
-    if count <= max_points:
-        return times[:count], values[:count]
-
-    representatives = max(3, int(POWER_INTERACTIVE_BUCKET_REPRESENTATIVES))
-    bucket_count = max(1, int(max_points) // representatives)
-    edges = np.linspace(0, count, bucket_count + 1, dtype=int)
-    selected: list[tuple[pd.Timestamp, float]] = []
-
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        if hi <= lo:
-            continue
-        segment = values[lo:hi]
-        finite_mask = np.isfinite(segment)
-        if not np.any(finite_mask):
-            continue
-        finite_idx = np.flatnonzero(finite_mask)
-        finite_values = segment[finite_mask]
-        first_idx = lo + int(finite_idx[0])
-        last_idx = lo + int(finite_idx[-1])
-        min_idx = lo + int(finite_idx[int(np.nanargmin(finite_values))])
-        max_idx = lo + int(finite_idx[int(np.nanargmax(finite_values))])
-        mid_idx = lo + (hi - lo) // 2
-        mean_value = float(np.nanmean(finite_values))
-        candidates = (
-            (times[first_idx], float(values[first_idx])),
-            (times[min_idx], float(values[min_idx])),
-            (times[mid_idx], mean_value),
-            (times[max_idx], float(values[max_idx])),
-            (times[last_idx], float(values[last_idx])),
-        )
-        seen: set[tuple[int, float]] = set()
-        for stamp, value in sorted(candidates, key=lambda item: item[0]):
-            key = (pd.Timestamp(stamp).value, round(value, 12))
-            if key in seen:
-                continue
-            seen.add(key)
-            selected.append((pd.Timestamp(stamp), value))
-
-    if not selected:
-        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
-    selected.sort(key=lambda item: item[0])
-    return pd.DatetimeIndex([stamp for stamp, _value in selected]), np.asarray([value for _stamp, value in selected], dtype=np.float64)
+    times = times[:count]
+    values = np.asarray(values[:count], dtype=np.float64)
+    if count <= max_time_samples:
+        return times, values
+    keep_count = max(2, int(max_time_samples))
+    keep = np.unique(np.linspace(0, count - 1, keep_count, dtype=int))
+    return times[keep], values[keep]
 
 
-def _apply_matplotlib_axis_padding(ax, series: list[np.ndarray]) -> None:
-    """Add y-range headroom so boxed panel labels do not sit on top of traces."""
+def _trace_plot_values(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    max_time_samples: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    trace_times, trace_values = _trace_time_values(times, values)
+    return _downsample_trace(trace_times, trace_values, max_time_samples)
+
+
+def _padded_axis_limits(
+    series: list[np.ndarray],
+    headroom: float = MATPLOTLIB_Y_HEADROOM_FRACTION,
+    footroom: float = MATPLOTLIB_Y_FOOTROOM_FRACTION,
+) -> tuple[float, float] | None:
     finite_parts = [np.asarray(values, dtype=np.float64)[np.isfinite(values)] for values in series]
     finite_parts = [values for values in finite_parts if values.size]
     if not finite_parts:
-        return
+        return None
     values = np.concatenate(finite_parts)
     lower = float(np.nanmin(values))
     upper = float(np.nanmax(values))
     if not np.isfinite(lower) or not np.isfinite(upper):
-        return
+        return None
     span = upper - lower
     if span <= 0:
         scale = max(abs(upper), 1.0)
         span = scale * 0.1
         lower -= span * 0.5
         upper += span * 0.5
-    ax.set_ylim(
-        lower - span * MATPLOTLIB_Y_FOOTROOM_FRACTION,
-        upper + span * MATPLOTLIB_Y_HEADROOM_FRACTION,
+    return (
+        lower - span * footroom,
+        upper + span * headroom,
     )
+
+
+def _apply_matplotlib_axis_padding(ax, series: list[np.ndarray]) -> tuple[float, float] | None:
+    """Add y-range headroom so boxed panel labels do not sit on top of traces."""
+    limits = _padded_axis_limits(series)
+    if limits is not None:
+        ax.set_ylim(*limits)
+    return limits
 
 
 def _window_title(suffix: str, instrument: str) -> str:
@@ -1589,7 +1585,6 @@ def save_summary_png(
     max_time_samples: int = MAX_TIME_SAMPLES,
 ) -> int:
     ds = _prepare_summary_dataset(ds, instrument)
-    ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
     if len(times) == 0 or not panels:
@@ -1606,7 +1601,7 @@ def save_summary_png(
         for trace, values in rows:
             target = right_ax if trace.axis == "right" and right_ax is not None else ax
             drawstyle = "steps-post" if trace.step else "default"
-            trace_times, trace_values = _trace_time_values(times, values)
+            trace_times, trace_values = _trace_plot_values(times, values, max_time_samples)
             if len(trace_times) == 0:
                 continue
             target.plot(trace_times, trace_values, color=trace.color, linewidth=1.25, drawstyle=drawstyle, label=trace.label)
@@ -1619,9 +1614,16 @@ def save_summary_png(
             if trace.axis == "left" and left_color is None:
                 left_color = trace.color
 
-        _apply_matplotlib_axis_padding(ax, left_axis_values)
+        left_limits = _apply_matplotlib_axis_padding(ax, left_axis_values)
         if right_ax is not None:
-            _apply_matplotlib_axis_padding(right_ax, right_axis_values)
+            right_limits = _apply_matplotlib_axis_padding(right_ax, right_axis_values)
+            if panel.right_axis_label == panel.left_axis_label:
+                common_limits = _padded_axis_limits(left_axis_values + right_axis_values)
+                if common_limits is not None:
+                    ax.set_ylim(*common_limits)
+                    right_ax.set_ylim(*common_limits)
+            elif left_limits is not None and right_limits is None:
+                right_ax.set_ylim(*left_limits)
 
         ax.set_facecolor("white")
         ax.grid(True, color=PLOT_GRID, linewidth=0.5)
@@ -1705,9 +1707,6 @@ def build_summary_plotly(
 ) -> go.Figure:
     vertical_spacing = 0.04
     ds = _prepare_summary_dataset(ds, instrument)
-    preserve_trace_extrema = instrument == "power"
-    if not preserve_trace_extrema:
-        ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
     if len(times) == 0 or not panels:
@@ -1740,19 +1739,21 @@ def build_summary_plotly(
         )
         left_color = None
         right_color = None
+        left_axis_values: list[np.ndarray] = []
+        right_axis_values: list[np.ndarray] = []
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
             if secondary and right_color is None:
                 right_color = trace.color
             if not secondary and left_color is None:
                 left_color = trace.color
-            trace_times, trace_values = _trace_time_values(times, values)
+            trace_times, trace_values = _trace_plot_values(times, values, max_time_samples)
             if len(trace_times) == 0:
                 continue
-            if preserve_trace_extrema:
-                trace_times, trace_values = _bucket_trace_extrema(trace_times, trace_values, max_time_samples)
-                if len(trace_times) == 0:
-                    continue
+            if secondary:
+                right_axis_values.append(trace_values)
+            else:
+                left_axis_values.append(trace_values)
             fig.add_trace(
                 go.Scatter(
                     x=trace_times,
@@ -1769,6 +1770,13 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=secondary,
             )
+        left_range = _padded_axis_limits(left_axis_values, headroom=0.08, footroom=0.04)
+        right_range = _padded_axis_limits(right_axis_values, headroom=0.08, footroom=0.04)
+        if panel.right_axis_label == panel.left_axis_label:
+            common_range = _padded_axis_limits(left_axis_values + right_axis_values, headroom=0.08, footroom=0.04)
+            if common_range is not None:
+                left_range = common_range
+                right_range = common_range
         fig.update_yaxes(
             title_text=panel.left_axis_label,
             showgrid=True,
@@ -1776,6 +1784,7 @@ def build_summary_plotly(
             linecolor=PLOT_LINE,
             tickfont=dict(color=left_color or COLOR["black"], size=10),
             title_font=dict(color=left_color or COLOR["black"], size=11),
+            range=list(left_range) if left_range is not None else None,
             row=row_index,
             col=1,
             secondary_y=False,
@@ -1787,6 +1796,7 @@ def build_summary_plotly(
                 linecolor=PLOT_LINE,
                 tickfont=dict(color=right_color or COLOR["black"], size=10),
                 title_font=dict(color=right_color or COLOR["black"], size=11),
+                range=list(right_range) if right_range is not None else None,
                 row=row_index,
                 col=1,
                 secondary_y=True,

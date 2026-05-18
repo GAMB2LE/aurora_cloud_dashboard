@@ -65,7 +65,7 @@ Examples include:
 ## Dashboard performance note
 
 The stored Zarr schema and chunking remain unchanged. The dashboard opens this
-store with larger read chunks for interactive plotting, reduces long traces
-with bucketed first/min/mean/max/last representatives, and rounds live latest
-windows into 5-minute cache buckets. Those choices are presentation-layer
-optimizations only; they do not change ingest or storage.
+store with larger read chunks for interactive plotting, applies display-only
+sanity limits for impossible APS values, uses per-trace time downsampling, and
+rounds live latest windows into 5-minute cache buckets. Those choices are
+presentation-layer optimizations only; they do not change ingest or storage.

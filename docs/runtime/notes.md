@@ -19,14 +19,16 @@ stored variables.
 ## Power interactive performance
 
 The Power Zarr schema and chunks are unchanged, but the dashboard uses larger
-read chunks, bucketed first/min/mean/max/last trace representatives, and
-5-minute latest-window cache buckets for the interactive Power view. These
-choices improve browser responsiveness without changing the data product.
+read chunks, display-only sanity limits, per-trace time downsampling, and 5-minute
+latest-window cache buckets for the interactive Power view. These choices
+improve browser responsiveness without changing the data product.
 
 The cumulative Power panel is also computed with UTC-day context before the
 selected window is displayed. Solar-yield counters are treated as daily counters
 and converted to positive increments, so delayed controller resets after
-midnight do not produce false generation drops in the latest 24 h view.
+midnight do not produce false generation drops in the latest 24 h view. The
+right-axis surplus/deficit trace is an instantaneous W balance rather than a
+cumulative kWh line, so it stays interpretable across midnight in latest views.
 
 ## Meteorology display merge
 

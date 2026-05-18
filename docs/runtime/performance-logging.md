@@ -27,7 +27,6 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_INTERACTIVE_RENDER_CACHE_SIZE`
 - `AURORA_INTERACTIVE_MAX_TIME_SAMPLES`
 - `AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES`
-- `AURORA_POWER_INTERACTIVE_BUCKET_REPRESENTATIVES`
 - `AURORA_POWER_LATEST_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_QUICKLOOK_MAX_TIME_SAMPLES`
@@ -86,8 +85,9 @@ events should be interpreted:
   loaded, which keeps application startup from blocking on a full Plotly build
 - the heavier 2D interactive plots use a coarse-first pass before a full detail
   pass replaces it
-- Power interactive plots use bucketed first/min/mean/max/last trace reduction,
-  preserving short extrema while keeping the rendered Plotly payload smaller
+- Power interactive plots use the same display-time preparation and per-trace time
+  downsampling approach as the quicklooks, with display-only sanity limits for
+  impossible APS values
 - the live Power 24 h window is rounded into 5-minute cache buckets, so a small
   latest-timestamp change does not force an immediate full rebuild
 - inactive quicklook and operations tabs are lazy-loaded the first time the user

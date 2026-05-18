@@ -249,8 +249,10 @@ keep switching responsive:
   views
 - coarse-first rendering for the heavier 2D interactive plots before a full
   detail pass replaces them
-- Power interactive plots use a bucketed first/min/mean/max/last reduction per
-  trace, so the browser receives fewer points while short spikes remain visible
+- Power interactive plots use the same display-time preparation and per-trace
+  time downsampling approach as the quicklooks, with sanity limits for
+  impossible APS values so isolated raw outliers do not dominate the browser
+  view
 - the live Power 24 h window is rounded to 5-minute cache buckets, avoiding a
   full rebuild for every tiny latest-timestamp nudge
 
@@ -302,7 +304,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 ## Notes
 
 - Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
-- `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab. The Aurora Power Supply summary also overlays `watts_on_48vdc_Avg` from the ASFS logger Zarr on the right axis of the Output Power panel so ASS 48 V DC load is visible next to APS output. The cumulative Power panel normalizes `SolarYield_*` counters into positive UTC-day increments and computes utilisation with midnight context before cropping to the selected/latest window.
+- `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab. The Aurora Power Supply summary also overlays `watts_on_48vdc_Avg` from the ASFS logger Zarr on the right axis of the Output Power panel so ASS 48 V DC load is visible next to APS output. The cumulative Power panel normalizes `SolarYield_*` counters into positive UTC-day increments, computes utilisation with midnight context before cropping to the selected/latest window, and plots an instantaneous W surplus/deficit trace on the right axis.
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store. With the current ASFS CRD schema this includes ASFS Vaisala temperature, relative humidity, and pressure alongside the existing Metek wind and temperature context.
 - `Radiation` summary plots use the current ASFS CRD fields for SR30 shortwave radiation and support data, IR20 longwave radiation and support data, flux plates, KT15 surface temperature, and SR50 distance.
 - The dashboard UI now uses four top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, `House Keeping Quicklooks`, and `Operations Dashboard`.
@@ -617,8 +619,8 @@ Chunking:
 Dashboard performance note:
 
 - the stored Zarr chunking remains unchanged
-- the dashboard opens the Power store with larger read chunks and reduces
-  plotted traces with bucketed first/min/mean/max/last representatives
+- the dashboard opens the Power store with larger read chunks and uses the same
+  per-trace time downsampling approach as the quicklooks
 - live latest windows are rounded into 5-minute cache buckets so small timestamp
   advances do not force a complete Plotly rebuild
 

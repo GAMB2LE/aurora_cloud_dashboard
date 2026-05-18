@@ -2046,11 +2046,11 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
             time_subsample = max(time_subsample, 2)
             time_target = max(96, time_target // 3)
             height_target = max(72, height_target // 2)
-        preserve_time_extrema = render_quality == "summary_extrema"
+        preserve_time_detail = render_quality == "summary_full_time"
         perf["time_subsample"] = int(time_subsample)
         perf["time_target"] = int(time_target)
         perf["height_target"] = int(height_target)
-        perf["preserve_time_extrema"] = bool(preserve_time_extrema)
+        perf["preserve_time_detail"] = bool(preserve_time_detail)
         base = _get_base_dataset(instrument)
         if base is None:
             perf["status"] = "no_dataset"
@@ -2091,14 +2091,14 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
         perf["range_filter_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
 
         phase_start = perf_counter()
-        if not preserve_time_extrema and time_subsample > 1:
+        if not preserve_time_detail and time_subsample > 1:
             ds = ds.isel(time=slice(None, None, time_subsample))
         try:
             if ds.sizes.get("range", 0) > height_target:
                 fh = max(int(np.ceil(ds.sizes["range"] / height_target)), 1)
                 perf["range_coarsen_factor"] = int(fh)
                 ds = ds.coarsen({"range": fh}, boundary="trim").mean()
-            if not preserve_time_extrema and ds.sizes.get("time", 0) > time_target:
+            if not preserve_time_detail and ds.sizes.get("time", 0) > time_target:
                 ft = max(int(np.ceil(ds.sizes["time"] / time_target)), 1)
                 perf["time_coarsen_factor"] = int(ft)
                 ds = ds.coarsen({"time": ft}, boundary="trim").mean()
@@ -2882,13 +2882,13 @@ def _interactive_supports_refine(inst: str) -> bool:
 def _interactive_initial_quality(inst: str) -> str:
     """Choose the first render pass used to make an instrument feel responsive."""
     if inst == "power":
-        return "bucketed"
+        return "downsampled"
     return "coarse" if _interactive_supports_refine(inst) else "full"
 
 
 def _interactive_final_quality(inst: str) -> str:
     """Return the cache/render quality that represents the settled view."""
-    return "bucketed" if inst == "power" else "full"
+    return "downsampled" if inst == "power" else "full"
 
 
 def _stacked_interactive_max_time_samples(instrument: str, render_quality: str) -> int:
@@ -3593,7 +3593,7 @@ def _update_stacked_timeseries_view(
             return False
         source_instruments = summary_source_instruments(instrument)
         perf["source_instruments"] = list(source_instruments)
-        source_render_quality = "summary_extrema" if instrument == "power" else render_quality
+        source_render_quality = "summary_full_time" if instrument == "power" else render_quality
         perf["source_render_quality"] = source_render_quality
         context_start = _summary_context_start(start, instrument)
         perf["context_start"] = context_start
@@ -3620,7 +3620,7 @@ def _update_stacked_timeseries_view(
             max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
             perf["max_time_samples"] = max_time_samples
             if instrument == "power":
-                perf["plot_density_mode"] = "bucketed_extrema"
+                perf["plot_density_mode"] = "time_downsampled"
             fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
         except ValueError:
             perf["status"] = "no_data"

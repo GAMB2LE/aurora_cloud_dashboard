@@ -23,10 +23,10 @@ and shows a cached latest quicklook or loading skeleton while a refresh is in
 progress. Rapid control changes are debounced so only the newest requested view
 renders.
 
-For **Aurora Power Supply**, long interactive windows are reduced with bucketed
-first/min/mean/max/last representatives per trace, and live latest windows are
-rounded into 5-minute cache buckets. This keeps the Power view responsive
-without changing the underlying Power Zarr.
+For **Aurora Power Supply**, long interactive windows use the same display-time
+preparation and per-trace time downsampling approach as the quicklooks, and live
+latest windows are rounded into 5-minute cache buckets. This keeps the Power
+view responsive without changing the underlying Power Zarr.
 
 The current tab, instrument, and important control values are also kept in the
 browser URL. This makes mobile recovery less painful: if the phone backgrounds
