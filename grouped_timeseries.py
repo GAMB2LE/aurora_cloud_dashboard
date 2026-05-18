@@ -1689,12 +1689,51 @@ def _include_zero_in_limits(limits: tuple[float, float] | None) -> tuple[float, 
     return lower, 0.08 * span
 
 
-def _balance_label(value: float) -> str:
-    if not np.isfinite(value):
-        return ""
-    if abs(value) < 0.05:
-        return "Balanced 0 kWh"
-    return f"Surplus +{value:.1f} kWh" if value > 0 else f"Deficit {value:.1f} kWh"
+def _nice_tick_step(raw_step: float) -> float | None:
+    """Return a human-friendly tick interval near the requested raw interval."""
+    if not np.isfinite(raw_step) or raw_step <= 0:
+        return None
+    exponent = float(np.floor(np.log10(raw_step)))
+    base = 10.0**exponent
+    fraction = raw_step / base
+    for nice_fraction in (1.0, 1.25, 1.5, 2.0, 2.5, 5.0, 10.0):
+        if fraction <= nice_fraction:
+            return nice_fraction * base
+    return 10.0 * base
+
+
+def _axis_tick_values(
+    limits: tuple[float, float] | None,
+    target_count: int = 9,
+) -> tuple[list[float], list[str]]:
+    """Build readable numeric tick labels for dense interactive axes."""
+    if limits is None:
+        return [], []
+    lower, upper = limits
+    if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+        return [], []
+    step = _nice_tick_step((upper - lower) / max(target_count - 1, 1))
+    if step is None:
+        return [], []
+    start = np.floor(lower / step) * step
+    stop = np.ceil(upper / step) * step
+    values = np.arange(start, stop + step * 0.5, step, dtype=float)
+    values = values[(values >= lower - step * 0.05) & (values <= upper + step * 0.05)]
+    if values.size == 0:
+        return [], []
+    if step >= 1 and np.isclose(step, round(step)):
+        decimals = 0
+    elif step >= 1:
+        decimals = 2
+    else:
+        decimals = int(max(0, np.ceil(-np.log10(step)))) + 1
+    labels = []
+    for value in values:
+        if abs(value) < step * 1.0e-6:
+            labels.append("0")
+        else:
+            labels.append(f"{value:.{decimals}f}".rstrip("0").rstrip("."))
+    return values.tolist(), labels
 
 
 def _power_balance_trace_values(
@@ -1711,54 +1750,17 @@ def _power_balance_trace_values(
     return None
 
 
-def _last_finite_trace_point(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.Timestamp, float] | None:
-    finite = np.isfinite(values)
-    if not np.any(finite):
-        return None
-    idx = int(np.nonzero(finite)[0][-1])
-    return pd.Timestamp(times[idx]), float(values[idx])
-
-
 def _add_matplotlib_power_balance_guides(
     ax,
     rows: list[tuple[TraceSpec, np.ndarray]],
     times: pd.DatetimeIndex,
     max_time_samples: int,
 ) -> None:
-    """Annotate the APS surplus/deficit right axis without changing stored data."""
+    """Add a neutral zero reference to the APS surplus/deficit axis."""
     balance = _power_balance_trace_values(times, rows, max_time_samples)
     if balance is None:
         return
-    trace, trace_times, trace_values = balance
     ax.axhline(0.0, color=PLOT_GRID, linewidth=0.8, zorder=0)
-    ax.text(
-        0.99,
-        0.0,
-        "0 kWh balance",
-        transform=ax.get_yaxis_transform(),
-        ha="right",
-        va="bottom",
-        fontsize=8,
-        color=PLOT_TEXT,
-        bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.5),
-    )
-    point = _last_finite_trace_point(trace_times, trace_values)
-    if point is None:
-        return
-    last_time, last_value = point
-    ax.scatter([last_time], [last_value], s=26, color=trace.color, edgecolor="white", linewidth=0.8, zorder=4)
-    annotation = ax.annotate(
-        _balance_label(last_value),
-        xy=(last_time, last_value),
-        xytext=(7, 0),
-        textcoords="offset points",
-        ha="left",
-        va="center",
-        fontsize=8,
-        color=trace.color,
-        bbox=dict(facecolor="white", edgecolor=trace.color, linewidth=0.6, alpha=0.9, pad=2),
-    )
-    annotation.set_clip_on(False)
 
 
 def _add_plotly_power_balance_guides(
@@ -1933,16 +1935,6 @@ def save_summary_png(
             trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
-            marker_kwargs = {}
-            if trace.var == POWER_BALANCE_TRACE:
-                marker_kwargs = {
-                    "marker": "o",
-                    "markersize": 3.0,
-                    "markerfacecolor": "white",
-                    "markeredgecolor": trace.color,
-                    "markeredgewidth": 0.7,
-                    "markevery": max(1, len(trace_times) // 24),
-                }
             target.plot(
                 trace_times,
                 trace_values,
@@ -1950,7 +1942,6 @@ def save_summary_png(
                 linewidth=1.25,
                 drawstyle=drawstyle,
                 label=trace.label,
-                **marker_kwargs,
             )
             if target is right_ax:
                 right_axis_values.append(trace_values)
@@ -2152,6 +2143,10 @@ def build_summary_plotly(
             secondary_y=False,
         )
         if panel.right_axis_label is not None:
+            right_tick_values: list[float] = []
+            right_tick_labels: list[str] = []
+            if panel.key == "cumulative_power":
+                right_tick_values, right_tick_labels = _axis_tick_values(right_range, target_count=12)
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
                 showgrid=panel.key == "cumulative_power",
@@ -2163,6 +2158,11 @@ def build_summary_plotly(
                 tickfont=dict(color=right_color or COLOR["black"], size=10),
                 title_font=dict(color=right_color or COLOR["black"], size=11),
                 range=list(right_range) if right_range is not None else None,
+                tickmode="array" if right_tick_values else "auto",
+                tickvals=right_tick_values or None,
+                ticktext=right_tick_labels or None,
+                ticks="outside" if panel.key == "cumulative_power" else "",
+                ticklen=5 if panel.key == "cumulative_power" else None,
                 row=row_index,
                 col=1,
                 secondary_y=True,
