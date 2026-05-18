@@ -37,6 +37,8 @@ PLOTLY_PANEL_DOMAIN_END = 0.73
 PLOTLY_LEGEND_X = 0.84
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
+SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
+SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
 
 
 @dataclass(frozen=True)
@@ -1194,6 +1196,64 @@ def _daily_cumulative_energy_kwh(times: pd.DatetimeIndex, power_w: np.ndarray) -
     return cumulative_kwh
 
 
+def _daily_cumulative_counter_delta(times: pd.DatetimeIndex, counter_kwh: np.ndarray) -> np.ndarray:
+    """Convert daily-ish energy counters into UTC-day cumulative increments.
+
+    The APS solar-yield counters can reset tens of minutes after midnight. For
+    display, accumulate only positive counter changes within each UTC day and
+    ignore reset drops, so the plotted generation starts cleanly at midnight.
+    """
+    cumulative_kwh = np.full(len(times), np.nan, dtype=np.float64)
+    if len(times) == 0:
+        return cumulative_kwh
+
+    day_starts = times.normalize()
+    current_day = None
+    running_total = 0.0
+    last_value = np.nan
+    for idx, (day_start, raw_value) in enumerate(zip(day_starts, counter_kwh)):
+        if current_day is None or day_start != current_day:
+            current_day = day_start
+            running_total = 0.0
+            last_value = np.nan
+        if not np.isfinite(raw_value):
+            continue
+        if np.isfinite(last_value):
+            delta = float(raw_value - last_value)
+            if delta > 0.0:
+                running_total += delta
+        cumulative_kwh[idx] = running_total
+        last_value = float(raw_value)
+    return cumulative_kwh
+
+
+def _summary_display_timestamp(value: object) -> pd.Timestamp | None:
+    if value in (None, ""):
+        return None
+    try:
+        timestamp = pd.Timestamp(value)
+    except Exception:
+        return None
+    if pd.isna(timestamp):
+        return None
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp
+
+
+def _crop_to_summary_display_window(ds: xr.Dataset, times: pd.DatetimeIndex) -> xr.Dataset:
+    start = _summary_display_timestamp(ds.attrs.get(SUMMARY_DISPLAY_START_ATTR))
+    end = _summary_display_timestamp(ds.attrs.get(SUMMARY_DISPLAY_END_ATTR))
+    if start is None and end is None:
+        return ds
+    mask = np.ones(len(times), dtype=bool)
+    if start is not None:
+        mask &= times >= start
+    if end is not None:
+        mask &= times <= end
+    return ds.isel(time=mask)
+
+
 def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if instrument != "power" or "time" not in ds or ds.sizes.get("time", 0) == 0:
         return ds
@@ -1203,6 +1263,16 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
         return ds
 
     assignments: dict[str, xr.DataArray] = {}
+
+    generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
+    for field_name in generated_fields:
+        generated = _daily_cumulative_counter_delta(times, np.asarray(ds[field_name].values, dtype=np.float64))
+        assignments[field_name] = xr.DataArray(
+            generated,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "kWh"},
+        )
 
     if "ACOutputWatts" in ds or "DCInverterWatts" in ds:
         ac_power = np.asarray(
@@ -1230,27 +1300,25 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             attrs={"units": "kWh"},
         )
 
-    if "CumulativePowerGeneratedTotal" not in ds:
-        generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
-        if generated_fields:
-            total_generated = np.full(len(times), np.nan, dtype=np.float64)
-            valid_generated = np.zeros(len(times), dtype=bool)
-            field_values: list[np.ndarray] = []
-            for field_name in generated_fields:
-                values = np.asarray(ds[field_name].values, dtype=np.float64)
-                field_values.append(values)
-                valid_generated |= np.isfinite(values)
-            if np.any(valid_generated):
-                summed = np.zeros(int(np.count_nonzero(valid_generated)), dtype=np.float64)
-                for values in field_values:
-                    summed += np.nan_to_num(values[valid_generated], nan=0.0)
-                total_generated[valid_generated] = summed
-            assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
-                total_generated,
-                coords={"time": ds["time"]},
-                dims=("time",),
-                attrs={"units": "kWh"},
-            )
+    if generated_fields:
+        total_generated = np.full(len(times), np.nan, dtype=np.float64)
+        valid_generated = np.zeros(len(times), dtype=bool)
+        field_values: list[np.ndarray] = []
+        for field_name in generated_fields:
+            values = np.asarray(assignments[field_name].values, dtype=np.float64)
+            field_values.append(values)
+            valid_generated |= np.isfinite(values)
+        if np.any(valid_generated):
+            summed = np.zeros(int(np.count_nonzero(valid_generated)), dtype=np.float64)
+            for values in field_values:
+                summed += np.nan_to_num(values[valid_generated], nan=0.0)
+            total_generated[valid_generated] = summed
+        assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
+            total_generated,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "kWh"},
+        )
 
     generated_total_da = assignments.get("CumulativePowerGeneratedTotal", ds.get("CumulativePowerGeneratedTotal"))
     utilised_da = assignments.get("CumulativePowerUtilised", ds.get("CumulativePowerUtilised"))
@@ -1267,9 +1335,9 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             attrs={"units": "kWh"},
         )
 
-    if not assignments:
-        return ds
-    return ds.assign(**assignments)
+    prepared = ds.assign(**assignments) if assignments else ds
+    prepared_times = pd.DatetimeIndex(prepared["time"].values)
+    return _crop_to_summary_display_window(prepared, prepared_times)
 
 
 def numeric_time_vars(ds: xr.Dataset) -> list[str]:
@@ -1616,10 +1684,15 @@ def plot_summary_last_24h(
         raise ValueError("Dataset contains no time samples")
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
-    mask = (time_index >= start_time) & (time_index <= end_time)
+    context_start = pd.Timestamp(start_time).normalize() if instrument == "power" else start_time
+    mask = (time_index >= context_start) & (time_index <= end_time)
     if not mask.any():
         raise ValueError("No data in latest 24h")
     window = ds.isel(time=mask).sortby("time")
+    if instrument == "power":
+        window = window.copy(deep=False)
+        window.attrs[SUMMARY_DISPLAY_START_ATTR] = pd.Timestamp(start_time).isoformat()
+        window.attrs[SUMMARY_DISPLAY_END_ATTR] = pd.Timestamp(end_time).isoformat()
     title = _window_title("Latest 24 hours", instrument)
     return save_summary_png(window, instrument=instrument, title=title, output=output, max_time_samples=max_time_samples)
 

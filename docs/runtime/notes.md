@@ -23,6 +23,11 @@ read chunks, bucketed first/min/mean/max/last trace representatives, and
 5-minute latest-window cache buckets for the interactive Power view. These
 choices improve browser responsiveness without changing the data product.
 
+The cumulative Power panel is also computed with UTC-day context before the
+selected window is displayed. Solar-yield counters are treated as daily counters
+and converted to positive increments, so delayed controller resets after
+midnight do not produce false generation drops in the latest 24 h view.
+
 ## Meteorology display merge
 
 The Meteorology summary view merges selected ASFS logger met traces into the

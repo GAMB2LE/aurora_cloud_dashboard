@@ -44,6 +44,8 @@ from grouped_timeseries import (
     summary_daily_png,
     summary_latest_png,
     summary_source_instruments,
+    SUMMARY_DISPLAY_END_ATTR,
+    SUMMARY_DISPLAY_START_ATTR,
     widget_group_options,
 )
 from extra_housekeeping import (
@@ -2726,6 +2728,16 @@ def _canonical_interactive_window(start, end, instrument: str):
     return rounded_end - DEFAULT_WINDOW, rounded_end, f"power_latest_{POWER_LATEST_CACHE_ROUND_MINUTES}min"
 
 
+def _summary_context_start(start, instrument: str):
+    """Include UTC-midnight context for Power cumulative daily counters."""
+    if instrument != "power":
+        return start
+    start_dt = _as_naive_utc_datetime(start)
+    if start_dt is None:
+        return start
+    return datetime.combine(start_dt.date(), time.min)
+
+
 def _interactive_render_cache_key(
     start,
     end,
@@ -3583,10 +3595,19 @@ def _update_stacked_timeseries_view(
         perf["source_instruments"] = list(source_instruments)
         source_render_quality = "summary_extrema" if instrument == "power" else render_quality
         perf["source_render_quality"] = source_render_quality
+        context_start = _summary_context_start(start, instrument)
+        perf["context_start"] = context_start
         ds = combine_summary_datasets(
             instrument,
-            *(open_window(start, end, instrument=source_inst, render_quality=source_render_quality) for source_inst in source_instruments),
+            *(open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality) for source_inst in source_instruments),
         )
+        if instrument == "power" and ds is not None:
+            display_start = _as_naive_utc_datetime(start)
+            display_end = _as_naive_utc_datetime(end)
+            if display_start is not None:
+                ds.attrs[SUMMARY_DISPLAY_START_ATTR] = display_start.isoformat()
+            if display_end is not None:
+                ds.attrs[SUMMARY_DISPLAY_END_ATTR] = display_end.isoformat()
         times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
         perf["time_count"] = 0 if times is None else int(len(times))
         if times is None or len(times) == 0:

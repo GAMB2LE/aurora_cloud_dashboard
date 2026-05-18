@@ -22,6 +22,8 @@ from grouped_timeseries import (
     summary_daily_png,
     summary_latest_png,
     refresh_legacy_aliases,
+    SUMMARY_DISPLAY_END_ATTR,
+    SUMMARY_DISPLAY_START_ATTR,
 )
 
 APP_DIR = Path(__file__).resolve().parent
@@ -57,6 +59,14 @@ def _slice_window(ds: xr.Dataset | None, start: pd.Timestamp, end: pd.Timestamp)
     return ds.isel(time=mask).sortby("time")
 
 
+def _with_display_window(ds: xr.Dataset, start: pd.Timestamp, end: pd.Timestamp) -> xr.Dataset:
+    """Mark a context-loaded dataset so summary prep crops to the visible window."""
+    ds = ds.copy(deep=False)
+    ds.attrs[SUMMARY_DISPLAY_START_ATTR] = pd.Timestamp(start).isoformat()
+    ds.attrs[SUMMARY_DISPLAY_END_ATTR] = pd.Timestamp(end).isoformat()
+    return ds
+
+
 def main(force: bool = False) -> None:
     ds = xr.open_zarr(ZARR_PATH, chunks={})
     if "time" not in ds:
@@ -76,14 +86,16 @@ def main(force: bool = False) -> None:
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
-    latest_mask = (time_index >= start_time) & (time_index <= end_time)
+    latest_context_start = pd.Timestamp(start_time).normalize()
+    latest_mask = (time_index >= latest_context_start) & (time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
         latest_summary = combine_summary_datasets(
             INSTRUMENT,
             latest_day,
-            _slice_window(ass_power, pd.Timestamp(start_time), pd.Timestamp(end_time)),
+            _slice_window(ass_power, latest_context_start, pd.Timestamp(end_time)),
         )
+        latest_summary = _with_display_window(latest_summary, pd.Timestamp(start_time), pd.Timestamp(end_time))
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         save_summary_png(latest_summary, INSTRUMENT, "Aurora Power Supply - Latest 24 hours", summary_out)
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
