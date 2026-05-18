@@ -129,9 +129,12 @@ def _print_instrument_coverage(records: list[dict]) -> None:
         if event in {
             "interactive_view_update",
             "stacked_timeseries_render",
-            "calendar_render",
+            "science_quicklook_render",
+            "housekeeping_quicklook_render",
             "wxcam_interactive_render",
+            "wxcam_calendar_options",
             "wxcam_calendar_day_view",
+            "operations_dashboard_render",
         }:
             browse_counts[instrument] += 1
     if not browse_counts:

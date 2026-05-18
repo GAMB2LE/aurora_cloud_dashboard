@@ -26,8 +26,9 @@ from the instrument host and retains the full HATPRO file set. The Zarr builder
 uses the NetCDF products for LWP, IWV, infrared temperature, meteorology, and
 temperature profiles.
 
-The active processing service is:
+The active source and processing timers are:
 
+- `aurora-hatpro-source-sync.timer`
 - `aurora-hatpro-append.timer`
 - `aurora-hatpro-quicklooks.timer`
 

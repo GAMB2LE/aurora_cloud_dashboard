@@ -55,8 +55,10 @@ tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 - `science_quicklook_render`
 - `housekeeping_quicklook_render`
 - `wxcam_interactive_render`
+- `wxcam_calendar_options`
 - `wxcam_calendar_day_view`
 - `wxcam_calendar_sync`
+- `operations_dashboard_render`
 - `session_loaded`
 - `session_heartbeat`
 - `session_destroyed`

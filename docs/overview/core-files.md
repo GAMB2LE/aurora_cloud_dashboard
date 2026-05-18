@@ -6,8 +6,10 @@ operations tooling. The most important files are grouped below by role.
 ## Dashboard application
 
 - `app.py` - main Panel application and UI wiring
-- `grouped_timeseries.py` - shared summary-layout, labeling, and downsampling
-  helpers for the curated 1D instruments
+- `grouped_timeseries.py` - shared summary-layout, labeling, static quicklook
+  generation, and Plotly trace-reduction helpers for the curated 1D instruments
+- `quicklook_time_axis.py` - shared UTC time-axis formatting for static
+  science and housekeeping quicklooks
 
 ## Numeric data appenders
 

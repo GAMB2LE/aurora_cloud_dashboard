@@ -8,7 +8,9 @@ Path:
 
 - dimension: `time`
 - deployed shape after the CRD parser update, checked on `2026-05-18`:
-  - `time=20153`
+  - `time=20489`
+- time coverage when checked: `2026-05-02 00:00:00` to
+  `2026-05-18 18:29:00`
 
 ## Time coordinate
 

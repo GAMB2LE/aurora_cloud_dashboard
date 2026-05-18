@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Summary and housekeeping plotting helpers for 1D Aurora instruments."""
+"""Summary and housekeeping plotting helpers for 1D Aurora instruments.
+
+The helpers in this module define the curated panel layouts, human-readable
+labels, static quicklook PNG generation, and interactive Plotly summaries used
+by the Meteorology, Radiation, Aurora Power Supply, and Operations views.
+"""
 
 from __future__ import annotations
 
@@ -933,6 +938,11 @@ def default_interactive_label(instrument: str) -> str:
 
 
 def default_calendar_label(instrument: str) -> str:
+    """Return the default dated quicklook group label.
+
+    The function name is kept for compatibility with older app code that called
+    the dated PNG browser a calendar; the visible UI is now Science Quicklooks.
+    """
     return OVERVIEW_LABEL
 
 
@@ -1028,6 +1038,7 @@ def refresh_legacy_aliases(
 
 
 def calendar_date_tokens(quicklook_dir: Path, instrument: str) -> list[str]:
+    """List daily science-quicklook tokens for the dated quicklook selector."""
     prefix = quicklook_prefix(instrument)
     tokens: list[str] = []
     for png in sorted(quicklook_dir.glob(f"{prefix}__summary__*.png")):
@@ -1039,6 +1050,7 @@ def calendar_date_tokens(quicklook_dir: Path, instrument: str) -> list[str]:
 
 
 def calendar_product_paths(quicklook_dir: Path, instrument: str, token: str) -> list[tuple[str, Path]]:
+    """Return science and housekeeping PNGs associated with a quicklook token."""
     paths: list[tuple[str, Path]] = []
     if token == "latest":
         summary = summary_latest_png(quicklook_dir, instrument)

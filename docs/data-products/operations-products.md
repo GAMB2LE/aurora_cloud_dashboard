@@ -52,8 +52,10 @@ Path:
 When checked on `2026-05-18`:
 
 - dimension: `time`
-- shape: `time=2279`
-- data variables: `339`
+- shape: `time=2431`
+- data variables: `374`
+- time coverage when checked: `2026-05-09 16:01:00.181057` to
+  `2026-05-18 18:32:04.299819`
 - useful attrs:
   - `instrument = "ops-monitor"`
   - `source = "ops_monitor_YYYYMMDD.jsonl"`

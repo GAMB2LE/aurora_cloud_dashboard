@@ -34,6 +34,13 @@ Expected dimensions:
 The temperature-profile altitude coordinate from the source files is exposed as
 the `range` coordinate when present.
 
+When checked on `2026-05-18`, the deployed store had:
+
+- `time=680374`
+- `range=94`
+- 6 data variables
+- time coverage: `2026-02-27 13:00:01` to `2026-05-18 17:59:56`
+
 ## Variables
 
 - `LWP`: liquid water path, in `g / m^2`

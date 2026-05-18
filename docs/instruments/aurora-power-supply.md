@@ -37,6 +37,18 @@ Typical panels include:
 Legends are placed in a consistent right-side gutter rather than collected into
 one global legend block.
 
+## Interactive performance behavior
+
+The interactive view reads from the same Power Zarr used by the append and
+quicklook pipelines. For browser performance, the app opens the store with
+larger read chunks and reduces long traces with bucketed first/min/mean/max/last
+representatives. That keeps short spikes visible while avoiding very large
+Plotly payloads. The live latest window is also rounded into 5-minute cache
+buckets so a small timestamp advance does not rebuild the whole Power figure.
+
+These are display-time optimizations only; ingest, retention, and the stored
+Zarr schema are unchanged.
+
 ## Quicklooks
 
 - science quicklooks show the curated APS summary

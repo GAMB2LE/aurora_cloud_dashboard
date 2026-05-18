@@ -16,6 +16,13 @@ Their ingest, local retention, and Zarr schemas are not changed by those
 presentation choices; the dashboard simply renders curated subsets of the same
 stored variables.
 
+## Power interactive performance
+
+The Power Zarr schema and chunks are unchanged, but the dashboard uses larger
+read chunks, bucketed first/min/mean/max/last trace representatives, and
+5-minute latest-window cache buckets for the interactive Power view. These
+choices improve browser responsiveness without changing the data product.
+
 ## Meteorology display merge
 
 The Meteorology summary view merges selected ASFS logger met traces into the

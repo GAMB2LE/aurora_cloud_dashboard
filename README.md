@@ -37,7 +37,8 @@ Additional housekeeping products now exist for:
 - `generate_ops_monitor_quicklooks.py` - builds summary and housekeeping quicklooks for the archived Operations monitor products.
 - `append_new_*_to_zarr.py` - appenders for the numeric instruments.
 - `generate_*_quicklooks.py`, `plot_*_last24h.py` - quicklook and latest-product generators.
-- `grouped_timeseries.py` - shared summary-layout, labeling, downsampling, and quicklook helpers for the 1D instruments.
+- `grouped_timeseries.py` - shared summary-layout, labeling, static quicklook generation, and Plotly trace-reduction helpers for the 1D instruments.
+- `quicklook_time_axis.py` - shared UTC time-axis formatting for static science and housekeeping quicklooks.
 
 ## Deployed paths
 
@@ -88,8 +89,8 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/wxcam/...`
 - Storage type: local disk on `/dev/vdb`
 - Current filesystem size on `2026-05-18`: `983G`
-- Current used on `2026-05-18`: `197G`
-- Current available on `2026-05-18`: `736G`
+- Current used on `2026-05-18`: `213G`
+- Current available on `2026-05-18`: `720G`
 
 So `/data/aurora` is the product, work, and output area.
 
@@ -111,6 +112,7 @@ Important products:
 
 - CL61 Zarr: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr`
 - Radar Zarr: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
+- HATPRO Zarr: `/data/aurora/products/hatprog5/hatpro.zarr`
 - Vaisala met Zarr: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 - ASFS logger Zarr: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 - ASFS fast-sonic Zarr: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
@@ -144,6 +146,10 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
   - `aurora-radar-source-sync.timer`
   - `aurora-radar-append.timer`
   - `aurora-radar-quicklooks.timer`
+- Scanning microwave radiometer:
+  - `aurora-hatpro-source-sync.timer`
+  - `aurora-hatpro-append.timer`
+  - `aurora-hatpro-quicklooks.timer`
 - Vaisala met:
   - `aurora-vaisalamet-source-sync.timer`
   - `aurora-vaisalamet-append.timer`
@@ -168,8 +174,14 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
 - Operations:
   - `aurora-ops-monitor-collect.timer`
   - `aurora-ops-monitor-append.timer`
+  - `aurora-ops-monitor-alerts.timer`
   - `aurora-ops-monitor-quicklooks.timer`
   - `aurora-mirror-verify.timer`
+- JASMIN GWS sync:
+  - `aurora-gws-rsync-raw.timer`
+  - `aurora-gws-rsync-products.timer`
+  - `aurora-gws-rsync-products-wxcam.timer`
+  - `aurora-gws-rsync-manifests.timer`
 
 Useful commands:
 
@@ -206,6 +218,9 @@ The main event families currently logged are:
 - `base_dataset_open`
 - `dataset_time_bounds`
 - `dataset_time_bounds_cache_hit`
+- `interactive_render_deferred`
+- `interactive_render_cache_hit`
+- `interactive_render_debounced`
 - `window_open`
 - `interactive_view_update`
 - `hatpro_render`
@@ -213,8 +228,10 @@ The main event families currently logged are:
 - `science_quicklook_render`
 - `housekeeping_quicklook_render`
 - `wxcam_interactive_render`
+- `wxcam_calendar_options`
 - `wxcam_calendar_day_view`
 - `wxcam_calendar_sync`
+- `operations_dashboard_render`
 - `session_loaded`
 - `session_heartbeat`
 - `session_destroyed`
@@ -317,7 +334,7 @@ Path: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape checked on `2026-05-18`: `time=101532`, `range=3276`, `layer=5`
+- deployed shape checked on `2026-05-18`: `time=104982`, `range=3276`, `layer=5`
 - coordinates:
   - `time` - profile timestamps
   - `range` - range gate center in meters
@@ -380,7 +397,7 @@ Path: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`
-- deployed shape checked on `2026-05-18`: `time=147178`, `range=312`
+- deployed shape checked on `2026-05-18`: `time=160760`, `range=312`
 - coordinates:
   - `time` - derived from `Time + Timems`
   - `range` - concatenated chirp range gates from `C1Range` and `C2Range`
@@ -412,6 +429,24 @@ Chunking:
 
 - radar science variables are chunked `(400, full-range)`
 
+### HATPRO Zarr structure
+
+Path: `/data/aurora/products/hatprog5/hatpro.zarr`
+
+This store is a consolidated time-indexed xarray product for the RPG HATPRO G5
+scanning microwave radiometer.
+
+- deployed shape checked on `2026-05-18`: `time=680374`, `range=94`
+- the deployed store currently contains 6 variables:
+  - `LWP`
+  - `IWV`
+  - `IRR_Map`
+  - `SURF_T`
+  - `T_PROF`
+  - `T_PROF_CMP`
+- the builder currently rewrites the deterministic consolidated Zarr from the
+  mirrored raw tree
+
 ### Meteorology (VaisalaMET) Zarr structure
 
 Path: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
@@ -419,7 +454,7 @@ Path: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=221243`
+- deployed shape checked on `2026-05-18`: `time=227032`
 - coordinate:
   - `time` - parsed from the raw `timestamp` column, localized as `Europe/London`, then converted to UTC before storage
 
@@ -458,7 +493,7 @@ Path: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=20153`
+- deployed shape checked on `2026-05-18`: `time=20489`
 - coordinate:
   - `time` - parsed directly from the TOA5 `TIMESTAMP` column
 
@@ -496,7 +531,7 @@ Path: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=1951976`
+- deployed shape checked on `2026-05-18`: `time=1978238`
 - coordinate:
   - `time` - parsed from `TIMESTAMP` and offset by `metek_msec_out` to preserve sub-second timing
 
@@ -536,7 +571,7 @@ Path: `/data/aurora/products/power/power.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=842870`
+- deployed shape checked on `2026-05-18`: `time=874618`
 - coordinate:
   - `time` - parsed from the raw `aps_time` column
 
@@ -578,6 +613,14 @@ Schema note:
 Chunking:
 
 - `time`-only variables are chunked `(1200,)`
+
+Dashboard performance note:
+
+- the stored Zarr chunking remains unchanged
+- the dashboard opens the Power store with larger read chunks and reduces
+  plotted traces with bucketed first/min/mean/max/last representatives
+- live latest windows are rounded into 5-minute cache buckets so small timestamp
+  advances do not force a complete Plotly rebuild
 
 ## WXcam data products
 
@@ -642,5 +685,9 @@ Each group stores one xarray dataset with:
 
 Group-specific image geometry checked on `2026-05-18`:
 
-- `fish_hdr`: `3120 x 3040` pixels, chunked as `(1, 1024, 1024, 3)`
-- `pano_hdr`: `2880 x 750` pixels, chunked as `(1, 750, 1024, 3)`
+- `fish_hdr`: `time=13416`, `3120 x 3040` pixels, `channel=3`,
+  chunked as `(1, 1024, 1024, 3)`, covering `2026-05-02 00:00:00` to
+  `2026-05-18 18:30:39`
+- `pano_hdr`: `time=2075`, `2880 x 750` pixels, `channel=3`, chunked as
+  `(1, 750, 1024, 3)`, covering `2026-01-12 02:25:00` to
+  `2026-05-18 18:30:39`

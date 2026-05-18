@@ -8,7 +8,9 @@ Path:
 
 - dimension: `time`
 - deployed shape when checked on `2026-05-18`:
-  - `time=860232`
+  - `time=874618`
+- time coverage when checked: `2026-05-05 15:15:23.598658936` to
+  `2026-05-18 18:31:00.017739502`
 
 ## Time coordinate
 
@@ -59,3 +61,11 @@ Examples include:
 ## Chunking
 
 - `time`-only variables are chunked `(1200,)`
+
+## Dashboard performance note
+
+The stored Zarr schema and chunking remain unchanged. The dashboard opens this
+store with larger read chunks for interactive plotting, reduces long traces
+with bucketed first/min/mean/max/last representatives, and rounds live latest
+windows into 5-minute cache buckets. Those choices are presentation-layer
+optimizations only; they do not change ingest or storage.

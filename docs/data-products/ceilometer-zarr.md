@@ -8,9 +8,11 @@ Path:
 
 - dimensions: `time`, `range`, `layer`
 - deployed shape when checked on `2026-05-18`:
-  - `time=101532`
+  - `time=104982`
   - `range=3276`
   - `layer=5`
+- time coverage when checked: `2026-05-06 14:34:37` to
+  `2026-05-18 18:30:36.019`
 
 ## Coordinates
 

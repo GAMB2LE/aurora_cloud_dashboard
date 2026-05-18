@@ -3,8 +3,8 @@
 This module hosts the multi-instrument Panel and Plotly browser for atmospheric
 curtains, station summaries, WXcam media, quicklooks, and operations monitoring.
 It keeps per-instrument state warm and uses cached bounds, stale-render
-protection, and coarse-first rendering on heavier plots to keep the UI
-responsive during normal browsing.
+protection, coarse-first rendering on heavier 2D plots, and Power-specific
+trace bucketing to keep the UI responsive during normal browsing.
 """
 
 import asyncio
@@ -2381,7 +2381,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
 
 
 def _refresh_to_latest(_event=None):
-    """Jump window to latest 24h and update date pickers."""
+    """Jump the interactive time controls to the latest 24 h window."""
     global _live_guard
     _live_guard = True
     if not _is_wxcam_instrument(CURRENT_INSTRUMENT) and _dataset_cache_age(CURRENT_INSTRUMENT) >= timedelta(milliseconds=DATA_REFRESH_MS):
@@ -2868,16 +2868,19 @@ def _interactive_supports_refine(inst: str) -> bool:
 
 
 def _interactive_initial_quality(inst: str) -> str:
+    """Choose the first render pass used to make an instrument feel responsive."""
     if inst == "power":
         return "bucketed"
     return "coarse" if _interactive_supports_refine(inst) else "full"
 
 
 def _interactive_final_quality(inst: str) -> str:
+    """Return the cache/render quality that represents the settled view."""
     return "bucketed" if inst == "power" else "full"
 
 
 def _stacked_interactive_max_time_samples(instrument: str, render_quality: str) -> int:
+    """Cap 1D interactive trace density by instrument and render pass."""
     if instrument == "power":
         return POWER_INTERACTIVE_MAX_TIME_SAMPLES
     return 900 if render_quality == "coarse" else 1600
@@ -3049,6 +3052,7 @@ def _wxcam_interactive_video_options(selection: str) -> dict[str, str | None]:
 
 
 def _wxcam_calendar_options(selection: str) -> dict[str, str | None]:
+    """Return WXcam science-quicklook day choices for the HDR thumbnail grid."""
     image_type = _image_type_from_selection(selection)
     with _timed_perf("wxcam_calendar_options", instrument="wxcam", image_type=image_type) as perf:
         day_values = available_days(_wxcam_catalog_path("wxcam"), image_type, media_kind="image")
@@ -3077,6 +3081,7 @@ def _wxcam_day_token_to_utc(day_token: str) -> str | None:
 
 
 def _wxcam_calendar_day_token(selected_day: str | None) -> str | None:
+    """Normalize the quicklook day selector's latest label to today's token."""
     if selected_day == "Today (latest)":
         return _wxcam_today_token()
     return selected_day
@@ -4406,7 +4411,7 @@ hk_next = pn.widgets.Button(name=">>", button_type="default")
 
 
 def _shift_ql(delta: int):
-    """Move calendar selection by delta steps in the refreshed options list."""
+    """Move science quicklook day selection by delta steps."""
     _refresh_ql_options(preserve_current=True)
     opts = list(ql_date.options)
     if not opts or ql_date.value not in opts:
