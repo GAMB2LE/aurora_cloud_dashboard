@@ -1134,14 +1134,28 @@ def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> x
     return merged
 
 
+def _daily_cumulative_energy_kwh(times: pd.DatetimeIndex, power_w: np.ndarray) -> np.ndarray:
+    """Integrate power to kWh, resetting the displayed total at each UTC day."""
+    cumulative_kwh = np.zeros(len(times), dtype=np.float64)
+    if len(times) <= 1:
+        return cumulative_kwh
+
+    day_starts = times.normalize()
+    time_ns = times.asi8.astype(np.float64)
+    for idx in range(1, len(times)):
+        if day_starts[idx] != day_starts[idx - 1]:
+            # Start each day visibly from zero rather than carrying yesterday's
+            # utilised energy into the new UTC day.
+            cumulative_kwh[idx] = 0.0
+            continue
+        dt_hours = max((time_ns[idx] - time_ns[idx - 1]) / 3.6e12, 0.0)
+        incremental_kwh = 0.5 * (power_w[idx] + power_w[idx - 1]) * dt_hours / 1000.0
+        cumulative_kwh[idx] = cumulative_kwh[idx - 1] + incremental_kwh
+    return cumulative_kwh
+
+
 def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if instrument != "power" or "time" not in ds or ds.sizes.get("time", 0) == 0:
-        return ds
-    if (
-        "CumulativePowerUtilised" in ds
-        and "CumulativePowerGeneratedTotal" in ds
-        and "CumulativePowerBalance" in ds
-    ):
         return ds
 
     times = pd.DatetimeIndex(ds["time"].values)
@@ -1150,7 +1164,7 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
 
     assignments: dict[str, xr.DataArray] = {}
 
-    if "CumulativePowerUtilised" not in ds and ("ACOutputWatts" in ds or "DCInverterWatts" in ds):
+    if "ACOutputWatts" in ds or "DCInverterWatts" in ds:
         ac_power = np.asarray(
             ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.zeros(len(times)),
             dtype=np.float64,
@@ -1162,15 +1176,8 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
         utilised_power_w = np.nan_to_num(ac_power, nan=0.0) + np.nan_to_num(dc_power, nan=0.0)
         utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
 
-        cumulative_kwh = np.zeros(len(times), dtype=np.float64)
-        if len(times) > 1:
-            dt_hours = np.diff(times.asi8.astype(np.float64)) / 3.6e12
-            dt_hours = np.clip(dt_hours, a_min=0.0, a_max=None)
-            incremental_kwh = 0.5 * (utilised_power_w[1:] + utilised_power_w[:-1]) * dt_hours / 1000.0
-            cumulative_kwh[1:] = np.cumsum(incremental_kwh)
-
         assignments["CumulativePowerUtilised"] = xr.DataArray(
-            cumulative_kwh,
+            _daily_cumulative_energy_kwh(times, utilised_power_w),
             coords={"time": ds["time"]},
             dims=("time",),
             attrs={"units": "kWh"},
@@ -1191,7 +1198,7 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
 
     generated_total_da = assignments.get("CumulativePowerGeneratedTotal", ds.get("CumulativePowerGeneratedTotal"))
     utilised_da = assignments.get("CumulativePowerUtilised", ds.get("CumulativePowerUtilised"))
-    if "CumulativePowerBalance" not in ds and generated_total_da is not None and utilised_da is not None:
+    if generated_total_da is not None and utilised_da is not None:
         balance = np.asarray(generated_total_da.values, dtype=np.float64) - np.asarray(utilised_da.values, dtype=np.float64)
         assignments["CumulativePowerBalance"] = xr.DataArray(
             balance,

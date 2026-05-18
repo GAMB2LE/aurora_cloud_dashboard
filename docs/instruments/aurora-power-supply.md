@@ -20,7 +20,7 @@ Typical panels include:
   - `South Solar Generated`
   - `West Solar Generated`
   - `Total Generated`
-  - `Utilised`
+  - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
   - `Surplus / Deficit` on the right axis
 - **Output Voltage**
 - **Thermal State**
