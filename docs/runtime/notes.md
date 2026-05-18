@@ -34,10 +34,12 @@ midnight do not produce false generation drops in the latest 24 h view. The
 right-axis surplus/deficit trace is a carried cumulative kWh balance: each
 day's `Total Generated - Utilised` balance starts from the previous day's
 ending surplus or deficit. The utilised term remains the AC+DC output power
-integral. Negative carried deficit is cleared when `BatterySOC` reports full
-charge, because the battery has recovered the shortfall. Daily generated and
-utilised traces are visually broken at UTC midnight so their resets are shown
-as new segments rather than connected vertical jumps.
+integral. Power renders include a configurable lookback, currently 7 days by
+default, so the balance can be anchored to recent full-SOC history using one
+constant offset. That avoids both midnight discontinuities and artificial jumps
+at the SOC threshold. Daily generated and utilised traces are visually broken
+at UTC midnight so their resets are shown as new segments rather than connected
+vertical jumps.
 
 ## Meteorology display merge
 

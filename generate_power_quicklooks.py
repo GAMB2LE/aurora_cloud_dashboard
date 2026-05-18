@@ -22,6 +22,7 @@ from grouped_timeseries import (
     summary_daily_png,
     summary_latest_png,
     refresh_legacy_aliases,
+    POWER_BALANCE_LOOKBACK_DAYS,
     SUMMARY_DISPLAY_END_ATTR,
     SUMMARY_DISPLAY_START_ATTR,
 )
@@ -67,6 +68,11 @@ def _with_display_window(ds: xr.Dataset, start: pd.Timestamp, end: pd.Timestamp)
     return ds
 
 
+def _balance_context_start(start: pd.Timestamp) -> pd.Timestamp:
+    """Load prior APS history so surplus/deficit can anchor to full SOC."""
+    return (pd.Timestamp(start) - pd.Timedelta(days=max(0, POWER_BALANCE_LOOKBACK_DAYS))).normalize()
+
+
 def main(force: bool = False) -> None:
     ds = xr.open_zarr(ZARR_PATH, chunks={})
     if "time" not in ds:
@@ -86,7 +92,7 @@ def main(force: bool = False) -> None:
 
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
-    latest_context_start = pd.Timestamp(start_time).normalize()
+    latest_context_start = _balance_context_start(pd.Timestamp(start_time))
     latest_mask = (time_index >= latest_context_start) & (time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
@@ -113,13 +119,17 @@ def main(force: bool = False) -> None:
         ds_day = ds.isel(time=mask).sortby("time")
         if ds_day.sizes.get("time", 0) < 2:
             continue
-        summary_day = combine_summary_datasets(
-            INSTRUMENT,
-            ds_day,
-            _slice_window(ass_power, start, end),
-        )
         summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if force or not summary_out.exists():
+            context_start = _balance_context_start(start)
+            context_mask = (time_index >= context_start) & (time_index <= end)
+            summary_context = ds.isel(time=context_mask).sortby("time")
+            summary_day = combine_summary_datasets(
+                INSTRUMENT,
+                summary_context,
+                _slice_window(ass_power, context_start, end),
+            )
+            summary_day = _with_display_window(summary_day, start, end)
             title = pd.Timestamp(day).strftime("Aurora Power Supply - %Y-%m-%d")
             save_summary_png(summary_day, INSTRUMENT, title, summary_out)
         hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)

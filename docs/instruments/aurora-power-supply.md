@@ -26,8 +26,8 @@ Typical panels include:
   - `Total Generated`
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
   - `Power Surplus / Deficit` on the right axis, calculated as a carried kWh
-    energy balance from `Total Generated - Utilised`, with negative carried
-    deficit cleared when `BatterySOC` reports full charge
+    energy balance from `Total Generated - Utilised`, anchored to recent
+    full-SOC history
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
@@ -64,13 +64,12 @@ APS time grid.
 The cumulative panel is normalized at display time. The `SolarYield_*` counters
 are converted into positive UTC-day increments, so delayed controller resets
 just after midnight do not create false drops in the plotted generation lines.
-The utilised-energy line is integrated with midnight context before the view is
-cropped back to the selected/latest window, so the latest 24 h view matches the
-daily cumulative solar counters. The right-axis surplus/deficit trace is a
-carried cumulative energy balance in kWh: each day's `Total Generated -
-Utilised` balance starts from the previous day's ending surplus or deficit.
-When `BatterySOC` reaches full charge, any negative carried deficit is cleared
-to zero because the battery has recovered that energy shortfall.
+The utilised-energy line is integrated with lookback context before the view is
+cropped back to the selected/latest window, so the latest 24 h view can use
+recent full-SOC history as a baseline. The right-axis surplus/deficit trace is
+a carried cumulative energy balance in kWh. It is anchored with one constant
+offset from recent `BatterySOC >= 99.5 %` samples rather than being stepped at
+the moment the SOC threshold is crossed.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 

@@ -39,6 +39,7 @@ MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
 FULL_SOC_DEFICIT_CLEAR_THRESHOLD = 99.5
+POWER_BALANCE_LOOKBACK_DAYS = int(os.environ.get("AURORA_POWER_BALANCE_LOOKBACK_DAYS", "7"))
 
 
 @dataclass(frozen=True)
@@ -1260,24 +1261,19 @@ def _carryover_energy_balance(
     return balance
 
 
-def _clear_deficit_when_soc_full(
+def _anchor_balance_to_full_soc(
     balance_kwh: np.ndarray,
     state_of_charge: np.ndarray,
     threshold: float = FULL_SOC_DEFICIT_CLEAR_THRESHOLD,
 ) -> np.ndarray:
-    """Retire carried negative energy debt once the battery reports full SOC."""
-    adjusted = np.asarray(balance_kwh, dtype=np.float64).copy()
+    """Reference the carried energy balance to full-SOC history with one offset."""
+    balance = np.asarray(balance_kwh, dtype=np.float64)
     soc = np.asarray(state_of_charge, dtype=np.float64)
-    offset = 0.0
-    for idx, value in enumerate(adjusted):
-        if not np.isfinite(value):
-            continue
-        corrected = value + offset
-        if idx < soc.size and np.isfinite(soc[idx]) and soc[idx] >= threshold and corrected < 0.0:
-            offset -= corrected
-            corrected = 0.0
-        adjusted[idx] = corrected
-    return adjusted
+    count = min(balance.size, soc.size)
+    full = np.isfinite(balance[:count]) & np.isfinite(soc[:count]) & (soc[:count] >= threshold)
+    if not np.any(full):
+        return balance.copy()
+    return balance - float(np.nanmin(balance[:count][full]))
 
 
 def _summary_display_timestamp(value: object) -> pd.Timestamp | None:
@@ -1388,7 +1384,7 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
         )
         energy_balance = _carryover_energy_balance(times, generated, utilised)
         if "BatterySOC" in ds:
-            energy_balance = _clear_deficit_when_soc_full(energy_balance, np.asarray(ds["BatterySOC"].values, dtype=np.float64))
+            energy_balance = _anchor_balance_to_full_soc(energy_balance, np.asarray(ds["BatterySOC"].values, dtype=np.float64))
         assignments["PowerSurplusDeficit"] = xr.DataArray(
             energy_balance,
             coords={"time": ds["time"]},
@@ -1781,7 +1777,10 @@ def plot_summary_last_24h(
         raise ValueError("Dataset contains no time samples")
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
-    context_start = pd.Timestamp(start_time).normalize() if instrument == "power" else start_time
+    if instrument == "power":
+        context_start = (pd.Timestamp(start_time) - pd.Timedelta(days=max(0, POWER_BALANCE_LOOKBACK_DAYS))).normalize()
+    else:
+        context_start = start_time
     mask = (time_index >= context_start) & (time_index <= end_time)
     if not mask.any():
         raise ValueError("No data in latest 24h")
