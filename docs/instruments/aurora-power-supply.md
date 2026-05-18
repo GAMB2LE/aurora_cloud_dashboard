@@ -23,6 +23,10 @@ Typical panels include:
   - `Utilised`
   - `Surplus / Deficit` on the right axis
 - **Output Voltage**
+- **Thermal State**
+  - internal temperature
+  - heatsink temperature
+  - temperature sensors 1-4
 
 Legends are placed in a consistent right-side gutter rather than collected into
 one global legend block.

@@ -624,6 +624,20 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("DCInverterVolts", "DC Inverter Voltage", COLOR["slate"], axis="right"),
             ),
         ),
+        PanelSpec(
+            "thermal_state",
+            "Thermal State",
+            "Temperature [C]",
+            None,
+            (
+                TraceSpec("InternalTemperature", "Internal Temperature", COLOR["red"]),
+                TraceSpec("HeatsinkTemperature", "Heatsink Temperature", COLOR["brown"]),
+                TraceSpec("TempSensor1", "Temperature Sensor 1", COLOR["teal"]),
+                TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"]),
+                TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"]),
+                TraceSpec("TempSensor4", "Temperature Sensor 4", COLOR["olive"]),
+            ),
+        ),
     ),
     "ops-monitor": (
         PanelSpec(

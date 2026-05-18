@@ -8,7 +8,7 @@ for whether the observing stack is behaving.
 
 ## Instruments
 
-- `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`. The science layout includes renewables, cumulative power, battery charging, and separate output power / output voltage views with grouped units.
+- `Aurora Power Supply` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_APS` products on `House Keeping Quicklooks`. The science layout includes renewables, cumulative power, battery charging, separate output power / output voltage views with grouped units, and a bottom thermal-state panel for internal, heatsink, and auxiliary temperature sensors.
 - `Ceilometer` - CL61 backscatter/depolarization Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
 - `Cloud Radar` - RPG FMCW 94 GHz Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
 - `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.

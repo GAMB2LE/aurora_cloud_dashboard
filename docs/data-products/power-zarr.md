@@ -43,6 +43,11 @@ Examples include:
 - `BatteryWatts`
 - `DCInverterWatts`
 - `InternalTemperature`
+- `HeatsinkTemperature`
+- `TempSensor1`
+- `TempSensor2`
+- `TempSensor3`
+- `TempSensor4`
 - `MaxSolarWatts_East`
 
 ## Schema note
