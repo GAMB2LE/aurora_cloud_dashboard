@@ -57,7 +57,7 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
     ds_window = ds_window.sortby("time")
     # Limit range/height to 0–8000
     ds_window = ds_window.sel({range_coord: slice(0, 8000)})
-    if ds_window.dims.get(range_coord, 0) == 0:
+    if ds_window.sizes.get(range_coord, 0) == 0:
         raise ValueError("No data in range 0–8000.")
     if ds_window.time.size == 0:
         raise ValueError("No data found in the last 24 hours.")

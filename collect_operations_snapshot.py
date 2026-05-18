@@ -400,7 +400,9 @@ def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: f
 
 def _probe_http(url: str) -> dict[str, float | int | str | None]:
     start = time.monotonic()
-    request = urllib.request.Request(url, headers={"User-Agent": "aurora-ops-monitor/1.0"}, method="HEAD")
+    # Panel serves the dashboard route for GET requests but returns 405 for
+    # HEAD. Use a normal GET so the service log only records real failures.
+    request = urllib.request.Request(url, headers={"User-Agent": "aurora-ops-monitor/1.0"}, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             status_code = int(response.status)
