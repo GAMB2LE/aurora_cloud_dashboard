@@ -3154,8 +3154,8 @@ def _wxcam_hour_strip_markup(selection: str, selected_label: str | None) -> str:
     return (
         "<div class='wxcam-hour-strip'>"
         "<div class='wxcam-hour-strip__header'>"
-        "<div class='wxcam-hour-strip__title'>Representative hourly stills</div>"
-        "<div class='wxcam-hour-strip__hint'>Historical days keep a small hourly image strip for quick visual scanning.</div>"
+        "<div class='wxcam-hour-strip__title'>Representative hourly stills (UTC)</div>"
+        "<div class='wxcam-hour-strip__hint'>Historical days keep a small UTC hourly image strip for quick visual scanning.</div>"
         "</div>"
         f"<div class='wxcam-hour-strip__scroller'>{body}</div>"
         "</div>"
@@ -4907,6 +4907,25 @@ def _build_wxcam_hour_tile(
     )
 
 
+def _wxcam_quicklook_header(selection: str, day_utc: str) -> pn.pane.HTML:
+    """Return the UTC context banner shown above the WXcam science grid."""
+    selection_text = escape(selection)
+    day_text = escape(day_utc)
+    return pn.pane.HTML(
+        (
+            "<div class='wxcam-quicklook-header'>"
+            f"<div class='wxcam-quicklook-header__title'>{selection_text} science quicklook</div>"
+            f"<div class='wxcam-quicklook-header__date'>{day_text} UTC</div>"
+            "<div class='wxcam-quicklook-header__note'>"
+            "All times are UTC. Each tile is one UTC hour and uses the retained HDR JPG nearest HH:30 UTC when available."
+            "</div>"
+            "</div>"
+        ),
+        sizing_mode="stretch_width",
+        margin=(0, 0, 8, 0),
+    )
+
+
 def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour_path: str):
     with _timed_perf(
         "wxcam_calendar_day_view",
@@ -4918,7 +4937,7 @@ def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour
         day_utc = _wxcam_day_token_to_utc(day_token)
         if not day_utc:
             perf["status"] = "invalid_day"
-            return pn.pane.Markdown("No hourly images available for this selection.")
+            return pn.pane.Markdown("No hourly UTC images available for this selection.")
         image_type = _image_type_from_selection(selection)
         rows_by_hour = representative_hourly_records(
             _wxcam_catalog_path("wxcam"),
@@ -4927,9 +4946,10 @@ def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour
             media_kind="image",
         )
         perf["hour_count"] = len(rows_by_hour)
+        header = _wxcam_quicklook_header(selection, day_utc)
         if not rows_by_hour:
             perf["status"] = "empty"
-            return pn.pane.Markdown("No hourly images available for this selection.")
+            return pn.Column(header, pn.pane.Markdown("No hourly UTC images available for this selection."), sizing_mode="stretch_width")
         tiles = [
             _build_wxcam_hour_tile(image_type, day_token, hour_index, rows_by_hour.get(hour_index), selected_hour_path)
             for hour_index in range(24)
@@ -4938,11 +4958,11 @@ def _build_wxcam_calendar_day_view(selection: str, day_token: str, selected_hour
         selected_row = next((row for row in rows_by_hour.values() if str(row["raw_path"]) == selected_hour_path), None)
         if selected_row is None:
             perf["status"] = "grid_only"
-            return pn.Column(grid, sizing_mode="stretch_width")
+            return pn.Column(header, grid, sizing_mode="stretch_width")
         selected_hour_label = str(selected_row["time_utc"])[11:16] + " UTC"
-        viewer = _build_wxcam_image_view(Path(str(selected_row["raw_path"])), selection, f"{day_token} | {selected_hour_label}")
+        viewer = _build_wxcam_image_view(Path(str(selected_row["raw_path"])), selection, f"{day_utc} UTC | {selected_hour_label}")
         perf["status"] = "with_viewer"
-        return pn.Column(grid, viewer, sizing_mode="stretch_width")
+        return pn.Column(header, grid, viewer, sizing_mode="stretch_width")
 
 
 @pn.depends(
@@ -5049,9 +5069,9 @@ def _current_interactive_availability_markup() -> str:
             end_label = datetime.now(timezone.utc).strftime("%H:00")
         return _availability_bar_markup(
             bits,
-            start_label,
-            end_label,
-            "HDR image availability by hour",
+            f"{start_label} UTC",
+            f"{end_label} UTC",
+            "HDR image availability by UTC hour",
             "Each block represents one UTC hour. Teal means at least one HDR image exists for that hour.",
             full_label="HDR image present",
             empty_label="No HDR image",
@@ -5118,9 +5138,9 @@ def _current_science_availability_markup() -> str:
         end_label = datetime.now(timezone.utc).strftime("%H:00") if day_token == datetime.now(timezone.utc).strftime("%Y%m%d") else "23:00"
         return _availability_bar_markup(
             bits,
-            "00:00",
-            end_label,
-            "HDR image availability by hour",
+            "00:00 UTC",
+            f"{end_label} UTC",
+            "HDR image availability by UTC hour",
             "Each block represents one UTC hour. Teal means the science quicklook has an HDR image source for that hour.",
             full_label="Representative HDR image present",
             empty_label="No representative HDR image",
@@ -5185,9 +5205,9 @@ def _current_hk_availability_markup() -> str:
         end_label = datetime.now(timezone.utc).strftime("%H:00") if day_token == datetime.now(timezone.utc).strftime("%Y%m%d") else "23:00"
         return _availability_bar_markup(
             states,
-            "00:00",
-            end_label,
-            "WXcam HDR availability by hour",
+            "00:00 UTC",
+            f"{end_label} UTC",
+            "WXcam HDR availability by UTC hour",
             (
                 "Each block represents one UTC hour. Teal means the retained "
                 "WXcam HDR streams have an image for that hour; gold means "
@@ -6043,6 +6063,29 @@ body, .bk {
 }
 .wxcam-still--vertical .wxcam-still__frame img {
     max-height: min(56vh, 680px);
+}
+.wxcam-quicklook-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 14px;
+    align-items: baseline;
+    padding: 8px 0 4px;
+    border-bottom: 1px solid #d8e1e8;
+}
+.wxcam-quicklook-header__title {
+    font-size: 15px;
+    font-weight: 650;
+    color: #22313f;
+}
+.wxcam-quicklook-header__date {
+    font-size: 12px;
+    font-weight: 650;
+    color: #0b7285;
+}
+.wxcam-quicklook-header__note {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: #5f6c7b;
 }
 .wxcam-browser {
     gap: 10px;
