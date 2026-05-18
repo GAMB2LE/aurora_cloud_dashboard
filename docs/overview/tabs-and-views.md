@@ -10,7 +10,7 @@ This is the primary live-browsing surface.
 - **Ceilometer** and **Cloud Radar** show recent height-time plots.
 - **Meteorology**, **Radiation**, and **Aurora Power Supply** show fixed
   summary layouts rather than a freeform variable picker.
-- **WXcam** shows the stitched MP4 browser for `FISH HDR`.
+- **WXcam** shows the stitched MP4 browser for `FISH HDR` and `PANO HDR`.
 
 The share link, download, freshness, and availability UI are rendered beneath
 the content area so the data surface stays visually primary.

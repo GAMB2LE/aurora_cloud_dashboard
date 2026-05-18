@@ -4,12 +4,14 @@ WXcam uses a richer product model than the purely numeric instruments.
 
 ## Local raw mirror
 
-The deployed raw mirror retains only FISH HDR JPG and MP4 files locally:
+The deployed raw mirror retains only HDR JPG and MP4 files for the FISH and
+PANO streams:
 
 - `/project/aurora/raw/wxcam/FISH`
+- `/project/aurora/raw/wxcam/PANO`
 
-PANO and AUTO/LONG/SHORT files remain on the camera host and are not cataloged
-or archived from this VM.
+AUTO/LONG/SHORT files remain on the camera host and are not cataloged or
+archived from this VM.
 
 ## Catalog
 
@@ -17,12 +19,12 @@ The WXcam catalog lives at:
 
 - `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 
-It indexes FISH HDR JPGs and FISH HDR MP4s. Timestamps are derived from
+It indexes FISH HDR and PANO HDR JPG/MP4 files. Timestamps are derived from
 filenames and stored as UTC.
 
 Key fields include:
 
-- `image_type` - `fish_hdr`
+- `image_type` - `fish_hdr` or `pano_hdr`
 - `media_kind` - `image` or `video`
 - `time_utc`, `time_epoch_ns`, `day_utc`
 - `raw_path`, `relative_path`, `filename`

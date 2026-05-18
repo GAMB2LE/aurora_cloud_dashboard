@@ -4523,10 +4523,11 @@ def _current_hk_availability_markup() -> str:
             "WXcam HDR availability by hour",
             (
                 "Each block represents one UTC hour. Teal means the retained "
-                "FISH HDR stream has an image for that hour; gray means no "
+                "WXcam HDR streams have an image for that hour; gold means "
+                "only some retained streams are present; gray means no "
                 "retained HDR image is available."
             ),
-            full_label="FISH HDR present",
+            full_label="All retained HDR streams present",
             partial_label="Partial retained HDR coverage",
             empty_label="No retained HDR image",
             segment_titles=[f"{hour:02d}:00 UTC" for hour in range(24)],

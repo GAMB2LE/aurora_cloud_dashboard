@@ -72,16 +72,38 @@ def _needs_refresh(clips: list[Path], output_path: Path) -> bool:
         return False
     if not output_path.exists():
         return True
+    if output_path.suffix.lower() == ".mp4":
+        signature_path = _video_signature_path(output_path)
+        if not signature_path.exists():
+            return True
+        try:
+            return signature_path.read_text(encoding="utf-8") != _clip_signature(clips)
+        except OSError:
+            return True
     output_mtime_ns = output_path.stat().st_mtime_ns
     return any(path.stat().st_mtime_ns > output_mtime_ns for path in clips)
 
 
+def _clip_signature(clips: list[Path]) -> str:
+    lines = []
+    for path in clips:
+        stat_result = path.stat()
+        lines.append(f"{path.resolve()}\t{stat_result.st_size}\t{stat_result.st_mtime_ns}")
+    return "\n".join(lines) + "\n"
+
+
+def _video_signature_path(output_path: Path) -> Path:
+    return output_path.with_suffix(output_path.suffix + ".inputs")
+
+
 def _build_output(clips: list[Path], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    signature = _clip_signature(clips)
     with tempfile.TemporaryDirectory(dir=output_path.parent) as tmpdir_name:
         tmpdir = Path(tmpdir_name)
         list_path = tmpdir / "clips.txt"
         tmp_output = tmpdir / output_path.name
+        tmp_signature = tmpdir / f"{output_path.name}.inputs"
         lines = []
         for path in clips:
             escaped = str(path).replace("'", r"'\''")
@@ -120,7 +142,9 @@ def _build_output(clips: list[Path], output_path: Path) -> None:
             ],
             check=True,
         )
+        tmp_signature.write_text(signature, encoding="utf-8")
         tmp_output.replace(output_path)
+        tmp_signature.replace(_video_signature_path(output_path))
 
 
 def _thumbnail_path(thumbnail_root: Path, image_type: str, day_token: str, source_path: Path) -> Path:

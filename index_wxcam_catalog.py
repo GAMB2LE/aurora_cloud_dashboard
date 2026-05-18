@@ -29,8 +29,10 @@ def _bootstrap_from_remote(
     source_host: str,
     source_path: str,
     fish_pattern: str,
+    pano_pattern: str,
 ) -> int:
     fish_video_pattern = fish_pattern.removesuffix(".jpg") + ".mp4"
+    pano_video_pattern = pano_pattern.removesuffix(".jpg") + ".mp4"
     ssh_cmd = [
         "ssh",
         "-o",
@@ -52,15 +54,21 @@ def _bootstrap_from_remote(
         source_path,
         fish_pattern,
         fish_video_pattern,
+        pano_pattern,
+        pano_video_pattern,
     ]
     remote_script = """\
 set -euo pipefail
 source_path="$1"
 fish_pattern="$2"
 fish_video_pattern="$3"
+pano_pattern="$4"
+pano_video_pattern="$5"
 cd "$source_path"
 find FISH -type f -name "$fish_pattern" -printf '%p\\t%s\\t%T@\\0'
 find FISH -type f -name "$fish_video_pattern" -printf '%p\\t%s\\t%T@\\0'
+find PANO -type f -name "$pano_pattern" -printf '%p\\t%s\\t%T@\\0'
+find PANO -type f -name "$pano_video_pattern" -printf '%p\\t%s\\t%T@\\0'
 """
     inserted = 0
     process = subprocess.Popen(
@@ -120,6 +128,7 @@ def index_catalog(
     bootstrap_source_host: str | None = None,
     bootstrap_source_path: str | None = None,
     bootstrap_fish_pattern: str = "HDR_*.jpg",
+    bootstrap_pano_pattern: str = "HDR_*_PANO.jpg",
     commit_interval: int = COMMIT_INTERVAL,
 ) -> None:
     catalog_exists = catalog_path.exists()
@@ -148,6 +157,7 @@ def index_catalog(
                 source_host=bootstrap_source_host,
                 source_path=bootstrap_source_path,
                 fish_pattern=bootstrap_fish_pattern,
+                pano_pattern=bootstrap_pano_pattern,
             )
         known = existing_file_state(conn)
         for image_type, path in iter_raw_images(root):
@@ -187,6 +197,7 @@ def main() -> None:
     parser.add_argument("--bootstrap-source-host", default=None)
     parser.add_argument("--bootstrap-source-path", default=None)
     parser.add_argument("--bootstrap-fish-pattern", default="HDR_*.jpg")
+    parser.add_argument("--bootstrap-pano-pattern", default="HDR_*_PANO.jpg")
     parser.add_argument("--rebuild", action="store_true", help="Delete the existing catalog before re-indexing.")
     args = parser.parse_args()
 
@@ -206,6 +217,7 @@ def main() -> None:
         bootstrap_source_host=args.bootstrap_source_host,
         bootstrap_source_path=args.bootstrap_source_path,
         bootstrap_fish_pattern=args.bootstrap_fish_pattern,
+        bootstrap_pano_pattern=args.bootstrap_pano_pattern,
     )
 
 

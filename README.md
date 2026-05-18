@@ -14,7 +14,7 @@ for whether the observing stack is behaving.
 - `Scanning Microwave Radiometer` - HATPRO radiometer Zarr with LWP/IWV, infrared surface temperature, temperature-profile plots, and Science Quicklooks.
 - `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`. The science layout uses the current ASFS logger schema, including SR30 shortwave, IR20 longwave, flux plates, KT15 surface temperature, and SR50 distance.
-- `WXcam` - interactive stitched HDR video browser for the deployed `FISH HDR` stream, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. MP4 files are served through the dashboard static media route instead of being embedded in the Panel websocket payload. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour. PANO and AUTO/LONG/SHORT files remain on the camera host and are not part of the current local product stream.
+- `WXcam` - interactive stitched HDR video browser for the deployed `FISH HDR` and `PANO HDR` streams, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. MP4 files are served through the dashboard static media route instead of being embedded in the Panel websocket payload. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour. AUTO/LONG/SHORT files remain on the camera host and are not part of the current local product stream.
 - `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, Aurora Power Supply battery voltage, Aurora Power Supply internal temperature, processing health, dashboard render performance, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. The collector also writes Phase 1 observe-only health JSON and daily Markdown reports for service/code monitoring. The storage section now breaks out the CL61 root/data views, ASS data/root views, APS data/root views, and the AURORA Cloud product/root views separately, with subtitles showing the resolved `pwd -P` path being measured. Archived `HK_Operations` quicklooks are still available from `House Keeping Quicklooks` and now use a curated diagnostics layout rather than plotting every numeric operations field.
 
 Additional housekeeping products now exist for:
@@ -124,9 +124,10 @@ Important products:
 - Operations quicklooks: `/data/aurora/products/quicklooks/ops_monitor`
 - Operations health reports: `/data/aurora/products/ops_monitor/health`
 
-The deployed WXcam mirror under `/project/aurora/raw/wxcam` retains only FISH
-HDR JPG and MP4 files locally. PANO and AUTO/LONG/SHORT files remain on the
-camera host and are not cataloged, Zarr-appended, or archived from this VM.
+The deployed WXcam mirror under `/project/aurora/raw/wxcam` retains only HDR
+JPG and MP4 files for the `FISH` and `PANO` streams. AUTO/LONG/SHORT files
+remain on the camera host and are not cataloged, Zarr-appended, or archived
+from this VM.
 
 ## Services
 
@@ -295,7 +296,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - Browser state is reflected into the URL as controls change. The deployed Panel service also uses longer session retention and websocket keepalives so mobile browsers recover better after being backgrounded; if the phone still kills the tab, reopening the URL restores the selected tab, instrument, and key controls.
 - `HK_WXcam` is catalog-driven rather than pixel-driven. It summarizes hourly HDR image/video counts, median HDR JPG size, and the offset of the representative hourly image from the `:30` target used by the science grid.
 - `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
-- WXcam keeps the stitched FISH HDR MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
+- WXcam keeps the stitched HDR MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day for each retained stream.
 - WXcam MP4s are served from `/wxcam-media/...` with a file mtime cache key.
   This keeps large videos out of the Bokeh websocket and lets browsers request
   byte ranges for normal video seeking.
@@ -576,18 +577,20 @@ Chunking:
 
 ### Local raw mirror
 
-The deployed WXcam raw mirror retains only FISH HDR JPG and MP4 files locally:
+The deployed WXcam raw mirror retains only HDR JPG and MP4 files for the FISH
+and PANO streams:
 
 - `/project/aurora/raw/wxcam/FISH`
+- `/project/aurora/raw/wxcam/PANO`
 
-PANO and AUTO/LONG/SHORT files remain on the camera host and are not cataloged,
+AUTO/LONG/SHORT files remain on the camera host and are not cataloged,
 Zarr-appended, or archived from this VM.
 
 ### Catalog
 
-The WXcam catalog at `/data/aurora/products/wxcam/wxcam_catalog.sqlite` indexes FISH HDR JPGs and FISH HDR MP4s. Timestamps are derived from filenames and stored as UTC. Key fields include:
+The WXcam catalog at `/data/aurora/products/wxcam/wxcam_catalog.sqlite` indexes FISH HDR and PANO HDR JPGs/MP4s. Timestamps are derived from filenames and stored as UTC. Key fields include:
 
-- `image_type` - `fish_hdr`
+- `image_type` - `fish_hdr` or `pano_hdr`
 - `media_kind` - `image` or `video`
 - `time_utc`, `time_epoch_ns`, `day_utc`
 - `raw_path`, `relative_path`, `filename`
@@ -609,11 +612,12 @@ Root attrs:
 
 - `instrument = "wxcam"`
 - `title = "Aurora wxcam HDR images"`
-- `storage_policy = "Contains locally retained FISH HDR JPG image data with timestamps derived from filenames; MP4 products are stored separately."`
+- `storage_policy = "Contains locally retained FISH HDR and PANO HDR JPG image data with timestamps derived from filenames; MP4 products are stored separately."`
 
 Root groups:
 
 - `fish_hdr`
+- `pano_hdr`
 
 Each group stores one xarray dataset with:
 
@@ -632,4 +636,5 @@ Each group stores one xarray dataset with:
 
 Group-specific image geometry checked on `2026-05-18`:
 
-- `fish_hdr`: `time=13070`, `3120 x 3040` pixels, chunked as `(1, 1024, 1024, 3)`
+- `fish_hdr`: `3120 x 3040` pixels, chunked as `(1, 1024, 1024, 3)`
+- `pano_hdr`: `2880 x 750` pixels, chunked as `(1, 750, 1024, 3)`

@@ -30,7 +30,7 @@ def _ensure_store(zarr_path: Path) -> None:
         {
             "instrument": "wxcam",
             "title": "Aurora wxcam HDR images",
-            "storage_policy": "Contains locally retained FISH HDR JPG image data with timestamps derived from filenames; MP4 products are stored separately.",
+            "storage_policy": "Contains locally retained FISH HDR and PANO HDR JPG image data with timestamps derived from filenames; MP4 products are stored separately.",
         }
     )
 
