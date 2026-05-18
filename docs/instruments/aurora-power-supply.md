@@ -1,7 +1,8 @@
 # Aurora Power Supply
 
 Aurora Power Supply is the curated 1D electrical and thermal summary view built
-from the power Zarr.
+from the power Zarr, with the ASS 48 V DC consumption overlaid from the ASFS
+logger Zarr for station-load context.
 
 ## Interactive summary layout
 
@@ -15,6 +16,9 @@ Typical panels include:
   - `Charging Current In`
   - `Charging Power In`
 - **Output Power**
+  - AC output power
+  - DC inverter power
+  - ASS 48 V DC power consumption from `watts_on_48vdc_Avg`
 - **Cumulative Power**
   - `East Solar Generated`
   - `South Solar Generated`
@@ -43,6 +47,12 @@ one global legend block.
 Zarr path:
 
 - `/data/aurora/products/power/power.zarr`
+
+Presentation-layer overlay:
+
+- `/data/aurora/products/asfs_logger/asfs_logger.zarr`
+  - `watts_on_48vdc_Avg` supplies the ASS 48 V DC power consumption trace on
+    the **Output Power** panel
 
 Detailed schema:
 

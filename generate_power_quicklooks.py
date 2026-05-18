@@ -13,6 +13,7 @@ import xarray as xr
 
 from grouped_timeseries import (
     clear_generated_quicklooks,
+    combine_summary_datasets,
     housekeeping_daily_png,
     housekeeping_label,
     housekeeping_latest_png,
@@ -26,14 +27,41 @@ from grouped_timeseries import (
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
 ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
+ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
 QUICKLOOK_DIR = Path(os.environ.get("POWER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "power"))
 INSTRUMENT = "power"
+ASS_POWER_VAR = "watts_on_48vdc_Avg"
+
+
+def _optional_ass_power_dataset() -> xr.Dataset | None:
+    """Return the ASS 48 V power series used as context on the APS output plot."""
+    if not ASFS_LOGGER_ZARR_PATH.exists():
+        return None
+    try:
+        ds = xr.open_zarr(ASFS_LOGGER_ZARR_PATH, chunks={})
+    except Exception as exc:
+        print(f"Could not open ASFS logger Zarr for ASS power overlay: {exc}")
+        return None
+    if "time" not in ds or ASS_POWER_VAR not in ds:
+        return None
+    return ds[[ASS_POWER_VAR]]
+
+
+def _slice_window(ds: xr.Dataset | None, start: pd.Timestamp, end: pd.Timestamp) -> xr.Dataset | None:
+    if ds is None or "time" not in ds:
+        return None
+    time_index = pd.DatetimeIndex(ds["time"].values)
+    mask = (time_index >= start) & (time_index <= end)
+    if not mask.any():
+        return None
+    return ds.isel(time=mask).sortby("time")
 
 
 def main(force: bool = False) -> None:
     ds = xr.open_zarr(ZARR_PATH, chunks={})
     if "time" not in ds:
         raise KeyError("Dataset is missing a time coordinate")
+    ass_power = _optional_ass_power_dataset()
 
     time_index = pd.DatetimeIndex(ds["time"].values)
     if len(time_index) == 0:
@@ -51,8 +79,13 @@ def main(force: bool = False) -> None:
     latest_mask = (time_index >= start_time) & (time_index <= end_time)
     latest_day = ds.isel(time=latest_mask).sortby("time")
     if latest_day.sizes.get("time", 0) >= 2:
+        latest_summary = combine_summary_datasets(
+            INSTRUMENT,
+            latest_day,
+            _slice_window(ass_power, pd.Timestamp(start_time), pd.Timestamp(end_time)),
+        )
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
-        save_summary_png(latest_day, INSTRUMENT, "Aurora Power Supply - Latest 24 hours", summary_out)
+        save_summary_png(latest_summary, INSTRUMENT, "Aurora Power Supply - Latest 24 hours", summary_out)
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
@@ -68,10 +101,15 @@ def main(force: bool = False) -> None:
         ds_day = ds.isel(time=mask).sortby("time")
         if ds_day.sizes.get("time", 0) < 2:
             continue
+        summary_day = combine_summary_datasets(
+            INSTRUMENT,
+            ds_day,
+            _slice_window(ass_power, start, end),
+        )
         summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if force or not summary_out.exists():
             title = pd.Timestamp(day).strftime("Aurora Power Supply - %Y-%m-%d")
-            save_summary_png(ds_day, INSTRUMENT, title, summary_out)
+            save_summary_png(summary_day, INSTRUMENT, title, summary_out)
         hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if hk_out is not None and (force or not hk_out.exists()):
             hk_title = pd.Timestamp(day).strftime(f"{housekeeping_label(INSTRUMENT)} - %Y-%m-%d")

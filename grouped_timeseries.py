@@ -363,7 +363,7 @@ SUMMARY_SOURCE_INSTRUMENTS = {
     "vaisalamet": ("vaisalamet", "asfs-logger"),
     "asfs-logger": ("asfs-logger",),
     "asfs-fast-sonic": ("asfs-fast-sonic",),
-    "power": ("power",),
+    "power": ("power", "asfs-logger"),
     "ops-monitor": ("ops-monitor",),
 }
 
@@ -599,6 +599,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"]),
                 TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"]),
+                TraceSpec("watts_on_48vdc_Avg", "ASS 48 V DC Power Consumption", COLOR["purple"]),
             ),
         ),
         PanelSpec(
@@ -1185,18 +1186,25 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
 
     if "ACOutputWatts" in ds or "DCInverterWatts" in ds:
         ac_power = np.asarray(
-            ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.zeros(len(times)),
+            ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.full(len(times), np.nan),
             dtype=np.float64,
         )
         dc_power = np.asarray(
-            ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.zeros(len(times)),
+            ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.full(len(times), np.nan),
             dtype=np.float64,
         )
-        utilised_power_w = np.nan_to_num(ac_power, nan=0.0) + np.nan_to_num(dc_power, nan=0.0)
-        utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
+        # The power summary can include ASFS logger overlay traces on a merged
+        # time grid. Only integrate rows where APS output power was actually
+        # sampled, otherwise ASFS-only timestamps would look like zero APS load.
+        valid_power = np.isfinite(ac_power) | np.isfinite(dc_power)
+        utilised_full = np.full(len(times), np.nan, dtype=np.float64)
+        if np.any(valid_power):
+            utilised_power_w = np.nan_to_num(ac_power[valid_power], nan=0.0) + np.nan_to_num(dc_power[valid_power], nan=0.0)
+            utilised_power_w = np.clip(utilised_power_w, a_min=0.0, a_max=None)
+            utilised_full[valid_power] = _daily_cumulative_energy_kwh(times[valid_power], utilised_power_w)
 
         assignments["CumulativePowerUtilised"] = xr.DataArray(
-            _daily_cumulative_energy_kwh(times, utilised_power_w),
+            utilised_full,
             coords={"time": ds["time"]},
             dims=("time",),
             attrs={"units": "kWh"},
@@ -1205,9 +1213,18 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if "CumulativePowerGeneratedTotal" not in ds:
         generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
         if generated_fields:
-            total_generated = np.zeros(len(times), dtype=np.float64)
+            total_generated = np.full(len(times), np.nan, dtype=np.float64)
+            valid_generated = np.zeros(len(times), dtype=bool)
+            field_values: list[np.ndarray] = []
             for field_name in generated_fields:
-                total_generated += np.nan_to_num(np.asarray(ds[field_name].values, dtype=np.float64), nan=0.0)
+                values = np.asarray(ds[field_name].values, dtype=np.float64)
+                field_values.append(values)
+                valid_generated |= np.isfinite(values)
+            if np.any(valid_generated):
+                summed = np.zeros(int(np.count_nonzero(valid_generated)), dtype=np.float64)
+                for values in field_values:
+                    summed += np.nan_to_num(values[valid_generated], nan=0.0)
+                total_generated[valid_generated] = summed
             assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
                 total_generated,
                 coords={"time": ds["time"]},
@@ -1218,7 +1235,11 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     generated_total_da = assignments.get("CumulativePowerGeneratedTotal", ds.get("CumulativePowerGeneratedTotal"))
     utilised_da = assignments.get("CumulativePowerUtilised", ds.get("CumulativePowerUtilised"))
     if generated_total_da is not None and utilised_da is not None:
-        balance = np.asarray(generated_total_da.values, dtype=np.float64) - np.asarray(utilised_da.values, dtype=np.float64)
+        generated_total = np.asarray(generated_total_da.values, dtype=np.float64)
+        utilised = np.asarray(utilised_da.values, dtype=np.float64)
+        balance = np.full(len(times), np.nan, dtype=np.float64)
+        valid_balance = np.isfinite(generated_total) & np.isfinite(utilised)
+        balance[valid_balance] = generated_total[valid_balance] - utilised[valid_balance]
         assignments["CumulativePowerBalance"] = xr.DataArray(
             balance,
             coords={"time": ds["time"]},
