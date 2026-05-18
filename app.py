@@ -586,7 +586,7 @@ INSTRUMENTS = {
     },
     "Scanning Microwave Radiometer": {
         "zarr_env": "HATPRO_ZARR_PATH",
-        "zarr_default": "/mnt/data/ass/hatprog5/hatpro.zarr",
+        "zarr_default": "/data/aurora/products/hatprog5/hatpro.zarr",
         "chunk_spec": {"time": 600},
         "consolidated": True,
         "height_load_max": 10_000,
@@ -1028,6 +1028,15 @@ OPS_STREAM_SPECS = (
         "processing_keys": (
             "radar_append_service_healthy_state",
             "radar_quicklooks_service_healthy_state",
+        ),
+    },
+    {
+        "label": "HATPRO",
+        "stream_prefix": "hatpro",
+        "source_key": "hatpro_source_sync_service_healthy_state",
+        "processing_keys": (
+            "hatpro_append_service_healthy_state",
+            "hatpro_quicklooks_service_healthy_state",
         ),
     },
     {
@@ -3833,6 +3842,8 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
                 label = stem.removeprefix("asfs_logger_")
             elif stem.startswith("power_"):
                 label = stem.removeprefix("power_")
+            elif stem.startswith("hatpro_"):
+                label = stem.removeprefix("hatpro_")
             else:
                 label = stem
             date_labels.append((label, str(png)))

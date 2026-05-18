@@ -14,6 +14,8 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - CL61 Zarr:
   `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr`
 - Cloud Radar Zarr: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
+- HATPRO Zarr: `/data/aurora/products/hatprog5/hatpro.zarr`
+- HATPRO quicklooks: `/data/aurora/products/quicklooks/hatpro`
 - Meteorology Zarr: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 - ASFS Logger Zarr: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 - ASFS Fast Sonic Zarr:

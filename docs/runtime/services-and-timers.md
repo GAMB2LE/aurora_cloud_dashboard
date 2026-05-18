@@ -36,6 +36,12 @@ browser over normal HTTP instead of being serialized into the Panel websocket.
 - `aurora-radar-append.timer`
 - `aurora-radar-quicklooks.timer`
 
+## Scanning Microwave Radiometer
+
+- `aurora-hatpro-source-sync.timer`
+- `aurora-hatpro-append.timer`
+- `aurora-hatpro-quicklooks.timer`
+
 ## Meteorology (VaisalaMET)
 
 - `aurora-vaisalamet-source-sync.timer`

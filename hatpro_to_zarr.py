@@ -6,22 +6,24 @@ Aggregates:
 - LWP from *.LWP.NC
 - IWV from *.IWV.NC
 - IRR_Map (squeezed to 1D) from *.IRT.NC
-- Temperature profile (T_prof) from *.TPC.NC and *.TPB.NC
+- Temperature profile (T_prof) from non-CMP *.TPC.NC and *.TPB.NC
+- Composite temperature profile (T_prof) from *.CMP.TPC.NC
 
-Outputs /mnt/data/ass/hatprog5/hatpro.zarr by default, chunked along time.
+Outputs /data/aurora/products/hatprog5/hatpro.zarr by default, chunked along time.
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
 from typing import Iterable, List
 
 import numpy as np
 import xarray as xr
 
-ROOT_DEFAULT = Path("/mnt/data/ass/hatprog5")
-ZARR_DEFAULT = Path("/mnt/data/ass/hatprog5/hatpro.zarr")
+ROOT_DEFAULT = Path("/project/aurora/raw/hatprog5")
+ZARR_DEFAULT = Path("/data/aurora/products/hatprog5/hatpro.zarr")
 
 
 def _open_sorted_concat(files: List[Path], *, chunk_time: int, chunk_range: int | None = None) -> xr.Dataset:
@@ -36,7 +38,7 @@ def _open_sorted_concat(files: List[Path], *, chunk_time: int, chunk_range: int 
         chunks = {"time": chunk_time}
         if chunk_range:
             chunks["altitude_layer"] = chunk_range
-        ds = xr.open_dataset(f, chunks=chunks)
+        ds = xr.open_dataset(f, chunks=chunks, decode_timedelta=False)
         if "time" in ds:
             ds = ds.sortby("time")
         datasets.append(ds)
@@ -69,23 +71,33 @@ def _load_timeseries(root: Path, pattern: str, var: str, chunk_time: int) -> xr.
     return da.to_dataset(name=var)
 
 
-def _load_tprof(root: Path, patterns: Iterable[str], chunk_time: int, chunk_range: int) -> xr.Dataset | None:
-    files: List[Path] = []
-    for pat in patterns:
-        files.extend(root.rglob(pat))
+def _load_tprof_files(files: List[Path], label: str, output_name: str, chunk_time: int, chunk_range: int) -> xr.Dataset | None:
     if not files:
-        print("[skip] T_prof: no files found")
+        print(f"[skip] {label}: no files found")
         return None
-    print(f"[load] T_prof: {len(files)} files")
+    print(f"[load] {label}: {len(files)} files")
     ds = _open_sorted_concat(files, chunk_time=chunk_time, chunk_range=chunk_range)
     if "T_prof" not in ds:
-        print("[warn] T_prof variable missing")
+        print(f"[warn] {label}: T_prof variable missing")
         return None
     tprof = ds["T_prof"].rename({"altitude_layer": "range"}).sortby("time")
     if "altitude" in ds:
         alt = ds["altitude"].rename({"altitude_layer": "range"})
         tprof = tprof.assign_coords(range=alt)
-    return tprof.to_dataset(name="T_PROF")
+    return tprof.to_dataset(name=output_name)
+
+
+def _load_tprof(root: Path, patterns: Iterable[str], chunk_time: int, chunk_range: int) -> xr.Dataset | None:
+    files: List[Path] = []
+    for pat in patterns:
+        files.extend(root.rglob(pat))
+    files = [f for f in files if not f.name.endswith(".CMP.TPC.NC")]
+    return _load_tprof_files(files, "T_PROF", "T_PROF", chunk_time, chunk_range)
+
+
+def _load_cmp_tprof(root: Path, chunk_time: int, chunk_range: int) -> xr.Dataset | None:
+    files = sorted(root.rglob("*.CMP.TPC.NC"))
+    return _load_tprof_files(files, "T_PROF_CMP", "T_PROF_CMP", chunk_time, chunk_range)
 
 
 def _load_met(root: Path, chunk_time: int) -> xr.Dataset | None:
@@ -129,6 +141,10 @@ def build_zarr(root: Path, zarr_path: Path, chunk_time: int = 600, chunk_range: 
     if tprof_ds is not None:
         parts.append(tprof_ds)
 
+    cmp_tprof_ds = _load_cmp_tprof(root, chunk_time, chunk_range)
+    if cmp_tprof_ds is not None:
+        parts.append(cmp_tprof_ds)
+
     met_ds = _load_met(root, chunk_time)
     if met_ds is not None:
         parts.append(met_ds)
@@ -147,9 +163,30 @@ def build_zarr(root: Path, zarr_path: Path, chunk_time: int = 600, chunk_range: 
     if "range" in merged.dims:
         chunk_map["range"] = chunk_range
     merged = merged.chunk(chunk_map)
+    merged.attrs.update(
+        {
+            "title": "AURORA HATPRO G5 scanning microwave radiometer",
+            "source": "Mirrored raw HATPRO files from aurora@100.124.55.22:/home/aurora/data/hatprog5",
+            "raw_mirror": str(root),
+            "profile_policy": "T_PROF uses non-CMP TPC plus TPB files; T_PROF_CMP uses CMP.TPC files.",
+            "created_by": "hatpro_to_zarr.py",
+        }
+    )
 
-    print(f"[write] {zarr_path}")
-    merged.to_zarr(zarr_path, mode="w", consolidated=True)
+    tmp_path = zarr_path.with_name(f"{zarr_path.name}.tmp")
+    old_path = zarr_path.with_name(f"{zarr_path.name}.old")
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
+    if old_path.exists():
+        shutil.rmtree(old_path)
+
+    print(f"[write] {tmp_path}")
+    merged.to_zarr(tmp_path, mode="w", consolidated=True)
+    if zarr_path.exists():
+        zarr_path.rename(old_path)
+    tmp_path.rename(zarr_path)
+    if old_path.exists():
+        shutil.rmtree(old_path)
     print("[done]")
 
 

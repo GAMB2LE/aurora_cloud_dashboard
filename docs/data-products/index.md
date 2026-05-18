@@ -7,6 +7,7 @@ and operations-monitor products.
 
 - [Ceilometer Zarr](ceilometer-zarr.md)
 - [Cloud Radar Zarr](cloud-radar-zarr.md)
+- [HATPRO Zarr](hatpro-zarr.md)
 - [Meteorology Zarr](meteorology-zarr.md)
 - [ASFS Logger Zarr](asfs-logger-zarr.md)
 - [ASFS Fast Sonic Zarr](asfs-fast-sonic-zarr.md)

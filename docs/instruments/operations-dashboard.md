@@ -12,6 +12,8 @@ stack.
 - Aurora Power Supply internal temperature from `InternalTemperature`,
   scored green below `35 C`, amber from `35-40 C`, and red at `40 C` or above
 - source sync and processing health
+- HATPRO source, local mirror, GWS mirror, Zarr-build, and quicklook health
+  alongside the other science streams
 - dashboard performance-log freshness, including whether browser activity is
   still being written to `/data/aurora/products/dashboard/dashboard_perf.jsonl`
 - dashboard HTTP endpoint health and response time

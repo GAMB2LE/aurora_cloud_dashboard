@@ -8,9 +8,10 @@ variable directly.
 
 - [Ceilometer](ceilometer.md)
 - [Cloud Radar](cloud-radar.md)
+- [Scanning Microwave Radiometer](scanning-microwave-radiometer.md)
 
 These instruments are driven by 2D `time x range` Zarr stores and render as
-height-time plots in the interactive tab.
+height-time or profile plots in the interactive tab.
 
 ## Curated 1D summary instruments
 

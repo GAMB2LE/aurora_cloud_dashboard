@@ -35,6 +35,7 @@ nav:
       - Instrument summary: instruments/index.md
       - Ceilometer: instruments/ceilometer.md
       - Cloud Radar: instruments/cloud-radar.md
+      - Scanning Microwave Radiometer: instruments/scanning-microwave-radiometer.md
       - Meteorology: instruments/meteorology.md
       - Radiation: instruments/radiation.md
       - Aurora Power Supply: instruments/aurora-power-supply.md
@@ -52,6 +53,7 @@ nav:
       - Zarr and product overview: data-products/index.md
       - Ceilometer Zarr: data-products/ceilometer-zarr.md
       - Cloud Radar Zarr: data-products/cloud-radar-zarr.md
+      - HATPRO Zarr: data-products/hatpro-zarr.md
       - Meteorology Zarr: data-products/meteorology-zarr.md
       - ASFS Logger Zarr: data-products/asfs-logger-zarr.md
       - ASFS Fast Sonic Zarr: data-products/asfs-fast-sonic-zarr.md

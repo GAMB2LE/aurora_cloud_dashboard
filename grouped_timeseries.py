@@ -684,6 +684,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("cl61_local_coverage_pct", "CL61", COLOR["teal"]),
                 TraceSpec("radar_local_coverage_pct", "Radar", COLOR["blue"]),
+                TraceSpec("hatpro_local_coverage_pct", "HATPRO", COLOR["black"]),
                 TraceSpec("vaisalamet_local_coverage_pct", "Meteorology", COLOR["green"]),
                 TraceSpec("asfs_logger_local_coverage_pct", "Radiation", COLOR["purple"]),
                 TraceSpec("asfs_fast_sonic_local_coverage_pct", "ASFS Fast Sonic", COLOR["magenta"]),
@@ -699,6 +700,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("cl61_local_lag_min", "CL61", COLOR["teal"]),
                 TraceSpec("radar_local_lag_min", "Radar", COLOR["blue"]),
+                TraceSpec("hatpro_local_lag_min", "HATPRO", COLOR["black"]),
                 TraceSpec("vaisalamet_local_lag_min", "Meteorology", COLOR["green"]),
                 TraceSpec("asfs_logger_local_lag_min", "Radiation", COLOR["purple"]),
                 TraceSpec("asfs_fast_sonic_local_lag_min", "ASFS Fast Sonic", COLOR["magenta"]),
@@ -714,6 +716,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("cl61_gws_coverage_pct", "CL61", COLOR["teal"]),
                 TraceSpec("radar_gws_coverage_pct", "Radar", COLOR["blue"]),
+                TraceSpec("hatpro_gws_coverage_pct", "HATPRO", COLOR["black"]),
                 TraceSpec("vaisalamet_gws_coverage_pct", "Meteorology", COLOR["green"]),
                 TraceSpec("asfs_logger_gws_coverage_pct", "Radiation", COLOR["purple"]),
                 TraceSpec("asfs_fast_sonic_gws_coverage_pct", "ASFS Fast Sonic", COLOR["magenta"]),
@@ -776,12 +779,14 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("cl61_local_issue_count", "CL61 Local", COLOR["teal"], step=True, skip_if_all_zero=True),
                 TraceSpec("radar_local_issue_count", "Radar Local", COLOR["blue"], step=True, skip_if_all_zero=True),
+                TraceSpec("hatpro_local_issue_count", "HATPRO Local", COLOR["black"], step=True, skip_if_all_zero=True),
                 TraceSpec("vaisalamet_local_issue_count", "Meteorology Local", COLOR["green"], step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_logger_local_issue_count", "Radiation Local", COLOR["purple"], step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_fast_sonic_local_issue_count", "ASFS Fast Sonic Local", COLOR["magenta"], step=True, skip_if_all_zero=True),
                 TraceSpec("power_local_issue_count", "APS Local", COLOR["brown"], step=True, skip_if_all_zero=True),
                 TraceSpec("cl61_gws_issue_count", "CL61 GWS", COLOR["teal"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("radar_gws_issue_count", "Radar GWS", COLOR["blue"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
+                TraceSpec("hatpro_gws_issue_count", "HATPRO GWS", COLOR["black"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("vaisalamet_gws_issue_count", "Meteorology GWS", COLOR["green"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_logger_gws_issue_count", "Radiation GWS", COLOR["purple"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_fast_sonic_gws_issue_count", "ASFS Fast Sonic GWS", COLOR["magenta"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
@@ -796,6 +801,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("cl61_local_lag_min", "CL61 Local", COLOR["teal"], valid_min=2.0),
                 TraceSpec("radar_local_lag_min", "Radar Local", COLOR["blue"], valid_min=2.0),
+                TraceSpec("hatpro_local_lag_min", "HATPRO Local", COLOR["black"], valid_min=2.0),
                 TraceSpec("vaisalamet_local_lag_min", "Meteorology Local", COLOR["green"], valid_min=2.0),
                 TraceSpec("asfs_logger_local_lag_min", "Radiation Local", COLOR["purple"], valid_min=2.0),
                 TraceSpec("asfs_fast_sonic_local_lag_min", "ASFS Fast Sonic Local", COLOR["magenta"], valid_min=2.0),
@@ -803,6 +809,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("wxcam_local_lag_min", "WXcam Local", COLOR["olive"], valid_min=2.0),
                 TraceSpec("cl61_gws_lag_min", "CL61 GWS", COLOR["teal"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("radar_gws_lag_min", "Radar GWS", COLOR["blue"], axis="right", dash="dot", valid_min=10.0),
+                TraceSpec("hatpro_gws_lag_min", "HATPRO GWS", COLOR["black"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("vaisalamet_gws_lag_min", "Meteorology GWS", COLOR["green"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("asfs_logger_gws_lag_min", "Radiation GWS", COLOR["purple"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("asfs_fast_sonic_gws_lag_min", "ASFS Fast Sonic GWS", COLOR["magenta"], axis="right", dash="dot", valid_min=10.0),
@@ -843,6 +850,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("streams_source_stale_count", "Stale Streams", COLOR["red"], step=True, skip_if_all_zero=True),
                 TraceSpec("cl61_source_recent_state", "CL61 Recent", COLOR["teal"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("radar_source_recent_state", "Radar Recent", COLOR["blue"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("hatpro_source_recent_state", "HATPRO Recent", COLOR["black"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("vaisalamet_source_recent_state", "Meteorology Recent", COLOR["green"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_logger_source_recent_state", "Radiation Recent", COLOR["purple"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_fast_sonic_source_recent_state", "ASFS Fast Sonic Recent", COLOR["magenta"], axis="right", step=True, skip_if_all_zero=True),
