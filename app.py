@@ -19,7 +19,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from time import perf_counter
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import numpy as np
 import pandas as pd
@@ -676,6 +676,21 @@ def _wxcam_daily_video_root() -> Path:
 
 def _wxcam_hourly_thumbnail_root() -> Path:
     return Path(os.environ.get("WXCAM_HOURLY_THUMB_DIR", "/data/aurora/products/wxcam/hourly_thumbnails"))
+
+
+def _wxcam_media_root() -> Path:
+    return Path(os.environ.get("WXCAM_MEDIA_ROOT", "/data/aurora/products/wxcam"))
+
+
+def _wxcam_media_url(path: Path) -> str:
+    """Return a browser URL for WXcam media served by Panel's static route."""
+    root = _wxcam_media_root().resolve()
+    resolved = path.resolve()
+    rel = resolved.relative_to(root)
+    prefix = os.environ.get("WXCAM_MEDIA_URL_PREFIX", "/wxcam-media").strip() or "/wxcam-media"
+    prefix = "/" + prefix.strip("/")
+    version = path.stat().st_mtime_ns
+    return f"{prefix}/{quote(rel.as_posix())}?{urlencode({'v': version})}"
 
 
 def _ensure_utc(dt):
@@ -2810,18 +2825,6 @@ def _media_pane(path: str):
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
-@lru_cache(maxsize=8)
-def _cached_video_data_uri(path_str: str, size_bytes: int, mtime_ns: int) -> str:
-    video_bytes = Path(path_str).read_bytes()
-    encoded = b64encode(video_bytes).decode("utf-8")
-    return f"data:video/mp4;base64,{encoded}"
-
-
-def _video_data_uri(path: Path) -> str:
-    stat_result = path.stat()
-    return _cached_video_data_uri(str(path), stat_result.st_size, stat_result.st_mtime_ns)
-
-
 @lru_cache(maxsize=256)
 def _cached_image_data_uri(path_str: str, size_bytes: int, mtime_ns: int) -> str:
     image_bytes = Path(path_str).read_bytes()
@@ -2846,7 +2849,8 @@ def _build_wxcam_video_view(path: Path, selection: str, selected_label: str, con
         subtitle = str(context.get("subtitle", ""))
         stat_result = path.stat()
         perf["size_bytes"] = int(stat_result.st_size)
-        wxcam_player.src = _video_data_uri(path)
+        wxcam_player.src = _wxcam_media_url(path)
+        perf["src_mode"] = "static_url"
         wxcam_player.title = title
         wxcam_player.subtitle = subtitle
         wxcam_player.mode_class = mode_class

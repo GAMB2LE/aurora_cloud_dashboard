@@ -41,6 +41,11 @@ Daily videos are stitched from the 24 hourly MP4 clips for that UTC day.
 `latest.mp4` is stitched from the most recent 24 hourly clips across day
 boundaries.
 
+The dashboard serves these MP4 files through the static route
+`/wxcam-media/daily_videos/...` with a file-mtime query string. This avoids
+sending tens of megabytes of video data through the Panel websocket and allows
+browser video controls to use HTTP range requests.
+
 ## Dashboard usage
 
 - **Interactive Data Browser** uses the stitched MP4 products

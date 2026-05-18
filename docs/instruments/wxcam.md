@@ -18,6 +18,11 @@ The interactive tab is video-driven:
 - current-day stitched videos are refreshed ahead of the slower historical
   backfill work so the live browser stays useful during archive catch-up
 
+The MP4 player uses URLs under `/wxcam-media/...` instead of embedding video
+bytes in the Panel websocket payload. That keeps large stitched videos out of
+the Bokeh document and lets browsers use normal HTTP byte-range requests for
+playback and seeking.
+
 ## Science quicklooks
 
 The WXcam science view is image-driven:

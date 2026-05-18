@@ -19,6 +19,10 @@ tab, but it gives short backgrounding events a better chance of reconnecting.
 The app also mirrors view state into the URL so a killed tab can reload into
 the same tab, instrument, and key controls.
 
+The service also exposes `/data/aurora/products/wxcam` as the static route
+`/wxcam-media`. WXcam MP4 playback uses that route so videos are fetched by the
+browser over normal HTTP instead of being serialized into the Panel websocket.
+
 ## CL61
 
 - `aurora-cl61-source-sync.timer`
