@@ -30,7 +30,7 @@ ZARR_PATH = Path(os.environ.get("VAISALAMET_ZARR_PATH", "/data/aurora/products/v
 ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
 QUICKLOOK_DIR = Path(os.environ.get("VAISALAMET_QUICKLOOK_DIR", QUICKLOOK_ROOT / "vaisalamet"))
 INSTRUMENT = "vaisalamet"
-MET_HK_EXTRA_VARS = ("kt15_amb_Avg",)
+MET_HK_EXTRA_VARS = ("kt15_amb_Avg", "metek_InclX_out_Avg", "metek_InclY_out_Avg")
 
 
 def _meteorology_housekeeping_dataset(vaisala_ds: xr.Dataset, asfs_ds: xr.Dataset) -> xr.Dataset:
