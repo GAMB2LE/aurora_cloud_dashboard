@@ -73,6 +73,8 @@ It shows:
 - dashboard HTTP endpoint health and dashboard/infra git state
 - Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
   above `52 V`, amber from `50-52 V`, and red below `50 V`
+- Aurora Power Supply battery state of charge from `BatterySOC`, scored green
+  at or above `50 %`, amber from `25-50 %`, and red below `25 %`
 - Aurora Power Supply internal temperature from `InternalTemperature`,
   scored green below `35 C`, amber from `35-40 C`, and red at `40 C` or above
 - storage cards for the source hosts, the local Aurora host, and the JASMIN GWS

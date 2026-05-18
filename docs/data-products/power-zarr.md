@@ -8,7 +8,7 @@ Path:
 
 - dimension: `time`
 - deployed shape when checked on `2026-05-18`:
-  - `time=842870`
+  - `time=860232`
 
 ## Time coordinate
 
@@ -24,7 +24,7 @@ Path:
 ## Variable layout
 
 - one `float32` `time` series per retained source column
-- the deployed store currently contains `43` variables
+- the deployed store currently contains `62` variables
 
 Important ingest rules:
 
@@ -39,6 +39,7 @@ Examples include:
 - `ACOutputVolts`
 - `ACOutputWatts`
 - `BatteryAmps`
+- `BatterySOC`
 - `BatteryState`
 - `BatteryWatts`
 - `DCInverterWatts`

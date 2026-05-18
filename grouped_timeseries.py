@@ -203,7 +203,8 @@ HUMAN_LABELS = {
     "DCInverterVolts": "DC Inverter Voltage",
     "BatteryWatts": "Battery Power",
     "BatteryAmps": "Battery Current",
-    "BatteryState": "State of Charge",
+    "BatterySOC": "State of Charge",
+    "BatteryState": "Battery State",
     "BattsOnline": "Batteries Online",
     "InternalTemperature": "Internal Temperature",
     "HeatsinkTemperature": "Heatsink Temperature",
@@ -313,7 +314,8 @@ HUMAN_UNITS = {
     "ACkWh": "kWh",
     "ACnHours": "h",
     "BatteryAmps": "A",
-    "BatteryState": "%",
+    "BatterySOC": "%",
+    "BatteryState": "state",
     "BatteryWatts": "W",
     "BattsOnline": "state",
     "DCInverterAmps": "A",
@@ -355,9 +357,7 @@ HUMAN_UNITS = {
     "scantime": "s",
 }
 
-DISPLAY_SCALE = {
-    "BatteryState": 100.0,
-}
+DISPLAY_SCALE = {}
 
 SUMMARY_SOURCE_INSTRUMENTS = {
     "vaisalamet": ("vaisalamet", "asfs-logger"),
@@ -639,6 +639,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("TempSensor4", "Temperature Sensor 4", COLOR["olive"]),
             ),
         ),
+        PanelSpec(
+            "state_of_charge",
+            "State of Charge",
+            "SOC [%]",
+            None,
+            (
+                TraceSpec("BatterySOC", "State of Charge", COLOR["green"]),
+            ),
+        ),
     ),
     "ops-monitor": (
         PanelSpec(
@@ -670,10 +679,11 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         PanelSpec(
             "aps_battery_voltage",
             "APS Electrical / Thermal",
-            "Voltage [V]",
+            "Voltage [V] / SOC [%]",
             "Temperature [C]",
             (
                 TraceSpec("aps_battery_voltage_v", "DC Inverter Voltage", COLOR["brown"]),
+                TraceSpec("aps_battery_soc_pct", "State of Charge", COLOR["green"]),
                 TraceSpec("aps_internal_temp_c", "Internal Temperature", COLOR["red"], axis="right"),
             ),
         ),

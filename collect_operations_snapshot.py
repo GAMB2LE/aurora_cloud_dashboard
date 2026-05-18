@@ -684,6 +684,14 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     if battery_time is not None:
         record["aps_battery_voltage_time_utc"] = battery_time.isoformat()
         record["aps_battery_voltage_age_min"] = max((now - battery_time).total_seconds(), 0.0) / 60.0
+    battery_soc, battery_soc_time = _latest_finite_zarr_value(
+        _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
+        "BatterySOC",
+    )
+    record["aps_battery_soc_pct"] = battery_soc
+    if battery_soc_time is not None:
+        record["aps_battery_soc_time_utc"] = battery_soc_time.isoformat()
+        record["aps_battery_soc_age_min"] = max((now - battery_soc_time).total_seconds(), 0.0) / 60.0
     internal_temp, internal_temp_time = _latest_finite_zarr_value(
         _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
         "InternalTemperature",
@@ -869,6 +877,16 @@ def _level_from_battery_voltage(value: float | None) -> str:
     return "red"
 
 
+def _level_from_battery_soc(value: float | None) -> str:
+    if value is None:
+        return "gray"
+    if value >= 50.0:
+        return "green"
+    if value >= 25.0:
+        return "amber"
+    return "red"
+
+
 def _level_from_internal_temp(value: float | None) -> str:
     if value is None:
         return "gray"
@@ -966,6 +984,14 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         "power",
         "APS battery voltage",
         details=f"DC inverter voltage={_fmt(_value(snapshot, 'aps_battery_voltage_v'), ' V', 2)}, age={_fmt(_value(snapshot, 'aps_battery_voltage_age_min'), ' min')}",
+    )
+    soc_level = _level_from_battery_soc(_value(snapshot, "aps_battery_soc_pct"))
+    _health_check(
+        checks,
+        soc_level,
+        "power",
+        "APS battery state of charge",
+        details=f"SOC={_fmt(_value(snapshot, 'aps_battery_soc_pct'), '%', 0)}, age={_fmt(_value(snapshot, 'aps_battery_soc_age_min'), ' min')}",
     )
     temp_level = _level_from_internal_temp(_value(snapshot, "aps_internal_temp_c"))
     _health_check(

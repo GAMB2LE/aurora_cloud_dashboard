@@ -27,6 +27,8 @@ Typical panels include:
   - internal temperature
   - heatsink temperature
   - temperature sensors 1-4
+- **State of Charge**
+  - `BatterySOC` as battery state of charge in percent
 
 Legends are placed in a consistent right-side gutter rather than collected into
 one global legend block.

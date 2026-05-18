@@ -301,7 +301,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
   This keeps large videos out of the Bokeh websocket and lets browsers request
   byte ranges for normal video seeking.
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
-- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, systemd unit state, dashboard HTTP checks, dashboard/infra git state, and the latest Aurora Power Supply `DCInverterVolts` and `InternalTemperature` samples from the power Zarr. They stamp each snapshot with both `time_utc` and `snapshot_time_utc`, mark each stream red when the source has not produced data in the last 1.5 hours, score battery voltage as green above `52 V`, amber from `50-52 V`, and red below `50 V`, and score APS internal temperature as green below `35 C`, amber from `35-40 C`, and red at `40 C` or above. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the Phase 1 observe-only sentinel also writes `latest_health.json` and Markdown health reports under `/data/aurora/products/ops_monitor/health`. A fresh deployment can therefore show a live Operations tab and health report before the archived monitoring quicklook directory fills in.
+- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, systemd unit state, dashboard HTTP checks, dashboard/infra git state, and the latest Aurora Power Supply `DCInverterVolts`, `BatterySOC`, and `InternalTemperature` samples from the power Zarr. They stamp each snapshot with both `time_utc` and `snapshot_time_utc`, mark each stream red when the source has not produced data in the last 1.5 hours, score battery voltage as green above `52 V`, amber from `50-52 V`, and red below `50 V`, score battery SOC as green at or above `50 %`, amber from `25-50 %`, and red below `25 %`, and score APS internal temperature as green below `35 C`, amber from `35-40 C`, and red at `40 C` or above. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the Phase 1 observe-only sentinel also writes `latest_health.json` and Markdown health reports under `/data/aurora/products/ops_monitor/health`. A fresh deployment can therefore show a live Operations tab and health report before the archived monitoring quicklook directory fills in.
 
 ## Zarr data products
 
@@ -545,7 +545,7 @@ Useful root attrs include:
 Variable layout:
 
 - one `float32` `time` series per retained source column
-- the current deployed store contains 43 variables
+- the current deployed store contains 62 variables
 - raw column names are normalized by replacing `.` with `_`
 - columns containing `wind` and columns ending in `time` are excluded at ingest
 - examples include:
@@ -554,6 +554,7 @@ Variable layout:
   - `ACOutputVolts`
   - `ACOutputWatts`
   - `BatteryAmps`
+  - `BatterySOC`
   - `BatteryState`
   - `BatteryWatts`
   - `DCInverterWatts`

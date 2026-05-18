@@ -24,6 +24,9 @@ These snapshots capture:
 - Aurora Power Supply battery voltage from the latest `DCInverterVolts` sample
   in the power Zarr, scored green above `52 V`, amber from `50-52 V`, and red
   below `50 V`
+- Aurora Power Supply battery state of charge from the latest `BatterySOC`
+  sample in the power Zarr, scored green at or above `50 %`, amber from
+  `25-50 %`, and red below `25 %`
 - Aurora Power Supply internal temperature from the latest
   `InternalTemperature` sample in the power Zarr, scored green below `35 C`,
   amber from `35-40 C`, and red at `40 C` or above
