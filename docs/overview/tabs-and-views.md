@@ -13,11 +13,15 @@ This is the primary live-browsing surface.
 - **WXcam** shows the stitched MP4 browser for `FISH HDR` and `PANO HDR`.
 
 The share link, download, freshness, and availability UI are rendered beneath
-the content area so the data surface stays visually primary.
+the content area so the data surface stays visually primary. Freshness and
+availability are populated just after the page opens so the first browser paint
+does not wait for a Zarr timestamp scan.
 
 The interactive browser keeps the last rendered pane warm per instrument,
-remembers the instrument-specific control state, and shows a small loading
-notice or skeleton while a refresh is in progress.
+remembers the instrument-specific control state, reuses recent rendered windows,
+and shows a cached latest quicklook or loading skeleton while a refresh is in
+progress. Rapid control changes are debounced so only the newest requested view
+renders.
 
 The current tab, instrument, and important control values are also kept in the
 browser URL. This makes mobile recovery less painful: if the phone backgrounds
@@ -31,6 +35,10 @@ This tab shows archived science-facing products.
 - most instruments show daily PNG quicklooks
 - **WXcam** is special: it uses an image-driven hourly grid built from HDR JPGs
   nearest the `:30` mark in each UTC hour
+
+The quicklook image pane, freshness strip, and availability bar are lazy-loaded
+when the tab is first opened so the initial Interactive Data Browser page can
+appear sooner.
 
 ## House Keeping Quicklooks
 
@@ -50,9 +58,13 @@ science tab can stay focused on the most interpretable instrument products.
 time-only support variables, while Radar reads RPG LV1 housekeeping variables
 from the raw mirror.
 
+The housekeeping image pane, freshness strip, and availability bar are also
+lazy-loaded on first use.
+
 ## Operations Dashboard
 
 This tab is a live status dashboard rather than a static quicklook browser.
+It starts its periodic refresh only after the tab is opened.
 
 It shows:
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import timedelta
+import os
 from pathlib import Path
 import shutil
 
@@ -17,8 +18,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
 
-MAX_TIME_SAMPLES = 2200
-INTERACTIVE_MAX_TIME_SAMPLES = 3500
+MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
+INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600"))
 OVERVIEW_LABEL = "Overview"
 # Reserve a fixed right-side gutter for per-panel legends so they sit beyond the
 # secondary-axis labels in both the interactive Plotly view and saved PNGs.

@@ -7,10 +7,9 @@ protection, and coarse-first rendering on heavier plots to keep the UI
 responsive during normal browsing.
 """
 
-import os
 import asyncio
 from base64 import b64encode
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
 from functools import lru_cache
@@ -18,6 +17,7 @@ from html import escape
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import quote, urlencode
@@ -91,6 +91,7 @@ THEME_ACCENT = "#0b7285"
 
 class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
     src = param.String(default="")
+    poster = param.String(default="")
     title = param.String(default="")
     subtitle = param.String(default="")
     mode_class = param.String(default="wxcam-player--wide")
@@ -131,6 +132,7 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
         <video
           id="video_el"
           src="${src}"
+          poster="${poster}"
           controls
           preload="metadata"
           playsinline
@@ -618,6 +620,8 @@ TIME_SUBSAMPLE = 2  # slice time to lighten payloads
 TIME_TARGET = 300  # target max time samples for plotting
 HEIGHT_TARGET = 200  # target max height samples for plotting
 DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
+RENDER_DEBOUNCE_MS = int(os.environ.get("AURORA_RENDER_DEBOUNCE_MS", "150"))
+INTERACTIVE_RENDER_CACHE_SIZE = int(os.environ.get("AURORA_INTERACTIVE_RENDER_CACHE_SIZE", "12"))
 # A small future tolerance keeps normal clock skew harmless while protecting
 # the dashboard from bogus outlier timestamps that can blank the latest window.
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
@@ -627,11 +631,19 @@ INTERACTIVE_PLACEHOLDER_HEIGHT = 540
 _BASE_DS: dict[str, xr.Dataset | None] = {}
 _TIME_BOUNDS_CACHE: dict[str, dict[str, object]] = {}
 _INTERACTIVE_FIGURE_CACHE: dict[str, go.Figure] = {}
+_INTERACTIVE_RENDER_CACHE: OrderedDict[tuple[object, ...], go.Figure] = OrderedDict()
 _INSTRUMENT_VIEW_STATE: dict[str, dict[str, object]] = {}
+_DATASET_VERSION: dict[str, int] = {}
+_DATASET_REFRESHED_AT: dict[str, datetime] = {}
 CURRENT_INSTRUMENT = "power"
 _RENDER_REQUEST_COUNTER = 0
 _ACTIVE_RENDER_REQUEST_ID = 0
 _DISPLAYED_INTERACTIVE_INSTRUMENT: str | None = None
+_PENDING_INTERACTIVE_RENDER_ARGS: tuple[object, ...] | None = None
+_PENDING_INTERACTIVE_RENDER_CB = None
+_APP_BOOTSTRAPPING = True
+_INTERACTIVE_RENDER_ENABLED = False
+_INTERACTIVE_FOOTER_LOADED = False
 
 
 def _safe_periodic_callback(callback, period: int, start: bool = True):
@@ -732,14 +744,37 @@ def _get_base_dataset(inst: str | None = None):
                 return None
         perf["dims"] = dict(ds.sizes)
     _BASE_DS[inst] = ds
+    _DATASET_REFRESHED_AT[inst] = datetime.now(timezone.utc)
     return ds
 
 
 def _refresh_base_dataset(inst: str | None = None):
     """Drop the cached dataset so the next access reopens the Zarr (captures new data)."""
     inst = inst or CURRENT_INSTRUMENT
+    ds = _BASE_DS.get(inst)
+    if ds is not None:
+        try:
+            ds.close()
+        except Exception:
+            pass
     _BASE_DS[inst] = None
     _TIME_BOUNDS_CACHE.pop(inst, None)
+    _DATASET_VERSION[inst] = _DATASET_VERSION.get(inst, 0) + 1
+    _DATASET_REFRESHED_AT[inst] = datetime.now(timezone.utc)
+
+
+def _refresh_time_bounds_cache(inst: str | None = None):
+    """Invalidate lightweight timestamp metadata without closing open Zarr datasets."""
+    _TIME_BOUNDS_CACHE.pop(inst or CURRENT_INSTRUMENT, None)
+
+
+def _dataset_cache_age(inst: str | None = None) -> timedelta:
+    """Return age of the opened dataset handle; old handles are reopened during live refresh."""
+    inst = inst or CURRENT_INSTRUMENT
+    refreshed_at = _DATASET_REFRESHED_AT.get(inst)
+    if refreshed_at is None or _BASE_DS.get(inst) is None:
+        return timedelta.max
+    return datetime.now(timezone.utc) - refreshed_at
 
 
 def _remember_time_bounds(inst: str, lower: datetime | None, upper: datetime | None) -> tuple[datetime | None, datetime | None]:
@@ -2076,8 +2111,7 @@ def _is_wxcam_instrument(inst: str) -> bool:
 
 
 # Widgets / controls (Panel wires these into the view updater)
-tmin, tmax = _dataset_time_bounds()
-default_end = tmax or datetime.utcnow()
+default_end = datetime.utcnow()
 default_start = default_end - DEFAULT_WINDOW
 range_start = pn.widgets.DatetimePicker(name="Start (UTC)", value=default_start)
 range_end = pn.widgets.DatetimePicker(name="End (UTC)", value=default_end)
@@ -2107,7 +2141,7 @@ _live_guard = False
 _instrument_guard = False
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
-_base_dataset_timer = _safe_periodic_callback(_refresh_base_dataset, period=DATA_REFRESH_MS, start=True)
+_base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=True)
 
 
 def _capture_current_instrument_state(inst: str | None = None) -> None:
@@ -2140,8 +2174,12 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
     """Switch instrument: refresh dataset cache, reset controls, and relabel color widgets."""
     global CURRENT_INSTRUMENT, _instrument_guard
     _instrument_guard = True
+    previous_instrument = CURRENT_INSTRUMENT
     CURRENT_INSTRUMENT = inst
-    _refresh_base_dataset(inst)
+    if previous_instrument != inst or _BASE_DS.get(inst) is None:
+        _refresh_base_dataset(inst)
+    else:
+        _refresh_time_bounds_cache(inst)
     cfg = _cfg(inst)
     saved_state = _INSTRUMENT_VIEW_STATE.get(inst, {})
     with hold():
@@ -2194,6 +2232,10 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
             ):
                 range_start.value = saved_start
                 range_end.value = saved_end
+            elif _APP_BOOTSTRAPPING:
+                end = _ensure_utc(range_end.value) or datetime.utcnow()
+                range_start.value = end - DEFAULT_WINDOW
+                range_end.value = end
             else:
                 tmin, tmax = _dataset_time_bounds(inst)
                 end = tmax or datetime.utcnow()
@@ -2301,6 +2343,8 @@ def _refresh_to_latest(_event=None):
     """Jump window to latest 24h and update date pickers."""
     global _live_guard
     _live_guard = True
+    if not _is_wxcam_instrument(CURRENT_INSTRUMENT) and _dataset_cache_age(CURRENT_INSTRUMENT) >= timedelta(milliseconds=DATA_REFRESH_MS):
+        _refresh_base_dataset(CURRENT_INSTRUMENT)
     tmin, tmax = _dataset_time_bounds()
     end = tmax or datetime.utcnow()
     start = end - DEFAULT_WINDOW
@@ -2586,10 +2630,92 @@ def _render_request_active(request_id: int | None) -> bool:
     return request_id is None or request_id == _ACTIVE_RENDER_REQUEST_ID
 
 
-def _publish_plot_if_current(fig: go.Figure, instrument: str, request_id: int | None, cache_figure: bool = True) -> bool:
+def _normalize_cache_value(value):
+    if isinstance(value, datetime):
+        return _ensure_utc(value).replace(microsecond=0).isoformat()
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime(warn=False).replace(microsecond=0).isoformat()
+    if isinstance(value, float):
+        return round(value, 4)
+    return value
+
+
+def _interactive_render_cache_key(
+    start,
+    end,
+    bottom_val,
+    top_val,
+    var1_name,
+    var2_name,
+    bmin,
+    bmax,
+    lmin,
+    lmax,
+    lymin,
+    lymax,
+    iymin,
+    iymax,
+    rymin,
+    rymax,
+    instrument,
+    render_quality: str = "full",
+) -> tuple[object, ...]:
+    return (
+        instrument,
+        render_quality,
+        _DATASET_VERSION.get(instrument, 0),
+        _normalize_cache_value(start),
+        _normalize_cache_value(end),
+        _normalize_cache_value(bottom_val),
+        _normalize_cache_value(top_val),
+        var1_name,
+        var2_name,
+        _normalize_cache_value(bmin),
+        _normalize_cache_value(bmax),
+        _normalize_cache_value(lmin),
+        _normalize_cache_value(lmax),
+        _normalize_cache_value(lymin),
+        _normalize_cache_value(lymax),
+        _normalize_cache_value(iymin),
+        _normalize_cache_value(iymax),
+        _normalize_cache_value(rymin),
+        _normalize_cache_value(rymax),
+    )
+
+
+def _store_interactive_render_cache(cache_key: tuple[object, ...] | None, fig: go.Figure) -> None:
+    if cache_key is None or _is_wxcam_instrument(str(cache_key[0])):
+        return
+    _INTERACTIVE_RENDER_CACHE[cache_key] = go.Figure(fig)
+    _INTERACTIVE_RENDER_CACHE.move_to_end(cache_key)
+    while len(_INTERACTIVE_RENDER_CACHE) > INTERACTIVE_RENDER_CACHE_SIZE:
+        _INTERACTIVE_RENDER_CACHE.popitem(last=False)
+
+
+def _restore_exact_interactive_cache(cache_key: tuple[object, ...] | None, inst: str) -> bool:
+    if cache_key is None:
+        return False
+    cached = _INTERACTIVE_RENDER_CACHE.get(cache_key)
+    if cached is None:
+        return False
+    _INTERACTIVE_RENDER_CACHE.move_to_end(cache_key)
+    _show_plot(go.Figure(cached), instrument=inst, cache_figure=False)
+    _perf_log("interactive_render_cache_hit", instrument=inst)
+    return True
+
+
+def _publish_plot_if_current(
+    fig: go.Figure,
+    instrument: str,
+    request_id: int | None,
+    cache_figure: bool = True,
+    cache_key: tuple[object, ...] | None = None,
+) -> bool:
     if not _render_request_active(request_id):
         return False
     _show_plot(fig, instrument=instrument, cache_figure=cache_figure)
+    if cache_figure:
+        _store_interactive_render_cache(cache_key, fig)
     return True
 
 
@@ -2615,6 +2741,37 @@ def _restore_cached_interactive_view(inst: str) -> bool:
     return True
 
 
+def _latest_quicklook_path(inst: str) -> Path | None:
+    cfg = _cfg(inst)
+    candidates: list[Path] = []
+    latest_image = cfg.get("latest_image")
+    if latest_image:
+        candidates.append(Path(latest_image))
+    if _is_stacked_timeseries_instrument(inst):
+        candidates.append(summary_latest_png(Path(cfg["quicklook_dir"]), inst))
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _show_cached_quicklook_placeholder(inst: str) -> bool:
+    path = _latest_quicklook_path(inst)
+    if path is None:
+        return False
+    panel_obj = pn.Column(
+        pn.pane.HTML(
+            "<div class='interactive-loading-note'>Showing the latest cached quicklook while the interactive view loads.</div>",
+            sizing_mode="stretch_width",
+            margin=(0, 0, 8, 0),
+        ),
+        pn.pane.Image(str(path), sizing_mode="stretch_width"),
+        sizing_mode="stretch_width",
+    )
+    _show_interactive_panel(panel_obj, instrument=inst)
+    return True
+
+
 def _interactive_supports_refine(inst: str) -> bool:
     return inst in {"Ceilometer", "Cloud Radar", "Scanning Microwave Radiometer"}
 
@@ -2625,6 +2782,14 @@ def _schedule_next_tick(callback) -> None:
         doc.add_next_tick_callback(callback)
     else:
         callback()
+
+
+def _schedule_timeout(callback, timeout_ms: int):
+    doc = pn.state.curdoc
+    if doc is not None:
+        return doc.add_timeout_callback(callback, timeout_ms)
+    callback()
+    return None
 
 
 def _image_type_from_selection(selection: str) -> str:
@@ -2827,6 +2992,31 @@ def _wxcam_hourly_thumbnail_path(image_type: str, day_token: str, source_name: s
     return _wxcam_hourly_thumbnail_root() / image_type / day_token / f"{Path(source_name).stem}.jpg"
 
 
+def _wxcam_video_poster_data_uri(image_type: str, day_token: str, selected_label: str) -> str:
+    day_utc = _wxcam_day_token_to_utc(day_token)
+    if not day_utc:
+        return ""
+    rows = representative_hourly_records(
+        _wxcam_catalog_path("wxcam"),
+        image_type,
+        day_utc,
+        media_kind="image",
+    )
+    if not rows:
+        return ""
+    if selected_label == "Today (latest)":
+        row = rows[max(rows)]
+    else:
+        row = rows.get(12) or rows[min(rows)]
+    thumb_path = _wxcam_hourly_thumbnail_path(image_type, day_token, str(row["filename"]))
+    if not thumb_path.exists():
+        return ""
+    try:
+        return _image_data_uri(thumb_path)
+    except Exception:
+        return ""
+
+
 def _media_pane(path: str):
     suffix = Path(path).suffix.lower()
     if suffix == ".mp4":
@@ -2863,6 +3053,11 @@ def _build_wxcam_video_view(path: Path, selection: str, selected_label: str, con
         wxcam_player.title = title
         wxcam_player.subtitle = subtitle
         wxcam_player.mode_class = mode_class
+        wxcam_player.poster = _wxcam_video_poster_data_uri(
+            image_type,
+            str(context.get("day_token", "")),
+            selected_label,
+        )
         return wxcam_player_shell
 
 
@@ -3021,7 +3216,21 @@ def _update_wxcam_view(start, end, top_name: str, bottom_name: str, request_id: 
     return _publish_panel_if_current(wxcam_interactive_browser, request_id)
 
 
-def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iymax, rymin, rymax, request_id: int | None = None, render_quality: str = "full"):
+def _update_hatpro_view(
+    start,
+    end,
+    bottom_val,
+    top_val,
+    lymin,
+    lymax,
+    iymin,
+    iymax,
+    rymin,
+    rymax,
+    request_id: int | None = None,
+    render_quality: str = "full",
+    cache_key: tuple[object, ...] | None = None,
+):
     """Custom renderer for HATPRO radiometer: split LWP/IWV and IRR; T_PROF heatmap."""
     print(f"[hatpro] render window {start} -> {end}")
     with _timed_perf(
@@ -3060,7 +3269,7 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
                 font=dict(color=THEME_TEXT, size=16),
             )
             fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
-            return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id)
+            return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id, cache_key=cache_key)
 
         fig = make_subplots(
             rows=3,
@@ -3235,10 +3444,17 @@ def _update_hatpro_view(start, end, bottom_val, top_val, lymin, lymax, iymin, iy
         )
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
-        return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id)
+        return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id, cache_key=cache_key)
 
 
-def _update_stacked_timeseries_view(instrument: str, start, end, request_id: int | None = None, render_quality: str = "full"):
+def _update_stacked_timeseries_view(
+    instrument: str,
+    start,
+    end,
+    request_id: int | None = None,
+    render_quality: str = "full",
+    cache_key: tuple[object, ...] | None = None,
+):
     """Render a 1D summary instrument with fixed multi-panel layouts."""
     print(f"[{instrument}] render window {start} -> {end}")
     with _timed_perf(
@@ -3264,18 +3480,20 @@ def _update_stacked_timeseries_view(instrument: str, start, end, request_id: int
             empty = go.Figure()
             empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
             empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
-            return _publish_plot_if_current(empty, instrument, request_id)
+            return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
         try:
-            fig = build_summary_plotly(ds, instrument, title=display_name(instrument))
+            max_time_samples = 900 if render_quality == "coarse" else 1600
+            perf["max_time_samples"] = max_time_samples
+            fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
         except ValueError:
             perf["status"] = "no_data"
             empty = go.Figure()
             empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
             empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
-            return _publish_plot_if_current(empty, instrument, request_id)
+            return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
-        return _publish_plot_if_current(fig, instrument, request_id)
+        return _publish_plot_if_current(fig, instrument, request_id, cache_key=cache_key)
 
 
 def _render_interactive_view(
@@ -3317,6 +3535,26 @@ def _render_interactive_view(
         if not _render_request_active(request_id):
             perf["status"] = "stale_before_start"
             return
+        cache_key = _interactive_render_cache_key(
+            start,
+            end,
+            bottom_val,
+            top_val,
+            var1_name,
+            var2_name,
+            bmin,
+            bmax,
+            lmin,
+            lmax,
+            lymin,
+            lymax,
+            iymin,
+            iymax,
+            rymin,
+            rymax,
+            instrument,
+            render_quality=render_quality,
+        )
         perf["top_var"] = var1_name
         perf["bottom_var"] = var2_name
         perf["bottom_m"] = bottom_val
@@ -3336,6 +3574,7 @@ def _render_interactive_view(
                 rymax,
                 request_id=request_id,
                 render_quality=render_quality,
+                cache_key=cache_key,
             )
             if not published:
                 perf["status"] = "stale"
@@ -3356,6 +3595,7 @@ def _render_interactive_view(
                 end,
                 request_id=request_id,
                 render_quality=render_quality,
+                cache_key=cache_key,
             )
             if not published:
                 perf["status"] = "stale"
@@ -3388,7 +3628,7 @@ def _render_interactive_view(
                     font=dict(color=fg, size=16),
                 )
                 fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
-                if not _publish_plot_if_current(fig, instrument, request_id):
+                if not _publish_plot_if_current(fig, instrument, request_id, cache_key=cache_key):
                     perf["status"] = "stale"
                     return
             else:
@@ -3540,7 +3780,7 @@ def _render_interactive_view(
                 )
                 perf["status"] = "ok"
                 perf["trace_count"] = len(fig.data)
-                if not _publish_plot_if_current(fig, instrument, request_id):
+                if not _publish_plot_if_current(fig, instrument, request_id, cache_key=cache_key):
                     perf["status"] = "stale"
                     return
         if (
@@ -3577,7 +3817,7 @@ def _render_interactive_view(
             _clear_interactive_loading()
 
 
-def _schedule_interactive_render(
+def _start_interactive_render(
     start,
     end,
     bottom_val,
@@ -3603,13 +3843,61 @@ def _schedule_interactive_render(
         CURRENT_INSTRUMENT = instrument
     _capture_current_instrument_state(instrument)
     request_id = _begin_render_request()
-    has_cached_view = _restore_cached_interactive_view(instrument)
+    first_quality = "coarse" if _interactive_supports_refine(instrument) else "full"
+    full_cache_key = _interactive_render_cache_key(
+        start,
+        end,
+        bottom_val,
+        top_val,
+        var1_name,
+        var2_name,
+        bmin,
+        bmax,
+        lmin,
+        lmax,
+        lymin,
+        lymax,
+        iymin,
+        iymax,
+        rymin,
+        rymax,
+        instrument,
+        render_quality="full",
+    )
+    if _restore_exact_interactive_cache(full_cache_key, instrument):
+        _clear_interactive_loading()
+        return
+    first_cache_key = _interactive_render_cache_key(
+        start,
+        end,
+        bottom_val,
+        top_val,
+        var1_name,
+        var2_name,
+        bmin,
+        bmax,
+        lmin,
+        lmax,
+        lymin,
+        lymax,
+        iymin,
+        iymax,
+        rymin,
+        rymax,
+        instrument,
+        render_quality=first_quality,
+    )
+    has_cached_view = _restore_exact_interactive_cache(first_cache_key, instrument)
+    if has_cached_view and first_quality == "coarse":
+        first_quality = "full"
+    if not has_cached_view:
+        has_cached_view = _restore_cached_interactive_view(instrument)
     loading_message = "Refreshing the current selection." if has_cached_view else "Preparing the latest view for this instrument."
     _set_interactive_loading(instrument, loading_message, phase="loading", visible=True)
     if not has_cached_view:
-        _show_interactive_placeholder(instrument, "Loading the selected window and preparing the first pass of the plot.")
+        if not _show_cached_quicklook_placeholder(instrument):
+            _show_interactive_placeholder(instrument, "Loading the selected window and preparing the first pass of the plot.")
 
-    first_quality = "coarse" if _interactive_supports_refine(instrument) else "full"
     _schedule_next_tick(
         lambda: _render_interactive_view(
             start,
@@ -3633,6 +3921,70 @@ def _schedule_interactive_render(
             render_quality=first_quality,
         )
     )
+
+
+def _schedule_interactive_render(
+    start,
+    end,
+    bottom_val,
+    top_val,
+    var1_name,
+    var2_name,
+    bmin,
+    bmax,
+    lmin,
+    lmax,
+    lymin,
+    lymax,
+    iymin,
+    iymax,
+    rymin,
+    rymax,
+    instrument,
+):
+    if _instrument_guard:
+        return
+    global CURRENT_INSTRUMENT, _PENDING_INTERACTIVE_RENDER_ARGS, _PENDING_INTERACTIVE_RENDER_CB
+    if instrument != CURRENT_INSTRUMENT:
+        CURRENT_INSTRUMENT = instrument
+    _PENDING_INTERACTIVE_RENDER_ARGS = (
+        start,
+        end,
+        bottom_val,
+        top_val,
+        var1_name,
+        var2_name,
+        bmin,
+        bmax,
+        lmin,
+        lmax,
+        lymin,
+        lymax,
+        iymin,
+        iymax,
+        rymin,
+        rymax,
+        instrument,
+    )
+    if _APP_BOOTSTRAPPING or not _INTERACTIVE_RENDER_ENABLED:
+        if _DISPLAYED_INTERACTIVE_INSTRUMENT is None:
+            if not _show_cached_quicklook_placeholder(instrument):
+                _show_interactive_placeholder(instrument, "Preparing the initial dashboard view.")
+        _perf_log("interactive_render_deferred", instrument=instrument)
+        return
+    if _PENDING_INTERACTIVE_RENDER_CB is not None:
+        _perf_log("interactive_render_debounced", instrument=instrument)
+        return
+
+    def _flush_pending_interactive_render() -> None:
+        global _PENDING_INTERACTIVE_RENDER_ARGS, _PENDING_INTERACTIVE_RENDER_CB
+        args = _PENDING_INTERACTIVE_RENDER_ARGS
+        _PENDING_INTERACTIVE_RENDER_ARGS = None
+        _PENDING_INTERACTIVE_RENDER_CB = None
+        if args is not None:
+            _start_interactive_render(*args)
+
+    _PENDING_INTERACTIVE_RENDER_CB = _schedule_timeout(_flush_pending_interactive_render, RENDER_DEBOUNCE_MS)
 
 
 @pn.depends(
@@ -3676,6 +4028,37 @@ def _update_view(start, end, bottom_val, top_val, var1_name, var2_name, bmin, bm
         rymax,
         instrument,
     )
+
+
+def _schedule_current_interactive_render() -> None:
+    _schedule_interactive_render(
+        range_start.value,
+        range_end.value,
+        bottom_range_m.value,
+        top_range_m.value,
+        var1_select.value,
+        var2_select.value,
+        beta_vmin.value,
+        beta_vmax.value,
+        ldr_vmin.value,
+        ldr_vmax.value,
+        lwp_ymin.value,
+        lwp_ymax.value,
+        iwv_ymin.value,
+        iwv_ymax.value,
+        irr_ymin.value,
+        irr_ymax.value,
+        instrument_select.value,
+    )
+
+
+def _enable_browser_interactive_render() -> None:
+    global _INTERACTIVE_RENDER_ENABLED
+    if pn.state.curdoc is None:
+        return
+    _INTERACTIVE_RENDER_ENABLED = True
+    _schedule_timeout(_activate_interactive_footer_metrics, 750)
+    _schedule_timeout(_schedule_current_interactive_render, 250)
 
 
 def _parse_relayout_time(val):
@@ -4927,6 +5310,16 @@ body, .bk {
     color: #536171;
     line-height: 1.35;
 }
+.interactive-loading-note,
+.lazy-tab-placeholder {
+    padding: 10px 12px;
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #fbfcfd;
+    color: #536171;
+    font-size: 12px;
+    line-height: 1.35;
+}
 .interactive-skeleton {
     display: flex;
     flex-direction: column;
@@ -5541,6 +5934,32 @@ template = pn.template.MaterialTemplate(
     main_max_width="1800px",  # wide but keeps a valid string
 )
 
+
+def _lightweight_placeholder(label: str) -> pn.pane.HTML:
+    return pn.pane.HTML(
+        f"<div class='lazy-tab-placeholder'>{escape(label)} will load after the page opens.</div>",
+        sizing_mode="stretch_width",
+        margin=0,
+    )
+
+
+interactive_status_container = pn.Column(_lightweight_placeholder("Freshness and status"), sizing_mode="stretch_width")
+interactive_availability_container = pn.Column(_lightweight_placeholder("Data availability"), sizing_mode="stretch_width")
+science_status_container = pn.Column(_lightweight_placeholder("Science freshness and status"), sizing_mode="stretch_width")
+science_availability_container = pn.Column(_lightweight_placeholder("Science data availability"), sizing_mode="stretch_width")
+hk_status_container = pn.Column(_lightweight_placeholder("Housekeeping freshness and status"), sizing_mode="stretch_width")
+hk_availability_container = pn.Column(_lightweight_placeholder("Housekeeping data availability"), sizing_mode="stretch_width")
+
+
+def _activate_interactive_footer_metrics() -> None:
+    global _INTERACTIVE_FOOTER_LOADED
+    if _INTERACTIVE_FOOTER_LOADED:
+        return
+    interactive_status_container[:] = [interactive_status]
+    interactive_availability_container[:] = [interactive_availability]
+    _INTERACTIVE_FOOTER_LOADED = True
+
+
 interactive_footer = pn.Card(
     pn.Row(
         interactive_copy,
@@ -5549,8 +5968,8 @@ interactive_footer = pn.Card(
         sizing_mode="stretch_width",
         css_classes=["mobile-stack", "action-row"],
     ),
-    interactive_status,
-    interactive_availability,
+    interactive_status_container,
+    interactive_availability_container,
     title="",
     collapsible=False,
     sizing_mode="stretch_width",
@@ -5565,8 +5984,8 @@ science_footer = pn.Card(
         sizing_mode="stretch_width",
         css_classes=["mobile-stack", "action-row"],
     ),
-    science_status,
-    science_availability,
+    science_status_container,
+    science_availability_container,
     title="",
     collapsible=False,
     sizing_mode="stretch_width",
@@ -5581,8 +6000,8 @@ hk_footer = pn.Card(
         sizing_mode="stretch_width",
         css_classes=["mobile-stack", "action-row"],
     ),
-    hk_status,
-    hk_availability,
+    hk_status_container,
+    hk_availability_container,
     title="",
     collapsible=False,
     sizing_mode="stretch_width",
@@ -5596,7 +6015,21 @@ def _refresh_operations_dashboard() -> None:
     operations_dashboard.object = _ops_operations_markup()
 
 
-_operations_timer = _safe_periodic_callback(_refresh_operations_dashboard, period=60_000, start=True)
+_operations_timer = _safe_periodic_callback(_refresh_operations_dashboard, period=60_000, start=False)
+
+
+def _lazy_tab_placeholder(label: str) -> pn.pane.HTML:
+    return pn.pane.HTML(
+        f"<div class='lazy-tab-placeholder'>{escape(label)} will load when this tab is opened.</div>",
+        sizing_mode="stretch_width",
+        margin=0,
+    )
+
+
+science_quicklook_container = pn.Column(_lazy_tab_placeholder("Science quicklooks"), sizing_mode="stretch_width")
+housekeeping_quicklook_container = pn.Column(_lazy_tab_placeholder("House keeping quicklooks"), sizing_mode="stretch_width")
+operations_container = pn.Column(_lazy_tab_placeholder("Operations dashboard"), sizing_mode="stretch_width")
+_LOADED_TABS: set[str] = set()
 
 interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_width")
 science_quicklooks_tab = pn.Column(
@@ -5608,7 +6041,7 @@ science_quicklooks_tab = pn.Column(
         sizing_mode="stretch_width",
         css_classes=["small-card"],
     ),
-    _science_quicklook_image,
+    science_quicklook_container,
     science_footer,
     sizing_mode="stretch_width",
 )
@@ -5621,11 +6054,11 @@ housekeeping_quicklooks_tab = pn.Column(
         sizing_mode="stretch_width",
         css_classes=["small-card"],
     ),
-    _housekeeping_quicklook_image,
+    housekeeping_quicklook_container,
     hk_footer,
     sizing_mode="stretch_width",
 )
-operations_tab = pn.Column(operations_dashboard, sizing_mode="stretch_width")
+operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
 tabs = pn.Tabs(
     ("Interactive Data Browser", interactive_tab),
     ("Science Quicklooks", science_quicklooks_tab),
@@ -5633,7 +6066,35 @@ tabs = pn.Tabs(
     ("Operations Dashboard", operations_tab),
     sizing_mode="stretch_both",
 )
-tabs.param.watch(_refresh_share_and_download_state, "active")
+
+
+def _ensure_active_tab_loaded() -> None:
+    active = tabs.active
+    if active == 1 and "science" not in _LOADED_TABS:
+        science_quicklook_container[:] = [_science_quicklook_image]
+        science_status_container[:] = [science_status]
+        science_availability_container[:] = [science_availability]
+        _LOADED_TABS.add("science")
+    elif active == 2 and "housekeeping" not in _LOADED_TABS:
+        housekeeping_quicklook_container[:] = [_housekeeping_quicklook_image]
+        hk_status_container[:] = [hk_status]
+        hk_availability_container[:] = [hk_availability]
+        _LOADED_TABS.add("housekeeping")
+    elif active == 3 and "operations" not in _LOADED_TABS:
+        operations_container[:] = [operations_dashboard]
+        _LOADED_TABS.add("operations")
+        try:
+            _operations_timer.start()
+        except RuntimeError:
+            pass
+
+
+def _on_tabs_active_change(_event=None) -> None:
+    _ensure_active_tab_loaded()
+    _refresh_share_and_download_state()
+
+
+tabs.param.watch(_on_tabs_active_change, "active")
 
 SITE_FOOTER_HTML = """
 <div class="site-footer">
@@ -5669,7 +6130,10 @@ _apply_query_state()
 requested_tab = _request_query_args().get("tab")
 if requested_tab in _QUERY_TAB_INDEX:
     tabs.active = _QUERY_TAB_INDEX[requested_tab]
+_ensure_active_tab_loaded()
 _refresh_share_and_download_state()
+_APP_BOOTSTRAPPING = False
+pn.state.onload(_enable_browser_interactive_render)
 
 tabs.sizing_mode = "stretch_width"
 template.main[:] = [main_layout]

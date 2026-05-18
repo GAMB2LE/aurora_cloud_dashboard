@@ -20,6 +20,10 @@ and the maximum live browser-session count seen in the sampled log window.
 - `AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT`
 - `AURORA_DASHBOARD_PERF_ENABLED`
 - `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS`
+- `AURORA_RENDER_DEBOUNCE_MS`
+- `AURORA_INTERACTIVE_RENDER_CACHE_SIZE`
+- `AURORA_INTERACTIVE_MAX_TIME_SAMPLES`
+- `AURORA_QUICKLOOK_MAX_TIME_SAMPLES`
 
 ## Useful commands
 
@@ -34,6 +38,9 @@ tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 - `base_dataset_open`
 - `dataset_time_bounds`
 - `dataset_time_bounds_cache_hit`
+- `interactive_render_deferred`
+- `interactive_render_cache_hit`
+- `interactive_render_debounced`
 - `window_open`
 - `interactive_view_update`
 - `hatpro_render`
@@ -54,12 +61,26 @@ events should be interpreted:
 
 - per-instrument pane reuse keeps the last rendered view warm while a refresh is
   queued
+- exact interactive views are cached for the most recent instrument/window
+  combinations, so returning to a recent view can repaint immediately
+- rapid widget-change bursts are debounced before rendering to avoid duplicate
+  back-to-back Plotly builds
 - dataset time bounds and latest timestamps are cached briefly
+- the periodic metadata timer invalidates timestamp bounds only; open Zarr
+  handles are reopened by the live-refresh path when they age past the configured
+  data-refresh interval
 - stale-render protection drops older queued renders before they can repaint the
   page
-- a loading skeleton is shown for uncached views
+- a cached latest quicklook is shown first when available, otherwise a loading
+  skeleton is shown for uncached views
+- the initial interactive render is deferred until the browser session is
+  loaded, which keeps application startup from blocking on a full Plotly build
 - the heavier 2D interactive plots use a coarse-first pass before a full detail
   pass replaces it
+- inactive quicklook and operations tabs are lazy-loaded the first time the user
+  opens them
+- interactive freshness and availability bars are also delayed until after the
+  page opens, so first paint does not wait for a full timestamp scan
 
 ## Session context
 
