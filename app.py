@@ -254,6 +254,8 @@ PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", s
 PERF_LOG_BACKUP_COUNT = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT", "5"))
 SESSION_HEARTBEAT_MS = int(os.environ.get("AURORA_DASHBOARD_SESSION_HEARTBEAT_MS", "60000"))
 _SESSION_BOOT_TS = datetime.now(timezone.utc)
+OPS_TREND_CACHE_TTL = timedelta(minutes=int(os.environ.get("AURORA_OPS_TREND_CACHE_TTL_MINUTES", "5")))
+OPS_TREND_WINDOW = timedelta(days=int(os.environ.get("AURORA_OPS_TREND_DAYS", "7")))
 
 
 def _session_id() -> str | None:
@@ -631,6 +633,14 @@ POWER_INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_POWER_INTERACTIV
 POWER_LATEST_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_LATEST_CACHE_ROUND_MINUTES", "5"))
 POWER_GENERAL_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES", "1"))
 POWER_LATEST_CACHE_TOLERANCE = timedelta(minutes=int(os.environ.get("AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES", "10")))
+PREWARM_LATEST_CACHE_TOLERANCE = timedelta(minutes=int(os.environ.get("AURORA_PREWARM_LATEST_CACHE_TOLERANCE_MINUTES", "30")))
+SUMMARY_INTERACTIVE_MAX_TIME_SAMPLES = {
+    "power": POWER_INTERACTIVE_MAX_TIME_SAMPLES,
+    "vaisalamet": int(os.environ.get("AURORA_MET_INTERACTIVE_MAX_TIME_SAMPLES", "1200")),
+    "asfs-logger": int(os.environ.get("AURORA_RADIATION_INTERACTIVE_MAX_TIME_SAMPLES", "1400")),
+    "ops-monitor": int(os.environ.get("AURORA_OPS_INTERACTIVE_MAX_TIME_SAMPLES", "1000")),
+}
+SUMMARY_INTERACTIVE_COARSE_TIME_SAMPLES = int(os.environ.get("AURORA_SUMMARY_COARSE_TIME_SAMPLES", "700"))
 # A small future tolerance keeps normal clock skew harmless while protecting
 # the dashboard from bogus outlier timestamps that can blank the latest window.
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
@@ -655,6 +665,7 @@ _INTERACTIVE_RENDER_ENABLED = False
 _INTERACTIVE_FOOTER_LOADED = False
 _POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
+_OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
 
 
 def _safe_periodic_callback(callback, period: int, start: bool = True):
@@ -1619,6 +1630,239 @@ def _ops_table_cell(level: str, label: str, detail: str = "") -> str:
     )
 
 
+def _ops_value_from_series(values: np.ndarray, mode: str = "latest") -> float | None:
+    arr = np.asarray(values, dtype=np.float64)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    if mode == "max":
+        return float(np.nanmax(finite))
+    if mode == "min":
+        return float(np.nanmin(finite))
+    return float(finite[-1])
+
+
+def _ops_combined_series(ds: xr.Dataset, names: tuple[str, ...], mode: str = "max") -> np.ndarray | None:
+    arrays = []
+    for name in names:
+        if name not in ds:
+            continue
+        arrays.append(np.asarray(ds[name].values, dtype=np.float64))
+    if not arrays:
+        return None
+    stack = np.vstack(arrays)
+    with np.errstate(all="ignore"):
+        if mode == "min":
+            return np.nanmin(stack, axis=0)
+        return np.nanmax(stack, axis=0)
+
+
+def _ops_sparkline_svg(values: np.ndarray | None, level: str, width: int = 150, height: int = 34) -> str:
+    if values is None:
+        return "<div class='ops-sparkline ops-sparkline--empty'>No trend</div>"
+    arr = np.asarray(values, dtype=np.float64)
+    finite_mask = np.isfinite(arr)
+    if np.count_nonzero(finite_mask) < 2:
+        return "<div class='ops-sparkline ops-sparkline--empty'>No trend</div>"
+    indices = np.flatnonzero(finite_mask)
+    if indices.size > 60:
+        keep = np.unique(np.linspace(0, indices.size - 1, 60, dtype=int))
+        indices = indices[keep]
+    y_values = arr[indices]
+    x_values = np.linspace(0, width, len(indices))
+    y_min = float(np.nanmin(y_values))
+    y_max = float(np.nanmax(y_values))
+    if not np.isfinite(y_min) or not np.isfinite(y_max):
+        return "<div class='ops-sparkline ops-sparkline--empty'>No trend</div>"
+    if y_max == y_min:
+        y_min -= 1.0
+        y_max += 1.0
+    y_scaled = height - 4.0 - ((y_values - y_min) / (y_max - y_min)) * (height - 8.0)
+    points = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(x_values, y_scaled))
+    color = {
+        "green": "#2a9d8f",
+        "amber": "#b7791f",
+        "red": "#c05647",
+        "gray": "#718195",
+    }.get(level, "#0b7285")
+    return (
+        f"<svg class='ops-sparkline' viewBox='0 0 {width} {height}' role='img' aria-label='7 day trend'>"
+        f"<polyline points='{points}' fill='none' stroke='{color}' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'></polyline>"
+        "</svg>"
+    )
+
+
+def _ops_trend_card_markup(title: str, level: str, value: str, meta: str, values: np.ndarray | None) -> str:
+    return (
+        "<div class='ops-card ops-card--trend'>"
+        f"<div class='ops-card__head'>{_ops_light_markup(level, title)}</div>"
+        f"<div class='ops-card__value'>{escape(value)}</div>"
+        f"{_ops_sparkline_svg(values, level)}"
+        f"<div class='ops-card__meta'>{escape(meta)}</div>"
+        "</div>"
+    )
+
+
+def _ops_trend_cards_markup() -> str:
+    """Return compact seven-day trend cards from the operations Zarr."""
+    now = datetime.now(timezone.utc)
+    cached_at = _OPS_TREND_CACHE.get("updated_at")
+    cached_markup = str(_OPS_TREND_CACHE.get("markup") or "")
+    if isinstance(cached_at, datetime) and now - cached_at < OPS_TREND_CACHE_TTL and cached_markup:
+        return cached_markup
+
+    path = Path(_zarr_path("ops-monitor"))
+    if not path.exists():
+        markup = _ops_card_markup("Trends", "gray", "No data", f"Expected {path}")
+        _OPS_TREND_CACHE.update({"updated_at": now, "markup": markup})
+        return markup
+    try:
+        ds = xr.open_zarr(path, chunks={}, consolidated=bool(_cfg("ops-monitor").get("consolidated", True)))
+        if "time" not in ds or ds.sizes.get("time", 0) == 0:
+            raise ValueError("operations Zarr has no time samples")
+        times = pd.DatetimeIndex(pd.to_datetime(ds["time"].values))
+        cutoff = pd.Timestamp(now - OPS_TREND_WINDOW).tz_localize(None)
+        mask = times >= cutoff
+        if np.any(mask):
+            ds = ds.isel(time=np.flatnonzero(mask))
+    except Exception as exc:
+        markup = _ops_card_markup("Trends", "gray", "Unavailable", str(exc))
+        _OPS_TREND_CACHE.update({"updated_at": now, "markup": markup})
+        return markup
+
+    disk_series = _ops_combined_series(
+        ds,
+        (
+            "host_celine_source_used_pct",
+            "host_celine_data_used_pct",
+            "host_ass_data_used_pct",
+            "host_ass_root_used_pct",
+            "host_aps_data_used_pct",
+            "host_aps_root_used_pct",
+            "aurora_data_used_pct",
+            "aurora_root_used_pct",
+            "gws_storage_used_pct",
+        ),
+        mode="max",
+    )
+    soc_series = np.asarray(ds["aps_battery_soc_pct"].values, dtype=np.float64) if "aps_battery_soc_pct" in ds else None
+    voltage_series = np.asarray(ds["aps_battery_voltage_v"].values, dtype=np.float64) if "aps_battery_voltage_v" in ds else None
+    source_lag_series = _ops_combined_series(
+        ds,
+        tuple(f"{spec['stream_prefix']}_source_age_min" for spec in OPS_STREAM_SPECS),
+        mode="max",
+    )
+    gws_lag_series = _ops_combined_series(
+        ds,
+        tuple(f"{spec['stream_prefix']}_gws_lag_min" for spec in OPS_STREAM_SPECS),
+        mode="max",
+    )
+
+    disk_latest = _ops_value_from_series(disk_series) if disk_series is not None else None
+    soc_latest = _ops_value_from_series(soc_series) if soc_series is not None else None
+    voltage_latest = _ops_value_from_series(voltage_series) if voltage_series is not None else None
+    source_lag_latest = _ops_value_from_series(source_lag_series) if source_lag_series is not None else None
+    gws_lag_latest = _ops_value_from_series(gws_lag_series) if gws_lag_series is not None else None
+
+    cards = [
+        _ops_trend_card_markup(
+            "Disk pressure",
+            _ops_level_from_used_pct(disk_latest),
+            "No data" if disk_latest is None else f"{disk_latest:.0f} %",
+            "Worst current storage use across source hosts, AURORA Cloud, and GWS",
+            disk_series,
+        ),
+        _ops_trend_card_markup(
+            "Battery SOC",
+            _ops_level_from_battery_soc(soc_latest),
+            "No data" if soc_latest is None else f"{soc_latest:.0f} %",
+            "Aurora Power Supply state of charge",
+            soc_series,
+        ),
+        _ops_trend_card_markup(
+            "Battery voltage",
+            _ops_level_from_battery_voltage(voltage_latest),
+            "No data" if voltage_latest is None else f"{voltage_latest:.2f} V",
+            "Aurora Power Supply DC inverter voltage",
+            voltage_series,
+        ),
+        _ops_trend_card_markup(
+            "Source lag",
+            _ops_level_from_age_minutes(source_lag_latest),
+            "No data" if source_lag_latest is None else _format_duration(timedelta(minutes=source_lag_latest)),
+            "Worst stream source age",
+            source_lag_series,
+        ),
+        _ops_trend_card_markup(
+            "GWS lag",
+            _ops_level_from_age_minutes(gws_lag_latest),
+            "No data" if gws_lag_latest is None else _format_duration(timedelta(minutes=gws_lag_latest)),
+            "Worst raw mirror lag on JASMIN GWS",
+            gws_lag_series,
+        ),
+    ]
+    markup = "".join(cards)
+    _OPS_TREND_CACHE.update({"updated_at": now, "markup": markup})
+    return markup
+
+
+def _ops_root_cause_cards_markup(
+    snapshot: dict,
+    perf_summary: dict,
+    manifest_ready: bool,
+    source_level: str,
+    source_freshness_level: str,
+    processing_level: str,
+    transfer_level: str,
+    mirror_level: str,
+    perf_log_level: str,
+) -> str:
+    """Group the traffic lights by where a user should look first."""
+    source_stale = int(_ops_float(snapshot.get("streams_source_stale_count")) or 0)
+    source_probe_failures = int(_ops_float(snapshot.get("source_host_probe_fail_count")) or 0)
+    source_sync_failures = int(_ops_float(snapshot.get("failed_source_sync_unit_count")) or 0)
+    processing_failures = int(_ops_float(snapshot.get("failed_processing_unit_count")) or 0)
+    transfer_failures = int(_ops_float(snapshot.get("failed_transfer_unit_count")) or 0)
+    gws_issues = int(_ops_float(snapshot.get("streams_gws_issue_count")) or 0)
+    local_issues = int(_ops_float(snapshot.get("streams_local_issue_count")) or 0)
+
+    cards = [
+        _ops_card_markup(
+            "Source computers",
+            _ops_worst_level([source_level, source_freshness_level]),
+            f"{source_probe_failures} host failures, {source_stale} stale streams",
+            "Remote source reachability and whether each stream has produced data within 1.5 hours",
+        ),
+        _ops_card_markup(
+            "Network and source sync",
+            _ops_level_from_count(source_sync_failures, amber_at=1.0),
+            f"{source_sync_failures} sync failures",
+            "Systemd source-mirror jobs from source hosts into /project/aurora",
+        ),
+        _ops_card_markup(
+            "Local processing",
+            _ops_worst_level([processing_level, _ops_level_from_count(local_issues, amber_at=1.0)]),
+            f"{processing_failures} service failures, {local_issues} local mirror issues",
+            "Append, quicklook, catalog, video, and local manifest/product gates",
+        ),
+        _ops_card_markup(
+            "GWS transfer",
+            _ops_worst_level([transfer_level, mirror_level]),
+            f"{transfer_failures} transfer failures, {gws_issues} GWS issues",
+            "JASMIN reachability, raw/product rsync jobs, and GWS manifest agreement",
+        ),
+        _ops_card_markup(
+            "Dashboard and render",
+            _ops_worst_level([perf_log_level, str(perf_summary.get("level", "gray"))]),
+            str(perf_summary.get("value", "No samples")),
+            "Diagnostic only; this does not drive Overall action state",
+        ),
+    ]
+    if not manifest_ready:
+        cards.append(_ops_card_markup("Manifest seed", "amber", "Pending", "Archive/prune checks are still waiting for manifest history"))
+    return "".join(cards)
+
+
 def _ops_operations_markup() -> str:
     snapshot = _ops_read_snapshot()
     with _timed_perf("operations_dashboard_render", instrument="ops-monitor", snapshot_path=snapshot.get("_path")) as perf:
@@ -1695,6 +1939,18 @@ def _ops_operations_markup() -> str:
         internal_temp_value, internal_temp_meta = _ops_internal_temp_text(snapshot)
         perf_log_value, perf_log_meta = _ops_perf_log_text(snapshot)
         perf_summary = _ops_perf_summary(Path(snapshot.get("dashboard_perf_log_path") or PERF_LOG_PATH))
+        root_cause_cards = _ops_root_cause_cards_markup(
+            snapshot,
+            perf_summary,
+            manifest_ready,
+            source_level,
+            source_freshness_level,
+            processing_level,
+            transfer_level,
+            mirror_level,
+            perf_log_level,
+        )
+        trend_cards = _ops_trend_cards_markup()
 
         summary_cards = [
             _ops_card_markup(
@@ -2023,6 +2279,14 @@ def _ops_operations_markup() -> str:
             "<div class='ops-section'>"
             "<div class='ops-section-title'>System summary</div>"
             f"<div class='ops-grid ops-grid--summary'>{''.join(summary_cards)}</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Root-cause groups</div>"
+            f"<div class='ops-grid ops-grid--root-cause'>{root_cause_cards}</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Seven-day trends</div>"
+            f"<div class='ops-grid ops-grid--trends'>{trend_cards}</div>"
             "</div>"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Storage</div>"
@@ -2896,12 +3160,35 @@ def _restore_exact_interactive_cache(cache_key: tuple[object, ...] | None, inst:
     return True
 
 
+def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) -> bool:
+    if len(cache_key) < 6 or cache_key[0] != inst:
+        return False
+    window_mode = str(cache_key[3])
+    if inst == "power":
+        return window_mode.startswith("power_latest_")
+    if inst not in {"vaisalamet", "asfs-logger"}:
+        return False
+    if str(cache_key[1]) != _interactive_final_quality(inst):
+        return False
+    try:
+        start_dt = _as_naive_utc_datetime(pd.Timestamp(cache_key[4]))
+        end_dt = _as_naive_utc_datetime(pd.Timestamp(cache_key[5]))
+    except Exception:
+        return False
+    if start_dt is None or end_dt is None or end_dt <= start_dt:
+        return False
+    if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=5):
+        return False
+    _lower, latest = _dataset_time_bounds(inst)
+    latest_dt = _as_naive_utc_datetime(latest)
+    if latest_dt is None:
+        return False
+    return abs(end_dt - latest_dt) <= PREWARM_LATEST_CACHE_TOLERANCE
+
+
 def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str) -> go.Figure | None:
     """Load a latest-view Plotly JSON produced by the quicklook pipeline."""
-    if len(cache_key) < 4 or cache_key[0] != inst:
-        return None
-    window_mode = str(cache_key[3])
-    if not window_mode.startswith("power_latest_"):
+    if not _cache_key_targets_latest_prewarm(cache_key, inst):
         return None
     path = _prewarmed_interactive_path(inst)
     if not path.exists():
@@ -3015,9 +3302,9 @@ def _interactive_final_quality(inst: str) -> str:
 
 def _stacked_interactive_max_time_samples(instrument: str, render_quality: str) -> int:
     """Cap 1D interactive trace density by instrument and render pass."""
-    if instrument == "power":
-        return POWER_INTERACTIVE_MAX_TIME_SAMPLES
-    return 900 if render_quality == "coarse" else 1600
+    if render_quality == "coarse":
+        return SUMMARY_INTERACTIVE_COARSE_TIME_SAMPLES
+    return SUMMARY_INTERACTIVE_MAX_TIME_SAMPLES.get(instrument, int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600")))
 
 
 def _schedule_next_tick(callback) -> None:
@@ -3043,6 +3330,36 @@ def _image_type_from_selection(selection: str) -> str:
 
 def _wxcam_today_token() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _empty_interactive_figure(instrument: str, reason: str, start=None, end=None, detail: str | None = None) -> go.Figure:
+    start_dt = _as_naive_utc_datetime(start)
+    end_dt = _as_naive_utc_datetime(end)
+    window = ""
+    if start_dt is not None and end_dt is not None:
+        window = f"<br><span style='font-size:12px;color:#647283'>Selected window: {start_dt:%Y-%m-%d %H:%M} to {end_dt:%Y-%m-%d %H:%M} UTC</span>"
+    detail_markup = "" if not detail else f"<br><span style='font-size:12px;color:#647283'>{escape(detail)}</span>"
+    fig = go.Figure()
+    fig.add_annotation(
+        text=f"<b>{escape(display_name(instrument))}</b><br>{escape(reason)}{window}{detail_markup}",
+        x=0.5,
+        y=0.52,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        align="center",
+        font=dict(color=THEME_TEXT, size=16),
+    )
+    fig.update_xaxes(visible=False)
+    fig.update_yaxes(visible=False)
+    fig.update_layout(
+        height=460,
+        margin=dict(l=40, r=40, t=40, b=40),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=THEME_TEXT),
+    )
+    return fig
 
 
 def _wxcam_daily_video_dir(image_type: str) -> Path:
@@ -3504,17 +3821,13 @@ def _update_hatpro_view(
         perf["time_count"] = 0 if times is None else int(len(times))
         if times is None or len(times) == 0:
             perf["status"] = "no_data"
-            fig = go.Figure()
-            fig.add_annotation(
-                text="No data",
-                x=0.5,
-                y=0.5,
-                xref="paper",
-                yref="paper",
-                showarrow=False,
-                font=dict(color=THEME_TEXT, size=16),
+            fig = _empty_interactive_figure(
+                "Scanning Microwave Radiometer",
+                "No samples were found for this selected time/range window.",
+                start=start,
+                end=end,
+                detail="Try widening the time range or range limits, or check Operations for source freshness.",
             )
-            fig.update_layout(height=600, margin=dict(l=40, r=40, t=40, b=40))
             return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id, cache_key=cache_key)
 
         fig = make_subplots(
@@ -3753,23 +4066,30 @@ def _update_stacked_timeseries_view(
         perf["time_count"] = 0 if times is None else int(len(times))
         if times is None or len(times) == 0:
             perf["status"] = "no_data"
-            empty = go.Figure()
-            empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
-            empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
+            empty = _empty_interactive_figure(
+                instrument,
+                "No samples were found for this selected time window.",
+                start=start,
+                end=end,
+                detail="Try a wider time range or check the Operations Dashboard source-freshness cards.",
+            )
             return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
         try:
             max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
             perf["max_time_samples"] = max_time_samples
-            if instrument == "power":
-                perf["plot_density_mode"] = "time_downsampled"
+            perf["plot_density_mode"] = "per_trace_display_downsampled"
             fig_started = perf_counter()
             fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
             perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
-        except ValueError:
+        except ValueError as exc:
             perf["status"] = "no_data"
-            empty = go.Figure()
-            empty.add_annotation(text="No data", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
-            empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
+            empty = _empty_interactive_figure(
+                instrument,
+                "No plottable variables are available for this window.",
+                start=start,
+                end=end,
+                detail=str(exc),
+            )
             return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
@@ -3899,17 +4219,13 @@ def _render_interactive_view(
             perf["range_count"] = int(ds.sizes.get("range", 0)) if ds is not None else 0
             if ds is None or not ds.data_vars:
                 perf["status"] = "no_data"
-                fig = go.Figure()
-                fig.add_annotation(
-                    text="No data",
-                    x=0.5,
-                    y=0.5,
-                    xref="paper",
-                    yref="paper",
-                    showarrow=False,
-                    font=dict(color=fg, size=16),
+                fig = _empty_interactive_figure(
+                    instrument,
+                    "No samples were found for this selected time/range window.",
+                    start=start,
+                    end=end,
+                    detail="Try widening the time range or range limits, or check Operations for source freshness.",
                 )
-                fig.update_layout(height=600, paper_bgcolor=bg, plot_bgcolor=bg, margin=dict(l=40, r=40, t=40, b=40))
                 if not _publish_plot_if_current(fig, instrument, request_id, cache_key=cache_key):
                     perf["status"] = "stale"
                     return
@@ -5829,6 +6145,10 @@ body, .bk {
 .ops-grid--summary {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
+.ops-grid--root-cause,
+.ops-grid--trends {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
 .ops-grid--storage {
     grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
@@ -5855,6 +6175,23 @@ body, .bk {
     font-size: 11px;
     color: #6b7280;
     line-height: 1.4;
+}
+.ops-card--trend {
+    min-height: 132px;
+}
+.ops-sparkline {
+    width: 100%;
+    height: 34px;
+    display: block;
+}
+.ops-sparkline--empty {
+    display: flex;
+    align-items: center;
+    color: #718195;
+    font-size: 11px;
+    border: 1px dashed #d8dee4;
+    border-radius: 6px;
+    padding-left: 8px;
 }
 .ops-light {
     display: inline-block;
@@ -6247,6 +6584,24 @@ body, .bk {
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
     .bk.pn-row { gap: 8px; }
+    .mobile-stack > .bk {
+        flex: 1 1 100%;
+        min-width: 0;
+    }
+    .controls-card .bk-card-body {
+        max-height: 56vh;
+        overflow-y: auto;
+    }
+    .action-row .bk-input-group {
+        min-width: 0;
+        width: 100%;
+    }
+    .ops-table {
+        min-width: 680px;
+    }
+    .ops-card {
+        min-height: unset;
+    }
     .wxcam-player__seek {
         grid-template-columns: 52px minmax(0, 1fr) 52px;
         gap: 8px;
@@ -6278,10 +6633,10 @@ controls = pn.Card(
         pn.Row(prev_btn, next_btn, sizing_mode="stretch_width", margin=(5, 0, 0, 0), css_classes=["mobile-stack"]),
         sizing_mode="stretch_width",
     ),
-    title="",
-    collapsible=False,
+    title="Controls",
+    collapsible=True,
     sizing_mode="stretch_width",
-    css_classes=["small-card"],
+    css_classes=["small-card", "controls-card"],
 )
 
 pn.extension(raw_css=[css])
@@ -6370,7 +6725,7 @@ hk_footer = pn.Card(
     css_classes=["small-card"],
 )
 
-operations_dashboard = pn.pane.HTML(_ops_operations_markup(), sizing_mode="stretch_width", margin=0)
+operations_dashboard = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
 
 
 def _refresh_operations_dashboard() -> None:
@@ -6444,6 +6799,7 @@ def _ensure_active_tab_loaded() -> None:
         _LOADED_TABS.add("housekeeping")
     elif active == 3 and "operations" not in _LOADED_TABS:
         operations_container[:] = [operations_dashboard]
+        _refresh_operations_dashboard()
         _LOADED_TABS.add("operations")
         try:
             _operations_timer.start()

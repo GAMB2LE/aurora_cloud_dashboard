@@ -12,6 +12,7 @@ import pandas as pd
 import xarray as xr
 
 from grouped_timeseries import (
+    build_summary_plotly,
     clear_generated_quicklooks,
     housekeeping_daily_png,
     housekeeping_label,
@@ -28,6 +29,8 @@ QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklo
 ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
 QUICKLOOK_DIR = Path(os.environ.get("ASFS_LOGGER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "asfs_logger"))
 INSTRUMENT = "asfs-logger"
+PREWARM_DIR = Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm"))
+PREWARM_JSON = PREWARM_DIR / "asfs_logger_latest_interactive.json"
 
 
 def main(force: bool = False) -> None:
@@ -53,6 +56,10 @@ def main(force: bool = False) -> None:
     if latest_day.sizes.get("time", 0) >= 2:
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         save_summary_png(latest_day, INSTRUMENT, "Radiation - Latest 24 hours", summary_out)
+        PREWARM_DIR.mkdir(parents=True, exist_ok=True)
+        fig = build_summary_plotly(latest_day, INSTRUMENT, title="Radiation", max_time_samples=1400)
+        fig.write_json(PREWARM_JSON)
+        print(f"Wrote {PREWARM_JSON}")
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"

@@ -27,12 +27,19 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_INTERACTIVE_RENDER_CACHE_SIZE`
 - `AURORA_INTERACTIVE_MAX_TIME_SAMPLES`
 - `AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES`
+- `AURORA_MET_INTERACTIVE_MAX_TIME_SAMPLES`
+- `AURORA_RADIATION_INTERACTIVE_MAX_TIME_SAMPLES`
+- `AURORA_OPS_INTERACTIVE_MAX_TIME_SAMPLES`
+- `AURORA_SUMMARY_COARSE_TIME_SAMPLES`
 - `AURORA_POWER_LATEST_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES`
+- `AURORA_PREWARM_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_DISPLAY_ENERGY_FREQ`
 - `POWER_DISPLAY_ENERGY_ZARR_PATH`
 - `AURORA_INTERACTIVE_PREWARM_DIR`
+- `AURORA_OPS_TREND_CACHE_TTL_MINUTES`
+- `AURORA_OPS_TREND_DAYS`
 - `AURORA_QUICKLOOK_MAX_TIME_SAMPLES`
 
 ## Useful commands
@@ -96,14 +103,20 @@ events should be interpreted:
   downsampling approach as the quicklooks, with display-only sanity limits for
   impossible APS values
 - Power cumulative-energy traces are read from a compact one-minute display
-  Zarr when available, and the latest Power interactive figure can be loaded
-  from the prewarmed Plotly JSON created by `generate_power_quicklooks.py`
+  Zarr when available. Latest Power, Meteorology, and Radiation interactive
+  figures can be loaded from prewarmed Plotly JSON created by their quicklook
+  generators
 - the live Power 24 h window is rounded into 5-minute cache buckets, so a small
   latest-timestamp change does not force an immediate full rebuild
+- fixed-summary instruments use instrument-specific display-time sample caps;
+  this changes only the browser/PNG rendering density, not the ingested Zarr
+  data
 - inactive quicklook and operations tabs are lazy-loaded the first time the user
   opens them
 - interactive freshness and availability bars are also delayed until after the
   page opens, so first paint does not wait for a full timestamp scan
+- empty interactive views report the selected UTC window and suggest the next
+  useful check instead of showing a bare blank plot
 
 ## Session context
 

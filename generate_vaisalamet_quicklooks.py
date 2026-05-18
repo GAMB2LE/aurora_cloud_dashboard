@@ -12,6 +12,7 @@ import pandas as pd
 import xarray as xr
 
 from grouped_timeseries import (
+    build_summary_plotly,
     combine_summary_datasets,
     clear_generated_quicklooks,
     housekeeping_daily_png,
@@ -31,6 +32,8 @@ ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/auro
 QUICKLOOK_DIR = Path(os.environ.get("VAISALAMET_QUICKLOOK_DIR", QUICKLOOK_ROOT / "vaisalamet"))
 INSTRUMENT = "vaisalamet"
 MET_HK_EXTRA_VARS = ("kt15_amb_Avg", "metek_InclX_out_Avg", "metek_InclY_out_Avg")
+PREWARM_DIR = Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm"))
+PREWARM_JSON = PREWARM_DIR / "vaisalamet_latest_interactive.json"
 
 
 def _meteorology_housekeeping_dataset(vaisala_ds: xr.Dataset, asfs_ds: xr.Dataset) -> xr.Dataset:
@@ -79,6 +82,10 @@ def main(force: bool = False) -> None:
     if latest_day.sizes.get("time", 0) >= 2:
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         save_summary_png(latest_summary, INSTRUMENT, "Meteorology - Latest 24 hours", summary_out)
+        PREWARM_DIR.mkdir(parents=True, exist_ok=True)
+        fig = build_summary_plotly(latest_summary, INSTRUMENT, title="Meteorology", max_time_samples=1200)
+        fig.write_json(PREWARM_JSON)
+        print(f"Wrote {PREWARM_JSON}")
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"

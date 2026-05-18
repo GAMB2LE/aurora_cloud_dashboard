@@ -25,8 +25,15 @@ renders.
 
 For **Aurora Power Supply**, long interactive windows use the same display-time
 preparation and per-trace time downsampling approach as the quicklooks, and live
-latest windows are rounded into 5-minute cache buckets. This keeps the Power
-view responsive without changing the underlying Power Zarr.
+latest windows are rounded into 5-minute cache buckets. The latest **Aurora
+Power Supply**, **Meteorology**, and **Radiation** interactive views can also
+start from prewarmed Plotly JSON created by the quicklook generators. This keeps
+the browser responsive without changing the underlying Zarr stores.
+
+On small screens, the main controls are collapsible and stack vertically, while
+the plots remain a tall scrollable data surface. If a selected window has no
+available samples, the empty view reports the UTC window and points to the next
+useful check.
 
 The current tab, instrument, and important control values are also kept in the
 browser URL. This makes mobile recovery less painful: if the phone backgrounds
@@ -75,6 +82,9 @@ It shows:
 
 - traffic-light indicators for source hosts, processing, transfers, and mirror
   verification
+- root-cause groups that separate source, source-sync/network, local
+  processing, GWS transfer, and dashboard/render symptoms
+- seven-day trend cards for storage, SOC, voltage, source lag, and GWS lag
 - dashboard HTTP endpoint health and dashboard/infra git state
 - Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
   above `52 V`, amber from `50-52 V`, and red below `50 V`

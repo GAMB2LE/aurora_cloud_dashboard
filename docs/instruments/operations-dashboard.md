@@ -22,6 +22,10 @@ stack.
 - dashboard and infrastructure git cleanliness and local ahead/behind counts
 - recent dashboard render-performance statistics, including p50, p95, slowest
   timed event, and live-session counts
+- root-cause grouping for source computers, network/source sync, local
+  processing, GWS transfer, and dashboard/render behavior
+- seven-day trend cards for worst storage pressure, battery SOC, battery
+  voltage, worst source lag, and worst GWS lag
 - GWS transfer status
 - mirror verification and prune-readiness indicators
 - per-stream archive state, including WXcam backfill progress
@@ -40,6 +44,10 @@ The storage cards are intentionally broken out as:
 
 Each card subtitle uses the resolved `pwd -P` path that was actually probed for
 filesystem usage.
+
+The trend cards read the operations Zarr directly and are cached briefly in the
+dashboard process. They are intended as quick context, not as a replacement for
+the archived `HK_Operations` plots.
 
 ## Display model
 
