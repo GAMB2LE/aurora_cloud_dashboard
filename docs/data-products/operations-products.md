@@ -129,7 +129,10 @@ The script prefers `mailx` when it is available, then a sendmail-compatible
 interface, then direct SMTP from `OPS_ALERT_SMTP_*` environment variables. Set
 `OPS_ALERT_TRANSPORT` to `mailx`, `sendmail`, `smtp`, or `auto` to force a
 specific path. The VM still needs a real SMTP relay configured for `msmtp`
-before real email can be delivered through the recommended `mailx` path.
+before real email can be delivered through the recommended `mailx` path. When
+`sendmail` is the `msmtp` wrapper, the alert script only treats mail delivery as
+configured if an msmtp config exists at `/home/aurora/.msmtprc`, `/etc/msmtprc`,
+`/etc/msmtp/msmtprc`, or a path named by `OPS_ALERT_MSMTP_CONFIG`.
 
 Useful checks:
 

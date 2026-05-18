@@ -268,18 +268,61 @@ def _recipient_list(raw: str) -> list[str]:
     return [part.strip() for part in raw.replace(";", ",").split(",") if part.strip()]
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _msmtp_config_present() -> bool:
+    if os.environ.get("OPS_ALERT_MSMTP_CONFIG"):
+        return Path(os.environ["OPS_ALERT_MSMTP_CONFIG"]).expanduser().exists()
+    candidates = (
+        Path.home() / ".msmtprc",
+        Path("/etc/msmtprc"),
+        Path("/etc/msmtp/msmtprc"),
+    )
+    return any(path.exists() for path in candidates)
+
+
+def _sendmail_is_msmtp(sendmail: str | None) -> bool:
+    if not sendmail:
+        return False
+    try:
+        resolved = Path(sendmail).resolve()
+    except OSError:
+        resolved = Path(sendmail)
+    return "msmtp" in {resolved.name, Path(sendmail).name}
+
+
+def _sendmail_ready(sendmail: str | None) -> bool:
+    if not sendmail:
+        return False
+    if _sendmail_is_msmtp(sendmail):
+        return _msmtp_config_present() or _truthy_env("OPS_ALERT_ASSUME_SENDMAIL_CONFIGURED")
+    return True
+
+
+def _mailx_ready(mailx: str | None, sendmail: str | None) -> bool:
+    if not mailx:
+        return False
+    if _truthy_env("OPS_ALERT_ASSUME_MAILX_CONFIGURED"):
+        return True
+    if _sendmail_is_msmtp(sendmail or shutil.which("sendmail")):
+        return _msmtp_config_present()
+    return True
+
+
 def _transport_configured() -> bool:
     transport = os.environ.get("OPS_ALERT_TRANSPORT", "auto").lower()
     mailx = os.environ.get("OPS_ALERT_MAILX") or shutil.which("mailx") or shutil.which("mail")
     sendmail = os.environ.get("OPS_ALERT_SENDMAIL") or shutil.which("sendmail")
     smtp = os.environ.get("OPS_ALERT_SMTP_HOST")
     if transport == "mailx":
-        return bool(mailx)
+        return _mailx_ready(mailx, sendmail)
     if transport == "sendmail":
-        return bool(sendmail)
+        return _sendmail_ready(sendmail)
     if transport == "smtp":
         return bool(smtp)
-    return bool(mailx or sendmail or smtp)
+    return _mailx_ready(mailx, sendmail) or _sendmail_ready(sendmail) or bool(smtp)
 
 
 def _send_email(subject: str, body: str, recipients: list[str]) -> str:
@@ -292,15 +335,15 @@ def _send_email(subject: str, body: str, recipients: list[str]) -> str:
 
     transport = os.environ.get("OPS_ALERT_TRANSPORT", "auto").lower()
     mailx = os.environ.get("OPS_ALERT_MAILX") or shutil.which("mailx") or shutil.which("mail")
-    if transport in {"auto", "mailx"} and mailx:
+    sendmail = os.environ.get("OPS_ALERT_SENDMAIL") or shutil.which("sendmail")
+    if transport in {"auto", "mailx"} and _mailx_ready(mailx, sendmail):
         cmd = [mailx, "-s", subject]
         if os.environ.get("OPS_ALERT_FROM"):
             cmd.extend(["-r", os.environ["OPS_ALERT_FROM"]])
         subprocess.run([*cmd, *recipients], input=body, text=True, check=True)
         return f"mailx:{mailx}"
 
-    sendmail = os.environ.get("OPS_ALERT_SENDMAIL") or shutil.which("sendmail")
-    if transport in {"auto", "sendmail"} and sendmail:
+    if transport in {"auto", "sendmail"} and _sendmail_ready(sendmail):
         subprocess.run([sendmail, "-t"], input=msg.as_string(), text=True, check=True)
         return f"sendmail:{sendmail}"
 
