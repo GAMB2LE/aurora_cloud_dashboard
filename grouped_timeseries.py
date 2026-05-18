@@ -53,6 +53,7 @@ class TraceSpec:
     valid_max: float | None = None
     skip_if_all_zero: bool = False
     smooth_minutes: float | None = None
+    break_on_day_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -622,12 +623,12 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "Cumulative Energy [kWh]",
             "Power Surplus / Deficit [kWh]",
             (
-                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
-                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
-                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"]),
-                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"]),
-                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"]),
-                TraceSpec("PowerSurplusDeficit", "Power Surplus / Deficit", COLOR["red"], axis="right"),
+                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"], break_on_day_change=True),
+                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"], break_on_day_change=True),
+                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"], break_on_day_change=True),
+                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"], break_on_day_change=True),
+                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"], break_on_day_change=True),
+                TraceSpec("PowerSurplusDeficit", "Power Surplus / Deficit", COLOR["red"], axis="right", break_on_day_change=True),
             ),
         ),
         PanelSpec(
@@ -1469,6 +1470,29 @@ def _smooth_trace_values(
     return series.rolling(window, center=True, min_periods=1).mean().to_numpy(dtype=np.float64)
 
 
+def _insert_day_breaks(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    trace: TraceSpec,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Break display lines where UTC-day cumulative counters reset."""
+    if not trace.break_on_day_change or len(times) < 2:
+        return times, values
+    day_starts = times.normalize()
+    if not np.any(day_starts[1:] != day_starts[:-1]):
+        return times, values
+
+    out_times = []
+    out_values: list[float] = []
+    for idx, (timestamp, value) in enumerate(zip(times, values)):
+        if idx > 0 and day_starts[idx] != day_starts[idx - 1]:
+            out_times.append(timestamp)
+            out_values.append(np.nan)
+        out_times.append(timestamp)
+        out_values.append(float(value))
+    return pd.DatetimeIndex(out_times), np.asarray(out_values, dtype=np.float64)
+
+
 def _trace_plot_values(
     times: pd.DatetimeIndex,
     values: np.ndarray,
@@ -1477,7 +1501,8 @@ def _trace_plot_values(
 ) -> tuple[pd.DatetimeIndex, np.ndarray]:
     trace_times, trace_values = _trace_time_values(times, values)
     trace_values = _smooth_trace_values(trace_times, trace_values, trace)
-    return _downsample_trace(trace_times, trace_values, max_time_samples)
+    trace_times, trace_values = _downsample_trace(trace_times, trace_values, max_time_samples)
+    return _insert_day_breaks(trace_times, trace_values, trace)
 
 
 def _padded_axis_limits(
@@ -1651,6 +1676,8 @@ def save_summary_png(
         if right_ax is not None:
             right_ax.tick_params(axis="y", colors=right_color or COLOR["black"], labelsize=9)
             right_ax.set_ylabel(panel.right_axis_label or "", color=right_color or COLOR["black"], fontsize=11)
+            if panel.key == "cumulative_power":
+                right_ax.grid(True, axis="y", color=right_color or PLOT_GRID, linewidth=0.35, linestyle=":", alpha=0.35)
 
         ax.text(
             0.01,
@@ -1811,7 +1838,8 @@ def build_summary_plotly(
         if panel.right_axis_label is not None:
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
-                showgrid=False,
+                showgrid=panel.key == "cumulative_power",
+                gridcolor="rgba(192, 86, 71, 0.18)" if panel.key == "cumulative_power" else PLOT_GRID,
                 linecolor=PLOT_LINE,
                 tickfont=dict(color=right_color or COLOR["black"], size=10),
                 title_font=dict(color=right_color or COLOR["black"], size=11),

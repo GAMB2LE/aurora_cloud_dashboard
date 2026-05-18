@@ -65,8 +65,10 @@ are converted into positive UTC-day increments, so delayed controller resets
 just after midnight do not create false drops in the plotted generation lines.
 The utilised-energy line is integrated with midnight context before the view is
 cropped back to the selected/latest window, so the latest 24 h view matches the
-daily cumulative solar counters. The right-axis surplus/deficit trace is an
+daily cumulative solar counters. The right-axis surplus/deficit trace is a
 cumulative energy balance in kWh, calculated as `Total Generated - Utilised`.
+Daily cumulative traces are visually broken at UTC midnight so the daily reset
+does not render as a false vertical jump.
 
 These are display-time optimizations only; ingest, retention, and the stored
 Zarr schema are unchanged.
