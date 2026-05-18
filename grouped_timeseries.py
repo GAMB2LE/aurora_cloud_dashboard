@@ -18,6 +18,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
 
+from quicklook_time_axis import apply_quicklook_time_axis
+
 MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
 INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600"))
 OVERVIEW_LABEL = "Overview"
@@ -1414,11 +1416,7 @@ def plot_housekeeping_last_24h(
 
 
 def _apply_time_axis_matplotlib(ax, times: pd.DatetimeIndex) -> None:
-    span_hours = max((times.max() - times.min()) / np.timedelta64(1, "h"), 1.0)
-    interval = 1 if span_hours <= 18 else 2 if span_hours <= 36 else 6
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.tick_params(axis="x", labelrotation=0, labelsize=9)
+    apply_quicklook_time_axis(ax, times, label_rotation=0, label_size=9)
 
 
 def save_summary_png(
@@ -1489,8 +1487,7 @@ def save_summary_png(
             )
 
     _apply_time_axis_matplotlib(axes[-1], times)
-    start_stamp = times.min().strftime("%b %d, %Y")
-    axes[-1].set_xlabel(f"Hours after 00:00 UTC on {start_stamp}", fontsize=12)
+    axes[-1].set_xlabel("Time (UTC)", fontsize=12)
     fig.suptitle(title, fontsize=15)
     fig.tight_layout()
     fig.subplots_adjust(left=0.08, right=MATPLOTLIB_PANEL_RIGHT, bottom=0.08, top=0.95, hspace=0.05)

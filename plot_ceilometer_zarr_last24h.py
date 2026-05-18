@@ -11,13 +11,13 @@ from datetime import timedelta
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
-from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
 from pathlib import Path
 
 from extra_housekeeping import extra_housekeeping_latest_png, plot_ceilometer_housekeeping
+from quicklook_time_axis import apply_quicklook_time_axis
 
 BETA_CMAP = "cividis"
 
@@ -111,27 +111,18 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
         else:
             cbar.set_label("linear_depol_ratio")
 
-    # Time ticks: labels on the hour, angled labels (match quicklook style).
-    major_locator = HourLocator()
-    formatter = DateFormatter("%H:%M")
-    axes[-1].xaxis.set_major_locator(major_locator)
-    axes[-1].xaxis.set_major_formatter(formatter)
-    axes[-1].tick_params(axis="x", labelrotation=90)
-    for lbl in axes[-1].get_xticklabels():
-        lbl.set_rotation(90)
-        lbl.set_ha("right")
-    axes[0].xaxis.set_major_locator(major_locator)
-    axes[0].xaxis.set_major_formatter(formatter)
-    axes[0].tick_params(axis="x", labelrotation=90, labelbottom=False)  # hide top labels
-    for lbl in axes[0].get_xticklabels():
-        lbl.set_rotation(90)
-        lbl.set_ha("right")
-    axes[-1].set_xlabel("Time (UTC)")
+    # Put the date directly under a useful hour tick so rolling latest windows
+    # are readable even when they do not start at midnight.
+    window_times = pd.DatetimeIndex(ds_window["time"].values)
+    for ax in axes:
+        apply_quicklook_time_axis(ax, window_times, label_rotation=0, label_size=9)
+    axes[0].tick_params(axis="x", labelbottom=False)
+    axes[0].set_xlabel("")
 
     fig.suptitle("Last 24 hours")
-    # Match quicklook spacing so rotated hour labels stay visible.
+    # Give the two-line date tick room to breathe.
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.22)
+    fig.subplots_adjust(bottom=0.16)
     fig.savefig(output_png, dpi=150)
     print(f"Wrote {output_png}")
 

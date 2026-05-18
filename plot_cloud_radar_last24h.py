@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.dates import DateFormatter, HourLocator
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -21,6 +20,7 @@ from extra_housekeeping import (
     load_cloud_radar_housekeeping_from_raw,
     plot_cloud_radar_housekeeping,
 )
+from quicklook_time_axis import apply_quicklook_time_axis
 
 ZARR_DEFAULT = Path("/data/aurora/products/rpgfmcw94/cloud_radar.zarr")
 RAW_ROOT_DEFAULT = Path(os.environ.get("CLOUD_RADAR_RAW_ROOT", "/project/aurora/raw/rpgfmcw94"))
@@ -132,21 +132,16 @@ def plot_last_24h(zarr_path: Path, output: Path):
         cbar = fig.colorbar(mesh, ax=ax, pad=0.01)
         cbar.set_label(cbar_label)
 
-    locator = HourLocator()
-    formatter = DateFormatter("%H:%M")
+    window_times = pd.DatetimeIndex(window["time"].values)
     for ax in axes:
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(formatter)
-        ax.tick_params(axis="x", labelrotation=90)
-        for lbl in ax.get_xticklabels():
-            lbl.set_rotation(90)
-            lbl.set_ha("right")
-    axes[0].tick_params(axis="x", labelbottom=False)
-    axes[-1].set_xlabel("Time (UTC)")
+        apply_quicklook_time_axis(ax, window_times, label_rotation=0, label_size=9)
+    for ax in axes[:-1]:
+        ax.tick_params(axis="x", labelbottom=False)
+        ax.set_xlabel("")
 
     fig.suptitle("Cloud Radar – Last 24 hours")
     fig.tight_layout()
-    fig.subplots_adjust(top=0.96, bottom=0.22, hspace=0.18)
+    fig.subplots_adjust(top=0.96, bottom=0.11, hspace=0.18)
     fig.savefig(output, dpi=150)
     print(f"Wrote {output}")
     hk_output = extra_housekeeping_latest_png(output.parent, "Cloud Radar")

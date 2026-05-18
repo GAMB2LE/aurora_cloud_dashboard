@@ -7,11 +7,12 @@ import argparse
 from datetime import timedelta
 from pathlib import Path
 
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from quicklook_time_axis import apply_quicklook_time_axis
 
 ZARR_DEFAULT = Path("/data/aurora/products/hatprog5/hatpro.zarr")
 OUTPUT_DEFAULT = Path("/data/aurora/products/quicklooks/hatpro/latest.png")
@@ -94,16 +95,11 @@ def _plot_hatpro(window: xr.Dataset, title: str, output: Path) -> None:
         ax.spines["left"].set_color("#c5d0da")
         ax.spines["bottom"].set_color("#c5d0da")
 
-    axes[-1].set_xlabel("Time (UTC)")
-    axes[-1].xaxis.set_major_locator(mdates.HourLocator(interval=2 if len(times) > 24 * 60 else 1))
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    for label in axes[-1].get_xticklabels():
-        label.set_rotation(45)
-        label.set_ha("right")
+    apply_quicklook_time_axis(axes[-1], times, label_rotation=0, label_size=9)
 
     fig.suptitle(title, fontsize=14, color="#22313f")
     fig.tight_layout()
-    fig.subplots_adjust(top=0.94)
+    fig.subplots_adjust(top=0.94, bottom=0.08)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
     plt.close(fig)
