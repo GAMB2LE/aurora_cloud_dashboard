@@ -5763,6 +5763,34 @@ body, .bk {
     height: auto;
     max-height: 68vh;
 }
+.wxcam-still {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+.wxcam-still__frame {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #edf2f7;
+    border-radius: 8px;
+    overflow: hidden;
+    padding: 10px;
+    border: 1px solid #d8e1e8;
+}
+.wxcam-still__frame img {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: min(68vh, 900px);
+    object-fit: contain;
+}
+.wxcam-still--vertical .wxcam-still__frame img {
+    max-height: min(56vh, 680px);
+}
 .wxcam-browser {
     gap: 10px;
 }
@@ -5932,6 +5960,13 @@ body, .bk {
     }
     .wxcam-player--vertical .wxcam-player__frame video {
         max-height: calc(100vh - 260px);
+    }
+    .wxcam-still__frame {
+        padding: 6px;
+    }
+    .wxcam-still__frame img,
+    .wxcam-still--vertical .wxcam-still__frame img {
+        max-height: 52vh;
     }
 }
 """
