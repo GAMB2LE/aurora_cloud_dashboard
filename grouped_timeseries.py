@@ -1768,15 +1768,12 @@ def _add_plotly_power_balance_guides(
     trace_times: pd.DatetimeIndex,
     trace_values: np.ndarray,
 ) -> None:
-    """Add neutral zero reference and latest-value label to the APS balance trace."""
+    """Add a neutral zero reference to the APS balance trace."""
     finite = np.isfinite(trace_values)
     if not np.any(finite):
         return
     first_time = pd.Timestamp(trace_times[finite][0])
-    last_point = _last_finite_trace_point(trace_times, trace_values)
-    if last_point is None:
-        return
-    last_time, last_value = last_point
+    last_time = pd.Timestamp(trace_times[finite][-1])
     fig.add_trace(
         go.Scatter(
             x=[first_time, last_time],
@@ -1785,38 +1782,6 @@ def _add_plotly_power_balance_guides(
             name="0 kWh balance",
             line=dict(color=PLOT_GRID, width=1.0),
             hoverinfo="skip",
-            showlegend=False,
-        ),
-        row=row_index,
-        col=1,
-        secondary_y=True,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[first_time],
-            y=[0.0],
-            mode="text",
-            text=["0 kWh balance"],
-            textposition="top right",
-            textfont=dict(color=PLOT_TEXT, size=10),
-            hoverinfo="skip",
-            showlegend=False,
-        ),
-        row=row_index,
-        col=1,
-        secondary_y=True,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[last_time],
-            y=[last_value],
-            mode="text",
-            name="Latest balance",
-            text=[_balance_label(last_value)],
-            textposition="middle left",
-            textfont=dict(color=trace.color, size=11),
-            cliponaxis=False,
-            hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}} kWh<extra></extra>",
             showlegend=False,
         ),
         row=row_index,
