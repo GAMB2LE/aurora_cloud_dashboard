@@ -50,7 +50,6 @@ POWER_DISPLAY_ENERGY_MAP = {
     "CumulativePowerUtilised": "PowerDisplayCumulativePowerUtilised",
     "PowerSurplusDeficit": "PowerDisplayPowerSurplusDeficit",
 }
-POWER_BALANCE_TRACE = "PowerSurplusDeficit"
 
 
 @dataclass(frozen=True)
@@ -1689,31 +1688,17 @@ def _include_zero_in_limits(limits: tuple[float, float] | None) -> tuple[float, 
     return lower, 0.08 * span
 
 
-def _nice_tick_step(raw_step: float) -> float | None:
-    """Return a human-friendly tick interval near the requested raw interval."""
-    if not np.isfinite(raw_step) or raw_step <= 0:
-        return None
-    exponent = float(np.floor(np.log10(raw_step)))
-    base = 10.0**exponent
-    fraction = raw_step / base
-    for nice_fraction in (1.0, 1.25, 1.5, 2.0, 2.5, 5.0, 10.0):
-        if fraction <= nice_fraction:
-            return nice_fraction * base
-    return 10.0 * base
-
-
 def _axis_tick_values(
     limits: tuple[float, float] | None,
-    target_count: int = 9,
+    step: float = 2.0,
 ) -> tuple[list[float], list[str]]:
-    """Build readable numeric tick labels for dense interactive axes."""
+    """Build fixed-step numeric tick labels for secondary energy axes."""
     if limits is None:
         return [], []
     lower, upper = limits
     if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
         return [], []
-    step = _nice_tick_step((upper - lower) / max(target_count - 1, 1))
-    if step is None:
+    if not np.isfinite(step) or step <= 0:
         return [], []
     start = np.floor(lower / step) * step
     stop = np.ceil(upper / step) * step
@@ -1721,12 +1706,7 @@ def _axis_tick_values(
     values = values[(values >= lower - step * 0.05) & (values <= upper + step * 0.05)]
     if values.size == 0:
         return [], []
-    if step >= 1 and np.isclose(step, round(step)):
-        decimals = 0
-    elif step >= 1:
-        decimals = 2
-    else:
-        decimals = int(max(0, np.ceil(-np.log10(step)))) + 1
+    decimals = 0 if step >= 1 and np.isclose(step, round(step)) else int(max(0, np.ceil(-np.log10(step)))) + 1
     labels = []
     for value in values:
         if abs(value) < step * 1.0e-6:
@@ -1734,62 +1714,6 @@ def _axis_tick_values(
         else:
             labels.append(f"{value:.{decimals}f}".rstrip("0").rstrip("."))
     return values.tolist(), labels
-
-
-def _power_balance_trace_values(
-    times: pd.DatetimeIndex,
-    rows: list[tuple[TraceSpec, np.ndarray]],
-    max_time_samples: int,
-) -> tuple[TraceSpec, pd.DatetimeIndex, np.ndarray] | None:
-    for trace, values in rows:
-        if trace.var != POWER_BALANCE_TRACE:
-            continue
-        trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
-        if len(trace_times):
-            return trace, trace_times, trace_values
-    return None
-
-
-def _add_matplotlib_power_balance_guides(
-    ax,
-    rows: list[tuple[TraceSpec, np.ndarray]],
-    times: pd.DatetimeIndex,
-    max_time_samples: int,
-) -> None:
-    """Add a neutral zero reference to the APS surplus/deficit axis."""
-    balance = _power_balance_trace_values(times, rows, max_time_samples)
-    if balance is None:
-        return
-    ax.axhline(0.0, color=PLOT_GRID, linewidth=0.8, zorder=0)
-
-
-def _add_plotly_power_balance_guides(
-    fig: go.Figure,
-    row_index: int,
-    trace: TraceSpec,
-    trace_times: pd.DatetimeIndex,
-    trace_values: np.ndarray,
-) -> None:
-    """Add a neutral zero reference to the APS balance trace."""
-    finite = np.isfinite(trace_values)
-    if not np.any(finite):
-        return
-    first_time = pd.Timestamp(trace_times[finite][0])
-    last_time = pd.Timestamp(trace_times[finite][-1])
-    fig.add_trace(
-        go.Scatter(
-            x=[first_time, last_time],
-            y=[0.0, 0.0],
-            mode="lines",
-            name="0 kWh balance",
-            line=dict(color=PLOT_GRID, width=1.0),
-            hoverinfo="skip",
-            showlegend=False,
-        ),
-        row=row_index,
-        col=1,
-        secondary_y=True,
-    )
 
 
 def _padded_axis_limits(
@@ -1966,6 +1890,10 @@ def save_summary_png(
                 right_limits = _include_zero_in_limits(right_limits)
                 if right_limits is not None:
                     right_ax.set_ylim(*right_limits)
+                    tick_values, tick_labels = _axis_tick_values(right_limits, step=2.0)
+                    if tick_values:
+                        right_ax.set_yticks(tick_values)
+                        right_ax.set_yticklabels(tick_labels)
 
         ax.set_facecolor("white")
         ax.grid(True, color=PLOT_GRID, linewidth=0.5)
@@ -1974,9 +1902,6 @@ def save_summary_png(
         if right_ax is not None:
             right_ax.tick_params(axis="y", colors=right_color or COLOR["black"], labelsize=9)
             right_ax.set_ylabel(panel.right_axis_label or "", color=right_color or COLOR["black"], fontsize=11)
-            if panel.key == "cumulative_power":
-                right_ax.grid(True, axis="y", color=PLOT_GRID, linewidth=0.35, linestyle=":", alpha=0.7)
-                _add_matplotlib_power_balance_guides(right_ax, rows, times, max_time_samples)
 
         ax.text(
             0.01,
@@ -2089,7 +2014,6 @@ def build_summary_plotly(
         right_color = None
         left_axis_values: list[np.ndarray] = []
         right_axis_values: list[np.ndarray] = []
-        balance_rendered: tuple[TraceSpec, pd.DatetimeIndex, np.ndarray] | None = None
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
             if secondary and right_color is None:
@@ -2103,8 +2027,6 @@ def build_summary_plotly(
                 right_axis_values.append(trace_values)
             else:
                 left_axis_values.append(trace_values)
-            if trace.var == POWER_BALANCE_TRACE:
-                balance_rendered = (trace, trace_times, trace_values)
             fig.add_trace(
                 go.Scatter(
                     x=trace_times,
@@ -2146,12 +2068,12 @@ def build_summary_plotly(
             right_tick_values: list[float] = []
             right_tick_labels: list[str] = []
             if panel.key == "cumulative_power":
-                right_tick_values, right_tick_labels = _axis_tick_values(right_range, target_count=12)
+                right_tick_values, right_tick_labels = _axis_tick_values(right_range, step=2.0)
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
-                showgrid=panel.key == "cumulative_power",
+                showgrid=False,
                 gridcolor=PLOT_GRID,
-                zeroline=panel.key == "cumulative_power",
+                zeroline=False,
                 zerolinecolor=PLOT_GRID,
                 zerolinewidth=1,
                 linecolor=PLOT_LINE,
@@ -2167,8 +2089,6 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=True,
             )
-        if panel.key == "cumulative_power" and balance_rendered is not None:
-            _add_plotly_power_balance_guides(fig, row_index, *balance_rendered)
 
     tickvals = []
     ticktext = []
