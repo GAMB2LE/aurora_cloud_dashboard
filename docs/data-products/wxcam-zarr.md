@@ -38,10 +38,10 @@ Each group stores one xarray dataset with:
 
 ## Group geometry
 
-When checked on `2026-05-09`:
+When checked on `2026-05-18`:
 
 - `fish_hdr`
-  - shape: `time=6606, y=3040, x=3120, channel=3`
+  - shape: `time=13070, y=3040, x=3120, channel=3`
   - image geometry: `3120 x 3040`
   - chunks: `(1, 1024, 1024, 3)`
 ## Important note

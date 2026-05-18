@@ -7,8 +7,8 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-09`:
-  - `time=332309`
+- deployed shape when checked on `2026-05-18`:
+  - `time=842870`
 
 ## Time coordinate
 

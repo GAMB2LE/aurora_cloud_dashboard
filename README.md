@@ -13,7 +13,7 @@ for whether the observing stack is behaving.
 - `Cloud Radar` - RPG FMCW 94 GHz Zarr with height-time plots on the `Interactive Data Browser` tab and daily science quicklooks on `Science Quicklooks`.
 - `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`. The science layout uses the current ASFS logger schema, including SR30 shortwave, IR20 longwave, flux plates, KT15 surface temperature, and SR50 distance.
-- `WXcam` - interactive stitched HDR video browser for `FISH HDR` and `PANO HDR`, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. MP4 files are served through the dashboard static media route instead of being embedded in the Panel websocket payload. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour.
+- `WXcam` - interactive stitched HDR video browser for the deployed `FISH HDR` stream, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. MP4 files are served through the dashboard static media route instead of being embedded in the Panel websocket payload. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30` in each hour. PANO and AUTO/LONG/SHORT files remain on the camera host and are not part of the current local product stream.
 - `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, Aurora Power Supply battery voltage, Aurora Power Supply internal temperature, processing health, dashboard render performance, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. The collector also writes Phase 1 observe-only health JSON and daily Markdown reports for service/code monitoring. The storage section now breaks out the CL61 root/data views, ASS data/root views, APS data/root views, and the AURORA Cloud product/root views separately, with subtitles showing the resolved `pwd -P` path being measured. Archived `HK_Operations` quicklooks are still available from `House Keeping Quicklooks` and now use a curated diagnostics layout rather than plotting every numeric operations field.
 
 Additional housekeeping products now exist for:
@@ -65,9 +65,9 @@ separate trees on purpose.
   - `/project/aurora/raw/power/level1`
   - `/project/aurora/raw/wxcam`
 - Storage type: shared Ceph network filesystem
-- Current filesystem size on `2026-05-09`: `4.0T`
-- Current used on `2026-05-09`: `36G`
-- Current available on `2026-05-09`: `3.9T`
+- Current filesystem size on `2026-05-18`: `4.0T`
+- Current used on `2026-05-18`: `41G`
+- Current available on `2026-05-18`: `3.9T`
 
 So `/project/aurora` is the raw landing and mirror area.
 
@@ -86,9 +86,9 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
 - Storage type: local disk on `/dev/vdb`
-- Current filesystem size on `2026-05-09`: `983G`
-- Current used on `2026-05-09`: `117G`
-- Current available on `2026-05-09`: `816G`
+- Current filesystem size on `2026-05-18`: `983G`
+- Current used on `2026-05-18`: `197G`
+- Current available on `2026-05-18`: `736G`
 
 So `/data/aurora` is the product, work, and output area.
 
@@ -121,10 +121,11 @@ Important products:
 - Operations raw snapshots: `/project/aurora/raw/ops_monitor`
 - Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`
 - Operations quicklooks: `/data/aurora/products/quicklooks/ops_monitor`
+- Operations health reports: `/data/aurora/products/ops_monitor/health`
 
-The dashboard reads WXcam products from the HDR subsets, but the current raw
-mirror under `/project/aurora/raw/wxcam` now copies the full upstream `FISH/`
-and `PANO/` tree for retention and archive verification.
+The deployed WXcam mirror under `/project/aurora/raw/wxcam` retains only FISH
+HDR JPG and MP4 files locally. PANO and AUTO/LONG/SHORT files remain on the
+camera host and are not cataloged, Zarr-appended, or archived from this VM.
 
 ## Services
 
@@ -293,12 +294,12 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - Browser state is reflected into the URL as controls change. The deployed Panel service also uses longer session retention and websocket keepalives so mobile browsers recover better after being backgrounded; if the phone still kills the tab, reopening the URL restores the selected tab, instrument, and key controls.
 - `HK_WXcam` is catalog-driven rather than pixel-driven. It summarizes hourly HDR image/video counts, median HDR JPG size, and the offset of the representative hourly image from the `:30` target used by the science grid.
 - `ASFS Fast Sonic` data products still exist on disk, but the instrument is currently hidden from the dashboard selectors.
-- WXcam keeps the stitched MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
+- WXcam keeps the stitched FISH HDR MP4 player on `Interactive Data Browser`. `Today (latest)` uses `latest.mp4`, which is rebuilt from the most recent 24 hourly clips. Historical days use one stitched MP4 per UTC day.
 - WXcam MP4s are served from `/wxcam-media/...` with a file mtime cache key.
   This keeps large videos out of the Bokeh websocket and lets browsers request
   byte ranges for normal video seeking.
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30` and shows a tile only when an image exists for that hour.
-- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, systemd unit state, and the latest Aurora Power Supply `DCInverterVolts` and `InternalTemperature` samples from the power Zarr. They now also stamp each snapshot with both `time_utc` and `snapshot_time_utc`, mark each stream red when the source has not produced data in the last 1.5 hours, score battery voltage as green above `52 V`, amber from `50-52 V`, and red below `50 V`, and score APS internal temperature as green below `35 C`, amber from `35-40 C`, and red at `40 C` or above. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the quicklook generator still waits until at least two samples exist before it writes archived line-plot PNGs. A fresh deployment can therefore show a live Operations tab before the archived monitoring quicklook directory fills in.
+- `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, systemd unit state, dashboard HTTP checks, dashboard/infra git state, and the latest Aurora Power Supply `DCInverterVolts` and `InternalTemperature` samples from the power Zarr. They stamp each snapshot with both `time_utc` and `snapshot_time_utc`, mark each stream red when the source has not produced data in the last 1.5 hours, score battery voltage as green above `52 V`, amber from `50-52 V`, and red below `50 V`, and score APS internal temperature as green below `35 C`, amber from `35-40 C`, and red at `40 C` or above. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the Phase 1 observe-only sentinel also writes `latest_health.json` and Markdown health reports under `/data/aurora/products/ops_monitor/health`. A fresh deployment can therefore show a live Operations tab and health report before the archived monitoring quicklook directory fills in.
 
 ## Zarr data products
 
@@ -309,7 +310,7 @@ Path: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape: `time=24942`, `range=3276`, `layer=5`
+- deployed shape checked on `2026-05-18`: `time=101532`, `range=3276`, `layer=5`
 - coordinates:
   - `time` - profile timestamps
   - `range` - range gate center in meters
@@ -372,7 +373,7 @@ Path: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`
-- deployed shape: `time=6807`, `range=312`
+- deployed shape checked on `2026-05-18`: `time=147178`, `range=312`
 - coordinates:
   - `time` - derived from `Time + Timems`
   - `range` - concatenated chirp range gates from `C1Range` and `C2Range`
@@ -411,7 +412,7 @@ Path: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape: `time=110049`
+- deployed shape checked on `2026-05-18`: `time=221243`
 - coordinate:
   - `time` - parsed from the raw `timestamp` column, localized as `Europe/London`, then converted to UTC before storage
 
@@ -450,20 +451,20 @@ Path: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape: `time=10804`
+- deployed shape checked on `2026-05-18`: `time=20153`
 - coordinate:
   - `time` - parsed directly from the TOA5 `TIMESTAMP` column
 
 Useful root attrs include:
 
 - `instrument = "asfs-logger"`
-- `title = "ASFS LoggerNet science data"`
-- `source = "asfs-logger_sci_DD_MM_YYYY.dat"`
+- `title = "ASFS science data"`
+- `source = "asfs-logger_sci_DD_MM_YYYY.dat or aurora_asfs_data_sci_YYYYMMDDHHMM.dat"`
 
 Variable layout:
 
 - one `float32` `time` series per retained source column
-- the current deployed store contains 34 variables
+- the current deployed store contains 89 variables
 - examples include:
   - `PTemp_Avg`
   - `batt_volt_Avg`
@@ -488,15 +489,15 @@ Path: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape: `time=1044548`
+- deployed shape checked on `2026-05-18`: `time=1951976`
 - coordinate:
   - `time` - parsed from `TIMESTAMP` and offset by `metek_msec_out` to preserve sub-second timing
 
 Useful root attrs include:
 
 - `instrument = "asfs-fast-sonic"`
-- `title = "ASFS LoggerNet fast-sonic data"`
-- `source = "asfs-logger_fast_sonic_DD_MM_YYYY.dat"`
+- `title = "ASFS fast-sonic data"`
+- `source = "asfs-logger_fast_sonic_DD_MM_YYYY.dat or aurora_asfs_data_fast_sonic_YYYYMMDDHHMM.dat"`
 
 Variable layout:
 
@@ -528,7 +529,7 @@ Path: `/data/aurora/products/power/power.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape: `time=308318`
+- deployed shape checked on `2026-05-18`: `time=842870`
 - coordinate:
   - `time` - parsed from the raw `aps_time` column
 
@@ -554,7 +555,12 @@ Variable layout:
   - `BatteryState`
   - `BatteryWatts`
   - `DCInverterWatts`
+  - `HeatsinkTemperature`
   - `InternalTemperature`
+  - `TempSensor1`
+  - `TempSensor2`
+  - `TempSensor3`
+  - `TempSensor4`
   - `MaxSolarWatts_East`
 
 Schema note:
@@ -569,19 +575,18 @@ Chunking:
 
 ### Local raw mirror
 
-The deployed WXcam raw mirror now copies the full upstream `FISH/` and `PANO/`
-tree locally for retention and archive verification:
+The deployed WXcam raw mirror retains only FISH HDR JPG and MP4 files locally:
 
 - `/project/aurora/raw/wxcam/FISH`
-- `/project/aurora/raw/wxcam/PANO`
 
-The dashboard-facing products still only use the HDR JPG and HDR MP4 subsets.
+PANO and AUTO/LONG/SHORT files remain on the camera host and are not cataloged,
+Zarr-appended, or archived from this VM.
 
 ### Catalog
 
-The WXcam catalog at `/data/aurora/products/wxcam/wxcam_catalog.sqlite` indexes both HDR JPGs and HDR MP4s. Timestamps are derived from filenames and stored as UTC. Key fields include:
+The WXcam catalog at `/data/aurora/products/wxcam/wxcam_catalog.sqlite` indexes FISH HDR JPGs and FISH HDR MP4s. Timestamps are derived from filenames and stored as UTC. Key fields include:
 
-- `image_type` - `fish_hdr` or `pano_hdr`
+- `image_type` - `fish_hdr`
 - `media_kind` - `image` or `video`
 - `time_utc`, `time_epoch_ns`, `day_utc`
 - `raw_path`, `relative_path`, `filename`
@@ -603,12 +608,11 @@ Root attrs:
 
 - `instrument = "wxcam"`
 - `title = "Aurora wxcam HDR images"`
-- `storage_policy = "Contains locally retained HDR JPG image data for fish_hdr and pano_hdr with timestamps derived from filenames; MP4 products are stored separately."`
+- `storage_policy = "Contains locally retained FISH HDR JPG image data with timestamps derived from filenames; MP4 products are stored separately."`
 
 Root groups:
 
 - `fish_hdr`
-- `pano_hdr`
 
 Each group stores one xarray dataset with:
 
@@ -625,7 +629,6 @@ Each group stores one xarray dataset with:
   - `height[time]`
   - `size_bytes[time]`
 
-Group-specific image geometry:
+Group-specific image geometry checked on `2026-05-18`:
 
-- `fish_hdr`: `3120 x 3040` pixels, chunked as `(1, 1024, 1024, 3)`
-- `pano_hdr`: `2880 x 750` pixels, chunked as `(1, 750, 1024, 3)`
+- `fish_hdr`: `time=13070`, `3120 x 3040` pixels, chunked as `(1, 1024, 1024, 3)`

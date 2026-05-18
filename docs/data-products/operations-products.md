@@ -46,11 +46,11 @@ Path:
 
 - `/data/aurora/products/ops_monitor/ops_monitor.zarr`
 
-When checked on `2026-05-09`:
+When checked on `2026-05-18`:
 
 - dimension: `time`
-- shape: `time=49`
-- data variables: `296`
+- shape: `time=2279`
+- data variables: `339`
 - useful attrs:
   - `instrument = "ops-monitor"`
   - `source = "ops_monitor_YYYYMMDD.jsonl"`

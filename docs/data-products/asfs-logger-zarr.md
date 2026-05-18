@@ -7,8 +7,8 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape after the CRD parser update, checked on `2026-05-17`:
-  - `time=19708`
+- deployed shape after the CRD parser update, checked on `2026-05-18`:
+  - `time=20153`
 
 ## Time coordinate
 

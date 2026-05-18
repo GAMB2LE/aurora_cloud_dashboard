@@ -29,5 +29,6 @@ The general rule is:
 - dashboard-facing products live under `/data/aurora/products`
 
 For most numeric instruments, that means a fixed-schema Zarr plus generated PNG
-quicklooks. WXcam and Operations Dashboard add richer product layers on top of
-that pattern.
+quicklooks. WXcam adds media/catalog products on top of that pattern, while
+Operations Dashboard adds raw JSONL snapshots, a monitoring Zarr, archived PNG
+quicklooks, and observe-only health reports.

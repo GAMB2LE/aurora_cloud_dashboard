@@ -58,6 +58,7 @@ It shows:
 
 - traffic-light indicators for source hosts, processing, transfers, and mirror
   verification
+- dashboard HTTP endpoint health and dashboard/infra git state
 - Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
   above `52 V`, amber from `50-52 V`, and red below `50 V`
 - Aurora Power Supply internal temperature from `InternalTemperature`,

@@ -23,10 +23,12 @@ so the dashboard opens on the most direct power-health summary.
 - **Ceilometer** and **Cloud Radar** render height-time plots from Zarr stores.
 - **Meteorology**, **Radiation**, and **Aurora Power Supply** render curated
   multi-panel 1D summaries from fixed Zarr schemas.
-- **WXcam** combines a SQLite catalog, stitched MP4 products, and an HDR image
-  Zarr.
+- **WXcam** combines a SQLite catalog, stitched MP4 products, hourly
+  representative thumbnails, and an HDR image Zarr. The deployed product stream
+  is currently FISH HDR only.
 - **Operations Dashboard** is driven by the `ops_monitor` raw snapshots and
-  monitoring Zarr.
+  monitoring Zarr, plus the observe-only health JSON/Markdown reports written
+  by the Phase 1 sentinel.
 
 ## Key product roots
 

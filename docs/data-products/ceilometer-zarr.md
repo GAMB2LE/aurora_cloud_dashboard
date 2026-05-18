@@ -7,8 +7,8 @@ Path:
 ## Dataset shape
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape when checked on `2026-05-09`:
-  - `time=27552`
+- deployed shape when checked on `2026-05-18`:
+  - `time=101532`
   - `range=3276`
   - `layer=5`
 

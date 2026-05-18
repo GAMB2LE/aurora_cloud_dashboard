@@ -51,6 +51,10 @@ grid.
   `/data/aurora/products/wxcam/hourly_thumbnails`
 - image Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
 
+The deployed mirror currently retains only FISH HDR JPG and MP4 files locally.
+PANO and AUTO/LONG/SHORT files remain on the camera host and are not cataloged,
+Zarr-appended, or archived from this VM.
+
 Detailed product documentation:
 
 - [WXcam products](../data-products/wxcam-products.md)
