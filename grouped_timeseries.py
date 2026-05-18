@@ -22,6 +22,7 @@ from quicklook_time_axis import apply_quicklook_time_axis
 
 MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
 INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600"))
+POWER_INTERACTIVE_BUCKET_REPRESENTATIVES = int(os.environ.get("AURORA_POWER_INTERACTIVE_BUCKET_REPRESENTATIVES", "5"))
 OVERVIEW_LABEL = "Overview"
 # Reserve a fixed right-side gutter for per-panel legends so they sit beyond the
 # secondary-axis labels in both the interactive Plotly view and saved PNGs.
@@ -1341,6 +1342,60 @@ def _trace_time_values(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.
     return times[finite], values[finite]
 
 
+def _bucket_trace_extrema(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    max_points: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Reduce dense Power traces with first/min/mean/max/last points per bucket."""
+    values = np.asarray(values, dtype=np.float64)
+    count = min(len(times), values.size)
+    if count == 0:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+    if count <= max_points:
+        return times[:count], values[:count]
+
+    representatives = max(3, int(POWER_INTERACTIVE_BUCKET_REPRESENTATIVES))
+    bucket_count = max(1, int(max_points) // representatives)
+    edges = np.linspace(0, count, bucket_count + 1, dtype=int)
+    selected: list[tuple[pd.Timestamp, float]] = []
+
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        if hi <= lo:
+            continue
+        segment = values[lo:hi]
+        finite_mask = np.isfinite(segment)
+        if not np.any(finite_mask):
+            continue
+        finite_idx = np.flatnonzero(finite_mask)
+        finite_values = segment[finite_mask]
+        first_idx = lo + int(finite_idx[0])
+        last_idx = lo + int(finite_idx[-1])
+        min_idx = lo + int(finite_idx[int(np.nanargmin(finite_values))])
+        max_idx = lo + int(finite_idx[int(np.nanargmax(finite_values))])
+        mid_idx = lo + (hi - lo) // 2
+        mean_value = float(np.nanmean(finite_values))
+        candidates = (
+            (times[first_idx], float(values[first_idx])),
+            (times[min_idx], float(values[min_idx])),
+            (times[mid_idx], mean_value),
+            (times[max_idx], float(values[max_idx])),
+            (times[last_idx], float(values[last_idx])),
+        )
+        seen: set[tuple[int, float]] = set()
+        for stamp, value in sorted(candidates, key=lambda item: item[0]):
+            key = (pd.Timestamp(stamp).value, round(value, 12))
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append((pd.Timestamp(stamp), value))
+
+    if not selected:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+    selected.sort(key=lambda item: item[0])
+    return pd.DatetimeIndex([stamp for stamp, _value in selected]), np.asarray([value for _stamp, value in selected], dtype=np.float64)
+
+
 def _apply_matplotlib_axis_padding(ax, series: list[np.ndarray]) -> None:
     """Add y-range headroom so boxed panel labels do not sit on top of traces."""
     finite_parts = [np.asarray(values, dtype=np.float64)[np.isfinite(values)] for values in series]
@@ -1565,7 +1620,9 @@ def build_summary_plotly(
 ) -> go.Figure:
     vertical_spacing = 0.04
     ds = _prepare_summary_dataset(ds, instrument)
-    ds = downsample_time(ds, max_time_samples=max_time_samples)
+    preserve_trace_extrema = instrument == "power"
+    if not preserve_trace_extrema:
+        ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
     if len(times) == 0 or not panels:
@@ -1607,6 +1664,10 @@ def build_summary_plotly(
             trace_times, trace_values = _trace_time_values(times, values)
             if len(trace_times) == 0:
                 continue
+            if preserve_trace_extrema:
+                trace_times, trace_values = _bucket_trace_extrema(trace_times, trace_values, max_time_samples)
+                if len(trace_times) == 0:
+                    continue
             fig.add_trace(
                 go.Scatter(
                     x=trace_times,

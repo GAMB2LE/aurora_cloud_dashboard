@@ -232,6 +232,10 @@ keep switching responsive:
   views
 - coarse-first rendering for the heavier 2D interactive plots before a full
   detail pass replaces them
+- Power interactive plots use a bucketed first/min/mean/max/last reduction per
+  trace, so the browser receives fewer points while short spikes remain visible
+- the live Power 24 h window is rounded to 5-minute cache buckets, avoiding a
+  full rebuild for every tiny latest-timestamp nudge
 
 Each event also carries session and concurrency context when available, including:
 

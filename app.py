@@ -537,7 +537,9 @@ INSTRUMENTS = {
     "power": {
         "zarr_env": "POWER_ZARR_PATH",
         "zarr_default": "/data/aurora/products/power/power.zarr",
-        "chunk_spec": {"time": 1200},
+        # The power source is high-frequency. Larger dashboard read chunks avoid
+        # thousands of tiny Dask tasks when building the latest 24 h browser view.
+        "chunk_spec": {"time": 24000},
         "consolidated": True,
         "height_load_max": 1,
         "top_range_default": 1,
@@ -622,6 +624,9 @@ HEIGHT_TARGET = 200  # target max height samples for plotting
 DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
 RENDER_DEBOUNCE_MS = int(os.environ.get("AURORA_RENDER_DEBOUNCE_MS", "150"))
 INTERACTIVE_RENDER_CACHE_SIZE = int(os.environ.get("AURORA_INTERACTIVE_RENDER_CACHE_SIZE", "12"))
+POWER_INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES", "700"))
+POWER_LATEST_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_LATEST_CACHE_ROUND_MINUTES", "5"))
+POWER_LATEST_CACHE_TOLERANCE = timedelta(minutes=int(os.environ.get("AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES", "10")))
 # A small future tolerance keeps normal clock skew harmless while protecting
 # the dashboard from bogus outlier timestamps that can blank the latest window.
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
@@ -2039,9 +2044,11 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
             time_subsample = max(time_subsample, 2)
             time_target = max(96, time_target // 3)
             height_target = max(72, height_target // 2)
+        preserve_time_extrema = render_quality == "summary_extrema"
         perf["time_subsample"] = int(time_subsample)
         perf["time_target"] = int(time_target)
         perf["height_target"] = int(height_target)
+        perf["preserve_time_extrema"] = bool(preserve_time_extrema)
         base = _get_base_dataset(instrument)
         if base is None:
             perf["status"] = "no_dataset"
@@ -2082,14 +2089,14 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
         perf["range_filter_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
 
         phase_start = perf_counter()
-        if time_subsample > 1:
+        if not preserve_time_extrema and time_subsample > 1:
             ds = ds.isel(time=slice(None, None, time_subsample))
         try:
             if ds.sizes.get("range", 0) > height_target:
                 fh = max(int(np.ceil(ds.sizes["range"] / height_target)), 1)
                 perf["range_coarsen_factor"] = int(fh)
                 ds = ds.coarsen({"range": fh}, boundary="trim").mean()
-            if ds.sizes.get("time", 0) > time_target:
+            if not preserve_time_extrema and ds.sizes.get("time", 0) > time_target:
                 ft = max(int(np.ceil(ds.sizes["time"] / time_target)), 1)
                 perf["time_coarsen_factor"] = int(ft)
                 ds = ds.coarsen({"time": ft}, boundary="trim").mean()
@@ -2674,6 +2681,51 @@ def _normalize_cache_value(value):
     return value
 
 
+def _as_naive_utc_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime(warn=False)
+    return _ensure_utc(value)
+
+
+def _floor_datetime(value, step: timedelta):
+    value = _as_naive_utc_datetime(value)
+    if value is None:
+        return None
+    step_seconds = max(int(step.total_seconds()), 1)
+    timestamp = int(value.replace(tzinfo=timezone.utc).timestamp())
+    floored = timestamp - (timestamp % step_seconds)
+    return datetime.fromtimestamp(floored, tz=timezone.utc).replace(tzinfo=None)
+
+
+def _is_power_latest_window(start, end, instrument: str) -> bool:
+    if instrument != "power":
+        return False
+    start_dt = _as_naive_utc_datetime(start)
+    end_dt = _as_naive_utc_datetime(end)
+    if start_dt is None or end_dt is None or end_dt <= start_dt:
+        return False
+    if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=2):
+        return False
+    _lower, latest = _dataset_time_bounds(instrument)
+    latest_dt = _as_naive_utc_datetime(latest)
+    if latest_dt is None:
+        return False
+    return abs(end_dt - latest_dt) <= POWER_LATEST_CACHE_TOLERANCE
+
+
+def _canonical_interactive_window(start, end, instrument: str):
+    """Round Power's live latest window so small timestamp nudges can reuse cache."""
+    if not _is_power_latest_window(start, end, instrument):
+        return start, end, "exact"
+    step = timedelta(minutes=max(1, POWER_LATEST_CACHE_ROUND_MINUTES))
+    rounded_end = _floor_datetime(end, step)
+    if rounded_end is None:
+        return start, end, "exact"
+    return rounded_end - DEFAULT_WINDOW, rounded_end, f"power_latest_{POWER_LATEST_CACHE_ROUND_MINUTES}min"
+
+
 def _interactive_render_cache_key(
     start,
     end,
@@ -2694,10 +2746,15 @@ def _interactive_render_cache_key(
     instrument,
     render_quality: str = "full",
 ) -> tuple[object, ...]:
+    start, end, window_cache_mode = _canonical_interactive_window(start, end, instrument)
+    dataset_version: object = _DATASET_VERSION.get(instrument, 0)
+    if window_cache_mode.startswith("power_latest_"):
+        dataset_version = window_cache_mode
     return (
         instrument,
         render_quality,
-        _DATASET_VERSION.get(instrument, 0),
+        dataset_version,
+        window_cache_mode,
         _normalize_cache_value(start),
         _normalize_cache_value(end),
         _normalize_cache_value(bottom_val),
@@ -2808,6 +2865,22 @@ def _show_cached_quicklook_placeholder(inst: str) -> bool:
 
 def _interactive_supports_refine(inst: str) -> bool:
     return inst in {"Ceilometer", "Cloud Radar", "Scanning Microwave Radiometer"}
+
+
+def _interactive_initial_quality(inst: str) -> str:
+    if inst == "power":
+        return "bucketed"
+    return "coarse" if _interactive_supports_refine(inst) else "full"
+
+
+def _interactive_final_quality(inst: str) -> str:
+    return "bucketed" if inst == "power" else "full"
+
+
+def _stacked_interactive_max_time_samples(instrument: str, render_quality: str) -> int:
+    if instrument == "power":
+        return POWER_INTERACTIVE_MAX_TIME_SAMPLES
+    return 900 if render_quality == "coarse" else 1600
 
 
 def _schedule_next_tick(callback) -> None:
@@ -3503,9 +3576,11 @@ def _update_stacked_timeseries_view(
             return False
         source_instruments = summary_source_instruments(instrument)
         perf["source_instruments"] = list(source_instruments)
+        source_render_quality = "summary_extrema" if instrument == "power" else render_quality
+        perf["source_render_quality"] = source_render_quality
         ds = combine_summary_datasets(
             instrument,
-            *(open_window(start, end, instrument=source_inst, render_quality=render_quality) for source_inst in source_instruments),
+            *(open_window(start, end, instrument=source_inst, render_quality=source_render_quality) for source_inst in source_instruments),
         )
         times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
         perf["time_count"] = 0 if times is None else int(len(times))
@@ -3516,8 +3591,10 @@ def _update_stacked_timeseries_view(
             empty.update_layout(height=600, paper_bgcolor="white", plot_bgcolor="white")
             return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
         try:
-            max_time_samples = 900 if render_quality == "coarse" else 1600
+            max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
             perf["max_time_samples"] = max_time_samples
+            if instrument == "power":
+                perf["plot_density_mode"] = "bucketed_extrema"
             fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
         except ValueError:
             perf["status"] = "no_data"
@@ -3557,6 +3634,7 @@ def _render_interactive_view(
     global CURRENT_INSTRUMENT
     if instrument != CURRENT_INSTRUMENT:
         CURRENT_INSTRUMENT = instrument
+    start, end, cache_window_mode = _canonical_interactive_window(start, end, instrument)
     print(f"[render-view] instrument={instrument} quality={render_quality} request={request_id}")
     with _timed_perf(
         "interactive_view_update",
@@ -3589,6 +3667,7 @@ def _render_interactive_view(
             instrument,
             render_quality=render_quality,
         )
+        perf["cache_window_mode"] = cache_window_mode
         perf["top_var"] = var1_name
         perf["bottom_var"] = var2_name
         perf["bottom_m"] = bottom_val
@@ -3876,8 +3955,10 @@ def _start_interactive_render(
     if instrument != CURRENT_INSTRUMENT:
         CURRENT_INSTRUMENT = instrument
     _capture_current_instrument_state(instrument)
+    start, end, _cache_window_mode = _canonical_interactive_window(start, end, instrument)
     request_id = _begin_render_request()
-    first_quality = "coarse" if _interactive_supports_refine(instrument) else "full"
+    final_quality = _interactive_final_quality(instrument)
+    first_quality = _interactive_initial_quality(instrument)
     full_cache_key = _interactive_render_cache_key(
         start,
         end,
@@ -3896,7 +3977,7 @@ def _start_interactive_render(
         rymin,
         rymax,
         instrument,
-        render_quality="full",
+        render_quality=final_quality,
     )
     if _restore_exact_interactive_cache(full_cache_key, instrument):
         _clear_interactive_loading()
