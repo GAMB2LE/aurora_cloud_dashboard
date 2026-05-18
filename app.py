@@ -1,10 +1,11 @@
-# app.py
-# Aurora dashboard application.
-# - Multi-instrument Panel + Plotly browser for 2D atmospheric curtains, 1D
-#   station summaries, WXcam media, quicklooks, and operations monitoring.
-# - Keeps per-instrument interactive state warm so switching back feels fast.
-# - Uses cached time bounds, stale-render protection, and coarse-first rendering
-#   on the heavier interactive plots to keep the UI responsive.
+"""Aurora dashboard application.
+
+This module hosts the multi-instrument Panel and Plotly browser for atmospheric
+curtains, station summaries, WXcam media, quicklooks, and operations monitoring.
+It keeps per-instrument state warm and uses cached bounds, stale-render
+protection, and coarse-first rendering on heavier plots to keep the UI
+responsive during normal browsing.
+"""
 
 import os
 import asyncio
@@ -52,6 +53,7 @@ from extra_housekeeping import (
     extra_housekeeping_tokens,
 )
 from wxcam_catalog import (
+    WXCAM_IMAGE_TYPES,
     available_days,
     catalog_time_bounds,
     latest_record,
@@ -568,23 +570,17 @@ INSTRUMENTS = {
         "height_load_max": 1,
         "top_range_default": 1,
         "vars": {
-            "FISH HDR": {
-                "label": "FISH HDR",
-                "image_type": "fish_hdr",
+            spec["label"]: {
+                "label": spec["label"],
+                "image_type": image_type,
                 "clim": (0.0, 1.0),
                 "log": False,
                 "colorscale": "Viridis",
-            },
-            "PANO HDR": {
-                "label": "PANO HDR",
-                "image_type": "pano_hdr",
-                "clim": (0.0, 1.0),
-                "log": False,
-                "colorscale": "Viridis",
-            },
+            }
+            for image_type, spec in WXCAM_IMAGE_TYPES.items()
         },
-        "default_top": "FISH HDR",
-        "default_bottom": "PANO HDR",
+        "default_top": next((spec["label"] for spec in WXCAM_IMAGE_TYPES.values()), "FISH HDR"),
+        "default_bottom": next((spec["label"] for spec in WXCAM_IMAGE_TYPES.values()), "FISH HDR"),
         "quicklook_dir": _path_from_env("WXCAM_QUICKLOOK_DIR", QUICKLOOK_ROOT / "wxcam"),
         "latest_image": _path_from_env("WXCAM_LATEST_IMAGE", QUICKLOOK_ROOT / "wxcam" / "latest.jpg"),
     },
@@ -933,13 +929,17 @@ def _wxcam_combined_hour_states(day_token: str) -> list[int]:
     day_utc = _wxcam_day_token_to_utc(day_token)
     if not day_utc:
         return [0] * 24
-    fish = representative_hourly_records(_wxcam_catalog_path("wxcam"), "fish_hdr", day_utc, media_kind="image")
-    pano = representative_hourly_records(_wxcam_catalog_path("wxcam"), "pano_hdr", day_utc, media_kind="image")
+    records_by_type = {
+        image_type: representative_hourly_records(
+            _wxcam_catalog_path("wxcam"), image_type, day_utc, media_kind="image"
+        )
+        for image_type in WXCAM_IMAGE_TYPES
+    }
+    required_types = max(len(records_by_type), 1)
     states: list[int] = []
     for hour in range(24):
-        have_fish = hour in fish
-        have_pano = hour in pano
-        states.append(2 if (have_fish and have_pano) else 1 if (have_fish or have_pano) else 0)
+        present_types = sum(1 for rows in records_by_type.values() if hour in rows)
+        states.append(2 if present_types == required_types else 1 if present_types else 0)
     return states
 
 
@@ -4510,14 +4510,24 @@ def _current_hk_availability_markup() -> str:
             "00:00",
             end_label,
             "WXcam HDR availability by hour",
-            "Each block represents one UTC hour. Teal means both FISH and PANO have HDR images, amber means one stream only, and gray means neither stream is available.",
-            full_label="Both FISH and PANO present",
-            partial_label="Only one stream present",
-            empty_label="No HDR images",
+            (
+                "Each block represents one UTC hour. Teal means the retained "
+                "FISH HDR stream has an image for that hour; gray means no "
+                "retained HDR image is available."
+            ),
+            full_label="FISH HDR present",
+            partial_label="Partial retained HDR coverage",
+            empty_label="No retained HDR image",
             segment_titles=[f"{hour:02d}:00 UTC" for hour in range(24)],
         )
     if start is None or end is None:
-        return _availability_bar_markup([], "--", "--", "Housekeeping data availability by hour", "Each block would represent one UTC hour in the selected day.")
+        return _availability_bar_markup(
+            [],
+            "--",
+            "--",
+            "Housekeeping data availability by hour",
+            "Each block would represent one UTC hour in the selected day.",
+        )
     times = _instrument_time_index(inst)
     mask = (times >= pd.Timestamp(start)) & (times <= pd.Timestamp(end))
     bits, _missing, _total = _hourly_coverage_summary(times[mask], start, end)

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from wxcam_catalog import ensure_schema, open_catalog
+from wxcam_catalog import WXCAM_IMAGE_TYPES, ensure_schema, open_catalog
 
 EXTRA_HK_SPECS = {
     "Ceilometer": {"label": "HK_Ceilometer", "prefix": "ceilometer"},
@@ -494,15 +494,16 @@ def _plot_wxcam_housekeeping_frame(df: pd.DataFrame, title: str, output: Path) -
         ("Median HDR Image Size [MB]", "MB", image_sizes),
         ("Representative Image Offset from :30 [min]", "Minutes", image_offsets),
     ]
-    colors = {"fish_hdr": "#2bb3b1", "pano_hdr": "#7a52c7"}
-    labels = {"fish_hdr": "FISH HDR", "pano_hdr": "PANO HDR"}
+    palette = ["#2bb3b1", "#7a52c7", "#b5651d", "#4968b3"]
+    colors = {image_type: palette[idx % len(palette)] for idx, image_type in enumerate(WXCAM_IMAGE_TYPES)}
+    labels = {image_type: spec["label"] for image_type, spec in WXCAM_IMAGE_TYPES.items()}
     fig, axes = plt.subplots(len(panels), 1, figsize=(13, 10.5), sharex=True, squeeze=False)
     axes = axes[:, 0]
     for ax, (panel_title, y_label, frame) in zip(axes, panels):
         if frame.empty:
             ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, color="#555555")
         else:
-            for image_type in ("fish_hdr", "pano_hdr"):
+            for image_type in WXCAM_IMAGE_TYPES:
                 if image_type not in frame.columns:
                     continue
                 series = frame[image_type]
