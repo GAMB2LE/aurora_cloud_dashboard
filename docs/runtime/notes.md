@@ -31,8 +31,8 @@ The cumulative Power panel is also computed with UTC-day context before the
 selected window is displayed. Solar-yield counters are treated as daily counters
 and converted to positive increments, so delayed controller resets after
 midnight do not produce false generation drops in the latest 24 h view. The
-right-axis surplus/deficit trace is an instantaneous W balance rather than a
-cumulative kWh line, so it stays interpretable across midnight in latest views.
+right-axis surplus/deficit trace is a cumulative kWh balance calculated as
+`Total Generated - Utilised`.
 
 ## Meteorology display merge
 

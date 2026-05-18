@@ -362,7 +362,7 @@ HUMAN_UNITS = {
     "SolarYield_West": "kWh",
     "CumulativePowerGeneratedTotal": "kWh",
     "CumulativePowerUtilised": "kWh",
-    "PowerSurplusDeficit": "W",
+    "PowerSurplusDeficit": "kWh",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -620,7 +620,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "cumulative_power",
             "Cumulative Power",
             "Cumulative Energy [kWh]",
-            "Power Surplus / Deficit [W]",
+            "Power Surplus / Deficit [kWh]",
             (
                 TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"]),
                 TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"]),
@@ -1264,29 +1264,6 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
 
     assignments: dict[str, xr.DataArray] = {}
 
-    solar_power_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in ds]
-    output_power_fields = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in ds]
-    if solar_power_fields or output_power_fields:
-        power_balance = np.full(len(times), np.nan, dtype=np.float64)
-        valid_balance_power = np.zeros(len(times), dtype=bool)
-        solar_power = np.zeros(len(times), dtype=np.float64)
-        output_power = np.zeros(len(times), dtype=np.float64)
-        for field_name in solar_power_fields:
-            values = np.asarray(ds[field_name].values, dtype=np.float64)
-            valid_balance_power |= np.isfinite(values)
-            solar_power += np.nan_to_num(values, nan=0.0)
-        for field_name in output_power_fields:
-            values = np.asarray(ds[field_name].values, dtype=np.float64)
-            valid_balance_power |= np.isfinite(values)
-            output_power += np.nan_to_num(values, nan=0.0)
-        power_balance[valid_balance_power] = solar_power[valid_balance_power] - output_power[valid_balance_power]
-        assignments["PowerSurplusDeficit"] = xr.DataArray(
-            power_balance,
-            coords={"time": ds["time"]},
-            dims=("time",),
-            attrs={"units": "W"},
-        )
-
     generated_fields = [name for name in ("SolarYield_East", "SolarYield_South", "SolarYield_West") if name in ds]
     for field_name in generated_fields:
         generated = _daily_cumulative_counter_delta(times, np.asarray(ds[field_name].values, dtype=np.float64))
@@ -1338,6 +1315,32 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             total_generated[valid_generated] = summed
         assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
             total_generated,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "kWh"},
+        )
+
+    if "CumulativePowerGeneratedTotal" in assignments or "CumulativePowerUtilised" in assignments:
+        generated = np.asarray(
+            assignments["CumulativePowerGeneratedTotal"].values
+            if "CumulativePowerGeneratedTotal" in assignments
+            else np.full(len(times), np.nan),
+            dtype=np.float64,
+        )
+        utilised = np.asarray(
+            assignments["CumulativePowerUtilised"].values
+            if "CumulativePowerUtilised" in assignments
+            else np.full(len(times), np.nan),
+            dtype=np.float64,
+        )
+        valid_balance = np.isfinite(generated) | np.isfinite(utilised)
+        energy_balance = np.full(len(times), np.nan, dtype=np.float64)
+        energy_balance[valid_balance] = np.nan_to_num(generated[valid_balance], nan=0.0) - np.nan_to_num(
+            utilised[valid_balance],
+            nan=0.0,
+        )
+        assignments["PowerSurplusDeficit"] = xr.DataArray(
+            energy_balance,
             coords={"time": ds["time"]},
             dims=("time",),
             attrs={"units": "kWh"},

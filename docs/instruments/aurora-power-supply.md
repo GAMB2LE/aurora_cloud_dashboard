@@ -66,7 +66,7 @@ just after midnight do not create false drops in the plotted generation lines.
 The utilised-energy line is integrated with midnight context before the view is
 cropped back to the selected/latest window, so the latest 24 h view matches the
 daily cumulative solar counters. The right-axis surplus/deficit trace is an
-instantaneous power balance in W, so it does not reset or jump at midnight.
+cumulative energy balance in kWh, calculated as `Total Generated - Utilised`.
 
 These are display-time optimizations only; ingest, retention, and the stored
 Zarr schema are unchanged.
