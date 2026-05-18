@@ -26,6 +26,10 @@ stack.
 - mirror verification and prune-readiness indicators
 - per-stream archive state, including WXcam backfill progress
 
+Performance-log freshness and render-performance statistics are diagnostic
+signals only. They stay visible on the Operations Dashboard and in the health
+reports, but they do not drive the top-level **Overall** action state.
+
 The storage cards are intentionally broken out as:
 
 - CL61 root and CL61 data

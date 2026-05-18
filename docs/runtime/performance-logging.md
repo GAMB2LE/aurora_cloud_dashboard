@@ -12,6 +12,9 @@ when it was last written. The Operations Dashboard shows that as the
 source-transfer checks. It also reads recent timed events directly and reports
 the current render-performance summary, including p50, p95, the slowest event,
 and the maximum live browser-session count seen in the sampled log window.
+These performance signals are diagnostic only; they do not drive the
+Operations Dashboard **Overall** action state or the health report's
+`overall_level`.
 
 ## Environment controls
 

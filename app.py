@@ -1594,7 +1594,10 @@ def _ops_operations_markup() -> str:
             )
             if mirror_level == "green" and backfill_pending_count > 0:
                 mirror_level = "amber"
-        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, battery_level, battery_soc_level, internal_temp_level, perf_log_level, processing_level, transfer_level, mirror_level])
+        # Render/performance telemetry is diagnostic: it should stay visible,
+        # but it should not turn the overall operations state into "Action
+        # needed" when the data/transfer/power systems are otherwise healthy.
+        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, battery_level, battery_soc_level, internal_temp_level, processing_level, transfer_level, mirror_level])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -1663,13 +1666,13 @@ def _ops_operations_markup() -> str:
                 "Dashboard perf log",
                 perf_log_level,
                 perf_log_value,
-                perf_log_meta,
+                f"{perf_log_meta}; diagnostic only, not part of Overall",
             ),
             _ops_card_markup(
                 "Render performance",
                 perf_summary["level"],
                 perf_summary["value"],
-                perf_summary["meta"],
+                f"{perf_summary['meta']}; diagnostic only, not part of Overall",
             ),
             _ops_card_markup(
                 "Processing pipeline",

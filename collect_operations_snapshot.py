@@ -913,6 +913,7 @@ def _health_check(
     *,
     details: str = "",
     metrics: dict[str, Any] | None = None,
+    affects_overall: bool = True,
 ) -> None:
     checks.append(
         {
@@ -921,6 +922,7 @@ def _health_check(
             "message": message,
             "details": details,
             "metrics": metrics or {},
+            "affects_overall": affects_overall,
         }
     )
 
@@ -947,6 +949,7 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         "dashboard",
         "Dashboard performance log freshness",
         details=f"age={_fmt(_value(snapshot, 'dashboard_perf_log_age_min'), ' min')}",
+        affects_overall=False,
     )
 
     for prefix, label in (
@@ -1060,7 +1063,11 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
             ),
         )
 
-    overall_level = _worst_level([check["level"] for check in checks])
+    # Performance/logging telemetry is diagnostic. Keep it in the report, but
+    # keep the top-level action status focused on data flow, storage, power,
+    # transfer, service, and code health.
+    actionable_levels = [check["level"] for check in checks if check.get("affects_overall", True)]
+    overall_level = _worst_level(actionable_levels)
     observations = [check for check in checks if check["level"] in {"amber", "red", "gray"}]
     return {
         "generated_at_utc": snapshot.get("time_utc"),
@@ -1128,7 +1135,8 @@ def render_daily_report(snapshot: dict[str, Any], health: dict[str, Any], raw_sn
     else:
         for item in [*red_observations, *amber_observations, *[obs for obs in current_observations if obs["level"] == "gray"]][:20]:
             details = f" - {item['details']}" if item.get("details") else ""
-            lines.append(f"- **{item['level'].upper()}** `{item['component']}`: {item['message']}{details}")
+            scope = "" if item.get("affects_overall", True) else " _(diagnostic only)_"
+            lines.append(f"- **{item['level'].upper()}** `{item['component']}`: {item['message']}{scope}{details}")
 
     lines.extend(
         [
