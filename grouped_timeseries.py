@@ -628,7 +628,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"], break_on_day_change=True),
                 TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"], break_on_day_change=True),
                 TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"], break_on_day_change=True),
-                TraceSpec("PowerSurplusDeficit", "Power Surplus / Deficit", COLOR["red"], axis="right", break_on_day_change=True),
+                TraceSpec("PowerSurplusDeficit", "Power Surplus / Deficit", COLOR["red"], axis="right"),
             ),
         ),
         PanelSpec(
@@ -1228,6 +1228,37 @@ def _daily_cumulative_counter_delta(times: pd.DatetimeIndex, counter_kwh: np.nda
     return cumulative_kwh
 
 
+def _carryover_energy_balance(
+    times: pd.DatetimeIndex,
+    generated_kwh: np.ndarray,
+    utilised_kwh: np.ndarray,
+) -> np.ndarray:
+    """Carry daily generated-minus-utilised energy balance across UTC days."""
+    balance = np.full(len(times), np.nan, dtype=np.float64)
+    if len(times) == 0:
+        return balance
+
+    day_starts = times.normalize()
+    current_day = None
+    carry_kwh = 0.0
+    last_daily_balance = np.nan
+    for idx, day_start in enumerate(day_starts):
+        if current_day is None or day_start != current_day:
+            if current_day is not None and np.isfinite(last_daily_balance):
+                carry_kwh += float(last_daily_balance)
+            current_day = day_start
+            last_daily_balance = np.nan
+
+        generated = generated_kwh[idx]
+        utilised = utilised_kwh[idx]
+        if not np.isfinite(generated) and not np.isfinite(utilised):
+            continue
+        daily_balance = np.nan_to_num(generated, nan=0.0) - np.nan_to_num(utilised, nan=0.0)
+        balance[idx] = carry_kwh + daily_balance
+        last_daily_balance = daily_balance
+    return balance
+
+
 def _summary_display_timestamp(value: object) -> pd.Timestamp | None:
     if value in (None, ""):
         return None
@@ -1334,12 +1365,7 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             else np.full(len(times), np.nan),
             dtype=np.float64,
         )
-        valid_balance = np.isfinite(generated) | np.isfinite(utilised)
-        energy_balance = np.full(len(times), np.nan, dtype=np.float64)
-        energy_balance[valid_balance] = np.nan_to_num(generated[valid_balance], nan=0.0) - np.nan_to_num(
-            utilised[valid_balance],
-            nan=0.0,
-        )
+        energy_balance = _carryover_energy_balance(times, generated, utilised)
         assignments["PowerSurplusDeficit"] = xr.DataArray(
             energy_balance,
             coords={"time": ds["time"]},

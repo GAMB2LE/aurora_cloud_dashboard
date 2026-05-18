@@ -25,8 +25,8 @@ Typical panels include:
   - `West Solar Generated`
   - `Total Generated`
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
-  - `Power Surplus / Deficit` on the right axis, calculated as instantaneous
-    solar power minus AC plus DC output power
+  - `Power Surplus / Deficit` on the right axis, calculated as a carried kWh
+    energy balance from `Total Generated - Utilised`
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
@@ -66,9 +66,10 @@ just after midnight do not create false drops in the plotted generation lines.
 The utilised-energy line is integrated with midnight context before the view is
 cropped back to the selected/latest window, so the latest 24 h view matches the
 daily cumulative solar counters. The right-axis surplus/deficit trace is a
-cumulative energy balance in kWh, calculated as `Total Generated - Utilised`.
-Daily cumulative traces are visually broken at UTC midnight so the daily reset
-does not render as a false vertical jump.
+carried cumulative energy balance in kWh: each day's `Total Generated -
+Utilised` balance starts from the previous day's ending surplus or deficit.
+The daily generated and utilised traces are visually broken at UTC midnight so
+their resets do not render as false vertical jumps.
 
 These are display-time optimizations only; ingest, retention, and the stored
 Zarr schema are unchanged.
