@@ -1263,9 +1263,9 @@ def _ops_level_from_internal_temp(value) -> str:
     temperature = _ops_float(value)
     if temperature is None:
         return "gray"
-    if temperature < 35.0:
-        return "green"
     if temperature < 40.0:
+        return "green"
+    if temperature < 45.0:
         return "amber"
     return "red"
 
@@ -1660,7 +1660,7 @@ def _ops_operations_markup() -> str:
                 "APS internal temp",
                 internal_temp_level,
                 internal_temp_value,
-                f"{internal_temp_meta}; green <35 C, amber 35-40 C, red >=40 C",
+                f"{internal_temp_meta}; green <40 C, amber 40-45 C, red >=45 C",
             ),
             _ops_card_markup(
                 "Dashboard perf log",

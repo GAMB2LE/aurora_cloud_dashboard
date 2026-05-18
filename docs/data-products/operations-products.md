@@ -28,8 +28,8 @@ These snapshots capture:
   sample in the power Zarr, scored green at or above `50 %`, amber from
   `25-50 %`, and red below `25 %`
 - Aurora Power Supply internal temperature from the latest
-  `InternalTemperature` sample in the power Zarr, scored green below `35 C`,
-  amber from `35-40 C`, and red at `40 C` or above
+  `InternalTemperature` sample in the power Zarr, scored green below `40 C`,
+  amber from `40-45 C`, and red at `45 C` or above
 - local `/project`, `/data`, and `/` filesystem usage
 - GWS usage and reachability
 - per-stream mirror coverage, lag, and mismatch counts

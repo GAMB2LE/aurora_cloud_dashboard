@@ -12,7 +12,7 @@ stack.
 - Aurora Power Supply battery state of charge from `BatterySOC`, scored green
   at or above `50 %`, amber from `25-50 %`, and red below `25 %`
 - Aurora Power Supply internal temperature from `InternalTemperature`,
-  scored green below `35 C`, amber from `35-40 C`, and red at `40 C` or above
+  scored green below `40 C`, amber from `40-45 C`, and red at `45 C` or above
 - source sync and processing health
 - HATPRO source, local mirror, GWS mirror, Zarr-build, and quicklook health
   alongside the other science streams

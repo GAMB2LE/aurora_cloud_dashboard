@@ -76,7 +76,7 @@ It shows:
 - Aurora Power Supply battery state of charge from `BatterySOC`, scored green
   at or above `50 %`, amber from `25-50 %`, and red below `25 %`
 - Aurora Power Supply internal temperature from `InternalTemperature`,
-  scored green below `35 C`, amber from `35-40 C`, and red at `40 C` or above
+  scored green below `40 C`, amber from `40-45 C`, and red at `45 C` or above
 - storage cards for the source hosts, the local Aurora host, and the JASMIN GWS
 - per-stream archive and prune-readiness status
 

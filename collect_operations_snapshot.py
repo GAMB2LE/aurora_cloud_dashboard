@@ -892,9 +892,9 @@ def _level_from_battery_soc(value: float | None) -> str:
 def _level_from_internal_temp(value: float | None) -> str:
     if value is None:
         return "gray"
-    if value < 35.0:
-        return "green"
     if value < 40.0:
+        return "green"
+    if value < 45.0:
         return "amber"
     return "red"
 
