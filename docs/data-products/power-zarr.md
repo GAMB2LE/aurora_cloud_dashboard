@@ -87,21 +87,22 @@ but stores one-minute cumulative kWh traces so the interactive APS cumulative
 panel does not need to reopen several days of one-second samples for every
 browser render.
 
-`PowerDisplayPowerSurplusDeficit` is a signed storage-balance trace. Negative
-values are kWh needed to refill the installed battery to 100% SOC, scaled to
-the configured battery-bank capacity. The default deployed capacity is `30 kWh`
-and can be changed with `AURORA_APS_BATTERY_CAPACITY_KWH`. The calculation uses
+`PowerDisplayPowerSurplusDeficit` keeps its historical variable name for
+compatibility, but the dashboard presents it as `Battery Deficit`. Values are
+positive kWh needed to refill the installed battery to 100% SOC, scaled to the
+configured battery-bank capacity. The default deployed capacity is `30 kWh` and
+can be changed with `AURORA_APS_BATTERY_CAPACITY_KWH`. The calculation uses
 `BatterySOC` when available and falls back to `AvailableCapacity / TotCapacity`;
 those raw capacity fields are treated as proportional counters rather than kAh
-values to multiply by voltage. Positive extra-storage values are intentionally
-not inferred at present because `MaxSolarWatts_*` can remain nonzero at night
-and is not a reliable curtailed-solar measurement. Until a trustworthy
-available-solar or curtailed-energy signal is identified, this derived variable
-is a conservative negative refill-deficit trace only.
+values to multiply by voltage. Extra-storage values are intentionally not
+inferred at present because `MaxSolarWatts_*` can remain nonzero at night and is
+not a reliable curtailed-solar measurement. Until a trustworthy available-solar
+or curtailed-energy signal is identified, this derived variable is a
+conservative positive refill-deficit trace only.
 
-When checked on `2026-05-19`, this derived store had `time=17244`, 6 data
+When checked on `2026-05-19`, this derived store had `time=17258`, 6 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-19 18:25:00`.
+`2026-05-05 15:15:00` to `2026-05-19 18:39:00`.
 
 Variables:
 

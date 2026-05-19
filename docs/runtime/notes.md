@@ -56,14 +56,15 @@ The cumulative Power display product is computed with full available context.
 Solar-yield counters are treated as daily counters and converted to positive
 increments, so delayed controller resets after midnight do not produce false
 generation drops in the latest 24 h view. The utilised term remains the AC+DC
-output power integral. The right-axis surplus/deficit trace is a signed storage
-balance rather than a simple generated-minus-utilised sum: negative values are
-kWh needed to refill the installed battery to 100% SOC, scaled to the configured
-installed bank capacity of `30 kWh` by default. Positive extra-storage values
-are intentionally disabled for now because `MaxSolarWatts_*` can be nonzero at
-night and is not a reliable curtailed-solar measurement. Daily generated and
-utilised traces are visually broken at UTC midnight so their resets are shown as
-new segments rather than connected vertical jumps.
+output power integral. The Battery Deficit trace shares the cumulative kWh axis
+and is a conservative refill-deficit estimate rather than a simple
+generated-minus-utilised sum: values are positive kWh needed to refill the
+installed battery to 100% SOC, scaled to the configured installed bank capacity
+of `30 kWh` by default. Extra-storage values are intentionally disabled for now
+because `MaxSolarWatts_*` can be nonzero at night and is not a reliable
+curtailed-solar measurement. Daily generated and utilised traces are visually
+broken at UTC midnight so their resets are shown as new segments rather than
+connected vertical jumps.
 
 ## Meteorology display merge
 

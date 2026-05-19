@@ -25,10 +25,10 @@ Typical panels include:
   - `West Solar Generated`
   - `Total Generated`
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
-  - `Power Surplus / Deficit` on the right axis, calculated as a signed storage
-    balance. Negative values are kWh required to refill the installed battery
-    to 100% SOC. Positive extra-storage values are not inferred until a
-    trustworthy curtailed-solar signal is available.
+  - `Battery Deficit`, plotted on the same cumulative kWh axis. Values are
+    positive kWh required to refill the installed battery to 100% SOC.
+    Extra-storage values are not inferred until a trustworthy curtailed-solar
+    signal is available.
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
@@ -75,16 +75,16 @@ The cumulative panel is normalized in the display-energy product. The
 `SolarYield_*` counters are converted into positive UTC-day increments, so
 delayed controller resets just after midnight do not create false drops in the
 plotted generation lines. The utilised-energy line is integrated from AC+DC
-output power. The right-axis surplus/deficit trace is no longer a simple
+output power. The Battery Deficit trace is no longer a simple
 generated-minus-utilised sum. It uses the configured installed battery-bank
 capacity, `30 kWh` by default, with `BatterySOC` or
 `AvailableCapacity / TotCapacity` to estimate the kWh needed to return the
 installed battery to full charge. The raw `TotCapacity` and
 `AvailableCapacity` fields are treated as proportional capacity counters, not
-as kAh values to multiply by voltage. Positive extra-storage values are not
-currently inferred because the APS `MaxSolarWatts_*` fields can stay nonzero at
+as kAh values to multiply by voltage. Extra-storage values are not currently
+inferred because the APS `MaxSolarWatts_*` fields can stay nonzero at
 night and are not a trustworthy available-solar signal. Until a real curtailed
-solar measurement is identified, this trace is a conservative negative refill
+solar measurement is identified, this trace is a conservative positive refill
 deficit only.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.

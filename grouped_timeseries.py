@@ -261,10 +261,10 @@ HUMAN_LABELS = {
     "PowerDisplaySolarYield_West": "West Solar Generated",
     "CumulativePowerGeneratedTotal": "Total Generated",
     "CumulativePowerUtilised": "Power Utilised",
-    "PowerSurplusDeficit": "Power Surplus / Deficit",
+    "PowerSurplusDeficit": "Battery Deficit",
     "PowerDisplayCumulativePowerGeneratedTotal": "Total Generated",
     "PowerDisplayCumulativePowerUtilised": "Power Utilised",
-    "PowerDisplayPowerSurplusDeficit": "Power Surplus / Deficit",
+    "PowerDisplayPowerSurplusDeficit": "Battery Deficit",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -650,14 +650,14 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "cumulative_power",
             "Cumulative Power",
             "Cumulative Energy [kWh]",
-            "Power Surplus / Deficit [kWh]",
+            None,
             (
                 TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"], break_on_day_change=True),
                 TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"], break_on_day_change=True),
                 TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"], break_on_day_change=True),
                 TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"], break_on_day_change=True),
                 TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"], break_on_day_change=True),
-                TraceSpec("PowerSurplusDeficit", "Power Surplus / Deficit", COLOR["red"], axis="right"),
+                TraceSpec("PowerSurplusDeficit", "Battery Deficit", COLOR["red"]),
             ),
         ),
         PanelSpec(
@@ -1291,12 +1291,14 @@ def _battery_deficit_to_full_kwh(ds: xr.Dataset) -> np.ndarray | None:
 
 
 def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.ndarray | None:
-    """Conservative signed storage balance for the APS cumulative panel.
+    """Conservative battery refill deficit for the APS cumulative panel.
 
-    Negative values mean kWh needed to refill the installed battery to 100% SOC.
-    The positive "could have captured with extra batteries" side is deliberately
-    disabled until a trustworthy curtailed-solar signal is available. The APS
-    `MaxSolarWatts_*` fields can remain nonzero at night, so treating
+    Values are positive kWh needed to refill the installed battery to 100% SOC.
+    The old variable name is retained for compatibility, but the dashboard label
+    is now "Battery Deficit" because the positive "could have captured with
+    extra batteries" side is deliberately disabled until a trustworthy
+    curtailed-solar signal is available. The APS `MaxSolarWatts_*` fields can
+    remain nonzero at night, so treating
     `MaxSolarWatts_* - SolarWatts_*` as available sunlight creates impossible
     jumps.
     """
@@ -1306,7 +1308,7 @@ def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.
     deficit_kwh = _battery_deficit_to_full_kwh(ds)
     if deficit_kwh is None:
         return None
-    return -np.clip(deficit_kwh[:count], a_min=0.0, a_max=APS_BATTERY_CAPACITY_KWH)
+    return np.clip(deficit_kwh[:count], a_min=0.0, a_max=APS_BATTERY_CAPACITY_KWH)
 
 
 def _display_energy_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
@@ -1706,6 +1708,8 @@ def _axis_tick_values(
     for value in values:
         if abs(value) < step * 1.0e-6:
             labels.append("0")
+        elif decimals == 0:
+            labels.append(f"{value:.0f}")
         else:
             labels.append(f"{value:.{decimals}f}".rstrip("0").rstrip("."))
     return values.tolist(), labels
