@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape after the CRD parser update, checked on `2026-05-18`:
-  - `time=20635`
+- deployed shape after the CRD parser update, checked on `2026-05-19`:
+  - `time=21007`
 - time coverage when checked: `2026-05-02 00:00:00` to
-  `2026-05-18 23:30:00`
+  `2026-05-19 12:30:00`
 - sorted unique `time` coordinate
 
 ## Time coordinate
@@ -68,6 +68,8 @@ Examples include:
   CRD variables; missing values for variables that do not exist in a given
   source format are stored as `NaN`
 - the appender keeps the current variable set fixed between deliberate rebuilds
+- append writes materialize only the already-filtered new sample block before
+  writing, matching the cross-instrument Zarr append policy
 
 ## Chunking
 

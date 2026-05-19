@@ -21,7 +21,10 @@ operations tooling. The most important files are grouped below by role.
 - `append_new_netcdf_to_zarr.py`
 
 These scripts ingest raw mirrored files and append them into the deployed Zarr
-stores.
+stores. The appenders sort and deduplicate time coordinates, filter to samples
+that are genuinely newer than the existing store, materialize that filtered
+block, and then append. That policy avoids partial chunk writes that can show
+up as false all-NaN stripes in range-resolved products.
 
 ## Quicklooks and latest plots
 

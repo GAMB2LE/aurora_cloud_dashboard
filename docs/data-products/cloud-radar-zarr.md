@@ -7,11 +7,11 @@ Path:
 ## Dataset shape
 
 - dimensions: `time`, `range`
-- deployed shape when checked on `2026-05-18`:
-  - `time=172045`
+- deployed shape when checked on `2026-05-19`:
+  - `time=199218`
   - `range=312`
 - time coverage when checked: `2026-05-09 08:59:59.305` to
-  `2026-05-18 22:59:54.510`
+  `2026-05-19 11:59:55.291`
 - sorted unique `time` coordinate
 
 ## Coordinates
@@ -50,6 +50,9 @@ the mirrored raw RPG LV1 files under `/project/aurora/raw/rpgfmcw94`.
   the dashboard also keeps a defensive future-time mask for plot bounds
 - append runs track the `range` layout and automatically rebuild a fresh store
   when a new contiguous raw-file run arrives with a different radar geometry
+- append writes materialize only the already-filtered new block before writing,
+  avoiding partial chunk appends that can create false all-NaN vertical stripes
+  in one radar moment while other moments remain valid
 
 ## Chunking
 

@@ -35,3 +35,8 @@ interactive Plotly JSON under `/data/aurora/products/dashboard/prewarm/`.
 WXcam adds media/catalog products on top of that pattern, while Operations
 Dashboard adds raw JSONL snapshots, a monitoring Zarr, archived PNG quicklooks,
 live trend cards, and observe-only health reports.
+
+Numeric appenders use a common safe-append policy: incoming files are sorted,
+deduplicated, filtered to genuinely new timestamps, and materialized before the
+Zarr append. That keeps the deployed stores monotonic and avoids partial chunk
+writes that can otherwise appear as false data gaps or all-NaN stripes.

@@ -16,9 +16,9 @@ separate trees.
   - `/project/aurora/raw/power/level1`
   - `/project/aurora/raw/wxcam`
 - **Storage type:** shared Ceph network filesystem
-- **Current filesystem size on `2026-05-18`:** `4.0T`
-- **Current used on `2026-05-18`:** `41G`
-- **Current available on `2026-05-18`:** `3.9T`
+- **Current filesystem size on `2026-05-19`:** `4.0T`
+- **Current used on `2026-05-19`:** `41G`
+- **Current available on `2026-05-19`:** `3.9T`
 
 So `/project/aurora` is the raw landing and mirror area.
 
@@ -37,9 +37,9 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
 - **Storage type:** local disk on `/dev/vdb`
-- **Current filesystem size on `2026-05-18`:** `983G`
-- **Current used on `2026-05-18`:** `216G`
-- **Current available on `2026-05-18`:** `718G`
+- **Current filesystem size on `2026-05-19`:** `983G`
+- **Current used on `2026-05-19`:** `225G`
+- **Current available on `2026-05-19`:** `708G`
 
 So `/data/aurora` is the product, work, and output area.
 

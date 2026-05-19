@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-18`:
-  - `time=230236`
+- deployed shape when checked on `2026-05-19`:
+  - `time=238261`
 - time coverage when checked: `2026-05-02 00:00:02` to
-  `2026-05-18 23:46:54`
+  `2026-05-19 12:56:59`
 - sorted unique `time` coordinate
 
 ## Time coordinate
@@ -44,6 +44,8 @@ Examples include:
 - append runs align incoming files to the existing Zarr schema
 - missing existing columns are filled with `NaN`
 - newly appearing columns are dropped unless the store is rebuilt
+- append writes materialize only the already-filtered new sample block before
+  writing, matching the cross-instrument Zarr append policy
 
 ## Chunking
 

@@ -22,7 +22,7 @@ The WXcam catalog lives at:
 It indexes FISH HDR and PANO HDR JPG/MP4 files. Timestamps are derived from
 filenames and stored as UTC.
 
-Key fields include:
+The active table is `images`. Key fields include:
 
 - `image_type` - `fish_hdr` or `pano_hdr`
 - `media_kind` - `image` or `video`
@@ -31,9 +31,10 @@ Key fields include:
 - `width`, `height`, `size_bytes`, `mtime_ns`, `indexed_at`
 
 Catalog queries should order records by `time_epoch_ns` and then `raw_path`.
-When checked on `2026-05-18`, the catalog had no null timestamp rows, all
+When checked on `2026-05-19`, the catalog had no null timestamp rows, all
 cataloged images were HDR files, and FISH/PANO image and video records were
-ordered cleanly by timestamp.
+ordered cleanly by timestamp. At that check it contained `46425` FISH HDR image
+records, `46424` PANO HDR image records, and `1287` MP4 records for each stream.
 
 ## Daily videos and hourly thumbnails
 

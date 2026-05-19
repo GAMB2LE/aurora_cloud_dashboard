@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-18`:
-  - `time=892175`
+- deployed shape when checked on `2026-05-19`:
+  - `time=935543`
 - time coverage when checked: `2026-05-05 15:15:23.598658936` to
-  `2026-05-18 23:48:53.813775146`
+  `2026-05-19 12:53:42.726175049`
 - sorted unique `time` coordinate
 
 ## Time coordinate
@@ -58,6 +58,8 @@ Examples include:
 
 - append runs keep the existing variable set fixed in the same way as
   `vaisalamet`
+- append writes materialize only the already-filtered new sample block before
+  writing, matching the cross-instrument Zarr append policy
 
 ## Chunking
 
@@ -85,9 +87,9 @@ but stores one-minute cumulative kWh traces so the interactive APS cumulative
 panel does not need to reopen several days of one-second samples for every
 browser render.
 
-When checked on `2026-05-18`, this derived store had `time=16118`, 6 data
+When checked on `2026-05-19`, this derived store had `time=16910`, 6 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-18 23:39:00`.
+`2026-05-05 15:15:00` to `2026-05-19 12:51:00`.
 
 Variables:
 

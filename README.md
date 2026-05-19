@@ -67,9 +67,9 @@ separate trees on purpose.
   - `/project/aurora/raw/power/level1`
   - `/project/aurora/raw/wxcam`
 - Storage type: shared Ceph network filesystem
-- Current filesystem size on `2026-05-18`: `4.0T`
-- Current used on `2026-05-18`: `41G`
-- Current available on `2026-05-18`: `3.9T`
+- Current filesystem size on `2026-05-19`: `4.0T`
+- Current used on `2026-05-19`: `41G`
+- Current available on `2026-05-19`: `3.9T`
 
 So `/project/aurora` is the raw landing and mirror area.
 
@@ -88,9 +88,9 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
 - Storage type: local disk on `/dev/vdb`
-- Current filesystem size on `2026-05-18`: `983G`
-- Current used on `2026-05-18`: `216G`
-- Current available on `2026-05-18`: `718G`
+- Current filesystem size on `2026-05-19`: `983G`
+- Current used on `2026-05-19`: `225G`
+- Current available on `2026-05-19`: `708G`
 
 So `/data/aurora` is the product, work, and output area.
 
@@ -310,7 +310,7 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 
 ## Notes
 
-- Radar data currently contains at least one bogus far-future timestamp in the Zarr store. `app.py` filters clearly invalid future times when computing bounds and plotting windows so the interactive view stays usable.
+- Radar ingest now drops clearly bogus future timestamps before writing, and `app.py` keeps a defensive future-time mask when computing bounds and plotting windows so the interactive view stays usable if a bad sample appears before the next rebuild.
 - `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab. The Aurora Power Supply summary also overlays `watts_on_48vdc_Avg` from the ASFS logger Zarr on the right axis of the Output Power panel so ASS 48 V DC load is visible next to APS output. The cumulative Power panel normalizes `SolarYield_*` counters into positive UTC-day increments, computes AC+DC utilisation with lookback context before cropping to the selected/latest window, and plots a carried cumulative kWh surplus/deficit trace. The red trace is anchored with one constant offset from recent full-SOC history rather than stepped at the SOC threshold. Daily generated and utilised traces are visually broken at UTC midnight so their resets do not draw as false vertical jumps.
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store. With the current ASFS CRD schema this includes ASFS Vaisala temperature, relative humidity, and pressure alongside the existing Metek wind and temperature context.
 - `Radiation` summary plots use the current ASFS CRD fields for SR30 shortwave radiation and support data, IR20 longwave radiation and support data, flux plates, KT15 surface temperature, and SR50 distance.
@@ -333,6 +333,10 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30 UTC` and shows a tile only when an image exists for that hour; the quicklook header, selected still title, and availability bar all label the times as UTC.
 - `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, systemd unit state, dashboard HTTP checks, dashboard/infra git state, and the latest Aurora Power Supply `DCInverterVolts`, `BatterySOC`, and `InternalTemperature` samples from the power Zarr. They stamp each snapshot with both `time_utc` and `snapshot_time_utc`, mark each stream red when the source has not produced data in the last 1.5 hours, score battery voltage as green above `52 V`, amber from `50-52 V`, and red below `50 V`, score battery SOC as green at or above `50 %`, amber from `25-50 %`, and red below `25 %`, and score APS internal temperature as green below `40 C`, amber from `40-45 C`, and red at `45 C` or above. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the Phase 1 observe-only sentinel also writes `latest_health.json` and Markdown health reports under `/data/aurora/products/ops_monitor/health`. A fresh deployment can therefore show a live Operations tab and health report before the archived monitoring quicklook directory fills in.
 - `Operations` email alerts are evaluated by `send_ops_alerts.py` from the latest operations snapshot. Alerts go to `gamb2le@ncas.ac.uk` for storage usage at `80 %`, battery SOC at or below `20 %`, APS internal temperature at or above `45 C`, battery voltage below `50 V`, and stream-health problems that persist for `3 h`. Alert state and event logs live under `/data/aurora/products/ops_monitor/alerts`.
+- Numeric appenders use a common safe-append policy: incoming files are sorted,
+  deduplicated, filtered to genuinely new timestamps, and materialized before
+  the Zarr append. This keeps the deployed stores monotonic and avoids partial
+  chunk writes that can otherwise appear as false data gaps or all-NaN stripes.
 
 ## Zarr data products
 
@@ -343,7 +347,7 @@ Path: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape checked on `2026-05-18`: `time=106392`, `range=3276`, `layer=5`
+- deployed shape checked on `2026-05-19`: `time=111582`, `range=3276`, `layer=5`
 - coordinates:
   - `time` - profile timestamps
   - `range` - range gate center in meters
@@ -406,7 +410,7 @@ Path: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`
-- deployed shape checked on `2026-05-18`: `time=169783`, `range=312`
+- deployed shape checked on `2026-05-19`: `time=199218`, `range=312`
 - coordinates:
   - `time` - derived from `Time + Timems`
   - `range` - concatenated chirp range gates from `C1Range` and `C2Range`
@@ -433,6 +437,7 @@ Conversion notes:
 - fill values at or below the radar missing-data sentinel are converted to `NaN`
 - the dashboard masks obviously bogus far-future timestamps when plotting or choosing the latest time window
 - append runs now track the `range` layout; if new raw files arrive with a different radar geometry, the appender backs up the existing store and rebuilds a fresh store from the newest contiguous geometry run
+- append writes materialize only the already-filtered new block before writing, avoiding partial chunk appends that can create false all-NaN vertical stripes
 
 Chunking:
 
@@ -445,7 +450,7 @@ Path: `/data/aurora/products/hatprog5/hatpro.zarr`
 This store is a consolidated time-indexed xarray product for the RPG HATPRO G5
 scanning microwave radiometer.
 
-- deployed shape checked on `2026-05-18`: `time=694062`, `range=94`
+- deployed shape checked on `2026-05-19`: `time=741953`, `range=94`
 - the deployed store currently contains 6 variables:
   - `LWP`
   - `IWV`
@@ -463,7 +468,7 @@ Path: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=229410`
+- deployed shape checked on `2026-05-19`: `time=238261`
 - coordinate:
   - `time` - parsed from the raw `timestamp` column, localized as `Europe/London`, then converted to UTC before storage
 
@@ -502,7 +507,7 @@ Path: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=20599`
+- deployed shape checked on `2026-05-19`: `time=21007`
 - coordinate:
   - `time` - parsed directly from the TOA5 `TIMESTAMP` column
 
@@ -540,7 +545,7 @@ Path: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=1987921`
+- deployed shape checked on `2026-05-19`: `time=2028871`
 - coordinate:
   - `time` - parsed from `TIMESTAMP` and offset by `metek_msec_out` to preserve sub-second timing
 
@@ -580,7 +585,7 @@ Path: `/data/aurora/products/power/power.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-18`: `time=887825`
+- deployed shape checked on `2026-05-19`: `time=935543`
 - coordinate:
   - `time` - parsed from the raw `aps_time` column
 
@@ -699,11 +704,11 @@ Each group stores one xarray dataset with:
   - `height[time]`
   - `size_bytes[time]`
 
-Group-specific image geometry checked on `2026-05-18`:
+Group-specific image geometry checked on `2026-05-19`:
 
-- `fish_hdr`: `time=13557`, `3120 x 3040` pixels, `channel=3`,
+- `fish_hdr`: `time=14076`, `3120 x 3040` pixels, `channel=3`,
   chunked as `(1, 1024, 1024, 3)`, covering `2026-05-02 00:00:00` to
-  `2026-05-18 22:25:39`
-- `pano_hdr`: `time=2214`, `2880 x 750` pixels, `channel=3`, chunked as
+  `2026-05-19 12:50:39`
+- `pano_hdr`: `time=2731`, `2880 x 750` pixels, `channel=3`, chunked as
   `(1, 750, 1024, 3)`, covering `2026-01-12 02:25:00` to
-  `2026-05-18 22:25:39`
+  `2026-05-19 12:50:39`

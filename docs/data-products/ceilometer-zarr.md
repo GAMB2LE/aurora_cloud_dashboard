@@ -7,12 +7,12 @@ Path:
 ## Dataset shape
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape when checked on `2026-05-18`:
-  - `time=106872`
+- deployed shape when checked on `2026-05-19`:
+  - `time=111582`
   - `range=3276`
   - `layer=5`
 - time coverage when checked: `2026-05-06 14:34:37` to
-  `2026-05-18 23:45:35.726000128`
+  `2026-05-19 12:50:35.596000000`
 - sorted unique `time` coordinate
 
 ## Coordinates
@@ -77,3 +77,12 @@ Path:
 - `time x range` fields such as `beta_att` are chunked `(30, full-range)`
 - `time x layer` diagnostics are chunked `(30, 5)`
 - `time`-only diagnostics are chunked `(30,)`
+
+## Append and repair notes
+
+The CL61 appender filters incoming files down to genuinely new timestamps,
+loads that already-filtered block, and then appends it. This avoids partial
+chunk writes that can leave raw-valid range profiles as all-NaN stripes in the
+Zarr. The recent visible CL61 window was repaired from the raw mirror after
+this policy was added, and recent plotted fields have been checked against the
+source files.
