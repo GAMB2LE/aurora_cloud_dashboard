@@ -20,12 +20,13 @@ Typical panels include:
   - DC inverter power
   - ASS 48 V DC power from `watts_on_48vdc_Avg` on the right axis
 - **Cumulative Power & State of Charge**
+  - `State of Charge`, from `BatterySOC`, on the left axis in percent
   - `East Solar Generated`
   - `South Solar Generated`
   - `West Solar Generated`
   - `Total Generated`
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
-  - `State of Charge`, from `BatterySOC`, plotted on the same left axis in percent
+  - cumulative generated and utilised energy traces on the right axis in kWh
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
@@ -70,9 +71,10 @@ The cumulative panel is normalized in the display-energy product. The
 delayed controller resets just after midnight do not create false drops in the
 plotted generation lines. The utilised-energy line is integrated from AC+DC
 output power. `BatterySOC` remains a direct raw Power Zarr field and is plotted
-as `State of Charge` on the same left axis as the cumulative kWh traces, so the
-panel shows generation, use, and battery state without deriving a separate
-deficit estimate.
+as `State of Charge` on the left axis. The cumulative generated and utilised
+energy traces are plotted on the right axis in kWh, so the panel shows
+generation, use, and battery state without deriving a separate deficit
+estimate.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 

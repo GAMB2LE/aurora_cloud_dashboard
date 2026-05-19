@@ -57,9 +57,10 @@ Solar-yield counters are treated as daily counters and converted to positive
 increments, so delayed controller resets after midnight do not produce false
 generation drops in the latest 24 h view. The utilised term remains the AC+DC
 output power integral. `BatterySOC` is plotted directly from `power.zarr` as
-`State of Charge` on the same left axis as the cumulative energy traces. Daily
-generated and utilised traces are visually broken at UTC midnight so their
-resets are shown as new segments rather than connected vertical jumps.
+`State of Charge` on the left axis, while generated and utilised cumulative
+energy traces are plotted on the right axis. Daily generated and utilised
+traces are visually broken at UTC midnight so their resets are shown as new
+segments rather than connected vertical jumps.
 
 ## Meteorology display merge
 

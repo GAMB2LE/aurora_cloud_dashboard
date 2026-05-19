@@ -657,15 +657,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         PanelSpec(
             "cumulative_power",
             "Cumulative Power & State of Charge",
-            "Cumulative Energy [kWh] / SOC [%]",
-            None,
+            "SOC [%]",
+            "Cumulative Energy [kWh]",
             (
-                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"], break_on_day_change=True),
-                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"], break_on_day_change=True),
-                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"], break_on_day_change=True),
-                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"], break_on_day_change=True),
-                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"], break_on_day_change=True),
                 TraceSpec("BatterySOC", "State of Charge", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"], axis="right", break_on_day_change=True),
+                TraceSpec("SolarYield_South", "South Solar Generated", COLOR["purple"], axis="right", break_on_day_change=True),
+                TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"], axis="right", break_on_day_change=True),
+                TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"], axis="right", break_on_day_change=True),
+                TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"], axis="right", break_on_day_change=True),
             ),
         ),
         PanelSpec(

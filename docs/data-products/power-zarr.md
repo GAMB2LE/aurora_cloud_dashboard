@@ -88,13 +88,13 @@ panel does not need to reopen several days of one-second samples for every
 browser render.
 
 `BatterySOC` is not duplicated in this compact store. The dashboard reads it
-directly from `power.zarr` and plots it as `State of Charge` on the same left
-axis as the generated and utilised energy traces in the
-**Cumulative Power & State of Charge** panel.
+directly from `power.zarr` and plots it as `State of Charge` on the left axis
+of the **Cumulative Power & State of Charge** panel. The generated and utilised
+energy traces from this compact store are plotted on that panel's right axis.
 
-When checked on `2026-05-19`, this derived store had `time=17304`, 5 data
+When checked on `2026-05-19`, this derived store had `time=17329`, 5 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-19 19:25:00`.
+`2026-05-05 15:15:00` to `2026-05-19 19:50:00`.
 
 Variables:
 
