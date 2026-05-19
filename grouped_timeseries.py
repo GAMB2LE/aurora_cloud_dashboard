@@ -34,6 +34,8 @@ MATPLOTLIB_PANEL_RIGHT = 0.72
 MATPLOTLIB_LEGEND_X = 1.12
 PLOTLY_PANEL_DOMAIN_END = 0.73
 PLOTLY_LEGEND_X = 0.84
+PLOTLY_POWER_LEGEND_X = 1.03
+PLOTLY_POWER_RIGHT_MARGIN = 320
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -1978,12 +1980,18 @@ def build_summary_plotly(
     title: str | None = None,
     max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
 ) -> go.Figure:
-    vertical_spacing = 0.04
     ds = _prepare_summary_dataset(ds, instrument)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
     if len(times) == 0 or not panels:
         raise ValueError(f"No summary time-series panels available for {instrument}")
+
+    vertical_spacing = 0.028 if len(panels) >= 6 else 0.04
+    panel_domain_end = 0.82 if instrument == "power" else PLOTLY_PANEL_DOMAIN_END
+    legend_x = PLOTLY_POWER_LEGEND_X if instrument == "power" else PLOTLY_LEGEND_X
+    right_margin = PLOTLY_POWER_RIGHT_MARGIN if instrument == "power" else 80
+    per_panel_height = 330 if instrument == "power" else 280
+    max_height = 2400 if instrument == "power" else 1800
 
     fig = make_subplots(
         rows=len(panels),
@@ -2000,14 +2008,15 @@ def build_summary_plotly(
         legend_name = "legend" if row_index == 1 else f"legend{row_index}"
         panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
         legend_layouts[legend_name] = dict(
-            x=PLOTLY_LEGEND_X,
+            x=legend_x,
             xanchor="left",
             y=max(0.02, panel_top - 0.02),
             yanchor="top",
-            bgcolor="rgba(255,255,255,0.85)",
+            bgcolor="rgba(255,255,255,0.92)",
             bordercolor=PLOT_BORDER,
             borderwidth=1,
-            font=dict(size=10, color=PLOT_TEXT),
+            font=dict(size=9, color=PLOT_TEXT),
+            itemsizing="constant",
             tracegroupgap=2,
         )
         left_color = None
@@ -2054,6 +2063,7 @@ def build_summary_plotly(
                 right_range = common_range
         fig.update_yaxes(
             title_text=panel.left_axis_label,
+            automargin=True,
             showgrid=True,
             gridcolor=PLOT_GRID,
             linecolor=PLOT_LINE,
@@ -2071,6 +2081,7 @@ def build_summary_plotly(
                 right_tick_values, right_tick_labels = _axis_tick_values(right_range, step=2.0)
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
+                automargin=True,
                 showgrid=False,
                 gridcolor=PLOT_GRID,
                 zeroline=False,
@@ -2101,7 +2112,7 @@ def build_summary_plotly(
             tickvals.append(stamp.to_pydatetime())
             ticktext.append(stamp.strftime("%H:%M"))
     fig.update_xaxes(
-        domain=[0.0, PLOTLY_PANEL_DOMAIN_END],
+        domain=[0.0, panel_domain_end],
         tickmode="array",
         tickvals=tickvals,
         ticktext=ticktext,
@@ -2113,8 +2124,8 @@ def build_summary_plotly(
     fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
         showlegend=True,
-        height=max(620, min(1800, 280 * len(panels) + 90)),
-        margin=dict(l=80, r=80, t=60, b=70),
+        height=max(620, min(max_height, per_panel_height * len(panels) + 90)),
+        margin=dict(l=80, r=right_margin, t=60, b=70),
         paper_bgcolor="white",
         plot_bgcolor="white",
         font=dict(color=PLOT_TEXT, size=12),
