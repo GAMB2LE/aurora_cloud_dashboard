@@ -223,7 +223,6 @@ def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size
                         group=image_type,
                         mode="a",
                         append_dim="time",
-                        safe_chunks=False,
                     )
                 else:
                     ds.to_zarr(

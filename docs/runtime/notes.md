@@ -19,6 +19,13 @@ writing. The operations-monitor appender also checks the existing Zarr before
 append; if it finds an older manual/timer race that left time samples out of
 order, it backs up the store and rebuilds it from the raw JSONL snapshots.
 
+Append jobs should also filter to genuinely new timestamps before chunking or
+writing. This avoids partial chunk appends that can leave all-NaN profile
+stripes in range-resolved products. The CL61 and cloud-radar products were
+repaired from their raw mirrors after this policy was added, and the numeric
+appenders now materialize only the already-filtered new block before writing to
+Zarr.
+
 ## Curated 1D instruments
 
 `Meteorology`, `Radiation`, and `Aurora Power Supply` use fixed summary layouts.

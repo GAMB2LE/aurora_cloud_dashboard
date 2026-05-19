@@ -202,7 +202,7 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
         return
 
     print(f"Scanning {len(files)} candidate files")
-    combined = _load_files(files, chunks=chunks)
+    combined = _load_files(files, chunks=None)
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no readable operations snapshots.")
         return
@@ -216,9 +216,8 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
         print(f"{exc}; rebuilding from raw snapshots.")
         _backup_existing_store(zarr_path, "schema")
         return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
-    if chunks:
-        combined = combined.chunk(chunks)
-    combined.to_zarr(zarr_path, mode="a", append_dim="time", safe_chunks=False)
+    combined = combined.load()
+    combined.to_zarr(zarr_path, mode="a", append_dim="time")
     _consolidate(zarr_path)
     print("Append complete.")
 
