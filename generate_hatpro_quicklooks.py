@@ -58,7 +58,7 @@ def main(force: bool = False) -> None:
         if window.sizes.get("time", 0) < 2:
             continue
         title = pd.Timestamp(day).strftime("Scanning Microwave Radiometer - %Y-%m-%d")
-        _plot_hatpro(window, title, output)
+        _plot_hatpro(window, title, output, x_start=start, x_end=end)
 
 
 if __name__ == "__main__":

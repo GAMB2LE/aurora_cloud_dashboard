@@ -40,6 +40,11 @@ Science Quicklooks are written to:
 
 - `/data/aurora/products/quicklooks/hatpro`
 
+The static HATPRO science quicklook uses a common UTC x-axis across the LWP/IWV,
+surface-temperature, and temperature-profile panels. The profile panel is built
+from valid `T_PROF` profile times independently from the denser 1D variables, so
+time thinning does not leave the heatmap with only a few profile columns.
+
 Detailed schema:
 
 - [HATPRO Zarr](../data-products/hatpro-zarr.md)
