@@ -55,15 +55,16 @@ dominate the plotted scale.
 The cumulative Power display product is computed with full available context.
 Solar-yield counters are treated as daily counters and converted to positive
 increments, so delayed controller resets after midnight do not produce false
-generation drops in the latest 24 h view. The right-axis surplus/deficit trace
-is a carried cumulative kWh balance: each day's
-`Total Generated - Utilised` balance starts from the previous day's ending
-surplus or deficit. The utilised term remains the AC+DC output power integral.
-The balance is anchored to recent full-SOC history using one constant offset.
-That avoids both midnight discontinuities and artificial jumps at the SOC
-threshold. Daily generated and utilised traces are visually broken at UTC
-midnight so their resets are shown as new segments rather than connected
-vertical jumps.
+generation drops in the latest 24 h view. The utilised term remains the AC+DC
+output power integral. The right-axis surplus/deficit trace is a signed storage
+balance rather than a simple generated-minus-utilised sum: negative values are
+kWh needed to refill the installed battery to 100% SOC, while positive values
+are curtailed solar kWh that could have been captured by extra battery capacity
+while the installed battery was full. Positive reserve carries forward and is
+drawn down by later battery discharge, so days that never return to 100% SOC
+keep their remaining deficit. Daily generated and utilised traces are visually
+broken at UTC midnight so their resets are shown as new segments rather than
+connected vertical jumps.
 
 ## Meteorology display merge
 

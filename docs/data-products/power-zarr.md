@@ -87,9 +87,18 @@ but stores one-minute cumulative kWh traces so the interactive APS cumulative
 panel does not need to reopen several days of one-second samples for every
 browser render.
 
-When checked on `2026-05-19`, this derived store had `time=16910`, 6 data
+`PowerDisplayPowerSurplusDeficit` is a signed storage-balance trace. Negative
+values are kWh needed to refill the installed battery to 100% SOC, estimated
+from `TotCapacity`, `AvailableCapacity`, and battery/DC voltage. Positive
+values are curtailed solar kWh that could have been captured by extra battery
+capacity while the installed battery was full, estimated from
+`MaxSolarWatts_* - SolarWatts_*`. Positive reserve carries forward and is drawn
+down by later battery discharge, so days that do not reach 100% SOC retain
+their remaining deficit.
+
+When checked on `2026-05-19`, this derived store had `time=17214`, 6 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-19 12:51:00`.
+`2026-05-05 15:15:00` to `2026-05-19 17:55:00`.
 
 Variables:
 
