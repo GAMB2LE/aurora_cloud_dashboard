@@ -27,8 +27,8 @@ Typical panels include:
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
   - `Power Surplus / Deficit` on the right axis, calculated as a signed storage
     balance. Negative values are kWh required to refill the installed battery
-    to 100% SOC; positive values are curtailed solar kWh that could have been
-    captured by extra battery capacity while the installed battery was full.
+    to 100% SOC. Positive extra-storage values are not inferred until a
+    trustworthy curtailed-solar signal is available.
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
@@ -81,11 +81,11 @@ capacity, `30 kWh` by default, with `BatterySOC` or
 `AvailableCapacity / TotCapacity` to estimate the kWh needed to return the
 installed battery to full charge. The raw `TotCapacity` and
 `AvailableCapacity` fields are treated as proportional capacity counters, not
-as kAh values to multiply by voltage. When `BatterySOC >= 99.5 %`,
-available-but-uncaptured solar from `MaxSolarWatts_* - SolarWatts_*` is
-integrated as extra storage that could have been captured by a larger battery.
-That extra reserve carries forward and is drawn down by later battery
-discharge, so days that never return to 100% SOC keep their remaining deficit.
+as kAh values to multiply by voltage. Positive extra-storage values are not
+currently inferred because the APS `MaxSolarWatts_*` fields can stay nonzero at
+night and are not a trustworthy available-solar signal. Until a real curtailed
+solar measurement is identified, this trace is a conservative negative refill
+deficit only.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 

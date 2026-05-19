@@ -43,10 +43,8 @@ MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
-FULL_SOC_DEFICIT_CLEAR_THRESHOLD = 99.5
 APS_BATTERY_CAPACITY_KWH = float(os.environ.get("AURORA_APS_BATTERY_CAPACITY_KWH", "30"))
 POWER_BALANCE_LOOKBACK_DAYS = int(os.environ.get("AURORA_POWER_BALANCE_LOOKBACK_DAYS", "7"))
-POWER_BALANCE_MAX_STEP_MINUTES = float(os.environ.get("AURORA_POWER_BALANCE_MAX_STEP_MINUTES", "5"))
 POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "1min")
 POWER_DISPLAY_ENERGY_ATTR = "power_display_energy_product"
 POWER_DISPLAY_ENERGY_MAP = {
@@ -1259,52 +1257,6 @@ def _daily_cumulative_counter_delta(times: pd.DatetimeIndex, counter_kwh: np.nda
     return cumulative_kwh
 
 
-def _carryover_energy_balance(
-    times: pd.DatetimeIndex,
-    generated_kwh: np.ndarray,
-    utilised_kwh: np.ndarray,
-) -> np.ndarray:
-    """Carry daily generated-minus-utilised energy balance across UTC days."""
-    balance = np.full(len(times), np.nan, dtype=np.float64)
-    if len(times) == 0:
-        return balance
-
-    day_starts = times.normalize()
-    current_day = None
-    carry_kwh = 0.0
-    last_daily_balance = np.nan
-    for idx, day_start in enumerate(day_starts):
-        if current_day is None or day_start != current_day:
-            if current_day is not None and np.isfinite(last_daily_balance):
-                carry_kwh += float(last_daily_balance)
-            current_day = day_start
-            last_daily_balance = np.nan
-
-        generated = generated_kwh[idx]
-        utilised = utilised_kwh[idx]
-        if not np.isfinite(generated) and not np.isfinite(utilised):
-            continue
-        daily_balance = np.nan_to_num(generated, nan=0.0) - np.nan_to_num(utilised, nan=0.0)
-        balance[idx] = carry_kwh + daily_balance
-        last_daily_balance = daily_balance
-    return balance
-
-
-def _anchor_balance_to_full_soc(
-    balance_kwh: np.ndarray,
-    state_of_charge: np.ndarray,
-    threshold: float = FULL_SOC_DEFICIT_CLEAR_THRESHOLD,
-) -> np.ndarray:
-    """Reference the carried energy balance to full-SOC history with one offset."""
-    balance = np.asarray(balance_kwh, dtype=np.float64)
-    soc = np.asarray(state_of_charge, dtype=np.float64)
-    count = min(balance.size, soc.size)
-    full = np.isfinite(balance[:count]) & np.isfinite(soc[:count]) & (soc[:count] >= threshold)
-    if not np.any(full):
-        return balance.copy()
-    return balance - float(np.nanmin(balance[:count][full]))
-
-
 def _battery_deficit_to_full_kwh(ds: xr.Dataset) -> np.ndarray | None:
     """Return kWh required to refill the installed APS battery to 100%.
 
@@ -1338,33 +1290,15 @@ def _battery_deficit_to_full_kwh(ds: xr.Dataset) -> np.ndarray | None:
     return deficit_kwh
 
 
-def _solar_curtailment_power_w(ds: xr.Dataset) -> np.ndarray | None:
-    """Estimate available-but-uncaptured solar power from APS max/actual fields."""
-    count = ds.sizes.get("time", 0)
-    curtailed = np.zeros(count, dtype=np.float64)
-    found = False
-    for aspect in ("East", "South", "West"):
-        max_name = f"MaxSolarWatts_{aspect}"
-        actual_name = f"SolarWatts_{aspect}"
-        if max_name not in ds or actual_name not in ds:
-            continue
-        max_power = np.asarray(ds[max_name].values, dtype=np.float64)
-        actual_power = np.asarray(ds[actual_name].values, dtype=np.float64)
-        delta = max_power - actual_power
-        valid = np.isfinite(delta)
-        curtailed[valid] += np.clip(delta[valid], a_min=0.0, a_max=None)
-        found = True
-    return curtailed if found else None
-
-
 def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.ndarray | None:
-    """Signed storage balance for the APS cumulative panel.
+    """Conservative signed storage balance for the APS cumulative panel.
 
     Negative values mean kWh needed to refill the installed battery to 100% SOC.
-    Positive values mean extra kWh that could have been captured by additional
-    battery capacity from curtailed solar while the installed battery was full.
-    The positive reserve is carried forward and drawn down when the installed
-    battery later discharges, so days that never reach 100% keep their deficit.
+    The positive "could have captured with extra batteries" side is deliberately
+    disabled until a trustworthy curtailed-solar signal is available. The APS
+    `MaxSolarWatts_*` fields can remain nonzero at night, so treating
+    `MaxSolarWatts_* - SolarWatts_*` as available sunlight creates impossible
+    jumps.
     """
     count = len(times)
     if count == 0:
@@ -1372,45 +1306,7 @@ def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.
     deficit_kwh = _battery_deficit_to_full_kwh(ds)
     if deficit_kwh is None:
         return None
-    curtailed_power_w = _solar_curtailment_power_w(ds)
-    if curtailed_power_w is None:
-        curtailed_power_w = np.zeros(count, dtype=np.float64)
-
-    if "BatterySOC" in ds:
-        soc = np.asarray(ds["BatterySOC"].values, dtype=np.float64)
-        full = np.isfinite(soc) & (soc >= FULL_SOC_DEFICIT_CLEAR_THRESHOLD)
-    else:
-        full = np.isfinite(deficit_kwh) & (deficit_kwh <= 0.1)
-
-    balance = np.full(count, np.nan, dtype=np.float64)
-    extra_storage_kwh = 0.0
-    previous_deficit = np.nan
-    time_ns = times.asi8.astype(np.float64)
-    max_step_hours = max(POWER_BALANCE_MAX_STEP_MINUTES, 0.0) / 60.0
-
-    for idx in range(count):
-        deficit = deficit_kwh[idx]
-        if not np.isfinite(deficit):
-            continue
-        deficit = max(float(deficit), 0.0)
-
-        if np.isfinite(previous_deficit):
-            deficit_increase = deficit - previous_deficit
-            if deficit_increase > 0.0 and extra_storage_kwh > 0.0:
-                extra_storage_kwh = max(0.0, extra_storage_kwh - deficit_increase)
-
-        if idx > 0 and full[idx] and full[idx - 1]:
-            dt_hours = max((time_ns[idx] - time_ns[idx - 1]) / 3.6e12, 0.0)
-            if max_step_hours > 0.0:
-                dt_hours = min(dt_hours, max_step_hours)
-            p0 = curtailed_power_w[idx - 1]
-            p1 = curtailed_power_w[idx]
-            if np.isfinite(p0) and np.isfinite(p1) and dt_hours > 0.0:
-                extra_storage_kwh += 0.5 * (p0 + p1) * dt_hours / 1000.0
-
-        balance[idx] = extra_storage_kwh - deficit
-        previous_deficit = deficit
-    return balance
+    return -np.clip(deficit_kwh[:count], a_min=0.0, a_max=APS_BATTERY_CAPACITY_KWH)
 
 
 def _display_energy_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
@@ -1485,10 +1381,6 @@ def build_power_display_energy_dataset(
         utilised = np.full(len(times), np.nan, dtype=np.float64)
 
     balance = _storage_surplus_deficit_kwh(ds, times)
-    if balance is None and (generated_arrays or "ACOutputWatts" in ds or "DCInverterWatts" in ds):
-        balance = _carryover_energy_balance(times, total_generated, utilised)
-        if "BatterySOC" in ds:
-            balance = _anchor_balance_to_full_soc(balance, np.asarray(ds["BatterySOC"].values, dtype=np.float64))
     if balance is not None:
         frame[POWER_DISPLAY_ENERGY_MAP["PowerSurplusDeficit"]] = balance
 
@@ -1612,22 +1504,6 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
         )
 
     energy_balance = _storage_surplus_deficit_kwh(ds, times)
-    if energy_balance is None and ("CumulativePowerGeneratedTotal" in assignments or "CumulativePowerUtilised" in assignments):
-        generated = np.asarray(
-            assignments["CumulativePowerGeneratedTotal"].values
-            if "CumulativePowerGeneratedTotal" in assignments
-            else np.full(len(times), np.nan),
-            dtype=np.float64,
-        )
-        utilised = np.asarray(
-            assignments["CumulativePowerUtilised"].values
-            if "CumulativePowerUtilised" in assignments
-            else np.full(len(times), np.nan),
-            dtype=np.float64,
-        )
-        energy_balance = _carryover_energy_balance(times, generated, utilised)
-        if "BatterySOC" in ds:
-            energy_balance = _anchor_balance_to_full_soc(energy_balance, np.asarray(ds["BatterySOC"].values, dtype=np.float64))
     if energy_balance is not None:
         assignments["PowerSurplusDeficit"] = xr.DataArray(
             energy_balance,

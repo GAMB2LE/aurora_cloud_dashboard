@@ -93,15 +93,15 @@ the configured battery-bank capacity. The default deployed capacity is `30 kWh`
 and can be changed with `AURORA_APS_BATTERY_CAPACITY_KWH`. The calculation uses
 `BatterySOC` when available and falls back to `AvailableCapacity / TotCapacity`;
 those raw capacity fields are treated as proportional counters rather than kAh
-values to multiply by voltage. Positive values are curtailed solar kWh that
-could have been captured by extra battery capacity while the installed battery
-was full, estimated from `MaxSolarWatts_* - SolarWatts_*`. Positive reserve
-carries forward and is drawn down by later battery discharge, so days that do
-not reach 100% SOC retain their remaining deficit.
+values to multiply by voltage. Positive extra-storage values are intentionally
+not inferred at present because `MaxSolarWatts_*` can remain nonzero at night
+and is not a reliable curtailed-solar measurement. Until a trustworthy
+available-solar or curtailed-energy signal is identified, this derived variable
+is a conservative negative refill-deficit trace only.
 
-When checked on `2026-05-19`, this derived store had `time=17214`, 6 data
+When checked on `2026-05-19`, this derived store had `time=17244`, 6 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-19 17:55:00`.
+`2026-05-05 15:15:00` to `2026-05-19 18:25:00`.
 
 Variables:
 
