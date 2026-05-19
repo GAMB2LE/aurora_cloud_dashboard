@@ -89,20 +89,20 @@ browser render.
 
 `PowerDisplayPowerSurplusDeficit` keeps its historical variable name for
 compatibility, but the dashboard presents it as `Battery Deficit`. Values are
-positive kWh needed to refill the installed battery to 100% SOC, scaled to the
-configured battery-bank capacity. The default deployed capacity is `30 kWh` and
-can be changed with `AURORA_APS_BATTERY_CAPACITY_KWH`. The calculation uses
-`BatterySOC` when available and falls back to `AvailableCapacity / TotCapacity`;
-those raw capacity fields are treated as proportional counters rather than kAh
-values to multiply by voltage. Extra-storage values are intentionally not
-inferred at present because `MaxSolarWatts_*` can remain nonzero at night and is
-not a reliable curtailed-solar measurement. Until a trustworthy available-solar
-or curtailed-energy signal is identified, this derived variable is a
-conservative positive refill-deficit trace only.
+positive kWh needed to refill the installed battery to 100% SOC. The calculation
+integrates measured `BatteryWatts` energy flow, falling back to utilised minus
+generated energy if `BatteryWatts` is absent, and uses sustained
+`BatterySOC >= 99.5 %` only to initialize or validate zero deficit when the bank
+returns to full charge; SOC does not set the plotted magnitude. The default
+deployed capacity is `30.8 kWh`, matching 20 Discover HELIOS batteries at
+1.54 kWh each, and can be changed with `AURORA_APS_BATTERY_CAPACITY_KWH`.
+Extra-storage values are intentionally not inferred at present because
+`MaxSolarWatts_*` can remain nonzero at night and is not a reliable
+curtailed-solar measurement.
 
-When checked on `2026-05-19`, this derived store had `time=17258`, 6 data
+When checked on `2026-05-19`, this derived store had `time=17274`, 6 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-19 18:39:00`.
+`2026-05-05 15:15:00` to `2026-05-19 18:55:00`.
 
 Variables:
 

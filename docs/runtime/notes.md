@@ -57,14 +57,15 @@ Solar-yield counters are treated as daily counters and converted to positive
 increments, so delayed controller resets after midnight do not produce false
 generation drops in the latest 24 h view. The utilised term remains the AC+DC
 output power integral. The Battery Deficit trace shares the cumulative kWh axis
-and is a conservative refill-deficit estimate rather than a simple
-generated-minus-utilised sum: values are positive kWh needed to refill the
-installed battery to 100% SOC, scaled to the configured installed bank capacity
-of `30 kWh` by default. Extra-storage values are intentionally disabled for now
-because `MaxSolarWatts_*` can be nonzero at night and is not a reliable
-curtailed-solar measurement. Daily generated and utilised traces are visually
-broken at UTC midnight so their resets are shown as new segments rather than
-connected vertical jumps.
+and is computed by energy accounting rather than by transforming SOC directly:
+it integrates measured `BatteryWatts` energy flow, falls back to utilised minus
+generated energy if that field is absent, uses sustained `BatterySOC >= 99.5 %`
+only to initialize or validate zero deficit when the bank reaches full, and
+clips to the configured installed bank capacity of `30.8 kWh` by default.
+Extra-storage values are intentionally disabled for now because `MaxSolarWatts_*`
+can be nonzero at night and is not a reliable curtailed-solar measurement. Daily
+generated and utilised traces are visually broken at UTC midnight so their
+resets are shown as new segments rather than connected vertical jumps.
 
 ## Meteorology display merge
 
