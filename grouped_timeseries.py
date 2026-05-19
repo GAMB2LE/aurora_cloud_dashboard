@@ -43,13 +43,7 @@ MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
-APS_BATTERY_CAPACITY_KWH = float(os.environ.get("AURORA_APS_BATTERY_CAPACITY_KWH", "30.8"))
-APS_FULL_SOC_THRESHOLD = float(os.environ.get("AURORA_APS_FULL_SOC_THRESHOLD", "99.5"))
-APS_FULL_SOC_MIN_DURATION_MINUTES = float(os.environ.get("AURORA_APS_FULL_SOC_MIN_DURATION_MINUTES", "5"))
-APS_FULL_SOC_MAX_CORRECTION_KWH = float(os.environ.get("AURORA_APS_FULL_SOC_MAX_CORRECTION_KWH", "0.5"))
-APS_ENERGY_ACCOUNTING_MAX_STEP_MINUTES = float(os.environ.get("AURORA_APS_ENERGY_ACCOUNTING_MAX_STEP_MINUTES", "5"))
-APS_BATTERY_POWER_VALID_LIMIT_W = float(os.environ.get("AURORA_APS_BATTERY_POWER_VALID_LIMIT_W", "10000"))
-POWER_BALANCE_LOOKBACK_DAYS = int(os.environ.get("AURORA_POWER_BALANCE_LOOKBACK_DAYS", "7"))
+POWER_CUMULATIVE_CONTEXT_DAYS = int(os.environ.get("AURORA_POWER_CUMULATIVE_CONTEXT_DAYS", "7"))
 POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "1min")
 POWER_DISPLAY_ENERGY_ATTR = "power_display_energy_product"
 POWER_DISPLAY_ENERGY_MAP = {
@@ -58,7 +52,6 @@ POWER_DISPLAY_ENERGY_MAP = {
     "SolarYield_West": "PowerDisplaySolarYield_West",
     "CumulativePowerGeneratedTotal": "PowerDisplayCumulativePowerGeneratedTotal",
     "CumulativePowerUtilised": "PowerDisplayCumulativePowerUtilised",
-    "PowerSurplusDeficit": "PowerDisplayPowerSurplusDeficit",
 }
 
 
@@ -266,10 +259,8 @@ HUMAN_LABELS = {
     "PowerDisplaySolarYield_West": "West Solar Generated",
     "CumulativePowerGeneratedTotal": "Total Generated",
     "CumulativePowerUtilised": "Power Utilised",
-    "PowerSurplusDeficit": "Battery Deficit",
     "PowerDisplayCumulativePowerGeneratedTotal": "Total Generated",
     "PowerDisplayCumulativePowerUtilised": "Power Utilised",
-    "PowerDisplayPowerSurplusDeficit": "Battery Deficit",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -394,10 +385,8 @@ HUMAN_UNITS = {
     "PowerDisplaySolarYield_West": "kWh",
     "CumulativePowerGeneratedTotal": "kWh",
     "CumulativePowerUtilised": "kWh",
-    "PowerSurplusDeficit": "kWh",
     "PowerDisplayCumulativePowerGeneratedTotal": "kWh",
     "PowerDisplayCumulativePowerUtilised": "kWh",
-    "PowerDisplayPowerSurplusDeficit": "kWh",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -653,8 +642,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "cumulative_power",
-            "Cumulative Power",
-            "Cumulative Energy [kWh]",
+            "Cumulative Power & State of Charge",
+            "Cumulative Energy [kWh] / SOC [%]",
             None,
             (
                 TraceSpec("SolarYield_East", "East Solar Generated", COLOR["brown"], break_on_day_change=True),
@@ -662,7 +651,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("SolarYield_West", "West Solar Generated", COLOR["magenta"], break_on_day_change=True),
                 TraceSpec("CumulativePowerGeneratedTotal", "Total Generated", COLOR["green"], break_on_day_change=True),
                 TraceSpec("CumulativePowerUtilised", "Utilised", COLOR["teal"], break_on_day_change=True),
-                TraceSpec("PowerSurplusDeficit", "Battery Deficit", COLOR["red"]),
+                TraceSpec("BatterySOC", "State of Charge", COLOR["green"], valid_min=0.0, valid_max=100.0),
             ),
         ),
         PanelSpec(
@@ -687,15 +676,6 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor4", "Temperature Sensor 4", COLOR["olive"], axis="right", valid_min=-40.0, valid_max=100.0),
-            ),
-        ),
-        PanelSpec(
-            "state_of_charge",
-            "State of Charge",
-            "SOC [%]",
-            None,
-            (
-                TraceSpec("BatterySOC", "State of Charge", COLOR["green"], valid_min=0.0, valid_max=100.0),
             ),
         ),
     ),
@@ -1262,149 +1242,6 @@ def _daily_cumulative_counter_delta(times: pd.DatetimeIndex, counter_kwh: np.nda
     return cumulative_kwh
 
 
-def _positive_counter_increments_kwh(counter_kwh: np.ndarray) -> np.ndarray:
-    """Return positive stepwise increments from a reset-prone kWh counter."""
-    values = np.asarray(counter_kwh, dtype=np.float64)
-    increments = np.zeros(values.size, dtype=np.float64)
-    if values.size <= 1:
-        return increments
-    valid_pair = np.isfinite(values[1:]) & np.isfinite(values[:-1])
-    delta = np.zeros(values.size - 1, dtype=np.float64)
-    delta[valid_pair] = values[1:][valid_pair] - values[:-1][valid_pair]
-    increments[1:] = np.clip(delta, a_min=0.0, a_max=None)
-    return increments
-
-
-def _power_increments_kwh(times: pd.DatetimeIndex, power_w: np.ndarray) -> np.ndarray:
-    """Integrate power samples to per-sample kWh increments without spanning gaps."""
-    values = np.asarray(power_w, dtype=np.float64)
-    increments = np.zeros(values.size, dtype=np.float64)
-    if values.size <= 1:
-        return increments
-    time_ns = times.asi8.astype(np.float64)
-    max_step_hours = max(APS_ENERGY_ACCOUNTING_MAX_STEP_MINUTES, 0.0) / 60.0
-    for idx in range(1, values.size):
-        p0 = values[idx - 1]
-        p1 = values[idx]
-        if not (np.isfinite(p0) and np.isfinite(p1)):
-            continue
-        dt_hours = max((time_ns[idx] - time_ns[idx - 1]) / 3.6e12, 0.0)
-        if max_step_hours > 0.0 and dt_hours > max_step_hours:
-            continue
-        increments[idx] = 0.5 * (p0 + p1) * dt_hours / 1000.0
-    return increments
-
-
-def _sustained_full_soc_mask(times: pd.DatetimeIndex, state_of_charge: np.ndarray) -> np.ndarray:
-    """Return full-SOC samples after rejecting isolated one-sample SOC spikes."""
-    soc = np.asarray(state_of_charge, dtype=np.float64)
-    full_raw = np.isfinite(soc) & (soc >= APS_FULL_SOC_THRESHOLD)
-    full = np.zeros(soc.size, dtype=bool)
-    if soc.size == 0 or not np.any(full_raw):
-        return full
-    time_ns = times.asi8.astype(np.float64)
-    max_gap_ns = max(APS_ENERGY_ACCOUNTING_MAX_STEP_MINUTES, 0.0) * 60.0 * 1.0e9
-    min_duration_ns = max(APS_FULL_SOC_MIN_DURATION_MINUTES, 0.0) * 60.0 * 1.0e9
-    idx = 0
-    while idx < soc.size:
-        if not full_raw[idx]:
-            idx += 1
-            continue
-        end = idx
-        while end + 1 < soc.size and full_raw[end + 1] and (time_ns[end + 1] - time_ns[end]) <= max_gap_ns:
-            end += 1
-        if (time_ns[end] - time_ns[idx]) >= min_duration_ns:
-            full[idx : end + 1] = True
-        idx = end + 1
-    return full
-
-
-def _battery_power_deficit_increments_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.ndarray | None:
-    """Return deficit increments from measured net battery power."""
-    if "BatteryWatts" not in ds:
-        return None
-    battery_power = np.asarray(ds["BatteryWatts"].values, dtype=np.float64)
-    if APS_BATTERY_POWER_VALID_LIMIT_W > 0:
-        battery_power[np.abs(battery_power) > APS_BATTERY_POWER_VALID_LIMIT_W] = np.nan
-    # Positive BatteryWatts charges the bank, so it reduces refill deficit.
-    return -_power_increments_kwh(times, battery_power)
-
-
-def _solar_generation_increments_kwh(ds: xr.Dataset) -> np.ndarray | None:
-    """Return total generated solar-energy increments from the three APS counters."""
-    count = ds.sizes.get("time", 0)
-    total = np.zeros(count, dtype=np.float64)
-    found = False
-    for field_name in ("SolarYield_East", "SolarYield_South", "SolarYield_West"):
-        if field_name not in ds:
-            continue
-        total += _positive_counter_increments_kwh(np.asarray(ds[field_name].values, dtype=np.float64))
-        found = True
-    return total if found else None
-
-
-def _utilised_energy_increments_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.ndarray | None:
-    """Return AC plus DC inverter load increments from APS output power."""
-    count = len(times)
-    if "ACOutputWatts" not in ds and "DCInverterWatts" not in ds:
-        return None
-    ac_power = np.asarray(ds["ACOutputWatts"].values if "ACOutputWatts" in ds else np.full(count, np.nan), dtype=np.float64)
-    dc_power = np.asarray(ds["DCInverterWatts"].values if "DCInverterWatts" in ds else np.full(count, np.nan), dtype=np.float64)
-    valid_power = np.isfinite(ac_power) | np.isfinite(dc_power)
-    combined_power = np.full(count, np.nan, dtype=np.float64)
-    combined_power[valid_power] = np.nan_to_num(ac_power[valid_power], nan=0.0) + np.nan_to_num(dc_power[valid_power], nan=0.0)
-    combined_power[valid_power] = np.clip(combined_power[valid_power], a_min=0.0, a_max=None)
-    return _power_increments_kwh(times, combined_power)
-
-
-def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.ndarray | None:
-    """Energy-accounting battery refill deficit anchored by full-SOC events.
-
-    Values are positive kWh needed to refill the installed battery bank. SOC is
-    used to initialize the first zero-deficit point when the bank reaches full
-    charge, then only to clear small integration drift. The plotted evolution is
-    integrated from measured battery energy flow and clipped to the configured
-    battery capacity. If BatteryWatts is unavailable, the function falls back to
-    utilised minus generated energy. The old variable name is retained for
-    compatibility, but the dashboard label is "Battery Deficit".
-    """
-    count = len(times)
-    if count == 0:
-        return np.asarray([], dtype=np.float64)
-    if APS_BATTERY_CAPACITY_KWH <= 0 or "BatterySOC" not in ds:
-        return None
-    net_increments = _battery_power_deficit_increments_kwh(ds, times)
-    if net_increments is None:
-        generated_increments = _solar_generation_increments_kwh(ds)
-        utilised_increments = _utilised_energy_increments_kwh(ds, times)
-        if generated_increments is None or utilised_increments is None:
-            return None
-        net_increments = utilised_increments[:count] - generated_increments[:count]
-
-    soc = np.asarray(ds["BatterySOC"].values, dtype=np.float64)
-    full_soc = _sustained_full_soc_mask(times, soc[:count])
-    deficit = np.full(count, np.nan, dtype=np.float64)
-    running_deficit = np.nan
-    anchored = False
-
-    for idx in range(count):
-        if full_soc[idx] and not anchored:
-            running_deficit = 0.0
-            anchored = True
-        elif anchored:
-            increment = net_increments[idx]
-            if np.isfinite(increment):
-                running_deficit = np.clip(running_deficit + increment, 0.0, APS_BATTERY_CAPACITY_KWH)
-            if full_soc[idx] and running_deficit <= APS_FULL_SOC_MAX_CORRECTION_KWH:
-                running_deficit = 0.0
-        if anchored:
-            deficit[idx] = running_deficit
-
-    if not np.any(np.isfinite(deficit)):
-        return None
-    return deficit
-
-
 def _display_energy_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
     """Map compact Power display-energy variables onto the standard plot names."""
     assignments: dict[str, xr.DataArray] = {}
@@ -1427,7 +1264,7 @@ def build_power_display_energy_dataset(
     The raw APS Zarr stays authoritative. This derived product stores only the
     one-minute cumulative kWh traces needed by the dashboard so interactive
     plotting does not need to read many days of one-second samples to compute
-    solar generation, utilised energy, and the battery-aware storage balance.
+    solar generation and utilised energy.
     """
     if "time" not in ds or ds.sizes.get("time", 0) == 0:
         return xr.Dataset()
@@ -1475,10 +1312,6 @@ def build_power_display_energy_dataset(
         frame[POWER_DISPLAY_ENERGY_MAP["CumulativePowerUtilised"]] = utilised
     else:
         utilised = np.full(len(times), np.nan, dtype=np.float64)
-
-    balance = _storage_surplus_deficit_kwh(ds, times)
-    if balance is not None:
-        frame[POWER_DISPLAY_ENERGY_MAP["PowerSurplusDeficit"]] = balance
 
     if not frame:
         return xr.Dataset()
@@ -1594,15 +1427,6 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
             total_generated[valid_generated] = summed
         assignments["CumulativePowerGeneratedTotal"] = xr.DataArray(
             total_generated,
-            coords={"time": ds["time"]},
-            dims=("time",),
-            attrs={"units": "kWh"},
-        )
-
-    energy_balance = _storage_surplus_deficit_kwh(ds, times)
-    if energy_balance is not None:
-        assignments["PowerSurplusDeficit"] = xr.DataArray(
-            energy_balance,
             coords={"time": ds["time"]},
             dims=("time",),
             attrs={"units": "kWh"},
@@ -2068,7 +1892,7 @@ def plot_summary_last_24h(
     end_time = time_index.max()
     start_time = end_time - timedelta(hours=24)
     if instrument == "power":
-        context_start = (pd.Timestamp(start_time) - pd.Timedelta(days=max(0, POWER_BALANCE_LOOKBACK_DAYS))).normalize()
+        context_start = (pd.Timestamp(start_time) - pd.Timedelta(days=max(0, POWER_CUMULATIVE_CONTEXT_DAYS))).normalize()
     else:
         context_start = start_time
     mask = (time_index >= context_start) & (time_index <= end_time)

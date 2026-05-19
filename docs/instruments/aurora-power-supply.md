@@ -19,27 +19,19 @@ Typical panels include:
   - AC output power
   - DC inverter power
   - ASS 48 V DC power from `watts_on_48vdc_Avg` on the right axis
-- **Cumulative Power**
+- **Cumulative Power & State of Charge**
   - `East Solar Generated`
   - `South Solar Generated`
   - `West Solar Generated`
   - `Total Generated`
   - `Utilised`, integrated from AC and DC output power and reset at each UTC midnight
-  - `Battery Deficit`, plotted on the same cumulative kWh axis. Values are
-    positive kWh required to refill the installed battery to 100% SOC.
-    The trace is integrated from measured `BatteryWatts` energy flow, with a
-    utilised-minus-generated fallback if that field is absent, and uses sustained
-    `BatterySOC >= 99.5 %` to initialize the first zero-deficit point and to
-    clear only small integration drift.
+  - `State of Charge`, from `BatterySOC`, plotted on the same left axis in percent
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
   - heatsink temperature
   - temperature sensors 1-4
   - left and right y-axes both use the same `Temperature [C]` range
-- **State of Charge**
-  - `BatterySOC` as battery state of charge in percent
-
 Legends are placed in a consistent right-side gutter rather than collected into
 one global legend block.
 
@@ -77,17 +69,10 @@ The cumulative panel is normalized in the display-energy product. The
 `SolarYield_*` counters are converted into positive UTC-day increments, so
 delayed controller resets just after midnight do not create false drops in the
 plotted generation lines. The utilised-energy line is integrated from AC+DC
-output power. The Battery Deficit trace is not a transformed SOC trace: it
-integrates measured `BatteryWatts` energy flow, falling back to utilised minus
-generated energy only if `BatteryWatts` is absent, and only uses sustained
-`BatterySOC >= 99.5 %` to initialize the first zero-deficit point and to clear
-small integration drift. It does not force large accumulated deficits to zero,
-so full-SOC periods no longer create artificial cliffs in the line. The
-configured installed battery-bank capacity is `30.8 kWh` by default,
-matching 20 Discover HELIOS batteries at 1.54 kWh each; it can be overridden
-with `AURORA_APS_BATTERY_CAPACITY_KWH`. Extra-storage values are not currently
-inferred because the APS `MaxSolarWatts_*` fields can stay nonzero at night and
-are not a trustworthy available-solar signal.
+output power. `BatterySOC` remains a direct raw Power Zarr field and is plotted
+as `State of Charge` on the same left axis as the cumulative kWh traces, so the
+panel shows generation, use, and battery state without deriving a separate
+deficit estimate.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 

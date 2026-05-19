@@ -47,7 +47,7 @@ from grouped_timeseries import (
     summary_source_instruments,
     SUMMARY_DISPLAY_END_ATTR,
     SUMMARY_DISPLAY_START_ATTR,
-    POWER_BALANCE_LOOKBACK_DAYS,
+    POWER_CUMULATIVE_CONTEXT_DAYS,
     widget_group_options,
 )
 from extra_housekeeping import (
@@ -3068,7 +3068,7 @@ def _canonical_interactive_window(start, end, instrument: str):
 
 
 def _summary_context_start(start, instrument: str):
-    """Include Power lookback context for cumulative balance anchoring."""
+    """Include Power context when cumulative display-energy cache is absent."""
     if instrument != "power":
         return start
     if _power_display_energy_path().exists():
@@ -3076,7 +3076,7 @@ def _summary_context_start(start, instrument: str):
     start_dt = _as_naive_utc_datetime(start)
     if start_dt is None:
         return start
-    context_date = (start_dt - timedelta(days=max(0, POWER_BALANCE_LOOKBACK_DAYS))).date()
+    context_date = (start_dt - timedelta(days=max(0, POWER_CUMULATIVE_CONTEXT_DAYS))).date()
     return datetime.combine(context_date, time.min)
 
 

@@ -56,17 +56,10 @@ The cumulative Power display product is computed with full available context.
 Solar-yield counters are treated as daily counters and converted to positive
 increments, so delayed controller resets after midnight do not produce false
 generation drops in the latest 24 h view. The utilised term remains the AC+DC
-output power integral. The Battery Deficit trace shares the cumulative kWh axis
-and is computed by energy accounting rather than by transforming SOC directly:
-it integrates measured `BatteryWatts` energy flow, falls back to utilised minus
-generated energy if that field is absent, uses sustained `BatterySOC >= 99.5 %`
-to initialize the first zero-deficit point and to clear only small integration
-drift, and clips to the configured installed bank capacity of `30.8 kWh` by
-default. Extra-storage values are intentionally disabled for now because
-`MaxSolarWatts_*` can be nonzero at night and is not a reliable curtailed-solar
-measurement. Daily generated and utilised traces are visually broken at UTC
-midnight so their resets are shown as new segments rather than connected
-vertical jumps.
+output power integral. `BatterySOC` is plotted directly from `power.zarr` as
+`State of Charge` on the same left axis as the cumulative energy traces. Daily
+generated and utilised traces are visually broken at UTC midnight so their
+resets are shown as new segments rather than connected vertical jumps.
 
 ## Meteorology display merge
 
