@@ -335,7 +335,12 @@ def append_new(
     skipped = len(geometry_records) - len(files)
     if skipped:
         print(f"Skipping {skipped} candidate files with mismatched radar geometry.")
-    combined = _load_files(files, chunks=chunks)
+    # Keep normal appends unchunked until after the time filter.  The lookback
+    # scan intentionally reloads older files so we can tolerate late file
+    # arrival, but chunking that overlapping dataset before boolean indexing can
+    # produce partial/misaligned Zarr writes when appending.  Materializing the
+    # small "new only" block avoids variable-specific all-NaN chunk stripes.
+    combined = _load_files(files, chunks=None)
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no readable radar samples.")
         return
@@ -344,8 +349,8 @@ def append_new(
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no samples newer than the existing Zarr.")
         return
-    # Ensure chunk alignment with existing store; disable strict chunk safety to avoid overlap errors.
-    combined.to_zarr(zarr_path, mode="a", append_dim="time", safe_chunks=False)
+    combined = _deduplicate_time(combined.sortby("time")).load()
+    combined.to_zarr(zarr_path, mode="a", append_dim="time")
     print("Append complete.")
 
 
