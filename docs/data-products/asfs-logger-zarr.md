@@ -81,6 +81,7 @@ This Zarr underpins:
 
 - the **Radiation** instrument directly
 - parts of the **Meteorology** presentation layer, including ASFS Vaisala
-  temperature, relative humidity, and pressure
+  temperature, relative humidity, pressure, Metek wind vectors, and
+  display-derived Metek wind speed/direction
 - the curated `HK_ASFS` housekeeping quicklooks for logger power, logger
   thermal/scan state, SR30 support, IR20 support, and sensor variability

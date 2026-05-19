@@ -184,6 +184,8 @@ HUMAN_LABELS = {
     "metek_T_out_Avg": "Sonic Temperature",
     "metek_InclX_out_Avg": "Metek Tilt X",
     "metek_InclY_out_Avg": "Metek Tilt Y",
+    "MetekWindSpeed": "Metek Wind Speed",
+    "MetekWindDirection": "Metek Wind Direction",
     "spn1_tot_Avg": "Total Radiation",
     "spn1_dif_Avg": "Diffuse Radiation",
     "sr30_swd_Irr_Avg": "Downwelling Shortwave",
@@ -298,6 +300,8 @@ HUMAN_UNITS = {
     "metek_T_out_Avg": "C",
     "metek_InclX_out_Avg": "deg",
     "metek_InclY_out_Avg": "deg",
+    "MetekWindSpeed": "m s^-1",
+    "MetekWindDirection": "deg",
     "spn1_tot_Avg": "W m^-2",
     "spn1_dif_Avg": "W m^-2",
     "sr30_swd_Irr_Avg": "W m^-2",
@@ -450,6 +454,16 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("metek_x_out_Avg", "Metek U Wind", COLOR["teal"]),
                 TraceSpec("metek_y_out_Avg", "Metek V Wind", COLOR["light_blue"]),
                 TraceSpec("metek_z_out_Avg", "Metek W Wind", COLOR["purple"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "metek_wind_speed_direction",
+            "Metek Wind Speed / Direction",
+            "Wind Speed [m/s]",
+            "Wind Direction [deg]",
+            (
+                TraceSpec("MetekWindSpeed", "Wind Speed", COLOR["teal"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("MetekWindDirection", "Wind Direction", COLOR["purple"], axis="right", valid_min=0.0, valid_max=360.0),
             ),
         ),
     ),
@@ -1361,8 +1375,39 @@ def _crop_to_summary_display_window(ds: xr.Dataset, times: pd.DatetimeIndex) -> 
     return ds.isel(time=mask)
 
 
+def _metek_wind_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
+    """Derive horizontal wind speed and meteorological direction from Metek U/V."""
+    if "metek_x_out_Avg" not in ds or "metek_y_out_Avg" not in ds or "time" not in ds:
+        return {}
+    u = np.asarray(ds["metek_x_out_Avg"].values, dtype=np.float64)
+    v = np.asarray(ds["metek_y_out_Avg"].values, dtype=np.float64)
+    valid = np.isfinite(u) & np.isfinite(v)
+    speed = np.full(len(u), np.nan, dtype=np.float64)
+    direction = np.full(len(u), np.nan, dtype=np.float64)
+    speed[valid] = np.hypot(u[valid], v[valid])
+    # Meteorological convention: direction wind is coming from, clockwise from north.
+    direction[valid] = (270.0 - np.degrees(np.arctan2(v[valid], u[valid]))) % 360.0
+    return {
+        "MetekWindSpeed": xr.DataArray(
+            speed,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={"units": "m s^-1", "description": "Horizontal wind speed derived from metek_x_out_Avg and metek_y_out_Avg."},
+        ),
+        "MetekWindDirection": xr.DataArray(
+            direction,
+            coords={"time": ds["time"]},
+            dims=("time",),
+            attrs={
+                "units": "degree",
+                "description": "Meteorological wind direction derived from metek_x_out_Avg and metek_y_out_Avg.",
+            },
+        ),
+    }
+
+
 def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
-    if instrument != "power" or "time" not in ds or ds.sizes.get("time", 0) == 0:
+    if instrument not in {"power", "vaisalamet"} or "time" not in ds or ds.sizes.get("time", 0) == 0:
         return ds
 
     times = pd.DatetimeIndex(ds["time"].values)
@@ -1370,6 +1415,12 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
         return ds
 
     assignments: dict[str, xr.DataArray] = {}
+    if instrument == "vaisalamet":
+        assignments.update(_metek_wind_assignments(ds))
+        prepared = ds.assign(**assignments) if assignments else ds
+        prepared_times = pd.DatetimeIndex(prepared["time"].values)
+        return _crop_to_summary_display_window(prepared, prepared_times)
+
     display_assignments = _display_energy_assignments(ds)
     if display_assignments:
         prepared = ds.assign(**display_assignments)

@@ -34,6 +34,9 @@ The Meteorology instrument currently groups:
 - **Met**
   - Metek `x` and `y` on the left axis
   - Metek `z` on the right axis
+- **Metek Wind Speed / Direction**
+  - horizontal wind speed derived from Metek `x/y`
+  - meteorological wind direction, clockwise from north, on the right axis
 
 Axes use human-readable labels with units rather than raw field names.
 
