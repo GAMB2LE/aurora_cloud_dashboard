@@ -46,6 +46,7 @@ SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
 APS_BATTERY_CAPACITY_KWH = float(os.environ.get("AURORA_APS_BATTERY_CAPACITY_KWH", "30.8"))
 APS_FULL_SOC_THRESHOLD = float(os.environ.get("AURORA_APS_FULL_SOC_THRESHOLD", "99.5"))
 APS_FULL_SOC_MIN_DURATION_MINUTES = float(os.environ.get("AURORA_APS_FULL_SOC_MIN_DURATION_MINUTES", "5"))
+APS_FULL_SOC_MAX_CORRECTION_KWH = float(os.environ.get("AURORA_APS_FULL_SOC_MAX_CORRECTION_KWH", "0.5"))
 APS_ENERGY_ACCOUNTING_MAX_STEP_MINUTES = float(os.environ.get("AURORA_APS_ENERGY_ACCOUNTING_MAX_STEP_MINUTES", "5"))
 APS_BATTERY_POWER_VALID_LIMIT_W = float(os.environ.get("AURORA_APS_BATTERY_POWER_VALID_LIMIT_W", "10000"))
 POWER_BALANCE_LOOKBACK_DAYS = int(os.environ.get("AURORA_POWER_BALANCE_LOOKBACK_DAYS", "7"))
@@ -1360,12 +1361,12 @@ def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.
     """Energy-accounting battery refill deficit anchored by full-SOC events.
 
     Values are positive kWh needed to refill the installed battery bank. SOC is
-    used only to initialize/validate the zero-deficit point when the bank reaches
-    full charge; the plotted evolution is integrated from measured battery
-    energy flow and clipped to the configured battery capacity. If BatteryWatts
-    is unavailable, the function falls back to utilised minus generated energy.
-    The old variable name is retained for compatibility, but the dashboard label
-    is "Battery Deficit".
+    used to initialize the first zero-deficit point when the bank reaches full
+    charge, then only to clear small integration drift. The plotted evolution is
+    integrated from measured battery energy flow and clipped to the configured
+    battery capacity. If BatteryWatts is unavailable, the function falls back to
+    utilised minus generated energy. The old variable name is retained for
+    compatibility, but the dashboard label is "Battery Deficit".
     """
     count = len(times)
     if count == 0:
@@ -1387,13 +1388,15 @@ def _storage_surplus_deficit_kwh(ds: xr.Dataset, times: pd.DatetimeIndex) -> np.
     anchored = False
 
     for idx in range(count):
-        if full_soc[idx]:
+        if full_soc[idx] and not anchored:
             running_deficit = 0.0
             anchored = True
         elif anchored:
             increment = net_increments[idx]
             if np.isfinite(increment):
                 running_deficit = np.clip(running_deficit + increment, 0.0, APS_BATTERY_CAPACITY_KWH)
+            if full_soc[idx] and running_deficit <= APS_FULL_SOC_MAX_CORRECTION_KWH:
+                running_deficit = 0.0
         if anchored:
             deficit[idx] = running_deficit
 

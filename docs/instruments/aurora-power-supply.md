@@ -29,8 +29,8 @@ Typical panels include:
     positive kWh required to refill the installed battery to 100% SOC.
     The trace is integrated from measured `BatteryWatts` energy flow, with a
     utilised-minus-generated fallback if that field is absent, and uses sustained
-    `BatterySOC >= 99.5 %` only to initialize or validate zero deficit when the
-    battery bank returns to full.
+    `BatterySOC >= 99.5 %` to initialize the first zero-deficit point and to
+    clear only small integration drift.
 - **Output Voltage**
 - **Thermal State**
   - internal temperature
@@ -80,9 +80,10 @@ plotted generation lines. The utilised-energy line is integrated from AC+DC
 output power. The Battery Deficit trace is not a transformed SOC trace: it
 integrates measured `BatteryWatts` energy flow, falling back to utilised minus
 generated energy only if `BatteryWatts` is absent, and only uses sustained
-`BatterySOC >= 99.5 %` to initialize or validate the zero-deficit point when the
-bank reaches full charge. The configured installed battery-bank capacity is
-`30.8 kWh` by default,
+`BatterySOC >= 99.5 %` to initialize the first zero-deficit point and to clear
+small integration drift. It does not force large accumulated deficits to zero,
+so full-SOC periods no longer create artificial cliffs in the line. The
+configured installed battery-bank capacity is `30.8 kWh` by default,
 matching 20 Discover HELIOS batteries at 1.54 kWh each; it can be overridden
 with `AURORA_APS_BATTERY_CAPACITY_KWH`. Extra-storage values are not currently
 inferred because the APS `MaxSolarWatts_*` fields can stay nonzero at night and
