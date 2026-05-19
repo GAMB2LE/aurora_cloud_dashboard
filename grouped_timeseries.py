@@ -44,6 +44,7 @@ MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
 FULL_SOC_DEFICIT_CLEAR_THRESHOLD = 99.5
+APS_BATTERY_CAPACITY_KWH = float(os.environ.get("AURORA_APS_BATTERY_CAPACITY_KWH", "30"))
 POWER_BALANCE_LOOKBACK_DAYS = int(os.environ.get("AURORA_POWER_BALANCE_LOOKBACK_DAYS", "7"))
 POWER_BALANCE_MAX_STEP_MINUTES = float(os.environ.get("AURORA_POWER_BALANCE_MAX_STEP_MINUTES", "5"))
 POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "1min")
@@ -398,7 +399,7 @@ HUMAN_UNITS = {
     "TempSensor2": "C",
     "TempSensor3": "C",
     "TempSensor4": "C",
-    "TotCapacity": "Ah",
+    "TotCapacity": "capacity units",
     "time_discrepancy": "s",
     "scantime": "s",
 }
@@ -1307,27 +1308,33 @@ def _anchor_balance_to_full_soc(
 def _battery_deficit_to_full_kwh(ds: xr.Dataset) -> np.ndarray | None:
     """Return kWh required to refill the installed APS battery to 100%.
 
-    `TotCapacity` and `AvailableCapacity` are reported by the APS in kAh. When
-    multiplied by battery/DC voltage the difference becomes kWh. This is more
-    physically meaningful for the storage balance than a simple cumulative
-    generation-minus-load trace.
+    The deployed bank is configured as 30 kWh by default. The raw
+    `TotCapacity` / `AvailableCapacity` values are proportional capacity
+    counters, not kAh values to multiply by voltage.
     """
-    if "TotCapacity" not in ds or "AvailableCapacity" not in ds:
+    if APS_BATTERY_CAPACITY_KWH <= 0:
         return None
     count = ds.sizes.get("time", 0)
-    total_capacity = np.asarray(ds["TotCapacity"].values, dtype=np.float64)
-    available_capacity = np.asarray(ds["AvailableCapacity"].values, dtype=np.float64)
-    if "BatteryVolts" in ds:
-        voltage = np.asarray(ds["BatteryVolts"].values, dtype=np.float64)
-    elif "DCInverterVolts" in ds:
-        voltage = np.asarray(ds["DCInverterVolts"].values, dtype=np.float64)
-    else:
-        voltage = np.full(count, np.nan, dtype=np.float64)
-
-    deficit_capacity = total_capacity - available_capacity
-    valid = np.isfinite(deficit_capacity) & np.isfinite(voltage) & (deficit_capacity >= 0.0) & (voltage > 0.0)
     deficit_kwh = np.full(count, np.nan, dtype=np.float64)
-    deficit_kwh[valid] = deficit_capacity[valid] * voltage[valid]
+    if "BatterySOC" in ds:
+        soc = np.asarray(ds["BatterySOC"].values, dtype=np.float64)
+        valid_soc = np.isfinite(soc)
+        deficit_kwh[valid_soc] = APS_BATTERY_CAPACITY_KWH * np.clip((100.0 - soc[valid_soc]) / 100.0, 0.0, 1.0)
+
+    if "TotCapacity" in ds and "AvailableCapacity" in ds:
+        total_capacity = np.asarray(ds["TotCapacity"].values, dtype=np.float64)
+        available_capacity = np.asarray(ds["AvailableCapacity"].values, dtype=np.float64)
+        valid_capacity = np.isfinite(total_capacity) & np.isfinite(available_capacity) & (total_capacity > 0.0)
+        capacity_deficit = APS_BATTERY_CAPACITY_KWH * np.clip(
+            1.0 - (available_capacity[valid_capacity] / total_capacity[valid_capacity]),
+            0.0,
+            1.0,
+        )
+        missing_soc = valid_capacity & ~np.isfinite(deficit_kwh)
+        deficit_kwh[missing_soc] = capacity_deficit[~np.isfinite(deficit_kwh[valid_capacity])]
+
+    if not np.any(np.isfinite(deficit_kwh)):
+        return None
     return deficit_kwh
 
 

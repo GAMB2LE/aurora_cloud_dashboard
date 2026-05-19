@@ -76,13 +76,16 @@ The cumulative panel is normalized in the display-energy product. The
 delayed controller resets just after midnight do not create false drops in the
 plotted generation lines. The utilised-energy line is integrated from AC+DC
 output power. The right-axis surplus/deficit trace is no longer a simple
-generated-minus-utilised sum. It uses `TotCapacity`, `AvailableCapacity`, and
-battery/DC voltage to estimate the kWh needed to return the installed battery
-to full charge. When `BatterySOC >= 99.5 %`, available-but-uncaptured solar
-from `MaxSolarWatts_* - SolarWatts_*` is integrated as extra storage that could
-have been captured by a larger battery. That extra reserve carries forward and
-is drawn down by later battery discharge, so days that never return to 100% SOC
-keep their remaining deficit.
+generated-minus-utilised sum. It uses the configured installed battery-bank
+capacity, `30 kWh` by default, with `BatterySOC` or
+`AvailableCapacity / TotCapacity` to estimate the kWh needed to return the
+installed battery to full charge. The raw `TotCapacity` and
+`AvailableCapacity` fields are treated as proportional capacity counters, not
+as kAh values to multiply by voltage. When `BatterySOC >= 99.5 %`,
+available-but-uncaptured solar from `MaxSolarWatts_* - SolarWatts_*` is
+integrated as extra storage that could have been captured by a larger battery.
+That extra reserve carries forward and is drawn down by later battery
+discharge, so days that never return to 100% SOC keep their remaining deficit.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 

@@ -58,8 +58,9 @@ increments, so delayed controller resets after midnight do not produce false
 generation drops in the latest 24 h view. The utilised term remains the AC+DC
 output power integral. The right-axis surplus/deficit trace is a signed storage
 balance rather than a simple generated-minus-utilised sum: negative values are
-kWh needed to refill the installed battery to 100% SOC, while positive values
-are curtailed solar kWh that could have been captured by extra battery capacity
+kWh needed to refill the installed battery to 100% SOC, scaled to the configured
+installed bank capacity of `30 kWh` by default, while positive values are
+curtailed solar kWh that could have been captured by extra battery capacity
 while the installed battery was full. Positive reserve carries forward and is
 drawn down by later battery discharge, so days that never return to 100% SOC
 keep their remaining deficit. Daily generated and utilised traces are visually
