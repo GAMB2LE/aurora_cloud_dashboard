@@ -3993,7 +3993,7 @@ def _update_hatpro_view(
 
         fig.update_layout(
             showlegend=False,
-            height=max(700, int(pn.state.viewport_height * 0.8)) if hasattr(pn.state, "viewport_height") else 900,
+            height=max(600, int(pn.state.viewport_height * 0.68)) if hasattr(pn.state, "viewport_height") else 760,
             margin=dict(l=60, r=80, t=30, b=110),
             coloraxis=dict(
                 colorscale=cfg["vars"]["T_PROF"]["colorscale"],
@@ -4354,7 +4354,7 @@ def _render_interactive_view(
                 fig.update_yaxes(showgrid=True, gridcolor=grid, linecolor=THEME_LINE, tickfont=dict(color=fg, size=12), title_font=dict(color=fg, size=12), row=2, col=1)
                 fig.update_yaxes(matches="y", row=2, col=1)
                 fig.update_layout(
-                    height=max(630, int(pn.state.viewport_height * 0.675)) if hasattr(pn.state, "viewport_height") else 810,
+                    height=max(540, int(pn.state.viewport_height * 0.56)) if hasattr(pn.state, "viewport_height") else 680,
                     margin=dict(l=50, r=70, t=30, b=90),
                     coloraxis=dict(
                         colorscale=var1["colorscale"] if var1 else "Cividis",

@@ -35,8 +35,10 @@ MATPLOTLIB_LEGEND_X = 1.12
 PLOTLY_SUMMARY_PANEL_DOMAIN_END = 0.78
 PLOTLY_SUMMARY_LEGEND_X = 0.91
 PLOTLY_SUMMARY_RIGHT_MARGIN = 110
-PLOTLY_SUMMARY_PANEL_HEIGHT = 295
-PLOTLY_SUMMARY_MAX_HEIGHT = 2050
+PLOTLY_SUMMARY_PANEL_HEIGHT = 225
+PLOTLY_SUMMARY_POWER_PANEL_HEIGHT = 250
+PLOTLY_SUMMARY_MAX_HEIGHT = 1650
+PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 1850
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -1826,6 +1828,24 @@ def _axis_tick_values(
     return values.tolist(), labels
 
 
+def _axis_tick_step(limits: tuple[float, float] | None, target_ticks: int = 6) -> float:
+    """Choose a quiet 1/2/5-style tick step for a numeric axis range."""
+    if limits is None:
+        return 1.0
+    lower, upper = limits
+    if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+        return 1.0
+    raw_step = (upper - lower) / max(target_ticks - 1, 1)
+    if raw_step <= 0 or not np.isfinite(raw_step):
+        return 1.0
+    magnitude = 10 ** np.floor(np.log10(raw_step))
+    for multiplier in (1.0, 2.0, 5.0, 10.0):
+        step = multiplier * magnitude
+        if step >= raw_step:
+            return float(step)
+    return float(10.0 * magnitude)
+
+
 def _padded_axis_limits(
     series: list[np.ndarray],
     headroom: float = MATPLOTLIB_Y_HEADROOM_FRACTION,
@@ -2000,7 +2020,7 @@ def save_summary_png(
                 right_limits = _include_zero_in_limits(right_limits)
                 if right_limits is not None:
                     right_ax.set_ylim(*right_limits)
-                    tick_values, tick_labels = _axis_tick_values(right_limits, step=2.0)
+                    tick_values, tick_labels = _axis_tick_values(right_limits, step=_axis_tick_step(right_limits))
                     if tick_values:
                         right_ax.set_yticks(tick_values)
                         right_ax.set_yticklabels(tick_labels)
@@ -2098,8 +2118,12 @@ def build_summary_plotly(
     panel_domain_end = PLOTLY_SUMMARY_PANEL_DOMAIN_END
     legend_x = PLOTLY_SUMMARY_LEGEND_X
     right_margin = PLOTLY_SUMMARY_RIGHT_MARGIN
-    per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
-    max_height = PLOTLY_SUMMARY_MAX_HEIGHT
+    if instrument == "power":
+        per_panel_height = PLOTLY_SUMMARY_POWER_PANEL_HEIGHT
+        max_height = PLOTLY_SUMMARY_POWER_MAX_HEIGHT
+    else:
+        per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
+        max_height = PLOTLY_SUMMARY_MAX_HEIGHT
 
     fig = make_subplots(
         rows=len(panels),
@@ -2186,7 +2210,7 @@ def build_summary_plotly(
             right_tick_values: list[float] = []
             right_tick_labels: list[str] = []
             if panel.key == "cumulative_power":
-                right_tick_values, right_tick_labels = _axis_tick_values(right_range, step=2.0)
+                right_tick_values, right_tick_labels = _axis_tick_values(right_range, step=_axis_tick_step(right_range))
             fig.update_yaxes(
                 title_text=panel.right_axis_label,
                 automargin=True,
@@ -2232,7 +2256,7 @@ def build_summary_plotly(
     fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
         showlegend=True,
-        height=max(620, min(max_height, per_panel_height * len(panels) + 90)),
+        height=max(520, min(max_height, per_panel_height * len(panels) + 90)),
         margin=dict(l=80, r=right_margin, t=60, b=70),
         paper_bgcolor="white",
         plot_bgcolor="white",
