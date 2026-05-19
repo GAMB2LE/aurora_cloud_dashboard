@@ -32,10 +32,11 @@ OVERVIEW_LABEL = "Overview"
 # secondary-axis labels in both the interactive Plotly view and saved PNGs.
 MATPLOTLIB_PANEL_RIGHT = 0.72
 MATPLOTLIB_LEGEND_X = 1.12
-PLOTLY_PANEL_DOMAIN_END = 0.73
-PLOTLY_LEGEND_X = 0.84
-PLOTLY_POWER_LEGEND_X = 0.91
-PLOTLY_POWER_RIGHT_MARGIN = 110
+PLOTLY_SUMMARY_PANEL_DOMAIN_END = 0.78
+PLOTLY_SUMMARY_LEGEND_X = 0.91
+PLOTLY_SUMMARY_RIGHT_MARGIN = 110
+PLOTLY_SUMMARY_PANEL_HEIGHT = 295
+PLOTLY_SUMMARY_MAX_HEIGHT = 2050
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -1987,11 +1988,11 @@ def build_summary_plotly(
         raise ValueError(f"No summary time-series panels available for {instrument}")
 
     vertical_spacing = 0.028 if len(panels) >= 6 else 0.04
-    panel_domain_end = 0.78 if instrument == "power" else PLOTLY_PANEL_DOMAIN_END
-    legend_x = PLOTLY_POWER_LEGEND_X if instrument == "power" else PLOTLY_LEGEND_X
-    right_margin = PLOTLY_POWER_RIGHT_MARGIN if instrument == "power" else 80
-    per_panel_height = 295 if instrument == "power" else 280
-    max_height = 2050 if instrument == "power" else 1800
+    panel_domain_end = PLOTLY_SUMMARY_PANEL_DOMAIN_END
+    legend_x = PLOTLY_SUMMARY_LEGEND_X
+    right_margin = PLOTLY_SUMMARY_RIGHT_MARGIN
+    per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
+    max_height = PLOTLY_SUMMARY_MAX_HEIGHT
 
     fig = make_subplots(
         rows=len(panels),
