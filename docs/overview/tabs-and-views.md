@@ -51,6 +51,9 @@ This tab shows archived science-facing products.
 The quicklook image pane, freshness strip, and availability bar are lazy-loaded
 when the tab is first opened so the initial Interactive Data Browser page can
 appear sooner.
+PNG quicklooks are displayed through a small derived cache that trims only
+trailing blank white canvas. The original quicklook PNGs remain unchanged for
+download and archival use.
 
 ## House Keeping Quicklooks
 

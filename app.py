@@ -14,6 +14,7 @@ from collections import OrderedDict, deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
 from functools import lru_cache
+import hashlib
 from html import escape
 import json
 import logging
@@ -31,6 +32,10 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover - dashboard can still serve source images.
+    Image = None
 from grouped_timeseries import (
     build_summary_plotly,
     calendar_date_tokens,
@@ -248,6 +253,12 @@ class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
+QUICKLOOK_DISPLAY_CACHE = Path(
+    os.environ.get("AURORA_QUICKLOOK_DISPLAY_CACHE", "/data/aurora/products/dashboard/quicklook_display_cache")
+)
+QUICKLOOK_TRIM_THRESHOLD_PX = int(os.environ.get("AURORA_QUICKLOOK_TRIM_THRESHOLD_PX", "32"))
+QUICKLOOK_TRIM_PADDING_PX = int(os.environ.get("AURORA_QUICKLOOK_TRIM_PADDING_PX", "24"))
+QUICKLOOK_WHITE_THRESHOLD = int(os.environ.get("AURORA_QUICKLOOK_WHITE_THRESHOLD", "250"))
 OPS_SNAPSHOT_PATH = Path(os.environ.get("OPS_MONITOR_SNAPSHOT_PATH", "/project/aurora/raw/ops_monitor/latest.json"))
 PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
@@ -451,6 +462,49 @@ def _timed_perf(event: str, **fields):
 
 def _path_from_env(env_name: str, default: Path) -> Path:
     return Path(os.environ.get(env_name, default))
+
+
+def _quicklook_display_path(path: Path) -> Path:
+    """Return a display copy with trailing blank PNG canvas trimmed when useful."""
+    if path.suffix.lower() != ".png" or Image is None:
+        return path
+    try:
+        stat = path.stat()
+    except OSError:
+        return path
+    return _quicklook_display_path_cached(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+@lru_cache(maxsize=512)
+def _quicklook_display_path_cached(path_str: str, size_bytes: int, mtime_ns: int) -> Path:
+    source = Path(path_str)
+    if Image is None:
+        return source
+    try:
+        with Image.open(source) as image:
+            if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                white.alpha_composite(rgba)
+                rgb = white.convert("RGB")
+            else:
+                rgb = image.convert("RGB")
+        arr = np.asarray(rgb)
+        content_rows = np.where(np.any(arr < QUICKLOOK_WHITE_THRESHOLD, axis=2).any(axis=1))[0]
+        if content_rows.size == 0:
+            return source
+        bottom = min(rgb.height, int(content_rows[-1]) + 1 + QUICKLOOK_TRIM_PADDING_PX)
+        if rgb.height - bottom < QUICKLOOK_TRIM_THRESHOLD_PX:
+            return source
+        key = hashlib.sha1(f"{source.resolve()}:{size_bytes}:{mtime_ns}:{bottom}".encode("utf-8")).hexdigest()[:16]
+        QUICKLOOK_DISPLAY_CACHE.mkdir(parents=True, exist_ok=True)
+        cropped = QUICKLOOK_DISPLAY_CACHE / f"{source.stem}__trim_{key}.png"
+        if not cropped.exists():
+            rgb.crop((0, 0, rgb.width, bottom)).save(cropped, "PNG", optimize=True)
+        return cropped
+    except Exception as exc:
+        logging.getLogger(__name__).debug("Could not trim quicklook PNG %s: %s", source, exc)
+        return source
 
 
 # --- Configuration ---
@@ -3589,6 +3643,8 @@ def _media_pane(path: str):
     suffix = Path(path).suffix.lower()
     if suffix == ".mp4":
         return pn.pane.Video(path, sizing_mode="stretch_width", autoplay=False, loop=False, muted=True)
+    if suffix == ".png":
+        return pn.pane.PNG(str(_quicklook_display_path(Path(path))), sizing_mode="stretch_width", css_classes=["quicklook-image"])
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
@@ -5314,7 +5370,7 @@ def _science_quicklook_image(selected, science_inst, wxcam_selection, selected_h
                 perf["status"] = "missing_file"
                 return pn.pane.Markdown("No image available for this selection.")
             perf["status"] = "ok"
-            return pn.pane.PNG(path, sizing_mode="stretch_width")
+            return pn.pane.PNG(str(_quicklook_display_path(path)), sizing_mode="stretch_width", css_classes=["quicklook-image"])
         path = _quicklook_options(instrument).get(selected)
         perf["path"] = path
         if path and Path(path).exists():
@@ -5342,7 +5398,7 @@ def _housekeeping_quicklook_image(selected, hk_inst):
         perf["path"] = path
         if path and path.exists():
             perf["status"] = "ok"
-            return pn.pane.PNG(path, sizing_mode="stretch_width")
+            return pn.pane.PNG(str(_quicklook_display_path(path)), sizing_mode="stretch_width", css_classes=["quicklook-image"])
         perf["status"] = "missing_file"
         return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
 
@@ -5875,6 +5931,12 @@ body, .bk {
 }
 .small-card .bk-card-body {
     padding: 6px 8px;
+}
+.quicklook-image {
+    margin-bottom: 0 !important;
+}
+.quicklook-image img {
+    display: block;
 }
 .status-strip {
     display: flex;
