@@ -26,7 +26,7 @@ from grouped_timeseries import (
     SUMMARY_DISPLAY_END_ATTR,
     SUMMARY_DISPLAY_START_ATTR,
 )
-from generate_power_display_energy import POWER_DISPLAY_ENERGY_ZARR_PATH, generate as generate_power_display_energy
+from generate_power_display_summary import POWER_DISPLAY_SUMMARY_ZARR_PATH, generate as generate_power_display_summary
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
@@ -71,19 +71,36 @@ def _with_display_window(ds: xr.Dataset, start: pd.Timestamp, end: pd.Timestamp)
     return ds
 
 
-def _optional_display_energy_dataset() -> xr.Dataset | None:
-    """Return the compact Power energy product used by the cumulative panel."""
+def _optional_display_summary_dataset() -> xr.Dataset | None:
+    """Return the compact Power display product used by summary panels."""
     try:
-        generate_power_display_energy()
+        generate_power_display_summary()
     except Exception as exc:
-        print(f"Could not refresh Power display-energy Zarr: {exc}")
-    if not POWER_DISPLAY_ENERGY_ZARR_PATH.exists():
+        print(f"Could not refresh Power display-summary Zarr: {exc}")
+    if not POWER_DISPLAY_SUMMARY_ZARR_PATH.exists():
         return None
     try:
-        return xr.open_zarr(POWER_DISPLAY_ENERGY_ZARR_PATH, chunks={})
+        return xr.open_zarr(POWER_DISPLAY_SUMMARY_ZARR_PATH, chunks={})
     except Exception as exc:
-        print(f"Could not open Power display-energy Zarr: {exc}")
+        print(f"Could not open Power display-summary Zarr: {exc}")
         return None
+
+
+def _summary_inputs(
+    raw_power_window: xr.Dataset,
+    display_summary: xr.Dataset | None,
+    ass_power: xr.Dataset | None,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> tuple[xr.Dataset | None, ...]:
+    """Prefer the compact display summary and fall back to raw/context inputs."""
+    display_window = _slice_window(display_summary, start, end)
+    if display_window is not None and display_window.sizes.get("time", 0) >= 2:
+        return (display_window,)
+    return (
+        raw_power_window,
+        _slice_window(ass_power, start, end),
+    )
 
 
 def main(force: bool = False) -> None:
@@ -91,7 +108,7 @@ def main(force: bool = False) -> None:
     if "time" not in ds:
         raise KeyError("Dataset is missing a time coordinate")
     ass_power = _optional_ass_power_dataset()
-    display_energy = _optional_display_energy_dataset()
+    display_summary = _optional_display_summary_dataset()
 
     time_index = pd.DatetimeIndex(ds["time"].values)
     if len(time_index) == 0:
@@ -111,9 +128,13 @@ def main(force: bool = False) -> None:
     if latest_day.sizes.get("time", 0) >= 2:
         latest_summary = combine_summary_datasets(
             INSTRUMENT,
-            latest_day,
-            _slice_window(ass_power, pd.Timestamp(start_time), pd.Timestamp(end_time)),
-            _slice_window(display_energy, pd.Timestamp(start_time), pd.Timestamp(end_time)),
+            *_summary_inputs(
+                latest_day,
+                display_summary,
+                ass_power,
+                pd.Timestamp(start_time),
+                pd.Timestamp(end_time),
+            ),
         )
         latest_summary = _with_display_window(latest_summary, pd.Timestamp(start_time), pd.Timestamp(end_time))
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
@@ -141,9 +162,7 @@ def main(force: bool = False) -> None:
         if force or not summary_out.exists():
             summary_day = combine_summary_datasets(
                 INSTRUMENT,
-                ds_day,
-                _slice_window(ass_power, start, end),
-                _slice_window(display_energy, start, end),
+                *_summary_inputs(ds_day, display_summary, ass_power, start, end),
             )
             summary_day = _with_display_window(summary_day, start, end)
             title = pd.Timestamp(day).strftime("Aurora Power Supply - %Y-%m-%d")

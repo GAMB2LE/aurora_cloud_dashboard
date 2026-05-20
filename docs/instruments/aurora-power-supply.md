@@ -38,13 +38,15 @@ one global legend block.
 
 ## Interactive performance behavior
 
-The interactive view reads ordinary APS traces from the same Power Zarr used by
-the append and quicklook pipelines. For browser performance, the cumulative
-energy traces are read from
-`/data/aurora/products/power/power_display_energy.zarr`, a compact one-minute
-display product derived from the raw Power Zarr. The raw store remains
-authoritative; the compact product only avoids multi-day one-second reads when
-the browser needs the cumulative panel.
+The interactive view prefers
+`/data/aurora/products/power/power_display_summary.zarr`, a compact
+one-minute display product derived from the raw Power Zarr plus the ASFS logger
+`watts_on_48vdc_Avg` context trace. The raw store remains authoritative; the
+compact product only avoids multi-day one-second reads and source merges when
+the browser needs the curated APS summary panels. If the broader display
+summary is missing, the app falls back to the raw Power Zarr and the smaller
+`/data/aurora/products/power/power_display_energy.zarr` cumulative-energy
+product.
 
 The app opens the Power store with larger read chunks and uses per-trace time
 downsampling. Display-only sanity limits remove impossible APS values, such as
@@ -66,15 +68,14 @@ power data are much denser. Downsampling after each trace has dropped merged
 NaN timestamps preserves the ASFS cadence instead of thinning it on the dense
 APS time grid.
 
-The cumulative panel is normalized in the display-energy product. The
+The cumulative panel is normalized in the display products. The
 `SolarYield_*` counters are converted into positive UTC-day increments, so
 delayed controller resets just after midnight do not create false drops in the
 plotted generation lines. The utilised-energy line is integrated from AC+DC
-output power. `BatterySOC` remains a direct raw Power Zarr field and is plotted
-as `State of Charge` on the left axis. The cumulative generated and utilised
-energy traces are plotted on the right axis in kWh, so the panel shows
-generation, use, and battery state without deriving a separate deficit
-estimate.
+output power. `BatterySOC` is plotted as `State of Charge` on the left axis.
+The cumulative generated and utilised energy traces are plotted on the right
+axis in kWh, so the panel shows generation, use, and battery state without
+deriving a separate deficit estimate.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
 
@@ -94,6 +95,7 @@ Zarr path:
 
 Derived display product:
 
+- `/data/aurora/products/power/power_display_summary.zarr`
 - `/data/aurora/products/power/power_display_energy.zarr`
 
 Presentation-layer overlay:

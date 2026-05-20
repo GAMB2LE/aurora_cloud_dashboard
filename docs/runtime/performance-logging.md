@@ -35,7 +35,10 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_PREWARM_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES`
+- `AURORA_POWER_DISPLAY_SUMMARY_FREQ`
 - `AURORA_POWER_DISPLAY_ENERGY_FREQ`
+- `AURORA_MEASURE_PLOT_JSON_BYTES`
+- `POWER_DISPLAY_SUMMARY_ZARR_PATH`
 - `POWER_DISPLAY_ENERGY_ZARR_PATH`
 - `AURORA_INTERACTIVE_PREWARM_DIR`
 - `AURORA_OPS_TREND_CACHE_TTL_MINUTES`
@@ -60,6 +63,8 @@ tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 - `interactive_render_debounced`
 - `interactive_prewarm_load`
 - `window_open`
+- `power_display_summary_open`
+- `power_display_summary_window`
 - `power_display_energy_open`
 - `power_display_energy_window`
 - `interactive_view_update`
@@ -99,13 +104,13 @@ events should be interpreted:
   loaded, which keeps application startup from blocking on a full Plotly build
 - the heavier 2D interactive plots use a coarse-first pass before a full detail
   pass replaces it
-- Power interactive plots use the same display-time preparation and per-trace time
-  downsampling approach as the quicklooks, with display-only sanity limits for
-  impossible APS values
-- Power cumulative-energy traces are read from a compact one-minute display
-  Zarr when available. Latest Power, Meteorology, and Radiation interactive
-  figures can be loaded from prewarmed Plotly JSON created by their quicklook
-  generators
+- Power interactive plots use the same display-time preparation and per-trace
+  time downsampling approach as the quicklooks, with display-only sanity limits
+  for impossible APS values
+- Power summary traces are read from a compact one-minute display-summary Zarr
+  when available. The older display-energy Zarr remains as a cumulative-panel
+  fallback. Latest Power, Meteorology, and Radiation interactive figures can be
+  loaded from prewarmed Plotly JSON created by their quicklook generators
 - the live Power 24 h window is rounded into 5-minute cache buckets, so a small
   latest-timestamp change does not force an immediate full rebuild
 - fixed-summary instruments use instrument-specific display-time sample caps;
@@ -135,9 +140,18 @@ path:
 - `source_open_ms`
 - `combine_ms`
 - `figure_build_ms`
+- `source_window_count`
+- `source_window_time_counts`
+- `source_window_var_counts`
+- `combined_var_count`
+- `plot_trace_count`
+- `plot_points_total`
+- `plot_points_min`
+- `plot_points_max`
+- optional `plot_json_bytes` when `AURORA_MEASURE_PLOT_JSON_BYTES=1`
 
 These fields make it easier to distinguish slow Zarr reads from slow Plotly
-figure construction.
+figure construction and from oversized browser payloads.
 
 These fields are useful for understanding real browser behavior, including
 multi-user overlap and concurrent browsing.

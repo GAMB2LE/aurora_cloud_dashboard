@@ -722,6 +722,8 @@ _INTERACTIVE_RENDER_ENABLED = False
 _INTERACTIVE_FOOTER_LOADED = False
 _POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
+_POWER_DISPLAY_SUMMARY_DS: xr.Dataset | None = None
+_POWER_DISPLAY_SUMMARY_REFRESHED_AT: datetime | None = None
 _OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
 
 
@@ -754,6 +756,10 @@ def _zarr_path(inst: str | None = None):
 
 def _power_display_energy_path() -> Path:
     return Path(os.environ.get("POWER_DISPLAY_ENERGY_ZARR_PATH", "/data/aurora/products/power/power_display_energy.zarr"))
+
+
+def _power_display_summary_path() -> Path:
+    return Path(os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr"))
 
 
 def _prewarmed_interactive_dir() -> Path:
@@ -893,9 +899,33 @@ def _get_power_display_energy_dataset() -> xr.Dataset | None:
     return ds
 
 
+def _get_power_display_summary_dataset() -> xr.Dataset | None:
+    """Open the compact Power display-summary store when it is available."""
+    global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
+    if _POWER_DISPLAY_SUMMARY_DS is not None:
+        return _POWER_DISPLAY_SUMMARY_DS
+    path = _power_display_summary_path()
+    if not path.exists():
+        return None
+    with _timed_perf("power_display_summary_open", instrument="power", zarr_path=str(path)) as perf:
+        try:
+            ds = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+        except Exception as exc:
+            perf["status"] = "unavailable"
+            perf["error"] = str(exc)
+            return None
+        perf["status"] = "ok"
+        perf["dims"] = dict(ds.sizes)
+        perf["var_count"] = len(ds.data_vars)
+    _POWER_DISPLAY_SUMMARY_DS = ds
+    _POWER_DISPLAY_SUMMARY_REFRESHED_AT = datetime.now(timezone.utc)
+    return ds
+
+
 def _refresh_power_display_energy_dataset() -> None:
-    """Drop the compact Power display-energy handle so latest products reopen."""
+    """Drop compact Power display-product handles so latest products reopen."""
     global _POWER_DISPLAY_ENERGY_DS, _POWER_DISPLAY_ENERGY_REFRESHED_AT
+    global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
     if _POWER_DISPLAY_ENERGY_DS is not None:
         try:
             _POWER_DISPLAY_ENERGY_DS.close()
@@ -903,6 +933,13 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_DISPLAY_ENERGY_DS = None
     _POWER_DISPLAY_ENERGY_REFRESHED_AT = None
+    if _POWER_DISPLAY_SUMMARY_DS is not None:
+        try:
+            _POWER_DISPLAY_SUMMARY_DS.close()
+        except Exception:
+            pass
+    _POWER_DISPLAY_SUMMARY_DS = None
+    _POWER_DISPLAY_SUMMARY_REFRESHED_AT = None
 
 
 def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
@@ -923,6 +960,29 @@ def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
         window = ds.isel(time=mask).sortby("time")
         perf["status"] = "ok"
         perf["output_time_count"] = int(window.sizes.get("time", 0))
+        return window
+
+
+def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
+    ds = _get_power_display_summary_dataset()
+    if ds is None or "time" not in ds:
+        return None
+    start_dt = _as_naive_utc_datetime(start)
+    end_dt = _as_naive_utc_datetime(end)
+    if start_dt is None or end_dt is None:
+        return None
+    with _timed_perf("power_display_summary_window", instrument="power", start=start_dt, end=end_dt) as perf:
+        times = pd.DatetimeIndex(ds["time"].values)
+        mask = (times >= start_dt) & (times <= end_dt)
+        matched = int(np.count_nonzero(mask))
+        perf["matched_time_count"] = matched
+        if not mask.any():
+            perf["status"] = "empty"
+            return None
+        window = ds.isel(time=mask).sortby("time")
+        perf["status"] = "ok"
+        perf["output_time_count"] = int(window.sizes.get("time", 0))
+        perf["var_count"] = len(window.data_vars)
         return window
 
 
@@ -3124,10 +3184,10 @@ def _canonical_interactive_window(start, end, instrument: str):
 
 
 def _summary_context_start(start, instrument: str):
-    """Include Power context when cumulative display-energy cache is absent."""
+    """Include Power context only when compact display products are absent."""
     if instrument != "power":
         return start
-    if _power_display_energy_path().exists():
+    if _power_display_summary_path().exists() or _power_display_energy_path().exists():
         return start
     start_dt = _as_naive_utc_datetime(start)
     if start_dt is None:
@@ -3260,6 +3320,45 @@ def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str)
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
         return fig
+
+
+def _dataset_window_metrics(ds: xr.Dataset | None) -> dict[str, int]:
+    if ds is None:
+        return {"time_count": 0, "var_count": 0}
+    return {
+        "time_count": int(ds.sizes.get("time", 0)),
+        "var_count": len(ds.data_vars),
+    }
+
+
+def _figure_metrics(fig: go.Figure) -> dict[str, int]:
+    """Return lightweight render payload metrics without serializing by default."""
+    point_counts: list[int] = []
+    for trace in fig.data:
+        x_values = getattr(trace, "x", None)
+        y_values = getattr(trace, "y", None)
+        if x_values is not None:
+            try:
+                point_counts.append(len(x_values))
+                continue
+            except TypeError:
+                pass
+        if y_values is not None:
+            try:
+                point_counts.append(len(y_values))
+            except TypeError:
+                point_counts.append(0)
+        else:
+            point_counts.append(0)
+    metrics = {
+        "plot_trace_count": len(fig.data),
+        "plot_points_total": int(sum(point_counts)),
+        "plot_points_max": int(max(point_counts)) if point_counts else 0,
+        "plot_points_min": int(min(point_counts)) if point_counts else 0,
+    }
+    if os.environ.get("AURORA_MEASURE_PLOT_JSON_BYTES", "").lower() in {"1", "true", "yes"}:
+        metrics["plot_json_bytes"] = len(fig.to_json().encode("utf-8"))
+    return metrics
 
 
 def _publish_plot_if_current(
@@ -4117,33 +4216,51 @@ def _update_stacked_timeseries_view(
             return False
         source_instruments = summary_source_instruments(instrument)
         perf["source_instruments"] = list(source_instruments)
-        power_display_available = instrument == "power" and _power_display_energy_path().exists()
-        # Power cumulative-energy traces now come from a compact display product.
-        # Only keep full raw time detail as a fallback when that product is absent.
-        if instrument == "power" and not power_display_available:
+        power_display_summary_available = instrument == "power" and _power_display_summary_path().exists()
+        power_display_energy_available = instrument == "power" and _power_display_energy_path().exists()
+        # Power summary traces can now come from a compact display product.
+        # Only keep full raw time detail as a fallback when compact products are
+        # absent and cumulative energy must be derived from source samples.
+        if instrument == "power" and not (power_display_summary_available or power_display_energy_available):
             source_render_quality = "summary_full_time"
         else:
             source_render_quality = render_quality
         perf["source_render_quality"] = source_render_quality
-        perf["power_display_energy_available"] = bool(power_display_available)
+        perf["power_display_summary_available"] = bool(power_display_summary_available)
+        perf["power_display_energy_available"] = bool(power_display_energy_available)
         context_start = _summary_context_start(start, instrument)
         perf["context_start"] = context_start
         source_open_started = perf_counter()
-        source_windows = [
-            open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
-            for source_inst in source_instruments
-        ]
+        source_windows: list[xr.Dataset | None] = []
         if instrument == "power":
-            display_window = _open_power_display_energy_window(start, end)
-            if display_window is not None:
-                source_windows.append(display_window)
-                perf["power_display_energy"] = "used"
+            display_summary_window = _open_power_display_summary_window(start, end)
+            if display_summary_window is not None:
+                source_windows = [display_summary_window]
+                perf["power_display_summary"] = "used"
+                perf["power_display_energy"] = "embedded"
             else:
-                perf["power_display_energy"] = "missing"
+                perf["power_display_summary"] = "missing"
+        if not source_windows:
+            source_windows = [
+                open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
+                for source_inst in source_instruments
+            ]
+            if instrument == "power":
+                display_window = _open_power_display_energy_window(start, end)
+                if display_window is not None:
+                    source_windows.append(display_window)
+                    perf["power_display_energy"] = "used"
+                else:
+                    perf["power_display_energy"] = "missing"
         perf["source_open_ms"] = round((perf_counter() - source_open_started) * 1000, 3)
+        source_metrics = [_dataset_window_metrics(window) for window in source_windows]
+        perf["source_window_count"] = len(source_metrics)
+        perf["source_window_time_counts"] = [item["time_count"] for item in source_metrics]
+        perf["source_window_var_counts"] = [item["var_count"] for item in source_metrics]
         combine_started = perf_counter()
         ds = combine_summary_datasets(instrument, *source_windows)
         perf["combine_ms"] = round((perf_counter() - combine_started) * 1000, 3)
+        perf["combined_var_count"] = 0 if ds is None else len(ds.data_vars)
         if instrument == "power" and ds is not None:
             display_start = _as_naive_utc_datetime(start)
             display_end = _as_naive_utc_datetime(end)
@@ -4170,6 +4287,7 @@ def _update_stacked_timeseries_view(
             fig_started = perf_counter()
             fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
             perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
+            perf.update(_figure_metrics(fig))
         except ValueError as exc:
             perf["status"] = "no_data"
             empty = _empty_interactive_figure(

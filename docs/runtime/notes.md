@@ -44,21 +44,24 @@ render.
 The raw Power Zarr schema and chunks are unchanged. The dashboard uses larger
 read chunks, display-only sanity limits, per-trace time downsampling, and
 5-minute latest-window cache buckets for the interactive Power view. The
-cumulative-energy panel additionally reads from the compact derived store
-`/data/aurora/products/power/power_display_energy.zarr`, which is regenerated
-from `power.zarr` by the Power quicklook pipeline.
+interactive Power summary now prefers the compact derived store
+`/data/aurora/products/power/power_display_summary.zarr`, which is regenerated
+from `power.zarr` and the optional ASFS logger ASS 48 V context by the Power
+quicklook pipeline. The older
+`/data/aurora/products/power/power_display_energy.zarr` product remains as a
+cumulative-panel fallback.
 
 The Battery Charging panel additionally applies a display-only 30-minute rolling
 mean to `BatteryAmps` and `BatteryWatts` so short charging transients do not
 dominate the plotted scale.
 
-The cumulative Power display product is computed with full available context.
+The cumulative Power display fields are computed with full available context.
 Solar-yield counters are treated as daily counters and converted to positive
 increments, so delayed controller resets after midnight do not produce false
 generation drops in the latest 24 h view. The utilised term remains the AC+DC
-output power integral. `BatterySOC` is plotted directly from `power.zarr` as
-`State of Charge` on the left axis, while generated and utilised cumulative
-energy traces are plotted on the right axis. Daily generated and utilised
+output power integral. `BatterySOC` is plotted as `State of Charge` on the left
+axis, while generated and utilised cumulative energy traces are plotted on the
+right axis. Daily generated and utilised
 traces are visually broken at UTC midnight so their resets are shown as new
 segments rather than connected vertical jumps.
 

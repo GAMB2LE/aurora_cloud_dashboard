@@ -93,6 +93,38 @@ def _print_group_summary(records: list[dict]) -> None:
         )
 
 
+def _print_phase_summary(records: list[dict]) -> None:
+    phases = ("source_open_ms", "combine_ms", "figure_build_ms", "plot_points_total", "plot_json_bytes")
+    grouped: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for row in records:
+        if row.get("event") != "stacked_timeseries_render":
+            continue
+        instrument = str(row.get("instrument", ""))
+        for phase in phases:
+            value = row.get(phase)
+            if value is None:
+                continue
+            try:
+                grouped[instrument][phase].append(float(value))
+            except (TypeError, ValueError):
+                continue
+    if not grouped:
+        return
+    print("\nStacked-timeseries phase summary")
+    print("================================")
+    for instrument, phase_values in sorted(grouped.items()):
+        print(instrument)
+        for phase in phases:
+            values = phase_values.get(phase)
+            if not values:
+                continue
+            avg = sum(values) / len(values)
+            p95 = _quantile(values, 0.95)
+            max_v = max(values)
+            suffix = " bytes" if phase == "plot_json_bytes" else " points" if phase == "plot_points_total" else "ms"
+            print(f"  {phase:22} count={len(values):4d} avg={avg:9.1f}{suffix} p95={p95:9.1f}{suffix} max={max_v:9.1f}{suffix}")
+
+
 def _print_session_summary(records: list[dict]) -> None:
     session_ids = {row.get("session_id") for row in records if row.get("session_id")}
     loaded = [row for row in records if row.get("event") == "session_loaded"]
@@ -157,7 +189,24 @@ def _print_slowest(records: list[dict], limit: int) -> None:
     print("================")
     for row in slowest:
         details = []
-        for key in ("event", "instrument", "view_type", "status", "selection", "selected", "day_token", "path"):
+        for key in (
+            "event",
+            "instrument",
+            "view_type",
+            "status",
+            "selection",
+            "selected",
+            "day_token",
+            "power_display_summary",
+            "power_display_energy",
+            "source_open_ms",
+            "combine_ms",
+            "figure_build_ms",
+            "trace_count",
+            "plot_points_total",
+            "plot_json_bytes",
+            "path",
+        ):
             value = row.get(key)
             if value not in (None, ""):
                 details.append(f"{key}={value}")
@@ -176,6 +225,7 @@ def main() -> None:
         return
     print(f"Loaded {len(records)} events from {args.log} over the last {args.hours:g} hours.")
     _print_group_summary(records)
+    _print_phase_summary(records)
     _print_session_summary(records)
     _print_instrument_coverage(records)
     _print_slowest(records, args.limit)

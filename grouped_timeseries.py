@@ -45,7 +45,9 @@ SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
 SUMMARY_DISPLAY_END_ATTR = "summary_display_end"
 POWER_CUMULATIVE_CONTEXT_DAYS = int(os.environ.get("AURORA_POWER_CUMULATIVE_CONTEXT_DAYS", "7"))
 POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "1min")
+POWER_DISPLAY_SUMMARY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_SUMMARY_FREQ", POWER_DISPLAY_ENERGY_FREQ)
 POWER_DISPLAY_ENERGY_ATTR = "power_display_energy_product"
+POWER_DISPLAY_SUMMARY_ATTR = "power_display_summary_product"
 POWER_DISPLAY_ENERGY_MAP = {
     "SolarYield_East": "PowerDisplaySolarYield_East",
     "SolarYield_South": "PowerDisplaySolarYield_South",
@@ -53,6 +55,28 @@ POWER_DISPLAY_ENERGY_MAP = {
     "CumulativePowerGeneratedTotal": "PowerDisplayCumulativePowerGeneratedTotal",
     "CumulativePowerUtilised": "PowerDisplayCumulativePowerUtilised",
 }
+POWER_DISPLAY_SUMMARY_FIELDS = (
+    "SolarWatts_East",
+    "SolarWatts_South",
+    "SolarWatts_West",
+    "SolarVolts_East",
+    "SolarVolts_South",
+    "SolarVolts_West",
+    "BatteryAmps",
+    "BatteryWatts",
+    "ACOutputWatts",
+    "DCInverterWatts",
+    "BatterySOC",
+    "ACOutputVolts",
+    "DCInverterVolts",
+    "InternalTemperature",
+    "HeatsinkTemperature",
+    "TempSensor1",
+    "TempSensor2",
+    "TempSensor3",
+    "TempSensor4",
+)
+POWER_DISPLAY_SUMMARY_CONTEXT_FIELDS = ("watts_on_48vdc_Avg",)
 
 
 @dataclass(frozen=True)
@@ -1349,6 +1373,99 @@ def build_power_display_energy_dataset(
     )
     for name in out.data_vars:
         out[name].attrs["units"] = "kWh"
+    return out
+
+
+def _time_frame_from_dataset(ds: xr.Dataset, fields: tuple[str, ...]) -> pd.DataFrame:
+    """Load selected 1D time-series fields into a sorted pandas frame."""
+    if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return pd.DataFrame()
+    names = [name for name in fields if name in ds and ds[name].dims == ("time",)]
+    if not names:
+        return pd.DataFrame()
+    times = pd.DatetimeIndex(ds["time"].values)
+    frame = pd.DataFrame(
+        {name: np.asarray(ds[name].values, dtype=np.float64) for name in names},
+        index=times,
+    )
+    frame = frame[~frame.index.isna()].sort_index()
+    return frame[~frame.index.duplicated(keep="last")]
+
+
+def _resample_display_frame(frame: pd.DataFrame, freq: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    return frame.resample(freq).mean().dropna(how="all")
+
+
+def build_power_display_summary_dataset(
+    power_ds: xr.Dataset,
+    ass_power_ds: xr.Dataset | None = None,
+    freq: str = POWER_DISPLAY_SUMMARY_FREQ,
+) -> xr.Dataset:
+    """Build one-minute APS traces for fast dashboard plotting.
+
+    The raw APS and ASFS logger Zarrs remain authoritative. This derived store
+    keeps only the fields used by the curated Power summary panels, resampled
+    to the dashboard display cadence, plus the cumulative-energy variables
+    already produced for the APS cumulative panel.
+    """
+    if "time" not in power_ds or power_ds.sizes.get("time", 0) == 0:
+        return xr.Dataset()
+
+    frames: list[pd.DataFrame] = []
+    sorted_power = power_ds.sortby("time")
+    power_times = pd.DatetimeIndex(sorted_power["time"].values)
+    power_start = power_times.min()
+    power_end = power_times.max()
+
+    power_frame = _time_frame_from_dataset(sorted_power, POWER_DISPLAY_SUMMARY_FIELDS)
+    power_frame = _resample_display_frame(power_frame, freq)
+    if not power_frame.empty:
+        frames.append(power_frame)
+
+    energy = build_power_display_energy_dataset(power_ds, freq=freq)
+    if energy.sizes.get("time", 0):
+        frames.append(energy.to_dataframe())
+
+    if ass_power_ds is not None:
+        ass_frame = _time_frame_from_dataset(ass_power_ds.sortby("time"), POWER_DISPLAY_SUMMARY_CONTEXT_FIELDS)
+        if not ass_frame.empty:
+            ass_frame = ass_frame[(ass_frame.index >= power_start) & (ass_frame.index <= power_end)]
+        ass_frame = _resample_display_frame(ass_frame, freq)
+        if not ass_frame.empty:
+            frames.append(ass_frame)
+
+    if not frames:
+        return xr.Dataset()
+
+    display_frame = pd.concat(frames, axis=1).sort_index()
+    display_frame = display_frame.loc[:, ~display_frame.columns.duplicated(keep="last")]
+    display_frame = display_frame.dropna(how="all")
+    if display_frame.empty:
+        return xr.Dataset()
+
+    start = pd.Timestamp(display_frame.index.min()).isoformat()
+    end = pd.Timestamp(display_frame.index.max()).isoformat()
+    out = xr.Dataset(
+        {name: (("time",), display_frame[name].to_numpy(dtype=np.float32)) for name in display_frame.columns},
+        coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
+        attrs={
+            POWER_DISPLAY_SUMMARY_ATTR: "true",
+            "source": "derived from power.zarr and optional asfs_logger.zarr ASS 48 V power",
+            "frequency": freq,
+            "time_coverage_start": start,
+            "time_coverage_end": end,
+            "description": "Display-only one-minute APS summary traces for fast dashboard plotting.",
+        },
+    )
+    for name in out.data_vars:
+        unit = human_unit(name)
+        if unit:
+            out[name].attrs["units"] = unit
+    for name in POWER_DISPLAY_ENERGY_MAP.values():
+        if name in out:
+            out[name].attrs["units"] = "kWh"
     return out
 
 

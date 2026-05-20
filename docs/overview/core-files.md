@@ -33,8 +33,10 @@ up as false all-NaN stripes in range-resolved products.
 - `generate_asfs_logger_quicklooks.py`
 - `generate_asfs_fast_sonic_quicklooks.py`
 - `generate_power_quicklooks.py`
+- `generate_power_display_summary.py` - builds the compact derived Power
+  display-summary Zarr used by the APS interactive and quicklook summary panels
 - `generate_power_display_energy.py` - builds the compact derived Power
-  display-energy Zarr used by the cumulative APS panel
+  display-energy Zarr used as a cumulative-panel compatibility product
 - `generate_ops_monitor_quicklooks.py`
 - `plot_*_last24h.py`
 
