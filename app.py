@@ -3639,12 +3639,38 @@ def _wxcam_video_poster_data_uri(image_type: str, day_token: str, selected_label
         return ""
 
 
+@lru_cache(maxsize=24)
+def _cached_quicklook_png_data_uri(path_str: str, size_bytes: int, mtime_ns: int) -> str:
+    encoded = b64encode(Path(path_str).read_bytes()).decode("utf-8")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _responsive_quicklook_png(path: Path) -> pn.pane.HTML:
+    """Render a PNG without Panel's fixed intrinsic-height image box.
+
+    Panel's native PNG pane stores the file's pixel height on the Bokeh model.
+    That leaves a large blank area below tall quicklooks when the browser scales
+    the image down to fit the available width. A plain HTML image lets the
+    browser preserve the aspect ratio and collapse the following footer tightly.
+    """
+    display_path = _quicklook_display_path(path)
+    stat_result = display_path.stat()
+    data_uri = _cached_quicklook_png_data_uri(str(display_path), stat_result.st_size, stat_result.st_mtime_ns)
+    alt = escape(display_path.stem.replace("_", " "))
+    return pn.pane.HTML(
+        f"<img class='quicklook-image__img' src='{data_uri}' alt='{alt}'>",
+        sizing_mode="stretch_width",
+        margin=0,
+        css_classes=["quicklook-image"],
+    )
+
+
 def _media_pane(path: str):
     suffix = Path(path).suffix.lower()
     if suffix == ".mp4":
         return pn.pane.Video(path, sizing_mode="stretch_width", autoplay=False, loop=False, muted=True)
     if suffix == ".png":
-        return pn.pane.PNG(str(_quicklook_display_path(Path(path))), sizing_mode="stretch_width", css_classes=["quicklook-image"])
+        return _responsive_quicklook_png(Path(path))
     return pn.pane.Image(path, sizing_mode="stretch_width")
 
 
@@ -5370,7 +5396,7 @@ def _science_quicklook_image(selected, science_inst, wxcam_selection, selected_h
                 perf["status"] = "missing_file"
                 return pn.pane.Markdown("No image available for this selection.")
             perf["status"] = "ok"
-            return pn.pane.PNG(str(_quicklook_display_path(path)), sizing_mode="stretch_width", css_classes=["quicklook-image"])
+            return _responsive_quicklook_png(path)
         path = _quicklook_options(instrument).get(selected)
         perf["path"] = path
         if path and Path(path).exists():
@@ -5398,7 +5424,7 @@ def _housekeeping_quicklook_image(selected, hk_inst):
         perf["path"] = path
         if path and path.exists():
             perf["status"] = "ok"
-            return pn.pane.PNG(str(_quicklook_display_path(path)), sizing_mode="stretch_width", css_classes=["quicklook-image"])
+            return _responsive_quicklook_png(path)
         perf["status"] = "missing_file"
         return pn.pane.Markdown("No housekeeping quicklooks available for this instrument.")
 
@@ -5934,9 +5960,14 @@ body, .bk {
 }
 .quicklook-image {
     margin-bottom: 0 !important;
+    line-height: 0;
 }
-.quicklook-image img {
+.quicklook-image img,
+.quicklook-image__img {
     display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
 }
 .status-strip {
     display: flex;

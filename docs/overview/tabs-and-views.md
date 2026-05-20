@@ -53,7 +53,9 @@ when the tab is first opened so the initial Interactive Data Browser page can
 appear sooner.
 PNG quicklooks are displayed through a small derived cache that trims only
 trailing blank white canvas. The original quicklook PNGs remain unchanged for
-download and archival use.
+download and archival use. The dashboard wraps displayed PNGs in responsive HTML
+so tall quicklooks scale to the browser width without reserving their original
+pixel height as blank page space.
 
 ## House Keeping Quicklooks
 
