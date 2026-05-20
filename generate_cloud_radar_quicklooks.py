@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate daily quicklook PNGs for the cloud radar Zarr store.
+Generate daily cloud-radar quicklook PNGs with the shared compact layout.
 Panels (top→bottom): ZE_dBZ, MeanVel, SpecWidth, SLDR, RHV, SRCX, Skew, Kurt.
 """
 

@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-19`:
-  - `time=935543`
+- deployed shape when checked on `2026-05-20`:
+  - `time=998611`
 - time coverage when checked: `2026-05-05 15:15:23.598658936` to
-  `2026-05-19 12:53:42.726175049`
+  `2026-05-20 07:55:44.192044678`
 - sorted unique `time` coordinate
 
 ## Time coordinate
@@ -92,9 +92,9 @@ directly from `power.zarr` and plots it as `State of Charge` on the left axis
 of the **Cumulative Power & State of Charge** panel. The generated and utilised
 energy traces from this compact store are plotted on that panel's right axis.
 
-When checked on `2026-05-19`, this derived store had `time=17329`, 5 data
+When checked on `2026-05-20`, this derived store had `time=18048`, 5 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-19 19:50:00`.
+`2026-05-05 15:15:00` to `2026-05-20 07:49:00`.
 
 Variables:
 

@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-19`:
-  - `time=238261`
+- deployed shape when checked on `2026-05-20`:
+  - `time=249795`
 - time coverage when checked: `2026-05-02 00:00:02` to
-  `2026-05-19 12:56:59`
+  `2026-05-20 07:56:41`
 - sorted unique `time` coordinate
 
 ## Time coordinate

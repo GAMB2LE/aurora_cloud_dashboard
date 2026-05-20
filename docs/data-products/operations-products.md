@@ -49,13 +49,13 @@ Path:
 
 - `/data/aurora/products/ops_monitor/ops_monitor.zarr`
 
-When checked on `2026-05-19`:
+When checked on `2026-05-20`:
 
 - dimension: `time`
-- shape: `time=2878`
+- shape: `time=3332`
 - data variables: `374`
 - time coverage when checked: `2026-05-09 16:01:00.181057` to
-  `2026-05-19 12:57:00.839144`
+  `2026-05-20 07:57:01.588621`
 - sorted unique `time` coordinate after the `2026-05-18` rebuild
 - useful attrs:
   - `instrument = "ops-monitor"`

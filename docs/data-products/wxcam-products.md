@@ -31,10 +31,13 @@ The active table is `images`. Key fields include:
 - `width`, `height`, `size_bytes`, `mtime_ns`, `indexed_at`
 
 Catalog queries should order records by `time_epoch_ns` and then `raw_path`.
-When checked on `2026-05-19`, the catalog had no null timestamp rows, all
+When checked on `2026-05-20`, the catalog had no null timestamp rows, all
 cataloged images were HDR files, and FISH/PANO image and video records were
-ordered cleanly by timestamp. At that check it contained `46425` FISH HDR image
-records, `46424` PANO HDR image records, and `1287` MP4 records for each stream.
+ordered cleanly by timestamp. At that check it contained `47109` FISH HDR image
+records, `47108` PANO HDR image records, and `1306` MP4 records for each stream.
+The cataloged image span was `2026-01-12 02:25:00` to
+`2026-05-20 07:55:39`; cataloged videos ran through
+`2026-05-20 06:00:00`.
 
 ## Daily videos and hourly thumbnails
 

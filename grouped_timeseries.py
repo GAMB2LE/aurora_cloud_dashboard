@@ -1069,7 +1069,11 @@ def refresh_legacy_aliases(
 
 
 def calendar_date_tokens(quicklook_dir: Path, instrument: str) -> list[str]:
-    """List daily science-quicklook tokens for the dated quicklook selector."""
+    """List daily Science Quicklook tokens.
+
+    The public UI no longer uses the word calendar, but these helper names are
+    retained because existing quicklook and performance code still imports them.
+    """
     prefix = quicklook_prefix(instrument)
     tokens: list[str] = []
     for png in sorted(quicklook_dir.glob(f"{prefix}__summary__*.png")):
@@ -1081,7 +1085,7 @@ def calendar_date_tokens(quicklook_dir: Path, instrument: str) -> list[str]:
 
 
 def calendar_product_paths(quicklook_dir: Path, instrument: str, token: str) -> list[tuple[str, Path]]:
-    """Return science and housekeeping PNGs associated with a quicklook token."""
+    """Return science and housekeeping PNGs associated with a dated token."""
     paths: list[tuple[str, Path]] = []
     if token == "latest":
         summary = summary_latest_png(quicklook_dir, instrument)

@@ -5,7 +5,9 @@ curtains, station summaries, WXcam media, quicklooks, and operations monitoring.
 It keeps per-instrument state warm and uses cached bounds, stale-render
 protection, prewarmed latest summary figures, coarse-first rendering on heavier
 2D plots, and instrument-specific trace-density controls to keep the UI
-responsive during normal browsing.
+responsive during normal browsing. Quicklook PNGs are displayed through
+responsive HTML wrappers so tall images do not reserve their original pixel
+height as blank page space after browser scaling.
 """
 
 import asyncio

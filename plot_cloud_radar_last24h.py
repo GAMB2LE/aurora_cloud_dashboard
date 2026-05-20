@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Render the last 24 hours of cloud radar data to a multi-panel PNG for the dashboard.
+Render the last 24 hours of cloud radar data to a compact multi-panel PNG.
 Panels (top→bottom): ZE_dBZ, MeanVel, SpecWidth, SLDR, RHV, SRCX, Skew, Kurt.
 """
 
