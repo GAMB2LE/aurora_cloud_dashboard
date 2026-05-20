@@ -41,6 +41,8 @@ Examples include:
 - `kt15_tem_Avg`
 - `licor_co2_out_Avg`
 - `licor_h2o_out_Avg`
+- `licor_co2_str_out_Avg`
+- `licor_t_out_Avg`
 - `metek_x_out_Avg`
 - `metek_T_out_Avg`
 - `sr30_swd_Irr_Avg`
@@ -84,4 +86,10 @@ This Zarr underpins:
   temperature, relative humidity, pressure, Metek wind vectors, and
   display-derived Metek wind speed/direction
 - the curated `HK_ASFS` housekeeping quicklooks for logger power, logger
-  thermal/scan state, SR30 support, IR20 support, and sensor variability
+  thermal/scan state, ASFS met/LI-COR CO2/H2O output and CO2 signal strength,
+  SR30 support, IR20 support, and sensor variability
+
+No `diag_out` LI-COR column is present in the deployed ASFS logger Zarr or in
+the current local raw ASFS science headers checked on `2026-05-20`. If the CRD
+program adds that column later, the Zarr will need a deliberate schema rebuild
+or migration before the housekeeping plot can show it.

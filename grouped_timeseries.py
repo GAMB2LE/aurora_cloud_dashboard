@@ -354,8 +354,8 @@ HUMAN_UNITS = {
     "sr50_qc_Avg": "state",
     "kt15_amb_Avg": "C",
     "kt15_tem_Avg": "C",
-    "licor_co2_out_Avg": "ppm",
-    "licor_h2o_out_Avg": "mmol mol^-1",
+    "licor_co2_out_Avg": "mmol m^-3",
+    "licor_h2o_out_Avg": "mmol m^-3",
     "licor_t_out_Avg": "C",
     "licor_co2_str_out_Avg": "%",
     "vaisala_T_Avg": "C",
@@ -555,6 +555,17 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("PTemp_Avg", "Panel Temperature", COLOR["brown"]),
                 TraceSpec("scantime", "Scan Time", COLOR["slate"], axis="right"),
+            ),
+        ),
+        PanelSpec(
+            "asfs_met_licor",
+            "ASFS Met / LI-COR",
+            "CO2 / H2O [mmol m^-3]",
+            "Signal Strength [%]",
+            (
+                TraceSpec("licor_co2_out_Avg", "CO2 Output", COLOR["teal"]),
+                TraceSpec("licor_h2o_out_Avg", "H2O Output", COLOR["light_blue"]),
+                TraceSpec("licor_co2_str_out_Avg", "CO2 Signal Strength", COLOR["green"], axis="right", valid_min=0.0, valid_max=100.0),
             ),
         ),
         PanelSpec(

@@ -29,8 +29,9 @@ not have to rebuild the full figure.
 
 - science quicklooks show the Radiation summary
 - housekeeping quicklooks show `HK_ASFS`, a curated support layout for logger
-  power, logger temperature/scan timing, SR30 orientation/fans/heaters, IR20
-  support, and sensor variability
+  power, logger temperature/scan timing, ASFS met/LI-COR CO2/H2O output and
+  signal strength, SR30 orientation/fans/heaters, IR20 support, and sensor
+  variability
 
 ## Backing data product
 

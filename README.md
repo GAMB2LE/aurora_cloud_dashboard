@@ -21,7 +21,7 @@ Additional housekeeping products now exist for:
 
 - `Ceilometer` as `HK_Ceilometer`, using CL61 time-only diagnostics such as sample cadence, receiver gain, backscatter noise/sum, alignment, visibility, and weather flags rather than duplicating the main backscatter/depolarization science fields.
 - `Cloud Radar` as `HK_Radar`, using raw RPG LV1 housekeeping variables such as status, DD voltage, IF power, transmitter/receiver/PC temperatures, pointing, surface met, rain, LWP, and cloud-base diagnostics rather than duplicating the radar science moments.
-- `ASFS Logger` as `HK_ASFS`, using a curated support layout for logger power, logger temperature/scan timing, SR30 orientation/fans/heaters, IR20 support, and sensor variability.
+- `ASFS Logger` as `HK_ASFS`, using a curated support layout for logger power, logger temperature/scan timing, ASFS met/LI-COR CO2/H2O output and signal strength, SR30 orientation/fans/heaters, IR20 support, and sensor variability.
 - `WXcam` as `HK_WXcam`
 
 ## Core files
@@ -537,13 +537,15 @@ Variable layout:
   - `batt_volt_Avg`
   - `amp_meter_48vdc_Avg`
   - `kt15_amb_Avg`, `kt15_tem_Avg`
-  - `licor_co2_out_Avg`, `licor_h2o_out_Avg`
+  - `licor_co2_out_Avg`, `licor_h2o_out_Avg`, `licor_co2_str_out_Avg`
   - `metek_x_out_Avg`, `metek_T_out_Avg`
   - `RECORD`
 
 Schema note:
 
 - append runs keep the existing variable set fixed in the same way as `vaisalamet`
+- no `diag_out` LI-COR field is currently present in the deployed Zarr or the
+  local raw ASFS science headers checked on `2026-05-20`
 
 Chunking:
 
