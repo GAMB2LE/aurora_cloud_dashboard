@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import xarray as xr
 from extra_housekeeping import (
@@ -36,6 +35,109 @@ SRCX_VMIN, SRCX_VMAX = 0.8, 1.0
 SKEW_VMIN, SKEW_VMAX = -2.0, 2.0
 KURT_VMIN, KURT_VMAX = 0.0, 8.0
 RANGE_MAX = 9000
+
+RADAR_PANELS = (
+    ("ZE_dBZ", "ZE", ZE_VMIN, ZE_VMAX, "ZE (dBZ)", "cividis"),
+    ("MeanVel", "Mean Velocity", VEL_VMIN, VEL_VMAX, "Mean Velocity (m/s)", "RdBu_r"),
+    ("SpecWidth", "Spectrum Width", SPEC_VMIN, SPEC_VMAX, "Spectrum Width (m/s)", "plasma"),
+    ("SLDR", "SLDR", SLDR_VMIN, SLDR_VMAX, "SLDR (dB)", "RdBu_r"),
+    ("RHV", "RHV", RHV_VMIN, RHV_VMAX, "RHV", "viridis"),
+    ("SRCX", "SRCX", SRCX_VMIN, SRCX_VMAX, "SRCX", "viridis"),
+    ("Skew", "Skew", SKEW_VMIN, SKEW_VMAX, "Skew", "RdBu_r"),
+    ("Kurt", "Kurtosis", KURT_VMIN, KURT_VMAX, "Kurtosis", "magma"),
+)
+
+
+def required_radar_vars() -> tuple[str, ...]:
+    return tuple(panel[0] for panel in RADAR_PANELS)
+
+
+def _validate_radar_vars(ds: xr.Dataset) -> None:
+    missing = [var for var in required_radar_vars() if var not in ds]
+    if missing:
+        raise KeyError(f"Dataset missing variables: {', '.join(missing)}")
+
+
+def _axis_times(window_times: pd.DatetimeIndex, x_start: pd.Timestamp, x_end: pd.Timestamp) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex([x_start, *window_times.to_pydatetime(), x_end])
+
+
+def plot_radar_quicklook(
+    window: xr.Dataset,
+    title: str,
+    output: Path,
+    *,
+    x_start: pd.Timestamp | None = None,
+    x_end: pd.Timestamp | None = None,
+) -> None:
+    """Render the shared compact science quicklook layout for radar windows."""
+    _validate_radar_vars(window)
+    window = window.sortby("time").sel({"range": slice(0, RANGE_MAX)})
+    window_times = pd.DatetimeIndex(window["time"].values)
+    if len(window_times) < 2:
+        raise ValueError("At least two radar time samples are required for a science quicklook.")
+
+    x_start = pd.Timestamp(window_times.min() if x_start is None else x_start)
+    x_end = pd.Timestamp(window_times.max() if x_end is None else x_end)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(len(RADAR_PANELS), 1, figsize=(12, 15.4), sharex=True, sharey=True)
+    if len(RADAR_PANELS) == 1:
+        axes = [axes]
+
+    colorbars = []
+    for ax, (var, panel_title, vmin, vmax, cbar_label, cmap) in zip(axes, RADAR_PANELS):
+        da = window[var].transpose("time", "range")
+        mesh = ax.pcolormesh(
+            da["time"].values,
+            da["range"].values,
+            da.values.T,
+            shading="auto",
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+        )
+        ax.set_ylabel("Range (m)", fontsize=8)
+        ax.set_ylim(0, RANGE_MAX)
+        ax.set_xlim(x_start, x_end)
+        ax.grid(True, color="#e3e8ee", linewidth=0.45)
+        ax.tick_params(axis="y", labelsize=8)
+        ax.text(
+            0.01,
+            0.93,
+            panel_title,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="#22313f",
+            bbox={"facecolor": "white", "edgecolor": "#22313f", "boxstyle": "square,pad=0.18", "linewidth": 0.8},
+        )
+        colorbars.append((mesh, cbar_label, ax))
+
+    for ax in axes[:-1]:
+        ax.tick_params(axis="x", labelbottom=False)
+        ax.set_xlabel("")
+    apply_quicklook_time_axis(
+        axes[-1],
+        _axis_times(window_times, x_start, x_end),
+        label_rotation=0,
+        label_size=8,
+    )
+
+    fig.suptitle(title, y=0.992, fontsize=13, color="#22313f")
+    fig.subplots_adjust(left=0.07, right=0.84, bottom=0.055, top=0.965, hspace=0.08)
+
+    for mesh, cbar_label, ax in colorbars:
+        bbox = ax.get_position()
+        cax = fig.add_axes([bbox.x1 + 0.012, bbox.y0, 0.012, bbox.height])
+        cbar = fig.colorbar(mesh, cax=cax)
+        cbar.set_label(cbar_label, fontsize=8)
+        cbar.ax.tick_params(labelsize=7, length=2)
+
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+    print(f"Wrote {output}")
 
 
 def _write_no_data_png(output: Path, start_time: pd.Timestamp, end_time: pd.Timestamp, latest_time: pd.Timestamp | None) -> None:
@@ -82,17 +184,14 @@ def _write_no_data_png(output: Path, start_time: pd.Timestamp, end_time: pd.Time
 
 def plot_last_24h(zarr_path: Path, output: Path):
     ds = xr.open_zarr(zarr_path, chunks={})
-    needed = ["ZE_dBZ", "MeanVel", "SpecWidth", "SLDR", "RHV", "SRCX", "Skew", "Kurt"]
-    missing = [v for v in needed if v not in ds]
-    if missing:
-        raise KeyError(f"Dataset missing variables: {', '.join(missing)}")
+    _validate_radar_vars(ds)
 
     time_index = pd.DatetimeIndex(ds["time"].values)
     end_time = pd.Timestamp.utcnow().replace(tzinfo=None)
     start_time = end_time - timedelta(hours=24)
 
     mask = (time_index >= start_time) & (time_index <= end_time)
-    if not mask.any():
+    if not mask.any() or int(mask.sum()) < 2:
         latest_time = time_index.max() if len(time_index) else None
         _write_no_data_png(output, start_time, end_time, latest_time)
         hk_output = extra_housekeeping_latest_png(output.parent, "Cloud Radar")
@@ -102,48 +201,7 @@ def plot_last_24h(zarr_path: Path, output: Path):
     window = ds.isel(time=mask).sortby("time")
     window = window.sel({"range": slice(0, RANGE_MAX)})
 
-    fig, axes = plt.subplots(8, 1, figsize=(12, 20), sharex=True, sharey=True)
-    vars_titles = [
-        ("ZE_dBZ", "ZE (dBZ)", ZE_VMIN, ZE_VMAX, "ZE (dBZ)", "cividis"),
-        ("MeanVel", "Mean Velocity", VEL_VMIN, VEL_VMAX, "Velocity (m/s)", "RdBu_r"),
-        ("SpecWidth", "Spectrum Width (m/s)", SPEC_VMIN, SPEC_VMAX, "Spec Width (m/s)", "plasma"),
-        ("SLDR", "SLDR (dB)", SLDR_VMIN, SLDR_VMAX, "SLDR (dB)", "RdBu_r"),
-        ("RHV", "RHV", RHV_VMIN, RHV_VMAX, "RHV", "viridis"),
-        ("SRCX", "SRCX", SRCX_VMIN, SRCX_VMAX, "SRCX", "viridis"),
-        ("Skew", "Skew", SKEW_VMIN, SKEW_VMAX, "Skew", "RdBu_r"),
-        ("Kurt", "Kurtosis", KURT_VMIN, KURT_VMAX, "Kurtosis", "magma"),
-    ]
-
-    for ax, (var, title, vmin, vmax, cbar_label, cmap) in zip(axes, vars_titles):
-        da = window[var]
-        data = da.transpose("time", "range").values
-        mesh = ax.pcolormesh(
-            da["time"].values,
-            da["range"].values,
-            data.T,
-            shading="auto",
-            vmin=vmin,
-            vmax=vmax,
-            cmap=cmap,
-        )
-        ax.set_ylabel("range (m)")
-        ax.set_title(title)
-        ax.set_ylim(0, RANGE_MAX)
-        cbar = fig.colorbar(mesh, ax=ax, pad=0.01)
-        cbar.set_label(cbar_label)
-
-    window_times = pd.DatetimeIndex(window["time"].values)
-    for ax in axes:
-        apply_quicklook_time_axis(ax, window_times, label_rotation=0, label_size=9)
-    for ax in axes[:-1]:
-        ax.tick_params(axis="x", labelbottom=False)
-        ax.set_xlabel("")
-
-    fig.suptitle("Cloud Radar – Last 24 hours")
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.96, bottom=0.11, hspace=0.18)
-    fig.savefig(output, dpi=150)
-    print(f"Wrote {output}")
+    plot_radar_quicklook(window, "Cloud Radar - Latest 24 hours", output, x_start=start_time, x_end=end_time)
     hk_output = extra_housekeeping_latest_png(output.parent, "Cloud Radar")
     if hk_output is not None:
         hk_window = load_cloud_radar_housekeeping_from_raw(RAW_ROOT_DEFAULT, start_time, end_time)

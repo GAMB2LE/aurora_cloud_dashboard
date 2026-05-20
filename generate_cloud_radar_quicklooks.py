@@ -10,9 +10,6 @@ from datetime import timedelta
 import os
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-from matplotlib.dates import DateFormatter, HourLocator
-import numpy as np
 import pandas as pd
 import xarray as xr
 from extra_housekeeping import (
@@ -20,6 +17,7 @@ from extra_housekeeping import (
     load_cloud_radar_housekeeping_from_raw,
     plot_cloud_radar_housekeeping,
 )
+from plot_cloud_radar_last24h import RANGE_MAX, plot_radar_quicklook, required_radar_vars
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
@@ -27,76 +25,14 @@ ZARR_PATH = Path(os.environ.get("CLOUD_RADAR_ZARR_PATH", "/data/aurora/products/
 RAW_ROOT = Path(os.environ.get("CLOUD_RADAR_RAW_ROOT", "/project/aurora/raw/rpgfmcw94"))
 QUICKLOOK_DIR = Path(os.environ.get("CLOUD_RADAR_QUICKLOOK_DIR", QUICKLOOK_ROOT / "cloud_radar"))
 
-ZE_VMIN, ZE_VMAX = -30.0, 10.0
-VEL_VMIN, VEL_VMAX = -5.0, 5.0
-SPEC_VMIN, SPEC_VMAX = 0.0, 3.0
-SLDR_VMIN, SLDR_VMAX = -100.0, -10.0
-RHV_VMIN, RHV_VMAX = 0.8, 1.0
-SRCX_VMIN, SRCX_VMAX = 0.8, 1.0
-SKEW_VMIN, SKEW_VMAX = -2.0, 2.0
-KURT_VMIN, KURT_VMAX = 0.0, 8.0
-RANGE_MAX = 9000
-
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _plot_day(ds_day: xr.Dataset, date_label: str, output: Path) -> None:
-    fig, axes = plt.subplots(8, 1, figsize=(12, 20), sharex=True, sharey=True)
-    vars_titles = [
-        ("ZE_dBZ", "ZE (dBZ)", ZE_VMIN, ZE_VMAX, "ZE (dBZ)", "cividis"),
-        ("MeanVel", "Mean Velocity", VEL_VMIN, VEL_VMAX, "Velocity (m/s)", "RdBu_r"),
-        ("SpecWidth", "Spectrum Width (m/s)", SPEC_VMIN, SPEC_VMAX, "Spec Width (m/s)", "plasma"),
-        ("SLDR", "SLDR (dB)", SLDR_VMIN, SLDR_VMAX, "SLDR (dB)", "RdBu_r"),
-        ("RHV", "RHV", RHV_VMIN, RHV_VMAX, "RHV", "viridis"),
-        ("SRCX", "SRCX", SRCX_VMIN, SRCX_VMAX, "SRCX", "viridis"),
-        ("Skew", "Skew", SKEW_VMIN, SKEW_VMAX, "Skew", "RdBu_r"),
-        ("Kurt", "Kurtosis", KURT_VMIN, KURT_VMAX, "Kurtosis", "magma"),
-    ]
-
-    for ax, (var, title, vmin, vmax, cbar_label, cmap) in zip(axes, vars_titles):
-        da = ds_day[var].transpose("time", "range")
-        data = da.values
-        mesh = ax.pcolormesh(
-            da["time"].values,
-            da["range"].values,
-            data.T,
-            shading="auto",
-            vmin=vmin,
-            vmax=vmax,
-            cmap=cmap,
-        )
-        cbar = fig.colorbar(mesh, ax=ax, pad=0.01)
-        cbar.set_label(cbar_label)
-        ax.set_ylabel("range (m)")
-        ax.set_title(title)
-        ax.set_ylim(0, RANGE_MAX)
-
-    locator = HourLocator()
-    formatter = DateFormatter("%H:%M")
-    for ax in axes:
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(formatter)
-        ax.tick_params(axis="x", labelrotation=90)
-        for lbl in ax.get_xticklabels():
-            lbl.set_rotation(90)
-            lbl.set_ha("right")
-    axes[0].tick_params(axis="x", labelbottom=False)
-    axes[-1].set_xlabel("Time (UTC)")
-
-    fig.suptitle(date_label)
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.96, bottom=0.22, hspace=0.18)
-    _ensure_dir(output.parent)
-    fig.savefig(output, dpi=150)
-    plt.close(fig)
-    print(f"Wrote {output}")
-
-
 def main(force: bool = False):
     ds = xr.open_zarr(ZARR_PATH, chunks={})
-    needed = ["ZE_dBZ", "MeanVel", "SpecWidth", "SLDR", "RHV", "SRCX", "Skew", "Kurt"]
+    needed = required_radar_vars()
     missing = [v for v in needed if v not in ds]
     if missing:
         raise KeyError(f"Dataset missing variables: {', '.join(missing)}")
@@ -138,7 +74,13 @@ def main(force: bool = False):
         if ds_day.sizes.get("time", 0) < 2:
             continue
         if not out.exists():
-            _plot_day(ds_day, pd.Timestamp(d).strftime("%Y-%m-%d"), out)
+            plot_radar_quicklook(
+                ds_day,
+                pd.Timestamp(d).strftime("Cloud Radar - %Y-%m-%d"),
+                out,
+                x_start=start,
+                x_end=end,
+            )
         if hk_out is not None and not hk_out.exists():
             hk_title = pd.Timestamp(d).strftime("HK_Radar - %Y-%m-%d")
             hk_day = load_cloud_radar_housekeeping_from_raw(RAW_ROOT, start, end)

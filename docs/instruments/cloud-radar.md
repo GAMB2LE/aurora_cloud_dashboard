@@ -14,6 +14,9 @@ shown as a height-time product in the interactive dashboard.
 ## Quicklooks
 
 - science quicklooks show archived daily radar products
+- latest and daily science quicklooks share the same compact eight-panel layout,
+  with boxed panel labels, a common UTC x-axis, and fixed colorbar gutters so the
+  saved PNGs do not carry large blank margins
 - housekeeping quicklooks include `HK_Radar`, which is generated from the raw
   RPG LV1 support variables rather than the radar science Zarr
 
