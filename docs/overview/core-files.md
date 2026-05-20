@@ -46,6 +46,11 @@ generators also write prewarmed latest interactive Plotly JSON under
 `/data/aurora/products/dashboard/prewarm/` so those first interactive views can
 paint without rebuilding the whole figure.
 
+On the deployed host, run these generators through their systemd services or
+source `/etc/aurora-dashboard.env` before manual runs. Without that environment
+they use the repo-local `quicklooks/` fallback, which is useful for development
+but is not the live dashboard product tree.
+
 ## WXcam tooling
 
 - `wxcam_catalog.py` - shared catalog helpers

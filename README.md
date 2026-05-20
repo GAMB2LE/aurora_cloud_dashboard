@@ -40,6 +40,11 @@ Additional housekeeping products now exist for:
 - `grouped_timeseries.py` - shared summary-layout, labeling, static quicklook generation, and Plotly trace-reduction helpers for the 1D instruments.
 - `quicklook_time_axis.py` - shared UTC time-axis formatting for static science and housekeeping quicklooks.
 
+Manual deployed quicklook runs should source `/etc/aurora-dashboard.env` first
+so products are written to `/data/aurora/products/quicklooks` and
+`/data/aurora/products/dashboard/prewarm`. Without that environment, generators
+fall back to the repo-local `quicklooks/` tree for development.
+
 ## Deployed paths
 
 Primary paths come from `/etc/aurora-dashboard.env`.

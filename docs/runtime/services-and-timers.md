@@ -107,3 +107,29 @@ sudo systemctl status aurora-dashboard.service
 sudo systemctl list-timers --all | rg '^.*aurora-'
 sudo journalctl -u aurora-dashboard.service -f
 ```
+
+## Manual Product Regeneration
+
+The deployed systemd services load `/etc/aurora-dashboard.env` before running
+appenders and quicklook generators. That environment file points products at
+the live dashboard tree, including:
+
+- `AURORA_QUICKLOOK_ROOT=/data/aurora/products/quicklooks`
+- `AURORA_INTERACTIVE_PREWARM_DIR=/data/aurora/products/dashboard/prewarm`
+
+When running a generator manually on the deployed host, source that environment
+first so the output lands where the dashboard reads it:
+
+```bash
+cd /opt/aurora-cloud-dashboard
+set -a
+source /etc/aurora-dashboard.env
+set +a
+source venv/bin/activate
+./generate_asfs_logger_quicklooks.py
+```
+
+Without the environment file, several generators intentionally fall back to a
+repo-local `quicklooks/` directory for development. That is useful for local
+tests, but it does not update the live dashboard quicklook shown in the web
+app.
