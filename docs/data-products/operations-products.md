@@ -20,7 +20,9 @@ These snapshots capture:
 - source-host disk usage and probe reachability
 - resolved `pwd -P` paths for the filesystem locations that were actually probed
 - per-stream source recency, with a red operational state if a source has not
-  produced data in the last 1.5 hours
+  produced data in the last 1.5 hours; HATPRO uses a `3 h` source-recency
+  window because it arrives as hourly batches and should only go stale after
+  two missed batches
 - Aurora Power Supply battery voltage from the latest `DCInverterVolts` sample
   in the power Zarr, scored green above `52 V`, amber from `50-52 V`, and red
   below `50 V`

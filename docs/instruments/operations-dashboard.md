@@ -34,6 +34,11 @@ Performance-log freshness and render-performance statistics are diagnostic
 signals only. They stay visible on the Operations Dashboard and in the health
 reports, but they do not drive the top-level **Overall** action state.
 
+Most source streams are marked stale after `1.5 h` without new source files.
+HATPRO is deliberately marked stale only after `3 h` because it lands in hourly
+batches; this requires two missed batches before the Operations Dashboard calls
+the source stale.
+
 The storage cards are intentionally broken out as:
 
 - CL61 root and CL61 data

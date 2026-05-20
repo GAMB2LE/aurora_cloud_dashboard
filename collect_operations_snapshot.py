@@ -171,6 +171,11 @@ TRANSFER_UNITS = (
     "aurora-mirror-verify.service",
 )
 SOURCE_RECENT_THRESHOLD_MINUTES = 90.0
+SOURCE_RECENT_THRESHOLD_OVERRIDES_MINUTES = {
+    # HATPRO publishes as hourly batches. Wait for two missed batches before
+    # marking the source stale so normal batch/manifest timing does not alert.
+    "hatprog5": 180.0,
+}
 HEALTH_LEVELS = {"green": 0, "amber": 1, "red": 2, "gray": -1}
 
 
@@ -376,6 +381,10 @@ def _recent_state(age_minutes: float | None, threshold_minutes: float = SOURCE_R
     if age_minutes is None:
         return 0
     return 1 if age_minutes <= threshold_minutes else 0
+
+
+def _source_recent_threshold_minutes(stream_name: str) -> float:
+    return SOURCE_RECENT_THRESHOLD_OVERRIDES_MINUTES.get(stream_name, SOURCE_RECENT_THRESHOLD_MINUTES)
 
 
 def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: float) -> dict[str, float | int | str | None]:
@@ -739,7 +748,7 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         if gws_count is not None:
             record[f"{prefix}_gws_lag_min"] = _lag_minutes(source_stats["latest_mtime"], gws_stats["latest_mtime"])
         source_age_min = _age_minutes(now_epoch, source_stats["latest_mtime"])
-        source_recent_state = _recent_state(source_age_min)
+        source_recent_state = _recent_state(source_age_min, _source_recent_threshold_minutes(stream_name))
         record[f"{prefix}_source_age_min"] = source_age_min
         record[f"{prefix}_source_recent_state"] = source_recent_state
         if source_recent_state:
