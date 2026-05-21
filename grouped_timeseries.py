@@ -24,6 +24,7 @@ from plotly.subplots import make_subplots
 import xarray as xr
 
 from quicklook_time_axis import apply_quicklook_time_axis
+from time_gap_breaks import insert_time_gap_breaks
 
 MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
 INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600"))
@@ -77,6 +78,14 @@ POWER_DISPLAY_SUMMARY_FIELDS = (
     "TempSensor4",
 )
 POWER_DISPLAY_SUMMARY_CONTEXT_FIELDS = ("watts_on_48vdc_Avg",)
+FAST_SONIC_TO_LOGGER_AVG = {
+    "metek_x_out": "metek_x_out_Avg",
+    "metek_y_out": "metek_y_out_Avg",
+    "metek_z_out": "metek_z_out_Avg",
+    "metek_T_out": "metek_T_out_Avg",
+    "metek_InclX_out": "metek_InclX_out_Avg",
+    "metek_InclY_out": "metek_InclY_out_Avg",
+}
 
 
 @dataclass(frozen=True)
@@ -427,7 +436,7 @@ HUMAN_UNITS = {
 DISPLAY_SCALE = {}
 
 SUMMARY_SOURCE_INSTRUMENTS = {
-    "vaisalamet": ("vaisalamet", "asfs-logger"),
+    "vaisalamet": ("vaisalamet", "asfs-logger", "asfs-fast-sonic"),
     "asfs-logger": ("asfs-logger",),
     "asfs-fast-sonic": ("asfs-fast-sonic",),
     "power": ("power", "asfs-logger"),
@@ -1227,6 +1236,13 @@ def summary_trace_vars(instrument: str) -> set[str]:
 
 
 def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> xr.Dataset:
+    """Merge 1D time-series sources, using later sources to fill gaps.
+
+    This is used for summary instruments whose displayed variables may come
+    from more than one Zarr store. Existing values keep priority, while NaNs
+    or missing times can be filled by an independent source such as ASFS fast
+    sonic.
+    """
     merged_inputs: list[xr.Dataset] = []
     for ds in datasets:
         if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
@@ -1238,10 +1254,80 @@ def combine_summary_datasets(instrument: str, *datasets: xr.Dataset | None) -> x
         merged_inputs.append(subset)
     if not merged_inputs:
         return xr.Dataset()
-    merged = xr.merge(merged_inputs, join="outer", compat="override", combine_attrs="drop_conflicts")
+    merged = merged_inputs[0]
+    for subset in merged_inputs[1:]:
+        merged, aligned = xr.align(merged, subset, join="outer")
+        assignments = {}
+        for name, da in aligned.data_vars.items():
+            if name in merged.data_vars:
+                filled = merged[name].combine_first(da)
+                filled.attrs = dict(merged[name].attrs)
+                assignments[name] = filled
+            else:
+                assignments[name] = da
+        if assignments:
+            merged = merged.assign(**assignments)
     merged = merged.sortby("time")
     merged.attrs["summary_instrument"] = instrument
     return merged
+
+
+def fast_sonic_metek_summary_dataset(ds: xr.Dataset, freq: str = "1min") -> xr.Dataset:
+    """Resample high-rate ASFS fast-sonic Metek fields onto summary names."""
+    if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return xr.Dataset()
+    if any(name in ds.data_vars for name in FAST_SONIC_TO_LOGGER_AVG.values()):
+        keep = [
+            name
+            for name in FAST_SONIC_TO_LOGGER_AVG.values()
+            if name in ds.data_vars and ds[name].dims == ("time",)
+        ]
+        return ds[keep].sortby("time") if keep else xr.Dataset()
+    keep = [name for name in FAST_SONIC_TO_LOGGER_AVG if name in ds and ds[name].dims == ("time",)]
+    if not keep:
+        return xr.Dataset()
+    frame = pd.DataFrame(
+        {FAST_SONIC_TO_LOGGER_AVG[name]: np.asarray(ds[name].values, dtype=np.float64) for name in keep},
+        index=pd.DatetimeIndex(ds["time"].values),
+    )
+    frame = frame[~frame.index.isna()].sort_index()
+    frame = frame.resample(freq).mean().dropna(how="all")
+    if frame.empty:
+        return xr.Dataset()
+    return xr.Dataset(
+        {name: (("time",), frame[name].to_numpy(dtype=np.float32)) for name in frame.columns},
+        coords={"time": frame.index.to_numpy(dtype="datetime64[ns]")},
+        attrs={"source": "derived from ASFS fast-sonic high-rate Metek fields", "frequency": freq},
+    )
+
+
+def augment_meteorology_from_fast_sonic(ds: xr.Dataset) -> xr.Dataset:
+    """Fill Meteorology Metek summary fields from the high-rate sonic stream.
+
+    The ASFS science/logger stream carries one-minute Metek averages alongside
+    radiation data. When that slow table has a source gap, the independent
+    fast-sonic files can still provide the same Metek components. This helper
+    maps those raw fast-sonic variables onto the one-minute summary names and
+    only fills places where the slow-table values are missing.
+    """
+    if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return ds
+    assignments: dict[str, xr.DataArray] = {}
+    for source_name, target_name in FAST_SONIC_TO_LOGGER_AVG.items():
+        if source_name not in ds or ds[source_name].dims != ("time",):
+            continue
+        source = ds[source_name].copy(deep=False)
+        source.attrs = dict(source.attrs)
+        source.attrs["derived_from"] = source_name
+        if target_name in ds and ds[target_name].dims == ("time",):
+            filled = ds[target_name].combine_first(source)
+            filled.attrs = dict(ds[target_name].attrs)
+            filled.attrs["gap_fill_source"] = source_name
+            assignments[target_name] = filled
+        else:
+            source.name = target_name
+            assignments[target_name] = source
+    return ds.assign(**assignments) if assignments else ds
 
 
 def _daily_cumulative_energy_kwh(times: pd.DatetimeIndex, power_w: np.ndarray) -> np.ndarray:
@@ -1548,6 +1634,7 @@ def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
 
     assignments: dict[str, xr.DataArray] = {}
     if instrument == "vaisalamet":
+        ds = augment_meteorology_from_fast_sonic(ds)
         assignments.update(_metek_wind_assignments(ds))
         prepared = ds.assign(**assignments) if assignments else ds
         prepared_times = pd.DatetimeIndex(prepared["time"].values)
@@ -1761,6 +1848,14 @@ def _insert_day_breaks(
     return pd.DatetimeIndex(out_times), np.asarray(out_values, dtype=np.float64)
 
 
+def _insert_line_gap_breaks(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Insert NaNs into line traces so outages render as visible white breaks."""
+    if len(times) < 2 or values.size < 2:
+        return times, values
+    expanded_times, expanded_values = insert_time_gap_breaks(times, np.asarray(values, dtype=np.float64)[None, :], time_axis=1)
+    return pd.DatetimeIndex(expanded_times), expanded_values[0]
+
+
 def _trace_plot_values(
     times: pd.DatetimeIndex,
     values: np.ndarray,
@@ -1770,6 +1865,7 @@ def _trace_plot_values(
     trace_times, trace_values = _trace_time_values(times, values)
     trace_values = _smooth_trace_values(trace_times, trace_values, trace)
     trace_times, trace_values = _downsample_trace(trace_times, trace_values, max_time_samples)
+    trace_times, trace_values = _insert_line_gap_breaks(trace_times, trace_values)
     return _insert_day_breaks(trace_times, trace_values, trace)
 
 
@@ -1900,6 +1996,7 @@ def plot_housekeeping_timeseries(
     for idx, (ax, name) in enumerate(zip(axes, names)):
         values = np.asarray(ds[name].values, dtype=np.float64) * display_scale(name)
         trace_times, trace_values = _trace_time_values(times, values)
+        trace_times, trace_values = _insert_line_gap_breaks(trace_times, trace_values)
         drawstyle = "steps-post" if is_status_like_var(name) else "default"
         if len(trace_times):
             ax.plot(trace_times, trace_values, color=colors[idx % len(colors)], linewidth=0.8, drawstyle=drawstyle)
