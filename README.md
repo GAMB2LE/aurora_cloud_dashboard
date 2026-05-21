@@ -121,6 +121,7 @@ Important products:
 - Vaisala met Zarr: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 - ASFS logger Zarr: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 - ASFS fast-sonic Zarr: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
+- ASFS fast-gas Zarr: `/data/aurora/products/asfs_fast_gas/asfs_fast_gas.zarr`
 - Power Zarr: `/data/aurora/products/power/power.zarr`
 - WXcam Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
@@ -167,6 +168,9 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
   - `aurora-asfs-fast-sonic-source-sync.timer`
   - `aurora-asfs-fast-sonic-append.timer`
   - `aurora-asfs-fast-sonic-quicklooks.timer`
+- ASFS fast-gas:
+  - `aurora-asfs-fast-gas-source-sync.timer`
+  - `aurora-asfs-fast-gas-append.timer`
 - Power:
   - `aurora-power-source-sync.timer`
   - `aurora-power-append.timer`
@@ -555,6 +559,48 @@ Schema note:
 Chunking:
 
 - `time`-only variables are chunked `(1200,)`
+
+### ASFS Fast Gas Zarr structure
+
+Path: `/data/aurora/products/asfs_fast_gas/asfs_fast_gas.zarr`
+
+This store is a separate high-rate ASFS LI-COR/gas stream. It is built from
+`aurora_asfs_data_fast_gas_YYYYMMDDHHMM.dat` files mirrored from the ASFS
+logger CRD area. It does not contain radiation sensors, so it cannot fill gaps
+in the Radiation science quicklook. It does provide the LI-COR variables used
+by the `HK_ASFS` housekeeping plot when the slower ASFS science file stream has
+a gap.
+
+This store is a single time-indexed xarray dataset with:
+
+- dimension: `time`
+- coordinate:
+  - `time` - parsed from `TIMESTAMP`; repeated burst timestamps are spread
+    within each logger block to preserve sample order
+
+Useful root attrs include:
+
+- `instrument = "asfs-fast-gas"`
+- `title = "ASFS fast-gas data"`
+- `source = "asfs-logger_fast_gas_DD_MM_YYYY.dat or aurora_asfs_data_fast_gas_YYYYMMDDHHMM.dat"`
+
+Variable layout:
+
+- one `float32` `time` series per retained source column
+- examples include:
+  - `licor_co2_out`
+  - `licor_h2o_out`
+  - `licor_pr_out`
+  - `licor_t_out`
+  - `licor_diag_out`
+  - `licor_co2_str_out`
+  - `RECORD`
+
+Display note:
+
+- `generate_asfs_logger_quicklooks.py` resamples this fast-gas store to
+  one-minute `_Avg` variables and merges them into ASFS housekeeping only
+- Radiation science panels remain driven by the ASFS science/logger Zarr
 
 ### ASFS Fast Sonic Zarr structure
 

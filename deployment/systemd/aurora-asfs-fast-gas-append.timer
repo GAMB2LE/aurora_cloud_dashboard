@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aurora ASFS fast-gas append every 5 minutes
+
+[Timer]
+OnCalendar=*:05/5
+RandomizedDelaySec=0
+Persistent=true
+Unit=aurora-asfs-fast-gas-append.service
+
+[Install]
+WantedBy=timers.target

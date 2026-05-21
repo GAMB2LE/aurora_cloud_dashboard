@@ -89,7 +89,7 @@ This Zarr underpins:
   thermal/scan state, ASFS met/LI-COR CO2/H2O output and CO2 signal strength,
   SR30 support, IR20 support, and sensor variability
 
-No `diag_out` LI-COR column is present in the deployed ASFS logger Zarr or in
-the current local raw ASFS science headers checked on `2026-05-20`. If the CRD
-program adds that column later, the Zarr will need a deliberate schema rebuild
-or migration before the housekeeping plot can show it.
+LI-COR housekeeping can also be filled from the separate ASFS fast-gas Zarr
+when the slower ASFS science/logger file stream has a gap. The fast-gas store
+includes high-rate `licor_diag_out` samples, so `HK_ASFS` can show LI-COR
+diagnostic continuity even when `diag_out` is not present in the science Zarr.

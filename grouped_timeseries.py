@@ -86,6 +86,14 @@ FAST_SONIC_TO_LOGGER_AVG = {
     "metek_InclX_out": "metek_InclX_out_Avg",
     "metek_InclY_out": "metek_InclY_out_Avg",
 }
+FAST_GAS_TO_LOGGER_AVG = {
+    "licor_co2_out": "licor_co2_out_Avg",
+    "licor_h2o_out": "licor_h2o_out_Avg",
+    "licor_pr_out": "licor_pr_out_Avg",
+    "licor_t_out": "licor_t_out_Avg",
+    "licor_diag_out": "licor_diag_out_Avg",
+    "licor_co2_str_out": "licor_co2_str_out_Avg",
+}
 
 
 @dataclass(frozen=True)
@@ -249,7 +257,9 @@ HUMAN_LABELS = {
     "kt15_tem_Avg": "KT15 Surface Temperature",
     "licor_co2_out_Avg": "LI-COR CO2",
     "licor_h2o_out_Avg": "LI-COR H2O",
+    "licor_pr_out_Avg": "LI-COR Pressure",
     "licor_t_out_Avg": "LI-COR Temperature",
+    "licor_diag_out_Avg": "LI-COR Diagnostic",
     "licor_co2_str_out_Avg": "LI-COR CO2 Strength",
     "vaisala_T_Avg": "ASFS Vaisala Temperature",
     "vaisala_RH_Avg": "ASFS Vaisala Relative Humidity",
@@ -365,7 +375,9 @@ HUMAN_UNITS = {
     "kt15_tem_Avg": "C",
     "licor_co2_out_Avg": "mmol m^-3",
     "licor_h2o_out_Avg": "mmol m^-3",
+    "licor_pr_out_Avg": "kPa",
     "licor_t_out_Avg": "C",
+    "licor_diag_out_Avg": "code",
     "licor_co2_str_out_Avg": "%",
     "vaisala_T_Avg": "C",
     "vaisala_RH_Avg": "%",
@@ -575,6 +587,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("licor_co2_out_Avg", "CO2 Output", COLOR["teal"]),
                 TraceSpec("licor_h2o_out_Avg", "H2O Output", COLOR["light_blue"]),
                 TraceSpec("licor_co2_str_out_Avg", "CO2 Signal Strength", COLOR["green"], axis="right", valid_min=0.0, valid_max=100.0),
+            ),
+        ),
+        PanelSpec(
+            "licor_diagnostics",
+            "LI-COR Diagnostics",
+            "Diagnostic Code",
+            None,
+            (
+                TraceSpec("licor_diag_out_Avg", "Diagnostic Code", COLOR["red"], step=True),
             ),
         ),
         PanelSpec(
@@ -1301,6 +1322,35 @@ def fast_sonic_metek_summary_dataset(ds: xr.Dataset, freq: str = "1min") -> xr.D
     )
 
 
+def fast_gas_licor_summary_dataset(ds: xr.Dataset, freq: str = "1min") -> xr.Dataset:
+    """Resample high-rate ASFS fast-gas LI-COR fields onto summary names."""
+    if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return xr.Dataset()
+    if any(name in ds.data_vars for name in FAST_GAS_TO_LOGGER_AVG.values()):
+        keep = [
+            name
+            for name in FAST_GAS_TO_LOGGER_AVG.values()
+            if name in ds.data_vars and ds[name].dims == ("time",)
+        ]
+        return ds[keep].sortby("time") if keep else xr.Dataset()
+    keep = [name for name in FAST_GAS_TO_LOGGER_AVG if name in ds and ds[name].dims == ("time",)]
+    if not keep:
+        return xr.Dataset()
+    frame = pd.DataFrame(
+        {FAST_GAS_TO_LOGGER_AVG[name]: np.asarray(ds[name].values, dtype=np.float64) for name in keep},
+        index=pd.DatetimeIndex(ds["time"].values),
+    )
+    frame = frame[~frame.index.isna()].sort_index()
+    frame = frame.resample(freq).mean().dropna(how="all")
+    if frame.empty:
+        return xr.Dataset()
+    return xr.Dataset(
+        {name: (("time",), frame[name].to_numpy(dtype=np.float32)) for name in frame.columns},
+        coords={"time": frame.index.to_numpy(dtype="datetime64[ns]")},
+        attrs={"source": "derived from ASFS fast-gas LI-COR fields", "frequency": freq},
+    )
+
+
 def augment_meteorology_from_fast_sonic(ds: xr.Dataset) -> xr.Dataset:
     """Fill Meteorology Metek summary fields from the high-rate sonic stream.
 
@@ -1314,6 +1364,28 @@ def augment_meteorology_from_fast_sonic(ds: xr.Dataset) -> xr.Dataset:
         return ds
     assignments: dict[str, xr.DataArray] = {}
     for source_name, target_name in FAST_SONIC_TO_LOGGER_AVG.items():
+        if source_name not in ds or ds[source_name].dims != ("time",):
+            continue
+        source = ds[source_name].copy(deep=False)
+        source.attrs = dict(source.attrs)
+        source.attrs["derived_from"] = source_name
+        if target_name in ds and ds[target_name].dims == ("time",):
+            filled = ds[target_name].combine_first(source)
+            filled.attrs = dict(ds[target_name].attrs)
+            filled.attrs["gap_fill_source"] = source_name
+            assignments[target_name] = filled
+        else:
+            source.name = target_name
+            assignments[target_name] = source
+    return ds.assign(**assignments) if assignments else ds
+
+
+def augment_asfs_from_fast_gas(ds: xr.Dataset) -> xr.Dataset:
+    """Fill ASFS LI-COR summary fields from the independent fast-gas stream."""
+    if ds is None or "time" not in ds or ds.sizes.get("time", 0) == 0:
+        return ds
+    assignments: dict[str, xr.DataArray] = {}
+    for source_name, target_name in FAST_GAS_TO_LOGGER_AVG.items():
         if source_name not in ds or ds[source_name].dims != ("time",):
             continue
         source = ds[source_name].copy(deep=False)

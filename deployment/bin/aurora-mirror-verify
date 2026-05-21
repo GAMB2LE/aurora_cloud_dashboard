@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import datetime as dt
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import zlib
+
+
+CONFIG = json.loads(
+    r'''
+{
+  "manifest_root": "/data/aurora/internal/mirror_manifests",
+  "history_keep": 48,
+  "checksum_mode": "none",
+  "checksum_spot_modulus": 20,
+  "local_settle_seconds": 600,
+  "gws_settle_seconds": 2700,
+  "product_settle_seconds": 900,
+  "aurora_user": "aurora",
+  "gws_user": "rrniii",
+  "gws_hosts": ["xfer-vm-03.jasmin.ac.uk", "xfer-vm-01.jasmin.ac.uk", "xfer-vm-02.jasmin.ac.uk"],
+  "gws_key": "/home/aurora/.ssh/id_rsa_jasmin_20200514",
+  "gws_raw_root": "/gws/ssde/j25b/gamb2le/data/incoming/aurora-cloud/raw",
+  "streams": [
+    {
+      "name": "cl61",
+      "source_user": "aurora",
+      "source_host": "100.117.101.84",
+      "source_root": "/home/aurora/data/cl61",
+      "source_auth": "cl61_key",
+      "source_pattern": "gamb2le_depolarisation_lidar_ceilometer_aurora_*.nc",
+      "recursive": false,
+      "local_root": "/project/aurora/raw/cl61",
+      "gws_relpath": "cl61",
+      "product_patterns": ["gamb2le_depolarisation_lidar_ceilometer_aurora_*.nc"],
+      "required_services": ["aurora-ceilometer-append.service"]
+    },
+    {
+      "name": "rpgfmcw94",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/rpgfmcw94",
+      "source_auth": "tailscale",
+      "source_pattern": "*LV1.NC",
+      "recursive": true,
+      "local_root": "/project/aurora/raw/rpgfmcw94",
+      "gws_relpath": "rpgfmcw94",
+      "product_patterns": ["*LV1.NC"],
+      "required_services": ["aurora-radar-append.service"]
+    },
+    {
+      "name": "hatprog5",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/hatprog5",
+      "source_auth": "tailscale",
+      "source_pattern": "HATPROG5-AURORA-ICELAND_*",
+      "recursive": true,
+      "local_root": "/project/aurora/raw/hatprog5",
+      "gws_relpath": "hatprog5",
+      "product_patterns": ["*.LWP.NC", "*.IWV.NC", "*.IRT.NC", "*.TPC.NC", "*.TPB.NC", "*.MET.NC"],
+      "required_services": ["aurora-hatpro-append.service"]
+    },
+    {
+      "name": "vaisalamet",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/vaisalamet",
+      "source_auth": "tailscale",
+      "source_pattern": "vaisala_met_level0_*.dat",
+      "recursive": false,
+      "local_root": "/project/aurora/raw/vaisalamet",
+      "gws_relpath": "vaisalamet",
+      "product_patterns": ["vaisala_met_level0_*.dat"],
+      "required_services": ["aurora-vaisalamet-append.service"]
+    },
+    {
+      "name": "asfs_logger",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/asfs/raw/crd",
+      "source_auth": "tailscale",
+      "source_pattern": "aurora_asfs_data_sci_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat",
+      "recursive": false,
+      "local_root": "/project/aurora/raw/asfs/crd",
+      "gws_relpath": "asfs/crd",
+      "product_patterns": ["aurora_asfs_data_sci_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat"],
+      "required_services": ["aurora-asfs-logger-append.service"]
+    },
+    {
+      "name": "asfs_fast_sonic",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/asfs/raw/crd",
+      "source_auth": "tailscale",
+      "source_pattern": "aurora_asfs_data_fast_sonic_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat",
+      "recursive": false,
+      "local_root": "/project/aurora/raw/asfs/crd",
+      "gws_relpath": "asfs/crd",
+      "product_patterns": ["aurora_asfs_data_fast_sonic_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat"],
+      "required_services": ["aurora-asfs-fast-sonic-append.service"]
+    },
+    {
+      "name": "asfs_fast_gas",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/asfs/raw/crd",
+      "source_auth": "tailscale",
+      "source_pattern": "aurora_asfs_data_fast_gas_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat",
+      "recursive": false,
+      "local_root": "/project/aurora/raw/asfs/crd",
+      "gws_relpath": "asfs/crd",
+      "product_patterns": ["aurora_asfs_data_fast_gas_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat"],
+      "required_services": ["aurora-asfs-fast-gas-append.service"]
+    },
+    {
+      "name": "power",
+      "source_user": "aurora",
+      "source_host": "100.81.226.30",
+      "source_root": "/data/power/level1",
+      "source_auth": "tailscale",
+      "source_pattern": "power_data_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].csv",
+      "recursive": false,
+      "local_root": "/project/aurora/raw/power/level1",
+      "gws_relpath": "power/level1",
+      "product_patterns": ["power_data_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].csv"],
+      "required_services": ["aurora-power-append.service"]
+    },
+    {
+      "name": "wxcam",
+      "source_user": "aurora",
+      "source_host": "100.124.55.22",
+      "source_root": "/home/aurora/data/wxcam",
+      "source_auth": "tailscale",
+      "source_pattern": [
+        "FISH/**/HDR_*.jpg",
+        "FISH/**/HDR_*.mp4",
+        "PANO/**/HDR_*_PANO.jpg",
+        "PANO/**/HDR_*_PANO.mp4"
+      ],
+      "recursive": true,
+      "local_root": "/project/aurora/raw/wxcam",
+      "gws_relpath": "wxcam",
+      "product_patterns": [
+        "FISH/**/HDR_*.jpg",
+        "FISH/**/HDR_*.mp4",
+        "PANO/**/HDR_*_PANO.jpg",
+        "PANO/**/HDR_*_PANO.mp4"
+      ],
+      "required_services": [
+        "aurora-wxcam-catalog.service",
+        "aurora-wxcam-daily-videos.service",
+        "aurora-wxcam-append.service"
+      ]
+    }
+  ]
+}
+'''
+)
+
+
+def json_default(value):
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    return str(value)
+
+
+KNOWN_HOSTS = f"/home/{CONFIG['aurora_user']}/.ssh/known_hosts"
+CL61_KEY = "/home/aurora/.ssh/id_ed25519_celine"
+TAILSCALE_BASE = [
+    "ssh",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "IdentityFile=none",
+    "-o",
+    "PubkeyAuthentication=no",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    f"UserKnownHostsFile={KNOWN_HOSTS}",
+]
+CL61_BASE = [
+    "ssh",
+    "-i",
+    CL61_KEY,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    f"UserKnownHostsFile={KNOWN_HOSTS}",
+]
+GWS_BASE = [
+    "ssh",
+    "-i",
+    CONFIG["gws_key"],
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    f"UserKnownHostsFile={KNOWN_HOSTS}",
+]
+
+
+def utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def match_entry(relpath: str, pattern: str | list[str]) -> bool:
+    if isinstance(pattern, list):
+        return any(match_entry(relpath, item) for item in pattern)
+    if pattern == "*" or not pattern:
+        return True
+    return fnmatch.fnmatch(Path(relpath).name, pattern) or fnmatch.fnmatch(relpath, pattern)
+
+
+def match_any(relpath: str, patterns: list[str]) -> bool:
+    if not patterns:
+        return False
+    basename = Path(relpath).name
+    return any(fnmatch.fnmatch(basename, pat) or fnmatch.fnmatch(relpath, pat) for pat in patterns)
+
+
+def should_checksum(relpath: str) -> bool:
+    mode = CONFIG["checksum_mode"]
+    if mode == "full":
+        return True
+    if mode == "spot":
+        return zlib.crc32(relpath.encode("utf-8")) % int(CONFIG["checksum_spot_modulus"]) == 0
+    return False
+
+
+def sha256_local(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_remote(base_cmd: list[str], target: str, root: str, relpath: str) -> str:
+    remote = f"cd {json.dumps(root)} && sha256sum -- {json.dumps('./' + relpath)} | cut -d ' ' -f1"
+    proc = subprocess.run(base_cmd + [target, remote], capture_output=True, text=True, check=True)
+    return proc.stdout.strip()
+
+
+def ssh_base(stream: dict) -> list[str]:
+    return CL61_BASE if stream["source_auth"] == "cl61_key" else TAILSCALE_BASE
+
+
+def list_remote_entries(base_cmd: list[str], target: str, root: str, recursive: bool, pattern: str | list[str]) -> dict[str, dict]:
+    find_bits = ["find", "."]
+    if not recursive:
+        find_bits.extend(["-maxdepth", "1"])
+    find_bits.extend(["-type", "f"])
+    if isinstance(pattern, str) and pattern != "*" and pattern:
+        find_bits.extend(["-name", pattern])
+    find_bits.extend(["-printf", r"%P\t%s\t%Ts\n"])
+    remote = f"cd {json.dumps(root)} && " + " ".join(json.dumps(bit) for bit in find_bits)
+    proc = subprocess.run(base_cmd + [target, remote], capture_output=True, text=True, check=True)
+    entries: dict[str, dict] = {}
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        relpath, size, mtime = line.split("\t")
+        if not match_entry(relpath, pattern):
+            continue
+        entries[relpath] = {
+            "relpath": relpath,
+            "size": int(size),
+            "mtime": int(mtime),
+            "checksum": "",
+        }
+    return entries
+
+
+def list_local_entries(root: Path, recursive: bool, pattern: str) -> dict[str, dict]:
+    entries: dict[str, dict] = {}
+    if not root.exists():
+        return entries
+    if recursive:
+        walker = root.rglob("*")
+    else:
+        walker = root.iterdir()
+    for path in walker:
+        if not path.is_file():
+            continue
+        relpath = path.relative_to(root).as_posix()
+        if not match_entry(relpath, pattern):
+            continue
+        stat = path.stat()
+        entries[relpath] = {
+            "relpath": relpath,
+            "size": int(stat.st_size),
+            "mtime": int(stat.st_mtime),
+            "checksum": "",
+        }
+    return entries
+
+
+def maybe_add_checksums(entries: dict[str, dict], mode: str, root: str | Path, remote_base: list[str] | None = None, remote_target: str | None = None) -> None:
+    if mode == "none":
+        return
+    for relpath, entry in entries.items():
+        if not should_checksum(relpath):
+            continue
+        if remote_base is None or remote_target is None:
+            entry["checksum"] = sha256_local(Path(root) / relpath)
+        else:
+            entry["checksum"] = sha256_remote(remote_base, remote_target, str(root), relpath)
+
+
+def write_manifest(path: Path, entries: dict[str, dict]) -> None:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("relpath\tsize\tmtime\tchecksum\n")
+        for relpath in sorted(entries):
+            entry = entries[relpath]
+            handle.write(f"{entry['relpath']}\t{entry['size']}\t{entry['mtime']}\t{entry['checksum']}\n")
+
+
+def service_info(name: str) -> dict:
+    proc = subprocess.run(
+        ["systemctl", "show", name, "-p", "Result", "-p", "ExecMainExitTimestamp"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    info = {"service": name, "result": None, "exit_timestamp": None}
+    for line in proc.stdout.splitlines():
+        if line.startswith("Result="):
+            info["result"] = line.split("=", 1)[1] or None
+        elif line.startswith("ExecMainExitTimestamp="):
+            raw = line.split("=", 1)[1].strip()
+            if raw and raw != "n/a":
+                try:
+                    info["exit_timestamp"] = dt.datetime.strptime(raw, "%a %Y-%m-%d %H:%M:%S %Z").replace(tzinfo=dt.timezone.utc)
+                except Exception:
+                    info["exit_timestamp"] = None
+    return info
+
+
+def latest_product_timestamp(stream: dict, source_entries: dict[str, dict]) -> int | None:
+    relevant = [entry["mtime"] for entry in source_entries.values() if match_any(entry["relpath"], stream["product_patterns"])]
+    return max(relevant) if relevant else None
+
+
+def settled_entries(source_entries: dict[str, dict], settle_seconds: int, now_ts: int) -> dict[str, dict]:
+    if settle_seconds <= 0:
+        return dict(source_entries)
+    cutoff = now_ts - settle_seconds
+    return {
+        relpath: entry
+        for relpath, entry in source_entries.items()
+        if int(entry["mtime"]) <= cutoff
+    }
+
+
+def latest_settled_product_timestamp(stream: dict, source_entries: dict[str, dict], settle_seconds: int, now_ts: int) -> int | None:
+    settled = settled_entries(source_entries, settle_seconds, now_ts)
+    relevant = [entry["mtime"] for entry in settled.values() if match_any(entry["relpath"], stream["product_patterns"])]
+    return max(relevant) if relevant else None
+
+
+def compare_entries(source_entries: dict[str, dict], other_entries: dict[str, dict]) -> tuple[list[str], list[str], list[str]]:
+    mirrored: list[str] = []
+    missing: list[str] = []
+    mismatched: list[str] = []
+    for relpath, source in source_entries.items():
+        other = other_entries.get(relpath)
+        if other is None:
+            missing.append(relpath)
+            continue
+        same = source["size"] == other["size"] and source["mtime"] == other["mtime"]
+        if source["checksum"] and other["checksum"]:
+            same = same and source["checksum"] == other["checksum"]
+        if same:
+            mirrored.append(relpath)
+        else:
+            mismatched.append(relpath)
+    return mirrored, missing, mismatched
+
+
+def prune_history(root: Path, keep: int) -> None:
+    history_root = root / "history"
+    if not history_root.exists():
+        return
+    runs = sorted([path for path in history_root.iterdir() if path.is_dir()])
+    for stale in runs[:-keep]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def probe_gws_host() -> str | None:
+    if not Path(CONFIG["gws_key"]).exists():
+        return None
+    for host in CONFIG["gws_hosts"]:
+        proc = subprocess.run(GWS_BASE + [f"{CONFIG['gws_user']}@{host}", "true"], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return host
+    return None
+
+
+def main() -> int:
+    manifest_root = Path(CONFIG["manifest_root"])
+    ensure_dir(manifest_root)
+    ensure_dir(manifest_root / "logs")
+    run_id = utcnow().strftime("%Y%m%dT%H%M%SZ")
+    history_dir = manifest_root / "history" / run_id
+    latest_dir = manifest_root / "latest"
+    summary = {
+        "generated_at": utcnow().isoformat(),
+        "gws_host": None,
+        "gws_available": False,
+        "streams": {},
+    }
+
+    gws_host = probe_gws_host()
+    if gws_host:
+        summary["gws_host"] = gws_host
+        summary["gws_available"] = True
+    gws_target = f"{CONFIG['gws_user']}@{gws_host}" if gws_host else None
+    now_ts = int(utcnow().timestamp())
+
+    hard_failures: list[str] = []
+
+    for stream in CONFIG["streams"]:
+        name = stream["name"]
+        stream_dir = history_dir / name
+        ensure_dir(stream_dir)
+        try:
+            source_target = f"{stream['source_user']}@{stream['source_host']}"
+            source_entries = list_remote_entries(
+                ssh_base(stream),
+                source_target,
+                stream["source_root"],
+                bool(stream["recursive"]),
+                stream["source_pattern"],
+            )
+            local_entries = list_local_entries(Path(stream["local_root"]), bool(stream["recursive"]), stream["source_pattern"])
+            maybe_add_checksums(source_entries, CONFIG["checksum_mode"], stream["source_root"], ssh_base(stream), source_target)
+            maybe_add_checksums(local_entries, CONFIG["checksum_mode"], Path(stream["local_root"]))
+
+            if gws_target:
+                gws_entries = list_remote_entries(
+                    GWS_BASE,
+                    gws_target,
+                    f"{CONFIG['gws_raw_root'].rstrip('/')}/{stream['gws_relpath'].lstrip('/')}",
+                    bool(stream["recursive"]),
+                    stream["source_pattern"],
+                )
+                maybe_add_checksums(
+                    gws_entries,
+                    CONFIG["checksum_mode"],
+                    f"{CONFIG['gws_raw_root'].rstrip('/')}/{stream['gws_relpath'].lstrip('/')}",
+                    GWS_BASE,
+                    gws_target,
+                )
+            else:
+                gws_entries = {}
+
+            write_manifest(stream_dir / "source.tsv", source_entries)
+            write_manifest(stream_dir / "local.tsv", local_entries)
+            if gws_target:
+                write_manifest(stream_dir / "gws.tsv", gws_entries)
+
+            local_source_entries = settled_entries(source_entries, int(CONFIG["local_settle_seconds"]), now_ts)
+            gws_source_entries = settled_entries(source_entries, int(CONFIG["gws_settle_seconds"]), now_ts)
+
+            local_mirrored, local_missing, local_mismatched = compare_entries(local_source_entries, local_entries)
+            if gws_target:
+                gws_mirrored, gws_missing, gws_mismatched = compare_entries(gws_source_entries, gws_entries)
+            else:
+                gws_mirrored, gws_missing, gws_mismatched = [], list(gws_source_entries.keys()), []
+
+            mirrored_all = sorted(set(local_mirrored).intersection(gws_mirrored)) if gws_target else []
+            latest_product_source = latest_settled_product_timestamp(
+                stream,
+                source_entries,
+                int(CONFIG["product_settle_seconds"]),
+                now_ts,
+            )
+            service_states = [service_info(service_name) for service_name in stream["required_services"]]
+            successful_exits = [state["exit_timestamp"] for state in service_states if state["result"] == "success" and state["exit_timestamp"]]
+            product_ok = False
+            if latest_product_source is None:
+                product_ok = True
+            elif len(successful_exits) == len(stream["required_services"]):
+                watermark = min(successful_exits)
+                product_ok = int(watermark.timestamp()) >= latest_product_source
+
+            prune_candidates = []
+            if product_ok and gws_target and not local_missing and not local_mismatched and not gws_missing and not gws_mismatched:
+                prune_candidates = mirrored_all
+
+            prune_path = stream_dir / "prune_candidates.tsv"
+            with prune_path.open("w", encoding="utf-8") as handle:
+                handle.write("relpath\n")
+                for relpath in prune_candidates:
+                    handle.write(f"{relpath}\n")
+
+            stream_summary = {
+                "source_count": len(source_entries),
+                "local_count": len(local_entries),
+                "gws_count": len(gws_entries) if gws_target else None,
+                "local_missing_count": len(local_missing),
+                "local_mismatch_count": len(local_mismatched),
+                "gws_missing_count": len(gws_missing) if gws_target else None,
+                "gws_mismatch_count": len(gws_mismatched) if gws_target else None,
+                "product_gate_ok": product_ok,
+                "required_services": service_states,
+                "latest_product_source_mtime": latest_product_source,
+                "prune_ready": bool(prune_candidates),
+                "prune_candidate_count": len(prune_candidates),
+            }
+            summary["streams"][name] = stream_summary
+        except Exception as exc:  # noqa: BLE001
+            summary["streams"][name] = {"error": str(exc), "prune_ready": False}
+            hard_failures.append(f"{name}: {exc}")
+
+    ensure_dir(history_dir)
+    with (history_dir / "summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True, default=json_default)
+        handle.write("\n")
+
+    if latest_dir.exists():
+        shutil.rmtree(latest_dir)
+    shutil.copytree(history_dir, latest_dir)
+    prune_history(manifest_root, int(CONFIG["history_keep"]))
+
+    if hard_failures:
+        print("Mirror verification completed with source/local failures:", file=sys.stderr)
+        for failure in hard_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

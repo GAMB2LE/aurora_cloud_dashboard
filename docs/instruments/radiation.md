@@ -31,7 +31,8 @@ not have to rebuild the full figure.
 - housekeeping quicklooks show `HK_ASFS`, a curated support layout for logger
   power, logger temperature/scan timing, ASFS met/LI-COR CO2/H2O output and
   signal strength, SR30 orientation/fans/heaters, IR20 support, and sensor
-  variability
+  variability. LI-COR housekeeping traces may be filled from the separate
+  ASFS fast-gas Zarr when the ASFS science/logger file stream has a gap.
 
 ## Backing data product
 
@@ -39,6 +40,11 @@ Zarr path:
 
 - `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 
+LI-COR housekeeping support:
+
+- `/data/aurora/products/asfs_fast_gas/asfs_fast_gas.zarr`
+
 Detailed schema:
 
 - [ASFS Logger Zarr](../data-products/asfs-logger-zarr.md)
+- [ASFS Fast Gas Zarr](../data-products/asfs-fast-gas-zarr.md)

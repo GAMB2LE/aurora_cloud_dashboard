@@ -11,6 +11,7 @@ and operations-monitor products.
 - [Meteorology Zarr](meteorology-zarr.md)
 - [ASFS Logger Zarr](asfs-logger-zarr.md)
 - [ASFS Fast Sonic Zarr](asfs-fast-sonic-zarr.md)
+- [ASFS Fast Gas Zarr](asfs-fast-gas-zarr.md)
 - [Power Zarr](power-zarr.md)
 
 ## WXcam products

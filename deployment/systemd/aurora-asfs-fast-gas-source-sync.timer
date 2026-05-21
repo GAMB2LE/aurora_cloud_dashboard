@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule Aurora ASFS fast-gas source sync
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+RandomizedDelaySec=30
+Unit=aurora-asfs-fast-gas-source-sync.service
+
+[Install]
+WantedBy=timers.target

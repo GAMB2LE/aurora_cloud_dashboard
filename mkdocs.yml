@@ -57,6 +57,7 @@ nav:
       - Meteorology Zarr: data-products/meteorology-zarr.md
       - ASFS Logger Zarr: data-products/asfs-logger-zarr.md
       - ASFS Fast Sonic Zarr: data-products/asfs-fast-sonic-zarr.md
+      - ASFS Fast Gas Zarr: data-products/asfs-fast-gas-zarr.md
       - Power Zarr: data-products/power-zarr.md
       - WXcam products: data-products/wxcam-products.md
       - WXcam Zarr: data-products/wxcam-zarr.md

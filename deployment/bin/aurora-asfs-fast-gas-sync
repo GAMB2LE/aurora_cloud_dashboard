@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_user=aurora
+source_host=100.124.55.22
+source_path=/home/aurora/data/asfs/raw/crd
+source_pattern='aurora_asfs_data_fast_gas_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dat'
+destination=/project/aurora/raw/asfs/crd
+state_file=/var/lib/aurora-cloud/asfs-fast-gas-sync.last
+start_fresh=0
+lookback_days=10
+known_hosts=/home/aurora/.ssh/known_hosts
+
+mkdir -p "$destination" "$(dirname "$state_file")" "$(dirname "$known_hosts")"
+
+if [[ ! -f "$state_file" ]]; then
+  if [[ "$start_fresh" == "1" ]]; then
+    date +%s > "$state_file"
+    echo "Initialized fresh ASFS fast-gas sync state at $(cat "$state_file"); no historical files pulled."
+    exit 0
+  fi
+  echo 0 > "$state_file"
+fi
+
+last_epoch="$(cat "$state_file")"
+now_epoch="$(date +%s)"
+lookback_epoch=$(( now_epoch - lookback_days * 86400 ))
+scan_epoch="$last_epoch"
+if (( last_epoch > lookback_epoch )); then
+  scan_epoch="$lookback_epoch"
+fi
+files_from="$(mktemp)"
+trap 'rm -f "$files_from"' EXIT
+
+ssh_opts=(
+  -o BatchMode=yes
+  -o IdentitiesOnly=yes
+  -o IdentityFile=none
+  -o PubkeyAuthentication=no
+  -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile="$known_hosts"
+)
+
+ssh "${ssh_opts[@]}" "${source_user}@${source_host}" bash -s -- "$source_path" "$source_pattern" "$scan_epoch" "$now_epoch" 202605020000 > "$files_from" <<'REMOTE_FIND'
+set -euo pipefail
+source_path="$1"
+source_pattern="$2"
+scan_epoch="$3"
+now_epoch="$4"
+min_stamp="$5"
+cd "$source_path"
+find . -maxdepth 1 -type f -name "$source_pattern" -newermt "@${scan_epoch}" ! -newermt "@${now_epoch}" -printf '%P\0' |
+  while IFS= read -r -d '' name; do
+    stamp="${name##*_}"
+    stamp="${stamp%.dat}"
+    if [[ "$stamp" > "$min_stamp" || "$stamp" == "$min_stamp" ]]; then
+      printf '%s\0' "$name"
+    fi
+  done
+REMOTE_FIND
+
+if [[ ! -s "$files_from" ]]; then
+  echo "$now_epoch" > "$state_file"
+  echo "No new ASFS fast-gas files found."
+  exit 0
+fi
+
+export RSYNC_RSH="ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$known_hosts"
+rsync -a --partial --from0 --files-from="$files_from" "${source_user}@${source_host}:${source_path%/}/" "${destination%/}/"
+echo "$now_epoch" > "$state_file"

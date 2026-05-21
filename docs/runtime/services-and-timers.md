@@ -60,6 +60,15 @@ browser over normal HTTP instead of being serialized into the Panel websocket.
 - `aurora-asfs-fast-sonic-append.timer`
 - `aurora-asfs-fast-sonic-quicklooks.timer`
 
+## ASFS Fast Gas
+
+- `aurora-asfs-fast-gas-source-sync.timer`
+- `aurora-asfs-fast-gas-append.timer`
+
+Fast-gas is the high-rate LI-COR/gas file family from the ASFS logger CRD
+area. It is stored in its own Zarr and is merged into `HK_ASFS` housekeeping
+quicklooks for LI-COR continuity. It does not contain radiation variables.
+
 ## Power
 
 - `aurora-power-source-sync.timer`

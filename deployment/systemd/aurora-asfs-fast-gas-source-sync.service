@@ -1,0 +1,13 @@
+[Unit]
+Description=Aurora pull fresh ASFS fast-gas raw files over Tailscale SSH
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+ExecStart=/usr/local/bin/aurora-asfs-fast-gas-sync
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
