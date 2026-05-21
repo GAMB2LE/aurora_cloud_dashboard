@@ -13,6 +13,7 @@ import pandas as pd
 import xarray as xr
 
 from quicklook_time_axis import apply_quicklook_time_axis
+from time_gap_breaks import insert_time_gap_breaks
 
 ZARR_DEFAULT = Path("/data/aurora/products/hatprog5/hatpro.zarr")
 OUTPUT_DEFAULT = Path("/data/aurora/products/quicklooks/hatpro/latest.png")
@@ -117,6 +118,7 @@ def _plot_hatpro(
     profile_mesh = None
     if profile_window is not None:
         profile_times, heights, temps = profile_window
+        profile_times, temps = insert_time_gap_breaks(profile_times, temps, time_axis=1)
         profile_mesh = ax.pcolormesh(
             profile_times,
             heights,

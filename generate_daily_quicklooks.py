@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from extra_housekeeping import extra_housekeeping_daily_png, plot_ceilometer_housekeeping
+from time_gap_breaks import insert_time_gap_breaks
 
 # --- Paths and constants ---
 APP_DIR = Path(__file__).resolve().parent
@@ -59,10 +60,11 @@ def _plot_day(ds_day: xr.Dataset, range_coord: str, date_label: str, output: Pat
         data = da.values
         if var == "beta_att":
             data = np.where(data > 0, data, np.nan)
+            plot_times, plot_data = insert_time_gap_breaks(da["time"].values, data.T, time_axis=1)
             mesh = ax.pcolormesh(
-                da["time"].values,
+                plot_times,
                 da[range_coord].values,
-                data.T,
+                plot_data,
                 shading="auto",
                 norm=LogNorm(vmin=BETA_VMIN, vmax=BETA_VMAX),
                 cmap=BETA_CMAP,
@@ -70,10 +72,11 @@ def _plot_day(ds_day: xr.Dataset, range_coord: str, date_label: str, output: Pat
             cbar = fig.colorbar(mesh, ax=ax, pad=0.01)
             cbar.set_label("beta_att (m⁻¹ sr⁻¹)")
         else:
+            plot_times, plot_data = insert_time_gap_breaks(da["time"].values, data.T, time_axis=1)
             mesh = ax.pcolormesh(
-                da["time"].values,
+                plot_times,
                 da[range_coord].values,
-                data.T,
+                plot_data,
                 shading="auto",
                 vmin=LDR_VMIN,
                 vmax=LDR_VMAX,

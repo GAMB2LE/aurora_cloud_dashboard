@@ -20,6 +20,7 @@ from extra_housekeeping import (
     plot_cloud_radar_housekeeping,
 )
 from quicklook_time_axis import apply_quicklook_time_axis
+from time_gap_breaks import insert_time_gap_breaks
 
 ZARR_DEFAULT = Path("/data/aurora/products/rpgfmcw94/cloud_radar.zarr")
 RAW_ROOT_DEFAULT = Path(os.environ.get("CLOUD_RADAR_RAW_ROOT", "/project/aurora/raw/rpgfmcw94"))
@@ -88,10 +89,11 @@ def plot_radar_quicklook(
     colorbars = []
     for ax, (var, panel_title, vmin, vmax, cbar_label, cmap) in zip(axes, RADAR_PANELS):
         da = window[var].transpose("time", "range")
+        plot_times, plot_data = insert_time_gap_breaks(da["time"].values, da.values.T, time_axis=1)
         mesh = ax.pcolormesh(
-            da["time"].values,
+            plot_times,
             da["range"].values,
-            da.values.T,
+            plot_data,
             shading="auto",
             vmin=vmin,
             vmax=vmax,

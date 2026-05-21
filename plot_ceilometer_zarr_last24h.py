@@ -18,6 +18,7 @@ from pathlib import Path
 
 from extra_housekeeping import extra_housekeeping_latest_png, plot_ceilometer_housekeeping
 from quicklook_time_axis import apply_quicklook_time_axis
+from time_gap_breaks import insert_time_gap_breaks
 
 BETA_CMAP = "cividis"
 
@@ -85,19 +86,21 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
             vmin = 1e-7
             vmax = 1e-3
             norm = LogNorm(vmin=vmin, vmax=vmax)
+            plot_times, plot_data = insert_time_gap_breaks(da["time"].values, data.T, time_axis=1)
             mesh = ax.pcolormesh(
-                da["time"].values,
+                plot_times,
                 da[range_coord].values,
-                data.T,
+                plot_data,
                 shading="auto",
                 norm=norm,
                 cmap=BETA_CMAP,
             )
         else:
+            plot_times, plot_data = insert_time_gap_breaks(da["time"].values, data.T, time_axis=1)
             mesh = ax.pcolormesh(
-                da["time"].values,
+                plot_times,
                 da[range_coord].values,
-                data.T,
+                plot_data,
                 shading="auto",
                 vmin=0,
                 vmax=0.5,

@@ -63,6 +63,7 @@ from extra_housekeeping import (
     extra_housekeeping_latest_png,
     extra_housekeeping_tokens,
 )
+from time_gap_breaks import insert_time_gap_breaks
 from wxcam_catalog import (
     WXCAM_IMAGE_TYPES,
     available_days,
@@ -2577,10 +2578,13 @@ def _make_plot(ds, var, clim, logz, coloraxis):
         with np.errstate(divide="ignore"):
             data = np.log10(data)
         zmin, zmax = np.log10(clim[0]), np.log10(clim[1])
+    times, data = insert_time_gap_breaks(times, data, time_axis=1)
     trace = go.Heatmap(
-        x=times,
+        x=pd.to_datetime(times),
         y=heights,
         z=data,
+        connectgaps=False,
+        hoverongaps=False,
         zmin=zmin,
         zmax=zmax,
         coloraxis=coloraxis,
@@ -4096,12 +4100,16 @@ def _update_hatpro_view(
         if "T_PROF" in ds:
             heights = ds["range"].values if "range" in ds else np.arange(ds["T_PROF"].shape[1])
             temps = np.array(ds["T_PROF"].transpose("range", "time"))
+            profile_times, temps = insert_time_gap_breaks(times, temps, time_axis=1)
+            profile_times = pd.to_datetime(profile_times)
             vmin, vmax = cfg["vars"]["T_PROF"]["clim"]
             fig.add_trace(
                 go.Heatmap(
-                    x=times,
+                    x=profile_times,
                     y=heights,
                     z=temps,
+                    connectgaps=False,
+                    hoverongaps=False,
                     zmin=vmin,
                     zmax=vmax,
                     coloraxis="coloraxis",
@@ -4112,9 +4120,10 @@ def _update_hatpro_view(
             )
             fig.add_trace(
                 go.Contour(
-                    x=times,
+                    x=profile_times,
                     y=heights,
                     z=temps,
+                    connectgaps=False,
                     showscale=False,
                     contours=dict(coloring="none", showlabels=True, labelfont=dict(color="white", size=10)),
                     line=dict(color="white", width=1),
@@ -4466,11 +4475,14 @@ def _render_interactive_view(
                         ldr = np.where((ldr >= 0.0) & (ldr <= 1.0), ldr, np.nan)
                         mask_threshold = 10 ** -6.5
                         ldr = np.where(beta_vals >= mask_threshold, ldr, np.nan)
+                        times, ldr = insert_time_gap_breaks(times, ldr, time_axis=1)
                         fig.add_trace(
                             go.Heatmap(
-                                x=times,
+                                x=pd.to_datetime(times),
                                 y=heights,
                                 z=ldr,
+                                connectgaps=False,
+                                hoverongaps=False,
                                 zmin=lmin,
                                 zmax=lmax,
                                 coloraxis="coloraxis2",
@@ -4483,11 +4495,14 @@ def _render_interactive_view(
                         times = pd.to_datetime(ds["time"].values)
                         heights = ds["range"].values
                         ldr = np.array(ds[var2_name].transpose("range", "time"))
+                        times, ldr = insert_time_gap_breaks(times, ldr, time_axis=1)
                         fig.add_trace(
                             go.Heatmap(
-                                x=times,
+                                x=pd.to_datetime(times),
                                 y=heights,
                                 z=ldr,
+                                connectgaps=False,
+                                hoverongaps=False,
                                 zmin=lmin,
                                 zmax=lmax,
                                 coloraxis="coloraxis2",
