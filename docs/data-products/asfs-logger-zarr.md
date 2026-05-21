@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape after the CRD parser update, checked on `2026-05-20`:
-  - `time=21598`
+- deployed shape after the CRD parser update, checked on `2026-05-21`:
+  - `time=22501`
 - time coverage when checked: `2026-05-02 00:00:00` to
-  `2026-05-20 07:30:00`
+  `2026-05-21 16:46:00`
 - sorted unique `time` coordinate
 
 ## Time coordinate
@@ -82,6 +82,8 @@ Examples include:
 This Zarr underpins:
 
 - the **Radiation** instrument directly
+- the **ASS 48 V DC Power** overlay on the Aurora Power Supply page through
+  `watts_on_48vdc_Avg`
 - parts of the **Meteorology** presentation layer, including ASFS Vaisala
   temperature, relative humidity, pressure, Metek wind vectors, and
   display-derived Metek wind speed/direction
@@ -93,3 +95,6 @@ LI-COR housekeeping can also be filled from the separate ASFS fast-gas Zarr
 when the slower ASFS science/logger file stream has a gap. The fast-gas store
 includes high-rate `licor_diag_out` samples, so `HK_ASFS` can show LI-COR
 diagnostic continuity even when `diag_out` is not present in the science Zarr.
+
+The ASFS fast-sonic and fast-gas stores do not contain radiation or
+`watts_on_48vdc_Avg`, so they cannot fill Radiation or ASS 48 V power gaps.

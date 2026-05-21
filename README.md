@@ -14,6 +14,10 @@ for whether the observing stack is behaving.
 - `Scanning Microwave Radiometer` - HATPRO radiometer Zarr with LWP/IWV, infrared surface temperature, temperature-profile plots, and Science Quicklooks.
 - `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`. The science layout uses the current ASFS logger schema, including SR30 shortwave, IR20 longwave, flux plates, KT15 surface temperature, and SR50 distance.
+- Radiation science variables and the APS page's **ASS 48 V DC Power** overlay
+  both come from the ASFS slow `sci` table. The ASFS fast-sonic and fast-gas
+  streams can keep Metek and LI-COR housekeeping current, but they do not
+  contain radiation or ASS 48 V power fields.
 - `WXcam` - interactive stitched HDR video browser for the deployed `FISH HDR` and `PANO HDR` streams, backed by a SQLite media catalog plus an HDR image Zarr. `Interactive Data Browser` uses a camera-style layout with obvious `Latest`, `Previous`, and `Next` controls plus `Updated X min ago` freshness metadata above the player. MP4 files are served through the dashboard static media route instead of being embedded in the Panel websocket payload. `Science Quicklooks` shows a `3 x 8` grid of hourly HDR JPG thumbnails for both today and past days, using the image nearest `:30 UTC` in each UTC hour. AUTO/LONG/SHORT files remain on the camera host and are not part of the current local product stream.
 - `Operations Dashboard` - dedicated top-level status tab with traffic-light indicators for source-host reachability, storage pressure, Aurora Power Supply battery voltage/SOC/internal temperature, processing health, GWS transfer status, mirror verification, and prune readiness, driven from the locally collected operations snapshot stream. It also groups symptoms into source, sync/network, local processing, GWS transfer, and dashboard/render root-cause cards, and shows seven-day trends for storage, SOC, voltage, source lag, and GWS lag. Dashboard render performance is visible as diagnostic context, but it does not drive the top-level action state. The collector also writes Phase 1 observe-only health JSON and daily Markdown reports for service/code monitoring. The storage section breaks out the CL61 root/data views, ASS data/root views, APS data/root views, and AURORA Cloud product/root views separately, with subtitles showing the resolved `pwd -P` path being measured. Archived `HK_Operations` quicklooks are still available from `House Keeping Quicklooks` and now use a curated diagnostics layout rather than plotting every numeric operations field.
 
@@ -68,13 +72,13 @@ separate trees on purpose.
   - `/project/aurora/raw/cl61`
   - `/project/aurora/raw/rpgfmcw94`
   - `/project/aurora/raw/vaisalamet`
-  - `/project/aurora/raw/asfs/loggernet`
+  - `/project/aurora/raw/asfs/crd`
   - `/project/aurora/raw/power/level1`
   - `/project/aurora/raw/wxcam`
 - Storage type: shared Ceph network filesystem
-- Current filesystem size on `2026-05-20`: `4.0T`
-- Current used on `2026-05-20`: `41G`
-- Current available on `2026-05-20`: `3.9T`
+- Current filesystem size on `2026-05-21`: `4.0T`
+- Current used on `2026-05-21`: `57G`
+- Current available on `2026-05-21`: `3.9T`
 
 So `/project/aurora` is the raw landing and mirror area.
 
@@ -93,9 +97,9 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
 - Storage type: local disk on `/dev/vdb`
-- Current filesystem size on `2026-05-20`: `983G`
-- Current used on `2026-05-20`: `238G`
-- Current available on `2026-05-20`: `695G`
+- Current filesystem size on `2026-05-21`: `983G`
+- Current used on `2026-05-21`: `262G`
+- Current available on `2026-05-21`: `672G`
 
 So `/data/aurora` is the product, work, and output area.
 
@@ -367,7 +371,7 @@ Path: `/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`, `layer`
-- deployed shape checked on `2026-05-20`: `time=118422`, `range=3276`, `layer=5`
+- deployed shape checked on `2026-05-21`: `time=131442`, `range=3276`, `layer=5`
 - coordinates:
   - `time` - profile timestamps
   - `range` - range gate center in meters
@@ -430,7 +434,7 @@ Path: `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
 This store is a single xarray dataset with:
 
 - dimensions: `time`, `range`
-- deployed shape checked on `2026-05-20`: `time=242237`, `range=312`
+- deployed shape checked on `2026-05-21`: `time=321488`, `range=312`
 - coordinates:
   - `time` - derived from `Time + Timems`
   - `range` - concatenated chirp range gates from `C1Range` and `C2Range`
@@ -470,7 +474,7 @@ Path: `/data/aurora/products/hatprog5/hatpro.zarr`
 This store is a consolidated time-indexed xarray product for the RPG HATPRO G5
 scanning microwave radiometer.
 
-- deployed shape checked on `2026-05-20`: `time=806964`, `range=94`
+- deployed shape checked on `2026-05-21`: `time=926160`, `range=94`
 - the deployed store currently contains 6 variables:
   - `LWP`
   - `IWV`
@@ -488,7 +492,7 @@ Path: `/data/aurora/products/vaisalamet/vaisalamet.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-20`: `time=249795`
+- deployed shape checked on `2026-05-21`: `time=271690`
 - coordinate:
   - `time` - parsed from the raw `timestamp` column, localized as `Europe/London`, then converted to UTC before storage
 
@@ -527,7 +531,7 @@ Path: `/data/aurora/products/asfs_logger/asfs_logger.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-20`: `time=21598`
+- deployed shape checked on `2026-05-21`: `time=22501`
 - coordinate:
   - `time` - parsed directly from the TOA5 `TIMESTAMP` column
 
@@ -553,8 +557,9 @@ Variable layout:
 Schema note:
 
 - append runs keep the existing variable set fixed in the same way as `vaisalamet`
-- no `diag_out` LI-COR field is currently present in the deployed Zarr or the
-  local raw ASFS science headers checked on `2026-05-20`
+- `licor_diag_out` is stored in the separate ASFS fast-gas Zarr and is merged
+  into ASFS housekeeping displays as `licor_diag_out_Avg`; it is not part of
+  the ASFS slow science Zarr schema
 
 Chunking:
 
@@ -609,7 +614,7 @@ Path: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-20`: `time=2093180`
+- deployed shape checked on `2026-05-21`: `time=2178419`
 - coordinate:
   - `time` - parsed from `TIMESTAMP` and offset by `metek_msec_out` to preserve sub-second timing
 
@@ -649,7 +654,7 @@ Path: `/data/aurora/products/power/power.zarr`
 This store is a single time-indexed xarray dataset with:
 
 - dimension: `time`
-- deployed shape checked on `2026-05-20`: `time=998611`
+- deployed shape checked on `2026-05-21`: `time=1118886`
 - coordinate:
   - `time` - parsed from the raw `aps_time` column
 
@@ -770,11 +775,11 @@ Each group stores one xarray dataset with:
   - `height[time]`
   - `size_bytes[time]`
 
-Group-specific image geometry checked on `2026-05-20`:
+Group-specific image geometry checked on `2026-05-21`:
 
-- `fish_hdr`: `time=14763`, `3120 x 3040` pixels, `channel=3`,
+- `fish_hdr`: `time=16068`, `3120 x 3040` pixels, `channel=3`,
   chunked as `(1, 1024, 1024, 3)`, covering `2026-05-02 00:00:00` to
-  `2026-05-20 07:55:39`
-- `pano_hdr`: `time=3411`, `2880 x 750` pixels, `channel=3`, chunked as
+  `2026-05-21 20:10:39`
+- `pano_hdr`: `time=4710`, `2880 x 750` pixels, `channel=3`, chunked as
   `(1, 750, 1024, 3)`, covering `2026-01-12 02:25:00` to
-  `2026-05-20 07:55:39`
+  `2026-05-21 20:10:39`

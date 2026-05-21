@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape after the CRD parser update, checked on `2026-05-20`:
-  - `time=2093180`
+- deployed shape after the CRD parser update, checked on `2026-05-21`:
+  - `time=2178419`
 - time coverage when checked: `2026-05-02 00:00:30.027` to
-  `2026-05-20 07:30:20.109000`
+  `2026-05-21 20:00:10`
 - sorted unique `time` coordinate
 
 ## Time coordinate

@@ -68,6 +68,12 @@ power data are much denser. Downsampling after each trace has dropped merged
 NaN timestamps preserves the ASFS cadence instead of thinning it on the dense
 APS time grid.
 
+The **ASS 48 V DC Power** overlay depends on the ASFS slow `sci` table field
+`watts_on_48vdc_Avg`. It can therefore go stale independently of the APS power
+system. The APS AC/DC output, battery, solar, SOC, and thermal traces come from
+the Power Zarr and can remain current even when the ASFS `sci` stream is not
+producing new files.
+
 The cumulative panel is normalized in the display products. The
 `SolarYield_*` counters are converted into positive UTC-day increments, so
 delayed controller resets just after midnight do not create false drops in the

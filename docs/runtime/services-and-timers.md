@@ -109,6 +109,16 @@ outbound relay such as `msmtp`.
 The products sync is intentionally split so the large WXcam media/Zarr tree can
 run independently from the smaller Zarr and quicklook products.
 
+The mirror verifier compares HATPRO files by basename. That is deliberate:
+newer HATPRO source paths are arranged under dated `Y2026/Mxx/Dxx`
+directories, while older local and GWS mirrors include a legacy flat layout.
+Basename comparison keeps the prune/coverage audit focused on whether the
+files are present without forcing a risky raw-data reshuffle.
+
+The HATPRO source sync also uses a three-day mtime lookback. HATPRO files can
+arrive after the previous sync while retaining an older file timestamp, and the
+lookback prevents those late files from being skipped permanently.
+
 ## Useful commands
 
 ```bash

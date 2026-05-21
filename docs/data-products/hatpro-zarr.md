@@ -43,12 +43,12 @@ Expected dimensions:
 The temperature-profile altitude coordinate from the source files is exposed as
 the `range` coordinate when present.
 
-When checked on `2026-05-20`, the deployed store had:
+When checked on `2026-05-21`, the deployed store had:
 
-- `time=806964`
+- `time=926160`
 - `range=94`
 - 6 data variables
-- time coverage: `2026-02-27 13:00:01` to `2026-05-20 06:59:56`
+- time coverage: `2026-02-27 13:00:01` to `2026-05-21 18:59:55`
 - sorted unique `time` coordinate
 
 ## Variables

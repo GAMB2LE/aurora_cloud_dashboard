@@ -7,10 +7,10 @@ Path:
 ## Dataset shape
 
 - dimension: `time`
-- deployed shape when checked on `2026-05-20`:
-  - `time=998611`
+- deployed shape when checked on `2026-05-21`:
+  - `time=1118886`
 - time coverage when checked: `2026-05-05 15:15:23.598658936` to
-  `2026-05-20 07:55:44.192044678`
+  `2026-05-21 20:15:04`
 - sorted unique `time` coordinate
 
 ## Time coordinate
@@ -90,9 +90,9 @@ but stores only the curated one-minute traces needed by the APS summary panels.
 That lets the interactive browser switch Power windows without repeatedly
 opening and merging multi-day one-second APS samples.
 
-When checked on `2026-05-20`, this derived store had `time=19426`, 25 data
+When checked on `2026-05-21`, this derived store had `time=21547`, 25 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-20 08:49:00`.
+`2026-05-05 15:15:00` to `2026-05-21 20:10:00`.
 
 Important variables include:
 
@@ -135,9 +135,9 @@ compatibility store. The generated and utilised energy traces from this compact
 store are plotted on the cumulative panel's right axis when the broader summary
 product is unavailable.
 
-When checked on `2026-05-20`, this derived store had `time=19426`, 5 data
+When checked on `2026-05-21`, this derived store had `time=21547`, 5 data
 variables, sorted unique timestamps, and coverage from
-`2026-05-05 15:15:00` to `2026-05-20 08:49:00`.
+`2026-05-05 15:15:00` to `2026-05-21 20:10:00`.
 
 Variables:
 

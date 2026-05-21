@@ -63,6 +63,7 @@ CONFIG = json.loads(
       "source_auth": "tailscale",
       "source_pattern": "HATPROG5-AURORA-ICELAND_*",
       "recursive": true,
+      "relpath_mode": "basename",
       "local_root": "/project/aurora/raw/hatprog5",
       "gws_relpath": "hatprog5",
       "product_patterns": ["*.LWP.NC", "*.IWV.NC", "*.IRT.NC", "*.TPC.NC", "*.TPB.NC", "*.MET.NC"],
@@ -319,6 +320,21 @@ def list_local_entries(root: Path, recursive: bool, pattern: str) -> dict[str, d
     return entries
 
 
+def normalize_relpaths(entries: dict[str, dict], mode: str | None) -> dict[str, dict]:
+    """Normalize manifest comparison keys for streams with legacy layouts."""
+    if mode != "basename":
+        return entries
+    normalized: dict[str, dict] = {}
+    for entry in entries.values():
+        key = Path(entry["relpath"]).name
+        candidate = dict(entry)
+        candidate["relpath"] = key
+        existing = normalized.get(key)
+        if existing is None or int(candidate["mtime"]) >= int(existing["mtime"]):
+            normalized[key] = candidate
+    return normalized
+
+
 def maybe_add_checksums(entries: dict[str, dict], mode: str, root: str | Path, remote_base: list[str] | None = None, remote_target: str | None = None) -> None:
     if mode == "none":
         return
@@ -460,6 +476,8 @@ def main() -> int:
             local_entries = list_local_entries(Path(stream["local_root"]), bool(stream["recursive"]), stream["source_pattern"])
             maybe_add_checksums(source_entries, CONFIG["checksum_mode"], stream["source_root"], ssh_base(stream), source_target)
             maybe_add_checksums(local_entries, CONFIG["checksum_mode"], Path(stream["local_root"]))
+            source_entries = normalize_relpaths(source_entries, stream.get("relpath_mode"))
+            local_entries = normalize_relpaths(local_entries, stream.get("relpath_mode"))
 
             if gws_target:
                 gws_entries = list_remote_entries(
@@ -476,6 +494,7 @@ def main() -> int:
                     GWS_BASE,
                     gws_target,
                 )
+                gws_entries = normalize_relpaths(gws_entries, stream.get("relpath_mode"))
             else:
                 gws_entries = {}
 

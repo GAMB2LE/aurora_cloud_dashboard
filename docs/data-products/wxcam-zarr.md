@@ -42,18 +42,18 @@ Each group stores one xarray dataset with:
 
 ## Group geometry
 
-When checked on `2026-05-20`:
+When checked on `2026-05-21`:
 
 - `fish_hdr`
-  - shape: `time=14763`, `y=3040`, `x=3120`, `channel=3`
+  - shape: `time=16068`, `y=3040`, `x=3120`, `channel=3`
   - image geometry: `3120 x 3040`
-  - time coverage: `2026-05-02 00:00:00` to `2026-05-20 07:55:39`
+  - time coverage: `2026-05-02 00:00:00` to `2026-05-21 20:10:39`
   - sorted unique `time` coordinate
   - chunks: `(1, 1024, 1024, 3)`
 - `pano_hdr`
-  - shape: `time=3411`, `y=750`, `x=2880`, `channel=3`
+  - shape: `time=4710`, `y=750`, `x=2880`, `channel=3`
   - image geometry: `2880 x 750`
-  - time coverage: `2026-01-12 02:25:00` to `2026-05-20 07:55:39`
+  - time coverage: `2026-01-12 02:25:00` to `2026-05-21 20:10:39`
   - sorted unique `time` coordinate
   - chunks: `(1, 750, 1024, 3)`
 

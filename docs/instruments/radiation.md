@@ -20,6 +20,15 @@ The current Radiation instrument intentionally stays compact:
 This is a presentation-layer subset of the ASFS logger store rather than a
 separate ingest path.
 
+## Freshness note
+
+Radiation depends on the ASFS slow `sci` table. The independent ASFS
+fast-sonic and fast-gas streams can keep Metek wind and LI-COR housekeeping
+plots current, but they do not contain SR30, IR20, flux-plate, KT15 surface, or
+SR50 radiation/support fields. If the logger stops writing new
+`aurora_asfs_data_sci_*.dat` files, Radiation will correctly stop at the last
+available `sci` sample even while fast-sonic and fast-gas continue.
+
 The latest interactive view can be prewarmed as Plotly JSON by
 `generate_asfs_logger_quicklooks.py` under
 `/data/aurora/products/dashboard/prewarm/`, so the first latest-view paint does
