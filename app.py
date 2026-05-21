@@ -4976,6 +4976,25 @@ def _housekeeping_tokens(inst: str, quick_dir: Path) -> list[str]:
     return extra_housekeeping_tokens(quick_dir, inst)
 
 
+def _legacy_science_quicklook_token(inst: str, png: Path) -> str | None:
+    """Return YYYYMMDD for legacy daily science PNGs, excluding HK products."""
+    prefixes = {
+        "Ceilometer": "ceilometer",
+        "Cloud Radar": "cloud_radar",
+        "Scanning Microwave Radiometer": "hatpro",
+    }
+    prefix = prefixes.get(inst)
+    if prefix is None or "__" in png.stem:
+        return None
+    expected_prefix = f"{prefix}_"
+    if not png.stem.startswith(expected_prefix):
+        return None
+    token = png.stem.removeprefix(expected_prefix)
+    if len(token) == 8 and token.isdigit():
+        return token
+    return None
+
+
 def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = None, mode: str = "science"):
     """Build a mapping of label -> quicklook asset token/path for a quicklook mode."""
     inst = inst or CURRENT_INSTRUMENT
@@ -5021,22 +5040,9 @@ def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = No
         for png in sorted(quick_dir.glob("*.png")):
             if png.name == latest.name:
                 continue
-            stem = png.stem
-            if stem.startswith("cloud_radar_"):
-                label = stem.removeprefix("cloud_radar_")
-            elif stem.startswith("ceilometer_"):
-                label = stem.removeprefix("ceilometer_")
-            elif stem.startswith("vaisalamet_"):
-                label = stem.removeprefix("vaisalamet_")
-            elif stem.startswith("asfs_logger_"):
-                label = stem.removeprefix("asfs_logger_")
-            elif stem.startswith("power_"):
-                label = stem.removeprefix("power_")
-            elif stem.startswith("hatpro_"):
-                label = stem.removeprefix("hatpro_")
-            else:
-                label = stem
-            date_labels.append((label, str(png)))
+            label = _legacy_science_quicklook_token(inst, png)
+            if label is not None:
+                date_labels.append((label, str(png)))
     for label, path in date_labels:
         opts[label] = path
     if latest.exists():
