@@ -270,18 +270,45 @@ def _height_values(ds: xr.Dataset, level_dim: str) -> tuple[list[object], str]:
     return list(range(int(ds.sizes.get(level_dim, 0)))), level_dim
 
 
+def _open_dataset(path: Path) -> xr.Dataset:
+    return xr.open_dataset(path, decode_timedelta=True)
+
+
+def _finite_numeric_variables(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    names: set[str] = set()
+    try:
+        with _open_dataset(path) as ds:
+            for name, da in ds.data_vars.items():
+                if not np.issubdtype(da.dtype, np.number):
+                    continue
+                values = np.asarray(da.values, dtype=float)
+                if np.isfinite(values).any():
+                    names.add(name)
+    except Exception:
+        return set()
+    return names
+
+
 def _variable_options(run_id: str, dataset_id: str) -> OrderedDict[str, str]:
     path = _dataset_path(run_id, dataset_id)
     if path is None or not path.exists():
         return OrderedDict()
     options: OrderedDict[str, str] = OrderedDict()
     try:
-        with xr.open_dataset(path, decode_timedelta=False) as ds:
+        with _open_dataset(path) as ds:
             for name, da in ds.data_vars.items():
                 if not np.issubdtype(da.dtype, np.number):
                     continue
+                values = np.asarray(da.values, dtype=float)
+                finite = values[np.isfinite(values)]
                 dims = " x ".join(str(dim) for dim in da.dims) or "scalar"
-                options[f"{name} ({dims})"] = name
+                if finite.size:
+                    suffix = f"{dims}; finite {finite.size}"
+                else:
+                    suffix = f"{dims}; no finite values"
+                options[f"{name} ({suffix})"] = name
     except Exception:
         return OrderedDict()
     return options
@@ -329,7 +356,7 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
     if path is not None and path.exists():
         file_state = f"{_format_size(path)}; {_format_mtime(path)}"
         try:
-            with xr.open_dataset(path, decode_timedelta=False) as ds:
+            with _open_dataset(path) as ds:
                 cards.extend(_card(name, size) for name, size in ds.sizes.items())
                 cards.extend(_card(name, value) for name, value in _variable_stats(ds, variable))
                 variables = ", ".join(escape(str(name)) for name in list(ds.data_vars)[:20])
@@ -409,7 +436,7 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
     if not variable:
         return _empty_figure(label, "No numeric variable selected")
     try:
-        with xr.open_dataset(path, decode_timedelta=False) as ds:
+        with _open_dataset(path) as ds:
             if variable not in ds:
                 return _empty_figure(label, f"Variable not found: {variable}")
             da = ds[variable].squeeze(drop=True)
@@ -423,6 +450,8 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
                 values = np.asarray(da_plot.values, dtype=float)
                 if values.ndim > 2:
                     values = np.nanmean(values, axis=tuple(range(2, values.ndim)))
+                if not np.isfinite(values).any():
+                    return _empty_figure(title, f"{variable} has no finite values in this file")
                 x, x_label = _axis_values(ds, time_dim)
                 y, y_label = _height_values(ds, level_dim)
                 fig = go.Figure(
@@ -440,10 +469,13 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
             elif da.ndim == 1:
                 dim = da.dims[0]
                 x, x_label = _axis_values(ds, dim)
+                y_values = np.asarray(da.values, dtype=float)
+                if not np.isfinite(y_values).any():
+                    return _empty_figure(title, f"{variable} has no finite values in this file")
                 fig = go.Figure(
                     go.Scatter(
                         x=x,
-                        y=np.asarray(da.values, dtype=float),
+                        y=y_values,
                         mode="lines+markers",
                         line={"color": THEME_ACCENT, "width": 2},
                         marker={"size": 5},
@@ -481,11 +513,17 @@ def _sync_variable_options(*_events) -> None:
     options = _variable_options(run_select.value, dataset_select.value)
     variable_select.options = options
     values = list(options.values())
-    preferred = ("model_cf", "cloud_fraction", "cf_V", "cf_A", "ql", "qi", "temperature", "pressure")
+    path = _dataset_path(run_select.value, dataset_select.value)
+    finite_values = _finite_numeric_variables(path) if path is not None else set()
+    preferred = ("cf_V", "cf_A", "cf_V_adv", "cf_A_adv", "cloud_fraction", "model_cf", "ql", "qi", "temperature", "pressure")
     if variable_select.value in values:
         return
     for name in preferred:
-        if name in values:
+        if name in values and name in finite_values:
+            variable_select.value = name
+            return
+    for name in values:
+        if name in finite_values:
             variable_select.value = name
             return
     variable_select.value = values[0] if values else None
@@ -515,7 +553,9 @@ def _apply_query_state() -> None:
     if args.get("dataset") in set(DATASETS.values()):
         dataset_select.value = args["dataset"]
     _sync_variable_options()
-    if args.get("variable") in list(variable_select.options.values()):
+    path = _dataset_path(run_select.value, dataset_select.value)
+    finite_values = _finite_numeric_variables(path) if path is not None else set()
+    if args.get("variable") in list(variable_select.options.values()) and args["variable"] in finite_values:
         variable_select.value = args["variable"]
 
 
