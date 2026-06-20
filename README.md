@@ -335,7 +335,8 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store. With the current ASFS CRD schema this includes ASFS Vaisala temperature, relative humidity, and pressure alongside the existing Metek wind and temperature context.
 - `Radiation` summary plots use the current ASFS CRD fields for SR30 shortwave radiation and support data, IR20 longwave radiation and support data, flux plates, KT15 surface temperature, and SR50 distance.
 - The dashboard UI now uses four top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, `House Keeping Quicklooks`, and `Operations Dashboard`.
-- The dashboard starts on `Aurora Power Supply` by default.
+- The dashboard starts on `Ceilometer` by default, showing the CL61 lidar view
+  on the `Interactive Data Browser` tab.
 - Availability bars, freshness/status chips, and share/download controls are shown beneath the rendered content in each tab so the data view stays visually primary.
 - Static PNG quicklooks are displayed through a derived trim cache plus a
   responsive HTML image wrapper. The original PNGs remain unchanged for
