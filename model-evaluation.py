@@ -90,6 +90,170 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
             },
         ),
         (
+            "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+            {
+                "label": "CM1 04:00 ERA5 qv+theta tau10",
+                "model": "CM1",
+                "status": "best ERA5 relaxation",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, ERA5 qv+theta relaxation to 05:00 UTC",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+                    "run_20260521",
+                ),
+                "uuid": "39349240-389b-46cb-9e07-588c271e952c",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau10",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+            {
+                "label": "CM1 04:00 ERA5 qv tau10",
+                "model": "CM1",
+                "status": "ERA5 relaxation",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, ERA5 qv relaxation to 05:00 UTC",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_qv_nudge_05_tau10_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+                    "run_20260521",
+                ),
+                "uuid": "52f55697-84c5-4729-a917-c5e1cd343691",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau10",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+            {
+                "label": "CM1 04:00 ERA5 qv+theta tau30",
+                "model": "CM1",
+                "status": "ERA5 relaxation",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, weaker ERA5 qv+theta relaxation",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+                    "run_20260521",
+                ),
+                "uuid": "72ce4056-6a2b-4441-b004-17927b6bbdd1",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+            {
+                "label": "CM1 04:00 ERA5 qv tau30",
+                "model": "CM1",
+                "status": "ERA5 relaxation",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, weaker ERA5 qv relaxation",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_qv_nudge_05_tau30_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+                    "run_20260521",
+                ),
+                "uuid": "5515c9a8-a612-4ab5-a30f-700ffa2c10f8",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_qv_nudge_05_tau30",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
             "cm1_0400_thompson_tall_rh105_cool_25_45",
             {
                 "label": "CM1 04:00 RH105 cool 2.5-4.5 km",
