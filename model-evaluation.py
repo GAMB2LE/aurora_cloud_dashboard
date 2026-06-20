@@ -10,6 +10,7 @@ from base64 import b64encode
 from collections import OrderedDict
 from datetime import datetime, timezone
 from html import escape
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlencode
@@ -67,6 +68,21 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                 "run_dir": _path("model", "cm1_forced_moist_thompson", "run_20260521"),
                 "uuid": "54c1d650-6627-4b5d-bfc4-b887b0671b2c",
                 "runtime": "1:51.25 wall, 398% CPU, 520292 kB RSS",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_forced_moist_thompson",
+                    "scorecard_cf_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_forced_moist_thompson",
+                    "scorecard_cf_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_forced_moist_thompson",
+                    "scorecard_cf_20260620.json",
+                ),
             },
         ),
         (
@@ -179,6 +195,7 @@ DATASETS = OrderedDict(
     [
         ("Cloudnet L3 CF", "l3_cf"),
         ("Cloudnet model", "cloudnet_model"),
+        ("CF scorecard", "scorecard"),
     ]
 )
 
@@ -219,6 +236,9 @@ def _dataset_path(run_id: str, dataset_id: str) -> Path | None:
     spec = RUNS.get(run_id)
     if not spec:
         return None
+    if dataset_id == "scorecard":
+        scorecard_path = spec.get("scorecard_png")
+        return scorecard_path if isinstance(scorecard_path, Path) else None
     path = spec.get(dataset_id)
     return path if isinstance(path, Path) else None
 
@@ -310,6 +330,11 @@ def _finite_numeric_variables(path: Path) -> set[str]:
 
 
 def _variable_options(run_id: str, dataset_id: str) -> OrderedDict[str, str]:
+    if dataset_id == "scorecard":
+        path = _dataset_path(run_id, dataset_id)
+        if path is not None and path.exists():
+            return OrderedDict([("Scorecard image", "scorecard")])
+        return OrderedDict()
     path = _dataset_path(run_id, dataset_id)
     if path is None or not path.exists():
         return OrderedDict()
@@ -361,6 +386,48 @@ def _variable_stats(ds: xr.Dataset, variable: str | None) -> list[tuple[str, str
     ]
 
 
+def _scorecard_json(spec: dict[str, object]) -> dict[str, object] | None:
+    path = spec.get("scorecard_json")
+    if not isinstance(path, Path) or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _scorecard_cards(spec: dict[str, object]) -> list[str]:
+    scorecard = _scorecard_json(spec)
+    if not scorecard:
+        return []
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return []
+    comparison = comparisons.get("cf_V") or comparisons.get("cf_A")
+    if not isinstance(comparison, dict):
+        return []
+    contingency = comparison.get("contingency")
+    if not isinstance(contingency, dict):
+        return []
+    radar = scorecard.get("radar_reflectivity")
+    radar = radar if isinstance(radar, dict) else {}
+    cards = [
+        _card("hits", contingency.get("hits", "n/a")),
+        _card("misses", contingency.get("misses", "n/a")),
+        _card("false alarms", contingency.get("false_alarms", "n/a")),
+        _card("POD", _compact_float(contingency.get("probability_of_detection"))),
+        _card("FAR", _compact_float(contingency.get("false_alarm_ratio"))),
+        _card("CSI", _compact_float(contingency.get("critical_success_index"))),
+    ]
+    if radar.get("available"):
+        cards.append(_card("max ZE_dBZ", _compact_float(radar.get("max_dbz"))))
+    return cards
+
+
+def _compact_float(value: object) -> object:
+    return f"{value:.3g}" if isinstance(value, float) else value
+
+
 def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0) -> str:
     spec = RUNS.get(run_id, {})
     path = _dataset_path(run_id, dataset_id)
@@ -371,7 +438,13 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
     cards: list[str] = []
     variables = "none"
     file_state = "not configured"
-    if path is not None and path.exists():
+    if dataset_id == "scorecard":
+        cards.extend(_scorecard_cards(spec))
+        variables = "scorecard PNG, Markdown and JSON"
+        file_state = f"{_format_size(path)}; {_format_mtime(path)}" if path is not None and path.exists() else "missing"
+        if not cards:
+            cards.append(_card("scorecard", file_state))
+    elif path is not None and path.exists():
         file_state = f"{_format_size(path)}; {_format_mtime(path)}"
         try:
             with _open_dataset(path) as ds:
@@ -392,6 +465,14 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
     runtime_row = ""
     if spec.get("runtime"):
         runtime_row = f"<tr><th>runtime</th><td>{escape(str(spec['runtime']))}</td></tr>"
+    scorecard_rows = ""
+    if dataset_id == "scorecard":
+        markdown_path = spec.get("scorecard_markdown")
+        json_path = spec.get("scorecard_json")
+        if isinstance(markdown_path, Path):
+            scorecard_rows += f"<tr><th>scorecard markdown</th><td><code>{escape(str(markdown_path))}</code></td></tr>"
+        if isinstance(json_path, Path):
+            scorecard_rows += f"<tr><th>scorecard json</th><td><code>{escape(str(json_path))}</code></td></tr>"
     path_markup = f"<code>{escape(str(path))}</code>" if path is not None else "not configured"
     return f"""
     <div class="model-shell">
@@ -410,6 +491,7 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
             <tr><th>file</th><td>{path_markup}</td></tr>
             {run_dir_row}
             {runtime_row}
+            {scorecard_rows}
             <tr><th>file state</th><td>{escape(file_state)}</td></tr>
             <tr><th>Cloudnet UUID</th><td>{escape(uuid)}</td></tr>
             <tr><th>variables</th><td>{variables}</td></tr>
@@ -519,6 +601,34 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
         return _empty_figure(label, f"Could not render {variable}: {exc}")
 
 
+def _scorecard_panel(run_id: str, _clicks: int = 0) -> pn.Column:
+    spec = RUNS.get(run_id, {})
+    png_path = spec.get("scorecard_png")
+    markdown_path = spec.get("scorecard_markdown")
+    panes: list[object] = []
+    if isinstance(png_path, Path) and png_path.exists():
+        data_uri = _asset_data_uri(png_path)
+        panes.append(
+            pn.pane.HTML(
+                f"<img class='scorecard-image' src='{data_uri}' alt='CM1 cloud-fraction scorecard'>",
+                sizing_mode="stretch_width",
+            )
+        )
+    else:
+        panes.append(pn.pane.Markdown("Scorecard image is missing.", sizing_mode="stretch_width"))
+    if isinstance(markdown_path, Path) and markdown_path.exists():
+        panes.append(
+            pn.Card(
+                pn.pane.Markdown(markdown_path.read_text(encoding="utf-8"), sizing_mode="stretch_width"),
+                title="Scorecard tables",
+                collapsible=True,
+                collapsed=False,
+                sizing_mode="stretch_width",
+            )
+        )
+    return pn.Column(*panes, sizing_mode="stretch_width")
+
+
 run_select = pn.widgets.Select(
     name="Run",
     value="cm1_forced_moist_thompson",
@@ -534,7 +644,11 @@ copy_button = pn.widgets.Button(name="Copy link", button_type="default", width=1
 def _sync_variable_options(*_events) -> None:
     options = _variable_options(run_select.value, dataset_select.value)
     variable_select.options = options
+    variable_select.disabled = dataset_select.value == "scorecard"
     values = list(options.values())
+    if dataset_select.value == "scorecard":
+        variable_select.value = values[0] if values else None
+        return
     path = _dataset_path(run_select.value, dataset_select.value)
     finite_values = _finite_numeric_variables(path) if path is not None else set()
     preferred = ("cf_V", "cf_A", "cf_V_adv", "cf_A_adv", "cloud_fraction", "model_cf", "ql", "qi", "temperature", "pressure")
@@ -608,7 +722,9 @@ summary_panel = pn.bind(
     refresh_button.param.clicks,
 )
 plot_panel = pn.bind(
-    lambda run_id, dataset_id, variable, clicks: pn.pane.Plotly(
+    lambda run_id, dataset_id, variable, clicks: _scorecard_panel(run_id, clicks)
+    if dataset_id == "scorecard"
+    else pn.pane.Plotly(
         _figure(run_id, dataset_id, variable, clicks),
         config={"responsive": True},
         sizing_mode="stretch_width",
@@ -723,6 +839,13 @@ body, .bk {
 .model-table code {
     word-break: break-all;
     color: #243b53;
+}
+.scorecard-image {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
 }
 .model-controls {
     align-items: flex-end;
