@@ -172,6 +172,129 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
             },
         ),
         (
+            "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+            {
+                "label": "CM1 04:00 ERA5 LSF qv",
+                "model": "CM1",
+                "status": "ERA5 time-series projection",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, ERA5 qv time-series target projected to 04:30 UTC",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_lsf_qv_tau10_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+                    "run_20260521",
+                ),
+                "uuid": "432f2f45-5653-4b8a-9d0e-97c768358805",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qv_tau10",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+            {
+                "label": "CM1 04:00 ERA5 LSF qv+theta",
+                "model": "CM1",
+                "status": "ERA5 time-series projection",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, ERA5 qv+theta time-series target projected to 04:30 UTC",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+                    "run_20260521",
+                ),
+                "uuid": "392ec0e5-d89c-4ffa-bd34-b3bebe45428a",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvtheta_tau10",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+            {
+                "label": "CM1 04:00 ERA5 LSF qv+theta+wind",
+                "model": "CM1",
+                "status": "ERA5 time-series projection",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, ERA5 qv+theta+wind time-series target projected to 04:30 UTC",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+                    "run_20260521",
+                ),
+                "uuid": "012b861d-2c52-499d-9a86-7771d3dfc7cb",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_era5_lsf_qvthetauv_tau10",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
             "cm1_0400_thompson_tall_era5_qvtheta_nudge_05_tau30",
             {
                 "label": "CM1 04:00 ERA5 qv+theta tau30",
