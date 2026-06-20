@@ -52,11 +52,29 @@ def _path(*parts: str) -> Path:
 RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
     [
         (
+            "cm1_forced_moist_thompson",
+            {
+                "label": "CM1 forced-moist Thompson",
+                "model": "CM1",
+                "status": "native cloud",
+                "summary": "64 x 64 x 80, 900 s, Thompson, 105% RH layer, 4 MPI ranks",
+                "cloudnet_model": _path("model", "cm1_forced_moist_thompson", "cloudnet_model.nc"),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_forced_moist_thompson",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_forced_moist_thompson_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path("model", "cm1_forced_moist_thompson", "run_20260521"),
+                "uuid": "54c1d650-6627-4b5d-bfc4-b887b0671b2c",
+                "runtime": "1:51.25 wall, 398% CPU, 520292 kB RSS",
+            },
+        ),
+        (
             "cm1_1h_thompson",
             {
                 "label": "CM1 Thompson 1 h",
                 "model": "CM1",
-                "status": "science candidate",
+                "status": "dry baseline",
                 "summary": "64 x 64 x 80, 3600 s, Thompson, 4 MPI ranks",
                 "cloudnet_model": _path("model", "cm1_1h_thompson", "cloudnet_model.nc"),
                 "l3_cf": _path(
@@ -501,7 +519,11 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
         return _empty_figure(label, f"Could not render {variable}: {exc}")
 
 
-run_select = pn.widgets.Select(name="Run", value="cm1_1h_thompson", options=_run_options())
+run_select = pn.widgets.Select(
+    name="Run",
+    value="cm1_forced_moist_thompson",
+    options=_run_options(),
+)
 dataset_select = pn.widgets.Select(name="Dataset", value="l3_cf", options=DATASETS)
 variable_select = pn.widgets.Select(name="Variable", options=OrderedDict())
 refresh_button = pn.widgets.Button(name="Refresh", button_type="primary", width=100)
