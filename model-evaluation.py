@@ -638,6 +638,30 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                     "aurora_multistream_pilot_20260520_20260602_era5_l3-cf_2026-05-21.nc",
                 ),
                 "uuid": "594d87e1-3bf2-428a-a22d-4beffd9ad344",
+                "scorecard_png": _path(
+                    "model",
+                    "era5_reference",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "era5_reference",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "era5_reference",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "ifs_hres_reference",
+            {
+                "label": "IFS/HRES reference (pending)",
+                "model": "IFS",
+                "status": "blocked: archive access",
+                "summary": "Historical 2026-05-21 IFS/HRES needs ECMWF archive/MARS access; no staged input exists yet.",
             },
         ),
         (
