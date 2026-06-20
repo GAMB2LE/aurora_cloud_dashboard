@@ -53,6 +53,117 @@ def _path(*parts: str) -> Path:
 RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
     [
         (
+            "cm1_0400_thompson_tall_rh105_25_60",
+            {
+                "label": "CM1 04:00 RH105 2.5-6.0 km",
+                "model": "CM1",
+                "status": "best 04:00 ensemble",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, 105% RH from 2.5-6.0 km",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_rh105_25_60_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path("model", "cm1_0400_thompson_tall_rh105_25_60", "run_20260521"),
+                "uuid": "e63672c1-26d5-4bda-8839-84b199ce6823",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_rh105_cool_25_45",
+            {
+                "label": "CM1 04:00 RH105 cool 2.5-4.5 km",
+                "model": "CM1",
+                "status": "04:00 ensemble",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, 105% RH and -0.25 K from 2.5-4.5 km",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_cool_25_45",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_rh105_cool_25_45",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_rh105_cool_25_45_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path("model", "cm1_0400_thompson_tall_rh105_cool_25_45", "run_20260521"),
+                "uuid": "5ce7606f-74df-47e0-ac20-03a9d3914dfc",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_cool_25_45",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_cool_25_45",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_cool_25_45",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_0400_thompson_tall_rh105_25_45",
+            {
+                "label": "CM1 04:00 RH105 2.5-4.5 km",
+                "model": "CM1",
+                "status": "04:00 ensemble",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, 105% RH from 2.5-4.5 km",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_45",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_rh105_25_45",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_rh105_25_45_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path("model", "cm1_0400_thompson_tall_rh105_25_45", "run_20260521"),
+                "uuid": "70221d67-c1d0-45cc-a238-339e0c9c5fd1",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_45",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_45",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_45",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
             "cm1_0400_thompson_tall",
             {
                 "label": "CM1 04:00 Thompson tall",
