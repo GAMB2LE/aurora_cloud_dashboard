@@ -53,6 +53,76 @@ def _path(*parts: str) -> Path:
 RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
     [
         (
+            "cm1_0400_thompson_tall",
+            {
+                "label": "CM1 04:00 Thompson tall",
+                "model": "CM1",
+                "status": "science candidate",
+                "summary": "64 x 64 x 200, 1800 s, Thompson, 10 km top, ERA5 04:00 init",
+                "cloudnet_model": _path("model", "cm1_0400_thompson_tall", "cloudnet_model.nc"),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path("model", "cm1_0400_thompson_tall", "run_20260521"),
+                "uuid": "8551ba28-f6fc-4ab2-b5e0-051e387cb783",
+                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_0400_thompson_tall",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_0400_thompson_tall",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_0400_thompson_tall",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
+            "cm1_forced_moist_thompson_aligned",
+            {
+                "label": "CM1 forced-moist Thompson aligned",
+                "model": "CM1",
+                "status": "domain mismatch",
+                "summary": "64 x 64 x 80, 4500 s, Thompson, official categorize overlap",
+                "cloudnet_model": _path(
+                    "model",
+                    "cm1_forced_moist_thompson_aligned",
+                    "cloudnet_model.nc",
+                ),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_forced_moist_thompson_aligned",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_forced_moist_thompson_aligned_official_l3-cf_2026-05-21.nc",
+                ),
+                "run_dir": _path("model", "cm1_forced_moist_thompson_aligned", "run_20260521"),
+                "uuid": "f6504c20-e953-4c7d-94c7-0024961c1774",
+                "runtime": "completed normally; 38 native outputs",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_forced_moist_thompson_aligned",
+                    "scorecard_cf_official_categorize_20260620.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_forced_moist_thompson_aligned",
+                    "scorecard_cf_official_categorize_20260620.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_forced_moist_thompson_aligned",
+                    "scorecard_cf_official_categorize_20260620.json",
+                ),
+            },
+        ),
+        (
             "cm1_forced_moist_thompson",
             {
                 "label": "CM1 forced-moist Thompson",
