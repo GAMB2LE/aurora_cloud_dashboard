@@ -120,9 +120,14 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                     "cm1_0400_thompson_tall_rh105_25_60",
                     "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_rh105_25_60_official_l3-cf_2026-05-21.nc",
                 ),
+                "l3_iwc": _path(
+                    "cloudnet_l3",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_0400_thompson_tall_rh105_25_60_official_l3-iwc_2026-05-21.nc",
+                ),
                 "run_dir": _path("model", "cm1_0400_thompson_tall_rh105_25_60", "run_20260521"),
-                "uuid": "e63672c1-26d5-4bda-8839-84b199ce6823",
-                "runtime": "completed normally at 1800 s; 16 native outputs",
+                "uuid": "l3-cf e63672c1-26d5-4bda-8839-84b199ce6823; l3-iwc f18143be-c574-4dc7-9482-f9493fbbd4a7",
+                "runtime": "completed normally at 1800 s; 16 native outputs; CF/IWC handoff complete",
                 "scorecard_png": _path(
                     "model",
                     "cm1_0400_thompson_tall_rh105_25_60",
