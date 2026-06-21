@@ -672,8 +672,15 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                 "l3_cf": _path(
                     "cloudnet_l3",
                     "cm1_smoke_kessler",
-                    "aurora_multistream_pilot_20260520_20260602_cm1_smoke_l3-cf_2026-05-21.nc",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_l3-cf.nc",
                 ),
+                "l3_cf_candidates": [
+                    _path(
+                        "cloudnet_l3",
+                        "cm1_smoke_kessler",
+                        "aurora_multistream_pilot_20260520_20260602_cm1_smoke_l3-cf_2026-05-21.nc",
+                    ),
+                ],
                 "run_dir": _path("model", "cm1_smoke_kessler", "run_20260521"),
                 "uuid": "f0fdcad7-2ce0-459d-987e-9970955dd6e3",
             },
@@ -689,8 +696,15 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                 "l3_cf": _path(
                     "cloudnet_l3",
                     "era5_reference",
-                    "aurora_multistream_pilot_20260520_20260602_era5_l3-cf_2026-05-21.nc",
+                    "aurora_multistream_pilot_20260520_20260602_era5_l3-cf.nc",
                 ),
+                "l3_cf_candidates": [
+                    _path(
+                        "cloudnet_l3",
+                        "era5_reference",
+                        "aurora_multistream_pilot_20260520_20260602_era5_l3-cf_2026-05-21.nc",
+                    ),
+                ],
                 "uuid": "594d87e1-3bf2-428a-a22d-4beffd9ad344",
                 "scorecard_png": _path(
                     "model",
@@ -729,8 +743,15 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                 "l3_cf": _path(
                     "cloudnet_l3",
                     "les_bridge_reference",
-                    "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf_2026-05-21.nc",
+                    "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf.nc",
                 ),
+                "l3_cf_candidates": [
+                    _path(
+                        "cloudnet_l3",
+                        "les_bridge_reference",
+                        "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf_2026-05-21.nc",
+                    ),
+                ],
                 "uuid": "0ed9db33-2101-4b32-999e-b3fe61315dc5",
             },
         ),
@@ -786,8 +807,17 @@ def _dataset_path(run_id: str, dataset_id: str) -> Path | None:
         return None
     if dataset_id in ARTIFACT_STEMS:
         return _artifact_path(run_id, spec, dataset_id, "png")
+    candidates: list[Path] = []
     path = spec.get(dataset_id)
-    return path if isinstance(path, Path) else None
+    if isinstance(path, Path):
+        candidates.append(path)
+    extra = spec.get(f"{dataset_id}_candidates")
+    if isinstance(extra, list):
+        candidates.extend(candidate for candidate in extra if isinstance(candidate, Path))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
 
 
 def _scorecard_path(run_id: str, spec: dict[str, object], kind: str) -> Path | None:
