@@ -35,6 +35,9 @@ WBAND_RADAR_SCORECARD_STEM = "scorecard_wband_radar_z_vs_cloudnet_z_20260622"
 PAMTRA_WBAND_RADAR_SCORECARD_STEM = (
     "scorecard_pamtra_wband_cosmo_1mom_sensitivity_z_vs_cloudnet_z_20260622"
 )
+PAMTRA_WBAND_RADAR_SENSITIVITY_SWEEP_STEM = (
+    "scorecard_pamtra_wband_cosmo_1mom_sensitivity_margin_sweep_20260622"
+)
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
@@ -42,6 +45,7 @@ ARTIFACT_STEMS = {
     "cl61_scorecard": CL61_SCORECARD_STEM,
     "wband_radar_scorecard": WBAND_RADAR_SCORECARD_STEM,
     "pamtra_wband_radar_scorecard": PAMTRA_WBAND_RADAR_SCORECARD_STEM,
+    "pamtra_wband_radar_sensitivity_sweep": PAMTRA_WBAND_RADAR_SENSITIVITY_SWEEP_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
@@ -50,6 +54,7 @@ ARTIFACT_TITLES = {
     "cl61_scorecard": "CL61 diagnostic",
     "wband_radar_scorecard": "W-band radar scorecard",
     "pamtra_wband_radar_scorecard": "PAMTRA W-band sensitivity scorecard",
+    "pamtra_wband_radar_sensitivity_sweep": "PAMTRA W-band sensitivity-margin sweep",
 }
 
 THEME_TEXT = "#22313f"
@@ -835,6 +840,7 @@ DATASETS = OrderedDict(
         ("CL61 diagnostic", "cl61_scorecard"),
         ("W-band radar scorecard", "wband_radar_scorecard"),
         ("PAMTRA W-band scorecard", "pamtra_wband_radar_scorecard"),
+        ("PAMTRA W-band sensitivity sweep", "pamtra_wband_radar_sensitivity_sweep"),
     ]
 )
 
@@ -1097,6 +1103,8 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _cl61_scorecard_cards(run_id, spec)
     if dataset_id in {"wband_radar_scorecard", "pamtra_wband_radar_scorecard"}:
         return _wband_radar_scorecard_cards(run_id, spec, dataset_id)
+    if dataset_id == "pamtra_wband_radar_sensitivity_sweep":
+        return _wband_radar_sensitivity_sweep_cards(run_id, spec)
     return []
 
 
@@ -1232,6 +1240,25 @@ def _wband_radar_scorecard_cards(
         _card("bias dB", _compact_float(reflectivity.get("mean_bias_db"))),
         _card("RMSE dB", _compact_float(reflectivity.get("root_mean_square_error_db"))),
         _card("base bias m", _compact_float(base_top.get("cloud_base_bias_mean_m"))),
+    ]
+
+
+def _wband_radar_sensitivity_sweep_cards(
+    run_id: str,
+    spec: dict[str, object],
+) -> list[str]:
+    sweep = _artifact_json(run_id, spec, "pamtra_wband_radar_sensitivity_sweep")
+    if not sweep:
+        return []
+    best = sweep.get("best_margin_by_csi")
+    best = best if isinstance(best, dict) else {}
+    return [
+        _card("best margin dB", _compact_float(best.get("sensitivity_margin_db"))),
+        _card("best CSI", _compact_float(best.get("critical_success_index"))),
+        _card("POD", _compact_float(best.get("probability_of_detection"))),
+        _card("FAR", _compact_float(best.get("false_alarm_ratio"))),
+        _card("false alarms", best.get("false_alarms", "n/a")),
+        _card("misses", best.get("misses", "n/a")),
     ]
 
 
