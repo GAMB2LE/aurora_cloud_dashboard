@@ -31,17 +31,20 @@ SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
 CL61_SCORECARD_STEM = "scorecard_cl61_beta_att_v0_20260621"
+WBAND_RADAR_SCORECARD_STEM = "scorecard_wband_radar_z_vs_cloudnet_z_20260622"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
     "iwc_scorecard": IWC_SCORECARD_STEM,
     "cl61_scorecard": CL61_SCORECARD_STEM,
+    "wband_radar_scorecard": WBAND_RADAR_SCORECARD_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
     "observation_audit": "Observation audit",
     "iwc_scorecard": "IWC scorecard",
     "cl61_scorecard": "CL61 diagnostic",
+    "wband_radar_scorecard": "W-band radar scorecard",
 }
 
 THEME_TEXT = "#22313f"
@@ -819,6 +822,7 @@ DATASETS = OrderedDict(
         ("IWC scorecard", "iwc_scorecard"),
         ("Observation audit", "observation_audit"),
         ("CL61 diagnostic", "cl61_scorecard"),
+        ("W-band radar scorecard", "wband_radar_scorecard"),
     ]
 )
 
@@ -1079,6 +1083,8 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _iwc_scorecard_cards(run_id, spec)
     if dataset_id == "cl61_scorecard":
         return _cl61_scorecard_cards(run_id, spec)
+    if dataset_id == "wband_radar_scorecard":
+        return _wband_radar_scorecard_cards(run_id, spec)
     return []
 
 
@@ -1188,6 +1194,28 @@ def _cl61_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
         _card("POD", _compact_float(contingency.get("probability_of_detection"))),
         _card("CSI", _compact_float(contingency.get("critical_success_index"))),
         _card("top bias m", _compact_float(base_top.get("cloud_top_bias_mean_m"))),
+    ]
+
+
+def _wband_radar_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    scorecard = _artifact_json(run_id, spec, "wband_radar_scorecard")
+    if not scorecard:
+        return []
+    contingency = scorecard.get("contingency")
+    contingency = contingency if isinstance(contingency, dict) else {}
+    reflectivity = scorecard.get("reflectivity_metrics")
+    reflectivity = reflectivity if isinstance(reflectivity, dict) else {}
+    base_top = scorecard.get("cloud_base_top")
+    base_top = base_top if isinstance(base_top, dict) else {}
+    return [
+        _card("hits", contingency.get("hits", "n/a")),
+        _card("misses", contingency.get("misses", "n/a")),
+        _card("false alarms", contingency.get("false_alarms", "n/a")),
+        _card("POD", _compact_float(contingency.get("probability_of_detection"))),
+        _card("CSI", _compact_float(contingency.get("critical_success_index"))),
+        _card("bias dB", _compact_float(reflectivity.get("mean_bias_db"))),
+        _card("RMSE dB", _compact_float(reflectivity.get("root_mean_square_error_db"))),
+        _card("base bias m", _compact_float(base_top.get("cloud_base_bias_mean_m"))),
     ]
 
 
