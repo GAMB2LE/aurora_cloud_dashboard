@@ -32,12 +32,14 @@ OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
 CL61_SCORECARD_STEM = "scorecard_cl61_beta_att_v0_20260621"
 WBAND_RADAR_SCORECARD_STEM = "scorecard_wband_radar_z_vs_cloudnet_z_20260622"
+PAMTRA_WBAND_RADAR_SCORECARD_STEM = "scorecard_pamtra_wband_radar_z_vs_cloudnet_z_20260622"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
     "iwc_scorecard": IWC_SCORECARD_STEM,
     "cl61_scorecard": CL61_SCORECARD_STEM,
     "wband_radar_scorecard": WBAND_RADAR_SCORECARD_STEM,
+    "pamtra_wband_radar_scorecard": PAMTRA_WBAND_RADAR_SCORECARD_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
@@ -45,6 +47,7 @@ ARTIFACT_TITLES = {
     "iwc_scorecard": "IWC scorecard",
     "cl61_scorecard": "CL61 diagnostic",
     "wband_radar_scorecard": "W-band radar scorecard",
+    "pamtra_wband_radar_scorecard": "PAMTRA W-band scorecard",
 }
 
 THEME_TEXT = "#22313f"
@@ -125,6 +128,11 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                     "model",
                     "cm1_0400_thompson_tall_rh105_25_60",
                     "wband_radar_proxy_20260622.nc",
+                ),
+                "pamtra_wband_radar": _path(
+                    "model",
+                    "cm1_0400_thompson_tall_rh105_25_60",
+                    "pamtra_wband_radar_simple_20260622.nc",
                 ),
                 "l3_cf": _path(
                     "cloudnet_l3",
@@ -818,11 +826,13 @@ DATASETS = OrderedDict(
         ("Cloudnet L3 IWC", "l3_iwc"),
         ("Cloudnet model", "cloudnet_model"),
         ("Synthetic W-band radar", "wband_radar"),
+        ("PAMTRA W-band radar", "pamtra_wband_radar"),
         ("CF scorecard", "scorecard"),
         ("IWC scorecard", "iwc_scorecard"),
         ("Observation audit", "observation_audit"),
         ("CL61 diagnostic", "cl61_scorecard"),
         ("W-band radar scorecard", "wband_radar_scorecard"),
+        ("PAMTRA W-band scorecard", "pamtra_wband_radar_scorecard"),
     ]
 )
 
@@ -1083,8 +1093,8 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _iwc_scorecard_cards(run_id, spec)
     if dataset_id == "cl61_scorecard":
         return _cl61_scorecard_cards(run_id, spec)
-    if dataset_id == "wband_radar_scorecard":
-        return _wband_radar_scorecard_cards(run_id, spec)
+    if dataset_id in {"wband_radar_scorecard", "pamtra_wband_radar_scorecard"}:
+        return _wband_radar_scorecard_cards(run_id, spec, dataset_id)
     return []
 
 
@@ -1197,8 +1207,12 @@ def _cl61_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
     ]
 
 
-def _wband_radar_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
-    scorecard = _artifact_json(run_id, spec, "wband_radar_scorecard")
+def _wband_radar_scorecard_cards(
+    run_id: str,
+    spec: dict[str, object],
+    dataset_id: str = "wband_radar_scorecard",
+) -> list[str]:
+    scorecard = _artifact_json(run_id, spec, dataset_id)
     if not scorecard:
         return []
     contingency = scorecard.get("contingency")
