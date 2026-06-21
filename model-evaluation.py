@@ -38,7 +38,7 @@ ARTIFACT_STEMS = {
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
     "observation_audit": "Observation audit",
-    "cl61_scorecard": "CL61 scorecard",
+    "cl61_scorecard": "CL61 diagnostic",
 }
 
 THEME_TEXT = "#22313f"
@@ -743,7 +743,7 @@ DATASETS = OrderedDict(
         ("Cloudnet model", "cloudnet_model"),
         ("CF scorecard", "scorecard"),
         ("Observation audit", "observation_audit"),
-        ("CL61 scorecard", "cl61_scorecard"),
+        ("CL61 diagnostic", "cl61_scorecard"),
     ]
 )
 
@@ -1052,6 +1052,17 @@ def _cl61_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
     scorecard = _artifact_json(run_id, spec, "cl61_scorecard")
     if not scorecard:
         return []
+    if scorecard.get("excluded_from_scoring"):
+        diagnostic = scorecard.get("diagnostic_summary")
+        diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+        return [
+            _card("status", scorecard.get("scoring_status", "excluded")),
+            _card("site km", _compact_float(scorecard.get("site_distance_km"))),
+            _card("valid gates", diagnostic.get("valid_points", "n/a")),
+            _card("sim signal", diagnostic.get("simulated_signal_gates", "n/a")),
+            _card("obs signal", diagnostic.get("observed_signal_gates", "n/a")),
+            _card("common signal", diagnostic.get("common_signal_gates", "n/a")),
+        ]
     contingency = scorecard.get("contingency")
     contingency = contingency if isinstance(contingency, dict) else {}
     base_top = scorecard.get("cloud_base_top")
