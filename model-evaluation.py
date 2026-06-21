@@ -701,8 +701,8 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
             {
                 "label": "IFS/HRES reference (pending)",
                 "model": "IFS",
-                "status": "blocked: archive access",
-                "summary": "Historical 2026-05-21 IFS/HRES needs ECMWF archive/MARS access; no staged input exists yet.",
+                "status": "blocked: MARS credentials",
+                "summary": "Historical 2026-05-21 IFS/HRES request is scripted, but aurora-cloud needs an ECMWF Web API/MARS key with archive entitlement.",
             },
         ),
         (
