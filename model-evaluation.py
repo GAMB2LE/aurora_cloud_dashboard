@@ -28,6 +28,18 @@ CASE_ROOT = Path(os.environ.get("AURORA_MODEL_EVALUATION_CASE_ROOT", "/data/auro
 CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_pilot_20260520_20260602")
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
+OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
+CL61_SCORECARD_STEM = "scorecard_cl61_beta_att_v0_20260621"
+ARTIFACT_STEMS = {
+    "scorecard": SCORECARD_CF_V0_STEM,
+    "observation_audit": OBSERVATION_AUDIT_STEM,
+    "cl61_scorecard": CL61_SCORECARD_STEM,
+}
+ARTIFACT_TITLES = {
+    "scorecard": "CF scorecard",
+    "observation_audit": "Observation audit",
+    "cl61_scorecard": "CL61 scorecard",
+}
 
 THEME_TEXT = "#22313f"
 THEME_MUTED = "#5f6c7b"
@@ -730,6 +742,8 @@ DATASETS = OrderedDict(
         ("Cloudnet L3 CF", "l3_cf"),
         ("Cloudnet model", "cloudnet_model"),
         ("CF scorecard", "scorecard"),
+        ("Observation audit", "observation_audit"),
+        ("CL61 scorecard", "cl61_scorecard"),
     ]
 )
 
@@ -770,24 +784,41 @@ def _dataset_path(run_id: str, dataset_id: str) -> Path | None:
     spec = RUNS.get(run_id)
     if not spec:
         return None
-    if dataset_id == "scorecard":
-        return _scorecard_path(run_id, spec, "png")
+    if dataset_id in ARTIFACT_STEMS:
+        return _artifact_path(run_id, spec, dataset_id, "png")
     path = spec.get(dataset_id)
     return path if isinstance(path, Path) else None
 
 
 def _scorecard_path(run_id: str, spec: dict[str, object], kind: str) -> Path | None:
+    return _artifact_path(run_id, spec, "scorecard", kind)
+
+
+def _artifact_path(
+    run_id: str,
+    spec: dict[str, object],
+    dataset_id: str,
+    kind: str,
+) -> Path | None:
     suffix_by_kind = {"png": "png", "markdown": "md", "json": "json"}
     suffix = suffix_by_kind[kind]
+    stem = ARTIFACT_STEMS[dataset_id]
     candidates: list[Path] = [
-        _path("model", run_id, f"{SCORECARD_CF_V0_STEM}.{suffix}"),
+        _path("model", run_id, f"{stem}.{suffix}"),
     ]
-    extra = spec.get(f"scorecard_{kind}_candidates")
+    extra = spec.get(f"{dataset_id}_{kind}_candidates")
     if isinstance(extra, list):
         candidates.extend(path for path in extra if isinstance(path, Path))
-    configured = spec.get(f"scorecard_{kind}")
+    configured = spec.get(f"{dataset_id}_{kind}")
     if isinstance(configured, Path):
         candidates.append(configured)
+    if dataset_id == "scorecard":
+        extra = spec.get(f"scorecard_{kind}_candidates")
+        if isinstance(extra, list):
+            candidates.extend(path for path in extra if isinstance(path, Path))
+        configured = spec.get(f"scorecard_{kind}")
+        if isinstance(configured, Path):
+            candidates.append(configured)
     for candidate in candidates:
         if candidate.exists():
             return candidate
@@ -881,10 +912,10 @@ def _finite_numeric_variables(path: Path) -> set[str]:
 
 
 def _variable_options(run_id: str, dataset_id: str) -> OrderedDict[str, str]:
-    if dataset_id == "scorecard":
+    if dataset_id in ARTIFACT_STEMS:
         path = _dataset_path(run_id, dataset_id)
         if path is not None and path.exists():
-            return OrderedDict([("Scorecard image", "scorecard")])
+            return OrderedDict([(f"{ARTIFACT_TITLES[dataset_id]} image", dataset_id)])
         return OrderedDict()
     path = _dataset_path(run_id, dataset_id)
     if path is None or not path.exists():
@@ -938,13 +969,31 @@ def _variable_stats(ds: xr.Dataset, variable: str | None) -> list[tuple[str, str
 
 
 def _scorecard_json(run_id: str, spec: dict[str, object]) -> dict[str, object] | None:
-    path = _scorecard_path(run_id, spec, "json")
+    return _artifact_json(run_id, spec, "scorecard")
+
+
+def _artifact_json(
+    run_id: str,
+    spec: dict[str, object],
+    dataset_id: str,
+) -> dict[str, object] | None:
+    path = _artifact_path(run_id, spec, dataset_id, "json")
     if path is None or not path.exists():
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> list[str]:
+    if dataset_id == "scorecard":
+        return _scorecard_cards(run_id, spec)
+    if dataset_id == "observation_audit":
+        return _observation_audit_cards(run_id, spec)
+    if dataset_id == "cl61_scorecard":
+        return _cl61_scorecard_cards(run_id, spec)
+    return []
 
 
 def _scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
@@ -975,6 +1024,48 @@ def _scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
     return cards
 
 
+def _observation_audit_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    audit = _artifact_json(run_id, spec, "observation_audit")
+    if not audit:
+        return []
+    summaries = audit.get("summaries")
+    if not isinstance(summaries, dict):
+        return []
+    summary = summaries.get("cf_V") or summaries.get("cf_A")
+    if not isinstance(summary, dict):
+        return []
+    contingency = summary.get("contingency")
+    contingency = contingency if isinstance(contingency, dict) else {}
+    alignment = audit.get("source_alignment")
+    alignment = alignment if isinstance(alignment, dict) else {}
+    return [
+        _card("hits", contingency.get("hits", "n/a")),
+        _card("misses", contingency.get("misses", "n/a")),
+        _card("false alarms", contingency.get("false_alarms", "n/a")),
+        _card("raw lidar FA", summary.get("false_alarm_with_raw_lidar_echo_gates", "n/a")),
+        _card("raw radar FA", summary.get("false_alarm_with_raw_radar_echo_gates", "n/a")),
+        _card("CL61 finite", _compact_float(alignment.get("raw_cl61_finite_fraction"))),
+    ]
+
+
+def _cl61_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    scorecard = _artifact_json(run_id, spec, "cl61_scorecard")
+    if not scorecard:
+        return []
+    contingency = scorecard.get("contingency")
+    contingency = contingency if isinstance(contingency, dict) else {}
+    base_top = scorecard.get("cloud_base_top")
+    base_top = base_top if isinstance(base_top, dict) else {}
+    return [
+        _card("hits", contingency.get("hits", "n/a")),
+        _card("misses", contingency.get("misses", "n/a")),
+        _card("false alarms", contingency.get("false_alarms", "n/a")),
+        _card("POD", _compact_float(contingency.get("probability_of_detection"))),
+        _card("CSI", _compact_float(contingency.get("critical_success_index"))),
+        _card("top bias m", _compact_float(base_top.get("cloud_top_bias_mean_m"))),
+    ]
+
+
 def _compact_float(value: object) -> object:
     return f"{value:.3g}" if isinstance(value, float) else value
 
@@ -989,12 +1080,12 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
     cards: list[str] = []
     variables = "none"
     file_state = "not configured"
-    if dataset_id == "scorecard":
-        cards.extend(_scorecard_cards(run_id, spec))
-        variables = "scorecard PNG, Markdown and JSON"
+    if dataset_id in ARTIFACT_STEMS:
+        cards.extend(_artifact_cards(run_id, spec, dataset_id))
+        variables = f"{ARTIFACT_TITLES[dataset_id]} PNG, Markdown and JSON"
         file_state = f"{_format_size(path)}; {_format_mtime(path)}" if path is not None and path.exists() else "missing"
         if not cards:
-            cards.append(_card("scorecard", file_state))
+            cards.append(_card(ARTIFACT_TITLES[dataset_id], file_state))
     elif path is not None and path.exists():
         file_state = f"{_format_size(path)}; {_format_mtime(path)}"
         try:
@@ -1016,14 +1107,14 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
     runtime_row = ""
     if spec.get("runtime"):
         runtime_row = f"<tr><th>runtime</th><td>{escape(str(spec['runtime']))}</td></tr>"
-    scorecard_rows = ""
-    if dataset_id == "scorecard":
-        markdown_path = _scorecard_path(run_id, spec, "markdown")
-        json_path = _scorecard_path(run_id, spec, "json")
+    artifact_rows = ""
+    if dataset_id in ARTIFACT_STEMS:
+        markdown_path = _artifact_path(run_id, spec, dataset_id, "markdown")
+        json_path = _artifact_path(run_id, spec, dataset_id, "json")
         if isinstance(markdown_path, Path):
-            scorecard_rows += f"<tr><th>scorecard markdown</th><td><code>{escape(str(markdown_path))}</code></td></tr>"
+            artifact_rows += f"<tr><th>artifact markdown</th><td><code>{escape(str(markdown_path))}</code></td></tr>"
         if isinstance(json_path, Path):
-            scorecard_rows += f"<tr><th>scorecard json</th><td><code>{escape(str(json_path))}</code></td></tr>"
+            artifact_rows += f"<tr><th>artifact json</th><td><code>{escape(str(json_path))}</code></td></tr>"
     path_markup = f"<code>{escape(str(path))}</code>" if path is not None else "not configured"
     return f"""
     <div class="model-shell">
@@ -1042,7 +1133,7 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
             <tr><th>file</th><td>{path_markup}</td></tr>
             {run_dir_row}
             {runtime_row}
-            {scorecard_rows}
+            {artifact_rows}
             <tr><th>file state</th><td>{escape(file_state)}</td></tr>
             <tr><th>Cloudnet UUID</th><td>{escape(uuid)}</td></tr>
             <tr><th>variables</th><td>{variables}</td></tr>
@@ -1153,25 +1244,30 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
 
 
 def _scorecard_panel(run_id: str, _clicks: int = 0) -> pn.Column:
+    return _artifact_panel(run_id, "scorecard", _clicks)
+
+
+def _artifact_panel(run_id: str, dataset_id: str, _clicks: int = 0) -> pn.Column:
     spec = RUNS.get(run_id, {})
-    png_path = _scorecard_path(run_id, spec, "png")
-    markdown_path = _scorecard_path(run_id, spec, "markdown")
+    png_path = _artifact_path(run_id, spec, dataset_id, "png")
+    markdown_path = _artifact_path(run_id, spec, dataset_id, "markdown")
+    title = ARTIFACT_TITLES.get(dataset_id, "Artifact")
     panes: list[object] = []
     if isinstance(png_path, Path) and png_path.exists():
         data_uri = _asset_data_uri(png_path)
         panes.append(
             pn.pane.HTML(
-                f"<img class='scorecard-image' src='{data_uri}' alt='CM1 cloud-fraction scorecard'>",
+                f"<img class='scorecard-image' src='{data_uri}' alt='{escape(title)}'>",
                 sizing_mode="stretch_width",
             )
         )
     else:
-        panes.append(pn.pane.Markdown("Scorecard image is missing.", sizing_mode="stretch_width"))
+        panes.append(pn.pane.Markdown(f"{title} image is missing.", sizing_mode="stretch_width"))
     if isinstance(markdown_path, Path) and markdown_path.exists():
         panes.append(
             pn.Card(
                 pn.pane.Markdown(markdown_path.read_text(encoding="utf-8"), sizing_mode="stretch_width"),
-                title="Scorecard tables",
+                title=f"{title} tables",
                 collapsible=True,
                 collapsed=False,
                 sizing_mode="stretch_width",
@@ -1195,9 +1291,9 @@ copy_button = pn.widgets.Button(name="Copy link", button_type="default", width=1
 def _sync_variable_options(*_events) -> None:
     options = _variable_options(run_select.value, dataset_select.value)
     variable_select.options = options
-    variable_select.disabled = dataset_select.value == "scorecard"
+    variable_select.disabled = dataset_select.value in ARTIFACT_STEMS
     values = list(options.values())
-    if dataset_select.value == "scorecard":
+    if dataset_select.value in ARTIFACT_STEMS:
         variable_select.value = values[0] if values else None
         return
     path = _dataset_path(run_select.value, dataset_select.value)
@@ -1242,7 +1338,9 @@ def _apply_query_state() -> None:
     _sync_variable_options()
     path = _dataset_path(run_select.value, dataset_select.value)
     finite_values = _finite_numeric_variables(path) if path is not None else set()
-    if args.get("variable") in list(variable_select.options.values()) and args["variable"] in finite_values:
+    if dataset_select.value in ARTIFACT_STEMS and args.get("variable") in list(variable_select.options.values()):
+        variable_select.value = args["variable"]
+    elif args.get("variable") in list(variable_select.options.values()) and args["variable"] in finite_values:
         variable_select.value = args["variable"]
 
 
@@ -1273,8 +1371,8 @@ summary_panel = pn.bind(
     refresh_button.param.clicks,
 )
 plot_panel = pn.bind(
-    lambda run_id, dataset_id, variable, clicks: _scorecard_panel(run_id, clicks)
-    if dataset_id == "scorecard"
+    lambda run_id, dataset_id, variable, clicks: _artifact_panel(run_id, dataset_id, clicks)
+    if dataset_id in ARTIFACT_STEMS
     else pn.pane.Plotly(
         _figure(run_id, dataset_id, variable, clicks),
         config={"responsive": True},
