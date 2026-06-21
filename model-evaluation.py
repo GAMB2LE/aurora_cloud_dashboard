@@ -39,6 +39,7 @@ PAMTRA_WBAND_RADAR_SENSITIVITY_SWEEP_STEM = (
     "scorecard_pamtra_wband_cosmo_1mom_sensitivity_margin_sweep_20260622"
 )
 PAMTRA_WBAND_HYDROMETEOR_SWEEP_STEM = "pamtra_wband_hydrometeor_contribution_sweep_20260622"
+PAMTRA_WBAND_DESCRIPTOR_GROUP_SWEEP_STEM = "pamtra_wband_descriptor_group_sweep_20260622"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
@@ -48,6 +49,7 @@ ARTIFACT_STEMS = {
     "pamtra_wband_radar_scorecard": PAMTRA_WBAND_RADAR_SCORECARD_STEM,
     "pamtra_wband_radar_sensitivity_sweep": PAMTRA_WBAND_RADAR_SENSITIVITY_SWEEP_STEM,
     "pamtra_wband_hydrometeor_sweep": PAMTRA_WBAND_HYDROMETEOR_SWEEP_STEM,
+    "pamtra_wband_descriptor_group_sweep": PAMTRA_WBAND_DESCRIPTOR_GROUP_SWEEP_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
@@ -58,6 +60,7 @@ ARTIFACT_TITLES = {
     "pamtra_wband_radar_scorecard": "PAMTRA W-band sensitivity scorecard",
     "pamtra_wband_radar_sensitivity_sweep": "PAMTRA W-band sensitivity-margin sweep",
     "pamtra_wband_hydrometeor_sweep": "PAMTRA W-band hydrometeor sweep",
+    "pamtra_wband_descriptor_group_sweep": "PAMTRA W-band descriptor-group sweep",
 }
 
 THEME_TEXT = "#22313f"
@@ -845,6 +848,7 @@ DATASETS = OrderedDict(
         ("PAMTRA W-band scorecard", "pamtra_wband_radar_scorecard"),
         ("PAMTRA W-band sensitivity sweep", "pamtra_wband_radar_sensitivity_sweep"),
         ("PAMTRA W-band hydrometeor sweep", "pamtra_wband_hydrometeor_sweep"),
+        ("PAMTRA W-band descriptor group sweep", "pamtra_wband_descriptor_group_sweep"),
     ]
 )
 
@@ -1110,7 +1114,9 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
     if dataset_id == "pamtra_wband_radar_sensitivity_sweep":
         return _wband_radar_sensitivity_sweep_cards(run_id, spec)
     if dataset_id == "pamtra_wband_hydrometeor_sweep":
-        return _pamtra_wband_hydrometeor_sweep_cards(run_id, spec)
+        return _pamtra_wband_hydrometeor_sweep_cards(run_id, spec, dataset_id)
+    if dataset_id == "pamtra_wband_descriptor_group_sweep":
+        return _pamtra_wband_hydrometeor_sweep_cards(run_id, spec, dataset_id)
     return []
 
 
@@ -1271,8 +1277,9 @@ def _wband_radar_sensitivity_sweep_cards(
 def _pamtra_wband_hydrometeor_sweep_cards(
     run_id: str,
     spec: dict[str, object],
+    dataset_id: str,
 ) -> list[str]:
-    sweep = _artifact_json(run_id, spec, "pamtra_wband_hydrometeor_sweep")
+    sweep = _artifact_json(run_id, spec, dataset_id)
     if not sweep:
         return []
     best = sweep.get("best_descriptor_by_csi")
@@ -1284,8 +1291,15 @@ def _pamtra_wband_hydrometeor_sweep_cards(
         for item in products
         if isinstance(item, dict)
     }
+    by_descriptor = {
+        item.get("descriptor_name"): item
+        for item in products
+        if isinstance(item, dict)
+    }
     ql = by_model.get("ql") or {}
     qs = by_model.get("qs") or {}
+    liquid_snow = by_descriptor.get("liquid_snow") or {}
+    full_cosmo = by_descriptor.get("full_cosmo") or {}
     return [
         _card("best descriptor", best.get("descriptor_name", "n/a")),
         _card("best model var", best.get("model_variable", "n/a")),
@@ -1293,6 +1307,8 @@ def _pamtra_wband_hydrometeor_sweep_cards(
         _card("best bias dB", _compact_float(best.get("reflectivity_mean_bias_db"))),
         _card("ql CSI", _compact_float(ql.get("critical_success_index"))),
         _card("qs CSI", _compact_float(qs.get("critical_success_index"))),
+        _card("liq+snow CSI", _compact_float(liquid_snow.get("critical_success_index"))),
+        _card("full CSI", _compact_float(full_cosmo.get("critical_success_index"))),
     ]
 
 
