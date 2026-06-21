@@ -29,15 +29,18 @@ CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
+IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
 CL61_SCORECARD_STEM = "scorecard_cl61_beta_att_v0_20260621"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
+    "iwc_scorecard": IWC_SCORECARD_STEM,
     "cl61_scorecard": CL61_SCORECARD_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
     "observation_audit": "Observation audit",
+    "iwc_scorecard": "IWC scorecard",
     "cl61_scorecard": "CL61 diagnostic",
 }
 
@@ -807,6 +810,7 @@ DATASETS = OrderedDict(
         ("Cloudnet L3 IWC", "l3_iwc"),
         ("Cloudnet model", "cloudnet_model"),
         ("CF scorecard", "scorecard"),
+        ("IWC scorecard", "iwc_scorecard"),
         ("Observation audit", "observation_audit"),
         ("CL61 diagnostic", "cl61_scorecard"),
     ]
@@ -1065,6 +1069,8 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _scorecard_cards(run_id, spec)
     if dataset_id == "observation_audit":
         return _observation_audit_cards(run_id, spec)
+    if dataset_id == "iwc_scorecard":
+        return _iwc_scorecard_cards(run_id, spec)
     if dataset_id == "cl61_scorecard":
         return _cl61_scorecard_cards(run_id, spec)
     return []
@@ -1119,6 +1125,34 @@ def _observation_audit_cards(run_id: str, spec: dict[str, object]) -> list[str]:
         _card("raw lidar FA", summary.get("false_alarm_with_raw_lidar_echo_gates", "n/a")),
         _card("raw radar FA", summary.get("false_alarm_with_raw_radar_echo_gates", "n/a")),
         _card("CL61 finite", _compact_float(alignment.get("raw_cl61_finite_fraction"))),
+    ]
+
+
+def _iwc_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    scorecard = _artifact_json(run_id, spec, "iwc_scorecard")
+    if not scorecard:
+        return []
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return []
+    comparison = comparisons.get("iwc") or next(iter(comparisons.values()), None)
+    if not isinstance(comparison, dict):
+        return []
+    point = comparison.get("point_metrics")
+    point = point if isinstance(point, dict) else {}
+    iwp = comparison.get("iwp_metrics")
+    iwp = iwp if isinstance(iwp, dict) else {}
+    occurrence = comparison.get("ice_occurrence")
+    occurrence = occurrence if isinstance(occurrence, dict) else {}
+    return [
+        _card("valid gates", point.get("valid_points", "n/a")),
+        _card("bias kg m-3", _compact_float(point.get("bias_mean"))),
+        _card("RMSE kg m-3", _compact_float(point.get("root_mean_square_error"))),
+        _card("corr", _compact_float(point.get("pearson_correlation"))),
+        _card("IWP bias", _compact_float(iwp.get("iwp_bias_mean_kg_m2"))),
+        _card("IWP RMSE", _compact_float(iwp.get("iwp_root_mean_square_error_kg_m2"))),
+        _card("hits", occurrence.get("hits", "n/a")),
+        _card("CSI", _compact_float(occurrence.get("critical_success_index"))),
     ]
 
 
