@@ -66,6 +66,44 @@ def _path(*parts: str) -> Path:
 RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
     [
         (
+            "cm1_reference_dry_run",
+            {
+                "label": "CM1 reference spin-up",
+                "model": "CM1",
+                "status": "spin-up: no observation overlap",
+                "summary": "64 x 64 x 120, Thompson, native CM1 output converted to Cloudnet model contract",
+                "cloudnet_model": _path("model", "cm1_reference", "cloudnet_model.nc"),
+                "l3_cf": _path(
+                    "cloudnet_l3",
+                    "cm1_reference_dry_run",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_l3-cf.nc",
+                ),
+                "l3_iwc": _path(
+                    "cloudnet_l3",
+                    "cm1_reference_dry_run",
+                    "aurora_multistream_pilot_20260520_20260602_cm1_l3-iwc.nc",
+                ),
+                "run_dir": _path("model", "cm1_reference", "run_20260521"),
+                "uuid": "l3-cf 98fa587f-c092-4a29-8586-bb16df847ea9; l3-iwc 0b3d2345-a983-4f68-881e-49c71a50cb49",
+                "runtime": "2 native CM1 outputs, 00:00-00:05 UTC; Cloudnet L3 CF/IWC handoff complete",
+                "scorecard_png": _path(
+                    "model",
+                    "cm1_reference",
+                    "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621.png",
+                ),
+                "scorecard_markdown": _path(
+                    "model",
+                    "cm1_reference",
+                    "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621.md",
+                ),
+                "scorecard_json": _path(
+                    "model",
+                    "cm1_reference",
+                    "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621.json",
+                ),
+            },
+        ),
+        (
             "cm1_0400_thompson_tall_rh105_25_60",
             {
                 "label": "CM1 04:00 RH105 2.5-6.0 km",
@@ -761,6 +799,7 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
 DATASETS = OrderedDict(
     [
         ("Cloudnet L3 CF", "l3_cf"),
+        ("Cloudnet L3 IWC", "l3_iwc"),
         ("Cloudnet model", "cloudnet_model"),
         ("CF scorecard", "scorecard"),
         ("Observation audit", "observation_audit"),
@@ -1339,7 +1378,21 @@ def _sync_variable_options(*_events) -> None:
         return
     path = _dataset_path(run_select.value, dataset_select.value)
     finite_values = _finite_numeric_variables(path) if path is not None else set()
-    preferred = ("cf_V", "cf_A", "cf_V_adv", "cf_A_adv", "cloud_fraction", "model_cf", "ql", "qi", "temperature", "pressure")
+    preferred = (
+        "cf_V",
+        "cf_A",
+        "cf_V_adv",
+        "cf_A_adv",
+        "model_cf",
+        "cloud_fraction",
+        "model_iwc",
+        "iwc",
+        "iwc_adv",
+        "ql",
+        "qi",
+        "temperature",
+        "pressure",
+    )
     if variable_select.value in values:
         return
     for name in preferred:
