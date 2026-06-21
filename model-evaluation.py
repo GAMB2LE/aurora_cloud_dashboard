@@ -32,7 +32,9 @@ OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
 CL61_SCORECARD_STEM = "scorecard_cl61_beta_att_v0_20260621"
 WBAND_RADAR_SCORECARD_STEM = "scorecard_wband_radar_z_vs_cloudnet_z_20260622"
-PAMTRA_WBAND_RADAR_SCORECARD_STEM = "scorecard_pamtra_wband_cosmo_1mom_z_vs_cloudnet_z_20260622"
+PAMTRA_WBAND_RADAR_SCORECARD_STEM = (
+    "scorecard_pamtra_wband_cosmo_1mom_sensitivity_z_vs_cloudnet_z_20260622"
+)
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
@@ -47,7 +49,7 @@ ARTIFACT_TITLES = {
     "iwc_scorecard": "IWC scorecard",
     "cl61_scorecard": "CL61 diagnostic",
     "wband_radar_scorecard": "W-band radar scorecard",
-    "pamtra_wband_radar_scorecard": "PAMTRA W-band scorecard",
+    "pamtra_wband_radar_scorecard": "PAMTRA W-band sensitivity scorecard",
 }
 
 THEME_TEXT = "#22313f"
