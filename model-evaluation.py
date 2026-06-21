@@ -27,6 +27,7 @@ APP_DIR = Path(__file__).resolve().parent
 CASE_ROOT = Path(os.environ.get("AURORA_MODEL_EVALUATION_CASE_ROOT", "/data/aurora/les/cases"))
 CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_pilot_20260520_20260602")
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
+SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 
 THEME_TEXT = "#22313f"
 THEME_MUTED = "#5f6c7b"
@@ -770,10 +771,27 @@ def _dataset_path(run_id: str, dataset_id: str) -> Path | None:
     if not spec:
         return None
     if dataset_id == "scorecard":
-        scorecard_path = spec.get("scorecard_png")
-        return scorecard_path if isinstance(scorecard_path, Path) else None
+        return _scorecard_path(run_id, spec, "png")
     path = spec.get(dataset_id)
     return path if isinstance(path, Path) else None
+
+
+def _scorecard_path(run_id: str, spec: dict[str, object], kind: str) -> Path | None:
+    suffix_by_kind = {"png": "png", "markdown": "md", "json": "json"}
+    suffix = suffix_by_kind[kind]
+    candidates: list[Path] = [
+        _path("model", run_id, f"{SCORECARD_CF_V0_STEM}.{suffix}"),
+    ]
+    extra = spec.get(f"scorecard_{kind}_candidates")
+    if isinstance(extra, list):
+        candidates.extend(path for path in extra if isinstance(path, Path))
+    configured = spec.get(f"scorecard_{kind}")
+    if isinstance(configured, Path):
+        candidates.append(configured)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
 
 
 def _dataset_label(dataset_id: str) -> str:
@@ -919,9 +937,9 @@ def _variable_stats(ds: xr.Dataset, variable: str | None) -> list[tuple[str, str
     ]
 
 
-def _scorecard_json(spec: dict[str, object]) -> dict[str, object] | None:
-    path = spec.get("scorecard_json")
-    if not isinstance(path, Path) or not path.exists():
+def _scorecard_json(run_id: str, spec: dict[str, object]) -> dict[str, object] | None:
+    path = _scorecard_path(run_id, spec, "json")
+    if path is None or not path.exists():
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -929,8 +947,8 @@ def _scorecard_json(spec: dict[str, object]) -> dict[str, object] | None:
         return None
 
 
-def _scorecard_cards(spec: dict[str, object]) -> list[str]:
-    scorecard = _scorecard_json(spec)
+def _scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    scorecard = _scorecard_json(run_id, spec)
     if not scorecard:
         return []
     comparisons = scorecard.get("comparisons")
@@ -972,7 +990,7 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
     variables = "none"
     file_state = "not configured"
     if dataset_id == "scorecard":
-        cards.extend(_scorecard_cards(spec))
+        cards.extend(_scorecard_cards(run_id, spec))
         variables = "scorecard PNG, Markdown and JSON"
         file_state = f"{_format_size(path)}; {_format_mtime(path)}" if path is not None and path.exists() else "missing"
         if not cards:
@@ -1000,8 +1018,8 @@ def _summary_markup(run_id: str, dataset_id: str, variable: str | None, _clicks:
         runtime_row = f"<tr><th>runtime</th><td>{escape(str(spec['runtime']))}</td></tr>"
     scorecard_rows = ""
     if dataset_id == "scorecard":
-        markdown_path = spec.get("scorecard_markdown")
-        json_path = spec.get("scorecard_json")
+        markdown_path = _scorecard_path(run_id, spec, "markdown")
+        json_path = _scorecard_path(run_id, spec, "json")
         if isinstance(markdown_path, Path):
             scorecard_rows += f"<tr><th>scorecard markdown</th><td><code>{escape(str(markdown_path))}</code></td></tr>"
         if isinstance(json_path, Path):
@@ -1136,8 +1154,8 @@ def _figure(run_id: str, dataset_id: str, variable: str | None, _clicks: int = 0
 
 def _scorecard_panel(run_id: str, _clicks: int = 0) -> pn.Column:
     spec = RUNS.get(run_id, {})
-    png_path = spec.get("scorecard_png")
-    markdown_path = spec.get("scorecard_markdown")
+    png_path = _scorecard_path(run_id, spec, "png")
+    markdown_path = _scorecard_path(run_id, spec, "markdown")
     panes: list[object] = []
     if isinstance(png_path, Path) and png_path.exists():
         data_uri = _asset_data_uri(png_path)
