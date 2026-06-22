@@ -44,6 +44,7 @@ PAMTRA_WBAND_AMPLITUDE_SWEEP_STEM = "pamtra_wband_amplitude_sweep_20260622"
 PAMTRA_WBAND_TARGETED_CALIBRATION_STEM = "pamtra_wband_targeted_calibration_20260622"
 PAMTRA_WBAND_CALIBRATION_GATE_STEM = "pamtra_wband_constrained_calibration_gate_20260622"
 PAMTRA_WBAND_DESCRIPTOR_PHYSICS_SWEEP_STEM = "pamtra_wband_descriptor_physics_sweep_20260622"
+PAMTRA_WBAND_DESCRIPTOR_PSD_SWEEP_STEM = "pamtra_wband_descriptor_psd_sweep_20260622"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
@@ -58,6 +59,7 @@ ARTIFACT_STEMS = {
     "pamtra_wband_targeted_calibration": PAMTRA_WBAND_TARGETED_CALIBRATION_STEM,
     "pamtra_wband_calibration_gate": PAMTRA_WBAND_CALIBRATION_GATE_STEM,
     "pamtra_wband_descriptor_physics_sweep": PAMTRA_WBAND_DESCRIPTOR_PHYSICS_SWEEP_STEM,
+    "pamtra_wband_descriptor_psd_sweep": PAMTRA_WBAND_DESCRIPTOR_PSD_SWEEP_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
@@ -73,6 +75,7 @@ ARTIFACT_TITLES = {
     "pamtra_wband_targeted_calibration": "PAMTRA W-band targeted calibration",
     "pamtra_wband_calibration_gate": "PAMTRA W-band calibration gate",
     "pamtra_wband_descriptor_physics_sweep": "PAMTRA W-band descriptor-physics sweep",
+    "pamtra_wband_descriptor_psd_sweep": "PAMTRA W-band descriptor PSD sweep",
 }
 
 THEME_TEXT = "#22313f"
@@ -865,6 +868,7 @@ DATASETS = OrderedDict(
         ("PAMTRA W-band targeted calibration", "pamtra_wband_targeted_calibration"),
         ("PAMTRA W-band calibration gate", "pamtra_wband_calibration_gate"),
         ("PAMTRA W-band descriptor physics sweep", "pamtra_wband_descriptor_physics_sweep"),
+        ("PAMTRA W-band descriptor PSD sweep", "pamtra_wband_descriptor_psd_sweep"),
     ]
 )
 
@@ -1137,8 +1141,11 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _pamtra_wband_amplitude_sweep_cards(run_id, spec)
     if dataset_id == "pamtra_wband_calibration_gate":
         return _pamtra_wband_calibration_gate_cards(run_id, spec)
-    if dataset_id == "pamtra_wband_descriptor_physics_sweep":
-        return _pamtra_wband_descriptor_physics_sweep_cards(run_id, spec)
+    if dataset_id in {
+        "pamtra_wband_descriptor_physics_sweep",
+        "pamtra_wband_descriptor_psd_sweep",
+    }:
+        return _pamtra_wband_descriptor_physics_sweep_cards(run_id, spec, dataset_id)
     return []
 
 
@@ -1403,8 +1410,9 @@ def _pamtra_wband_calibration_gate_cards(
 def _pamtra_wband_descriptor_physics_sweep_cards(
     run_id: str,
     spec: dict[str, object],
+    dataset_id: str = "pamtra_wband_descriptor_physics_sweep",
 ) -> list[str]:
-    sweep = _artifact_json(run_id, spec, "pamtra_wband_descriptor_physics_sweep")
+    sweep = _artifact_json(run_id, spec, dataset_id)
     if not sweep:
         return []
     best_csi = sweep.get("best_variant_by_csi")
