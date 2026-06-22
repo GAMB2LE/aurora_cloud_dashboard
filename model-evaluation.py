@@ -27,6 +27,7 @@ APP_DIR = Path(__file__).resolve().parent
 CASE_ROOT = Path(os.environ.get("AURORA_MODEL_EVALUATION_CASE_ROOT", "/data/aurora/les/cases"))
 CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_pilot_20260520_20260602")
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
+CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
@@ -47,6 +48,7 @@ PAMTRA_WBAND_CALIBRATION_GATE_STEM = "pamtra_wband_constrained_calibration_gate_
 PAMTRA_WBAND_DESCRIPTOR_PHYSICS_SWEEP_STEM = "pamtra_wband_descriptor_physics_sweep_20260622"
 PAMTRA_WBAND_DESCRIPTOR_PSD_SWEEP_STEM = "pamtra_wband_descriptor_psd_sweep_20260622"
 ARTIFACT_STEMS = {
+    "case_readiness_policy_gate": CASE_READINESS_POLICY_GATE_STEM,
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
     "iwc_scorecard": IWC_SCORECARD_STEM,
@@ -64,6 +66,7 @@ ARTIFACT_STEMS = {
     "pamtra_wband_descriptor_psd_sweep": PAMTRA_WBAND_DESCRIPTOR_PSD_SWEEP_STEM,
 }
 ARTIFACT_TITLES = {
+    "case_readiness_policy_gate": "Case readiness policy gate",
     "scorecard": "CF scorecard",
     "observation_audit": "Observation audit",
     "iwc_scorecard": "IWC scorecard",
@@ -858,6 +861,7 @@ DATASETS = OrderedDict(
         ("Cloudnet model", "cloudnet_model"),
         ("Synthetic W-band radar", "wband_radar"),
         ("PAMTRA W-band radar", "pamtra_wband_radar"),
+        ("Case readiness policy gate", "case_readiness_policy_gate"),
         ("CF scorecard", "scorecard"),
         ("IWC scorecard", "iwc_scorecard"),
         ("HATPRO LWP diagnostic", "lwp_scorecard"),
@@ -944,6 +948,8 @@ def _artifact_path(
     candidates: list[Path] = [
         _path("model", run_id, f"{stem}.{suffix}"),
     ]
+    if dataset_id == "case_readiness_policy_gate":
+        candidates.insert(0, _path(f"{stem}.{suffix}"))
     extra = spec.get(f"{dataset_id}_{kind}_candidates")
     if isinstance(extra, list):
         candidates.extend(path for path in extra if isinstance(path, Path))
@@ -1127,6 +1133,8 @@ def _artifact_json(
 def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> list[str]:
     if dataset_id == "scorecard":
         return _scorecard_cards(run_id, spec)
+    if dataset_id == "case_readiness_policy_gate":
+        return _case_readiness_policy_gate_cards(run_id, spec)
     if dataset_id == "observation_audit":
         return _observation_audit_cards(run_id, spec)
     if dataset_id == "iwc_scorecard":
@@ -1181,6 +1189,32 @@ def _scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
     if radar.get("available"):
         cards.append(_card("max ZE_dBZ", _compact_float(radar.get("max_dbz"))))
     return cards
+
+
+def _case_readiness_policy_gate_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    readiness = _artifact_json(run_id, spec, "case_readiness_policy_gate")
+    if not readiness:
+        return []
+    summary = readiness.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    datasets = readiness.get("datasets")
+    datasets = datasets if isinstance(datasets, list) else []
+    hatpro = next(
+        (
+            item
+            for item in datasets
+            if isinstance(item, dict) and item.get("dataset_id") == "hatpro"
+        ),
+        {},
+    )
+    return [
+        _card("status", readiness.get("status", "n/a")),
+        _card("required", summary.get("required_total", "n/a")),
+        _card("coverage ok", summary.get("required_coverage_ok", "n/a")),
+        _card("policy blocked", summary.get("required_policy_blocked", "n/a")),
+        _card("HATPRO policy", hatpro.get("policy_status", "n/a")),
+        _card("HATPRO site", hatpro.get("site_status", "n/a")),
+    ]
 
 
 def _observation_audit_cards(run_id: str, spec: dict[str, object]) -> list[str]:
