@@ -41,6 +41,7 @@ PAMTRA_WBAND_RADAR_SENSITIVITY_SWEEP_STEM = (
 PAMTRA_WBAND_HYDROMETEOR_SWEEP_STEM = "pamtra_wband_hydrometeor_contribution_sweep_20260622"
 PAMTRA_WBAND_DESCRIPTOR_GROUP_SWEEP_STEM = "pamtra_wband_descriptor_group_sweep_20260622"
 PAMTRA_WBAND_AMPLITUDE_SWEEP_STEM = "pamtra_wband_amplitude_sweep_20260622"
+PAMTRA_WBAND_CALIBRATION_GATE_STEM = "pamtra_wband_constrained_calibration_gate_20260622"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
@@ -52,6 +53,7 @@ ARTIFACT_STEMS = {
     "pamtra_wband_hydrometeor_sweep": PAMTRA_WBAND_HYDROMETEOR_SWEEP_STEM,
     "pamtra_wband_descriptor_group_sweep": PAMTRA_WBAND_DESCRIPTOR_GROUP_SWEEP_STEM,
     "pamtra_wband_amplitude_sweep": PAMTRA_WBAND_AMPLITUDE_SWEEP_STEM,
+    "pamtra_wband_calibration_gate": PAMTRA_WBAND_CALIBRATION_GATE_STEM,
 }
 ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
@@ -64,6 +66,7 @@ ARTIFACT_TITLES = {
     "pamtra_wband_hydrometeor_sweep": "PAMTRA W-band hydrometeor sweep",
     "pamtra_wband_descriptor_group_sweep": "PAMTRA W-band descriptor-group sweep",
     "pamtra_wband_amplitude_sweep": "PAMTRA W-band amplitude sweep",
+    "pamtra_wband_calibration_gate": "PAMTRA W-band calibration gate",
 }
 
 THEME_TEXT = "#22313f"
@@ -853,6 +856,7 @@ DATASETS = OrderedDict(
         ("PAMTRA W-band hydrometeor sweep", "pamtra_wband_hydrometeor_sweep"),
         ("PAMTRA W-band descriptor group sweep", "pamtra_wband_descriptor_group_sweep"),
         ("PAMTRA W-band amplitude sweep", "pamtra_wband_amplitude_sweep"),
+        ("PAMTRA W-band calibration gate", "pamtra_wband_calibration_gate"),
     ]
 )
 
@@ -1123,6 +1127,8 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _pamtra_wband_hydrometeor_sweep_cards(run_id, spec, dataset_id)
     if dataset_id == "pamtra_wband_amplitude_sweep":
         return _pamtra_wband_amplitude_sweep_cards(run_id, spec)
+    if dataset_id == "pamtra_wband_calibration_gate":
+        return _pamtra_wband_calibration_gate_cards(run_id, spec)
     return []
 
 
@@ -1349,6 +1355,38 @@ def _pamtra_wband_amplitude_sweep_cards(
         _card("FAR", _compact_float(best_csi.get("false_alarm_ratio"))),
         _card("misses", best_csi.get("misses", "n/a")),
         _card("false alarms", best_csi.get("false_alarms", "n/a")),
+    ]
+
+
+def _pamtra_wband_calibration_gate_cards(
+    run_id: str,
+    spec: dict[str, object],
+) -> list[str]:
+    gate = _artifact_json(run_id, spec, "pamtra_wband_calibration_gate")
+    if not gate:
+        return []
+    selected = gate.get("selected_candidate")
+    selected = selected if isinstance(selected, dict) else {}
+    radar_best = gate.get("radar_best_candidate")
+    radar_best = radar_best if isinstance(radar_best, dict) else {}
+    constraints = gate.get("constraints")
+    constraints = constraints if isinstance(constraints, dict) else {}
+    iwc = constraints.get("iwc")
+    iwc = iwc if isinstance(iwc, dict) else {}
+    lwc = constraints.get("lwc")
+    lwc = lwc if isinstance(lwc, dict) else {}
+    next_spec = str(gate.get("suggested_next_scale_spec") or "n/a")
+    if ":" in next_spec:
+        next_spec = next_spec.split(":", 1)[1]
+    return [
+        _card("selected", selected.get("scale_label", "none")),
+        _card("selected CSI", _compact_float(selected.get("critical_success_index"))),
+        _card("selected bias dB", _compact_float(selected.get("reflectivity_mean_bias_db"))),
+        _card("radar best", radar_best.get("scale_label", "n/a")),
+        _card("radar best CSI", _compact_float(radar_best.get("critical_success_index"))),
+        _card("IWC target", _compact_float(iwc.get("target_scale_factor"))),
+        _card("LWC status", lwc.get("status", "n/a")),
+        _card("next scale", next_spec),
     ]
 
 
