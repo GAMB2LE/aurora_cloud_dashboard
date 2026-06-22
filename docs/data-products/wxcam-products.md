@@ -39,6 +39,23 @@ contained `48414` FISH HDR image records, `48413` PANO HDR image records, and
 `2026-01-12 02:25:00` to `2026-05-21 20:10:39`; cataloged videos ran through
 `2026-05-21 19:00:00`.
 
+### Read-only standby access
+
+The warm-standby droplet receives this catalog by replication and serves it
+from `data-ocean.gamb2le.co.uk` without running WXcam writer timers. Dashboard
+readers must therefore treat the catalog as read-only:
+
+- use `open_catalog(path, readonly=True)` for viewer queries
+- do not call `ensure_schema()` from viewer/query helpers
+- keep schema creation and migration in the catalog writer/indexer path
+
+The read-only helper first tries SQLite `mode=ro`, then falls back to
+`mode=ro&immutable=1` for replicated catalog files that would otherwise raise
+`sqlite3.OperationalError: attempt to write a readonly database` while reading.
+That failure mode caused a blank `data-ocean.gamb2le.co.uk/app` page on
+`2026-06-22`, because WXcam panes are constructed at app startup even when the
+default visible instrument is `Ceilometer`.
+
 ## Daily videos and hourly thumbnails
 
 - daily MP4s:

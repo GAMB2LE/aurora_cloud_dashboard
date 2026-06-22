@@ -11,6 +11,7 @@ import math
 import numpy as np
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from typing import Any
@@ -27,6 +28,10 @@ GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 DASHBOARD_PERF_LOG_DEFAULT = Path("/data/aurora/products/dashboard/dashboard_perf.jsonl")
 DASHBOARD_HTTP_URL_DEFAULT = "http://127.0.0.1:5006/app"
+PRIMARY_DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app"
+STANDBY_DASHBOARD_URL_DEFAULT = "https://data-ocean.gamb2le.co.uk/app"
+REMOTE_DF_TIMEOUT_SECONDS = 45.0
+LOCAL_COMMAND_TIMEOUT_SECONDS = 30.0
 INFRA_REPO_DEFAULT = Path("/tmp/aurora-cloud-infra-codex")
 ENV_FILE_DEFAULT = Path("/etc/aurora-dashboard.env")
 KNOWN_HOSTS = Path("/home/aurora/.ssh/known_hosts")
@@ -284,7 +289,7 @@ def _remote_df(base_cmd: list[str], target: str, path: str) -> dict[str, Any]:
         "df -PB1 . | tail -1; "
         "df -Pi . | tail -1"
     )
-    proc = _run(base_cmd + [target, remote])
+    proc = _run(base_cmd + [target, remote], timeout=REMOTE_DF_TIMEOUT_SECONDS)
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
         raise ValueError(f"Unexpected df output for {target}:{path}")
@@ -300,7 +305,8 @@ def _local_df(path: str | Path) -> dict[str, Any]:
             "bash",
             "-lc",
             f"cd {quoted} && pwd -P && df -PB1 . | tail -1 && df -Pi . | tail -1",
-        ]
+        ],
+        timeout=LOCAL_COMMAND_TIMEOUT_SECONDS,
     )
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
@@ -412,6 +418,25 @@ def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: f
     }
 
 
+def _html_title(body: bytes) -> str:
+    try:
+        text = body[:64 * 1024].decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+    match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _dashboard_document_state(status_code: int, body: bytes) -> int:
+    if not (200 <= status_code < 400):
+        return 0
+    # A crashed Panel handler can still return a small Bokeh shell with title
+    # "Bokeh Application". Require the actual dashboard document marker.
+    return 1 if b"AURORA Data Viewer" in body and len(body) > 100_000 else 0
+
+
 def _probe_http(url: str) -> dict[str, float | int | str | None]:
     start = time.monotonic()
     # Panel serves the dashboard route for GET requests but returns 405 for
@@ -420,12 +445,20 @@ def _probe_http(url: str) -> dict[str, float | int | str | None]:
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             status_code = int(response.status)
+            body = response.read(1024 * 1024)
     except urllib.error.HTTPError as exc:
         status_code = int(exc.code)
+        try:
+            body = exc.read(1024 * 1024)
+        except Exception:
+            body = b""
         return {
             "ok_state": 1 if 200 <= status_code < 400 or status_code == 405 else 0,
             "status_code": status_code,
             "response_ms": (time.monotonic() - start) * 1000.0,
+            "content_bytes": len(body),
+            "title": _html_title(body),
+            "full_document_state": _dashboard_document_state(status_code, body),
             "error": str(exc),
         }
     except Exception as exc:
@@ -433,12 +466,18 @@ def _probe_http(url: str) -> dict[str, float | int | str | None]:
             "ok_state": 0,
             "status_code": None,
             "response_ms": (time.monotonic() - start) * 1000.0,
+            "content_bytes": 0,
+            "title": "",
+            "full_document_state": 0,
             "error": str(exc),
         }
     return {
         "ok_state": 1 if 200 <= status_code < 400 or status_code == 405 else 0,
         "status_code": status_code,
         "response_ms": (time.monotonic() - start) * 1000.0,
+        "content_bytes": len(body),
+        "title": _html_title(body),
+        "full_document_state": _dashboard_document_state(status_code, body),
         "error": "",
     }
 
@@ -541,6 +580,7 @@ def _systemd_show(unit: str) -> dict[str, str]:
     proc = _run(
         ["systemctl", "show", unit, *sum((["-p", prop] for prop in props), [])],
         check=False,
+        timeout=LOCAL_COMMAND_TIMEOUT_SECONDS,
     )
     info: dict[str, str] = {}
     for line in proc.stdout.splitlines():
@@ -676,6 +716,19 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     dashboard_probe = _probe_http(os.environ.get("AURORA_DASHBOARD_HEALTH_URL", DASHBOARD_HTTP_URL_DEFAULT))
     for key, value in dashboard_probe.items():
         record[f"dashboard_http_{key}"] = value
+
+    record["failover_collector_role"] = os.environ.get("AURORA_FAILOVER_ROLE", "")
+    record["failover_collector_domain"] = os.environ.get("AURORA_DOMAIN", "")
+    for endpoint, default_url in (
+        ("primary", PRIMARY_DASHBOARD_URL_DEFAULT),
+        ("standby", STANDBY_DASHBOARD_URL_DEFAULT),
+    ):
+        env_name = f"AURORA_{endpoint.upper()}_DASHBOARD_URL"
+        url = os.environ.get(env_name, default_url)
+        record[f"failover_{endpoint}_dashboard_url"] = url
+        endpoint_probe = _probe_http(url)
+        for key, value in endpoint_probe.items():
+            record[f"failover_{endpoint}_dashboard_http_{key}"] = value
 
     _collect_git_metrics(
         "dashboard_code",

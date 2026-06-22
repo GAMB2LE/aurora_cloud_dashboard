@@ -105,3 +105,38 @@ vertically so the data surface remains the primary scroll target.
 Some code and performance events still use `wxcam_calendar_*` names because the
 WXcam day grid originally lived on a tab called Calendar. The visible UI is now
 Science Quicklooks.
+
+## Read-only standby catalogs
+
+The warm-standby host serves replicated products at
+`data-ocean.gamb2le.co.uk` while writer timers stay disabled. Some replicated
+SQLite products, especially the WXcam catalog, may be readable by the dashboard
+service user but not writable. Even a plain SQLite `SELECT` can try to create
+or recover journal/WAL metadata, so standby reads must not use the same
+connection path as catalog writers.
+
+`wxcam_catalog.open_catalog(path, readonly=True)` is the dashboard-safe read
+path. It tries normal SQLite `mode=ro` first and falls back to
+`mode=ro&immutable=1` only when the normal read-only open still raises
+`attempt to write a readonly database`. This lets the primary read active
+SQLite metadata normally while allowing the standby to read replicated
+self-contained catalog files.
+
+Viewer helpers such as `latest_record`, `available_days`,
+`catalog_time_bounds`, `records_for_day`, `catalog_frontier`, and
+`records_after` must use `readonly=True` and must not call `ensure_schema()`.
+Schema creation and migration belong to writer/indexer paths such as
+`index_wxcam_catalog.py`.
+
+If `/app` returns a tiny Bokeh shell or shows a blank page with browser title
+`Bokeh Application`, check:
+
+```bash
+sudo journalctl -u aurora-dashboard.service --since '10 minutes ago' --no-pager
+```
+
+On `2026-06-22`, that symptom on the droplet was caused by
+`sqlite3.OperationalError: attempt to write a readonly database` in the WXcam
+catalog during app startup. The visible default was still meant to be
+`Ceilometer`, but the WXcam panes are constructed during app import, so the
+WXcam exception prevented the whole Panel document from rendering.

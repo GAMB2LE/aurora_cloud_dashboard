@@ -38,6 +38,9 @@ These snapshots capture:
 - prune-gate and product-gate summaries
 - systemd health for source sync, processing, and transfer units
 - dashboard HTTP health and response time
+- primary and standby public dashboard endpoint health, response time, content
+  size, HTML title, and whether the response is the full `AURORA Data Viewer`
+  document rather than a blank Bokeh shell
 - dashboard and infrastructure git branch, commit, dirty state, and local
   ahead/behind counts
 

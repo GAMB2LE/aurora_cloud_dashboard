@@ -1555,6 +1555,44 @@ def _ops_perf_log_text(snapshot: dict) -> tuple[str, str]:
     return f"{age_text} old", f"{path}{size_text}"
 
 
+def _ops_failover_endpoint_card(snapshot: dict, endpoint: str, title: str, expected_role: str) -> str:
+    prefix = f"failover_{endpoint}_dashboard"
+    ok = _ops_bool(snapshot.get(f"{prefix}_http_ok_state"))
+    full_document = _ops_bool(snapshot.get(f"{prefix}_http_full_document_state"))
+    status = _ops_float(snapshot.get(f"{prefix}_http_status_code"))
+    response_ms = _ops_float(snapshot.get(f"{prefix}_http_response_ms"))
+    content_bytes = _ops_float(snapshot.get(f"{prefix}_http_content_bytes"))
+    page_title = str(snapshot.get(f"{prefix}_http_title") or "").strip()
+    error = str(snapshot.get(f"{prefix}_http_error") or "").strip()
+    url = str(snapshot.get(f"{prefix}_url") or "").strip()
+
+    if full_document is True:
+        level = "green"
+        value = "Full app document"
+    elif ok is True:
+        level = "red"
+        value = f"HTTP {int(status)} but incomplete" if status is not None else "Incomplete app document"
+    elif ok is False:
+        level = "red"
+        value = f"HTTP {int(status)}" if status is not None else "Unreachable"
+    else:
+        level = "gray"
+        value = "No probe data"
+
+    details: list[str] = [expected_role]
+    if response_ms is not None:
+        details.append(f"{response_ms:.0f} ms")
+    if content_bytes is not None:
+        details.append(f"{content_bytes / 1024.0:.0f} KB")
+    if page_title:
+        details.append(f"title={page_title}")
+    if url:
+        details.append(url)
+    if error:
+        details.append(error[:140])
+    return _ops_card_markup(title, level, value, "; ".join(details))
+
+
 def _ops_perf_summary(path: Path, hours: float = 24.0, max_rows: int = 5000) -> dict:
     if not path.exists():
         return {"level": "red", "value": "Missing", "meta": f"Expected {path}"}
@@ -2069,6 +2107,20 @@ def _ops_operations_markup() -> str:
             perf_log_level,
         )
         trend_cards = _ops_trend_cards_markup()
+        failover_endpoint_levels = [
+            _ops_worst_level(
+                [
+                    _ops_level_from_bool(snapshot.get(f"failover_{endpoint}_dashboard_http_ok_state")),
+                    _ops_level_from_bool(snapshot.get(f"failover_{endpoint}_dashboard_http_full_document_state")),
+                ]
+            )
+            for endpoint in ("primary", "standby")
+        ]
+        failover_level = _ops_worst_level(failover_endpoint_levels)
+        failover_cards = [
+            _ops_failover_endpoint_card(snapshot, "primary", "Primary public app", "Expected main site"),
+            _ops_failover_endpoint_card(snapshot, "standby", "Standby public app", "Expected warm standby"),
+        ]
 
         summary_cards = [
             _ops_card_markup(
@@ -2128,6 +2180,14 @@ def _ops_operations_markup() -> str:
                 perf_summary["level"],
                 perf_summary["value"],
                 f"{perf_summary['meta']}; diagnostic only, not part of Overall",
+            ),
+            _ops_card_markup(
+                "Failover endpoints",
+                failover_level,
+                "Both apps full"
+                if failover_level == "green"
+                else ("No probe data" if failover_level == "gray" else "Endpoint issue"),
+                "Primary and standby public app probes; diagnostic only, not part of Overall",
             ),
             _ops_card_markup(
                 "Processing pipeline",
@@ -2405,6 +2465,11 @@ def _ops_operations_markup() -> str:
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Seven-day trends</div>"
             f"<div class='ops-grid ops-grid--trends'>{trend_cards}</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Cloud failover</div>"
+            f"<div class='ops-grid ops-grid--summary'>{''.join(failover_cards)}</div>"
+            "<div class='ops-footnote'>These probes check the public app URLs and require the full AURORA document, so a small blank Bokeh shell does not count as healthy.</div>"
             "</div>"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Storage</div>"

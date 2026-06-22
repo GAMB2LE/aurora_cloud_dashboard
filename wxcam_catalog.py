@@ -86,11 +86,44 @@ def mime_type_from_media_kind(media_kind: str) -> str:
     raise ValueError(f"Unsupported wxcam media kind {media_kind}")
 
 
-def open_catalog(path: Path) -> sqlite3.Connection:
+def _is_readonly_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return "readonly" in message or "read-only" in message
+
+
+def _open_readonly_catalog(path: Path) -> sqlite3.Connection:
+    last_readonly_error: sqlite3.OperationalError | None = None
+    for uri in (
+        f"file:{path}?mode=ro",
+        f"file:{path}?mode=ro&immutable=1",
+    ):
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+        except sqlite3.OperationalError as exc:
+            conn.close()
+            if _is_readonly_error(exc):
+                last_readonly_error = exc
+                continue
+            raise
+        return conn
+    assert last_readonly_error is not None
+    raise last_readonly_error
+
+
+def open_catalog(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
+    if readonly:
+        return _open_readonly_catalog(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    for pragma in ("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"):
+        try:
+            conn.execute(pragma)
+        except sqlite3.OperationalError as exc:
+            if not _is_readonly_error(exc):
+                conn.close()
+                raise
     return conn
 
 
@@ -283,8 +316,7 @@ def existing_file_state(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
 def catalog_time_bounds(path: Path) -> tuple[datetime | None, datetime | None]:
     if not path.exists():
         return None, None
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         row = conn.execute(
             "SELECT MIN(time_epoch_ns) AS min_ns, MAX(time_epoch_ns) AS max_ns FROM images"
         ).fetchone()
@@ -296,8 +328,7 @@ def catalog_time_bounds(path: Path) -> tuple[datetime | None, datetime | None]:
 def available_days(path: Path, image_type: str, media_kind: str | None = None) -> list[str]:
     if not path.exists():
         return []
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         if media_kind is None:
             rows = conn.execute(
                 """
@@ -324,8 +355,7 @@ def available_days(path: Path, image_type: str, media_kind: str | None = None) -
 def latest_record(path: Path, image_type: str, media_kind: str = "image") -> sqlite3.Row | None:
     if not path.exists():
         return None
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         return conn.execute(
             """
             SELECT *
@@ -341,8 +371,7 @@ def latest_record(path: Path, image_type: str, media_kind: str = "image") -> sql
 def latest_record_before(path: Path, image_type: str, end: datetime | None, media_kind: str = "image") -> sqlite3.Row | None:
     if end is None or not path.exists():
         return latest_record(path, image_type, media_kind=media_kind)
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         return conn.execute(
             """
             SELECT *
@@ -366,8 +395,7 @@ def latest_record_in_window(
         return None
     if start is None or end is None:
         return latest_record(path, image_type, media_kind=media_kind)
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         row = conn.execute(
             """
             SELECT *
@@ -392,8 +420,7 @@ def latest_records(
 ) -> list[sqlite3.Row]:
     if not path.exists():
         return []
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             """
             SELECT *
@@ -410,8 +437,7 @@ def latest_records(
 def daily_latest_records(path: Path, image_type: str, media_kind: str = "image") -> list[sqlite3.Row]:
     if not path.exists():
         return []
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             """
             SELECT i.*
@@ -448,8 +474,7 @@ def preferred_latest_record(path: Path, image_type: str, media_kinds: Sequence[s
     if not path.exists():
         return None
     placeholders = ",".join("?" for _ in media_kinds)
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             f"""
             SELECT *
@@ -471,8 +496,7 @@ def preferred_daily_record(
     if not path.exists():
         return None
     placeholders = ",".join("?" for _ in media_kinds)
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             f"""
             SELECT *
@@ -488,8 +512,7 @@ def preferred_daily_record(
 def records_for_day(path: Path, image_type: str, day_utc: str, media_kind: str = "video") -> list[sqlite3.Row]:
     if not path.exists():
         return []
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             """
             SELECT *
@@ -538,8 +561,7 @@ def representative_hourly_records(
 def catalog_frontier(path: Path, media_kind: str = "image") -> dict[str, int]:
     if not path.exists():
         return {}
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             """
             SELECT image_type, MAX(time_epoch_ns) AS max_ns
@@ -555,8 +577,7 @@ def catalog_frontier(path: Path, media_kind: str = "image") -> dict[str, int]:
 def records_after(path: Path, image_type: str, time_epoch_ns: int, media_kind: str = "image") -> list[sqlite3.Row]:
     if not path.exists():
         return []
-    with open_catalog(path) as conn:
-        ensure_schema(conn)
+    with open_catalog(path, readonly=True) as conn:
         rows = conn.execute(
             """
             SELECT *

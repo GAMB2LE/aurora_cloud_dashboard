@@ -19,6 +19,8 @@ stack.
 - dashboard performance-log freshness, including whether browser activity is
   still being written to `/data/aurora/products/dashboard/dashboard_perf.jsonl`
 - dashboard HTTP endpoint health and response time
+- public primary and standby dashboard endpoint health, including a full
+  document check that catches a blank Bokeh shell
 - dashboard and infrastructure git cleanliness and local ahead/behind counts
 - recent dashboard render-performance statistics, including p50, p95, slowest
   timed event, and live-session counts
@@ -63,6 +65,18 @@ samples to plot. Archive traffic lights are based on settled mirror health, so
 a stream stays green when the verified GWS archive has no missing or mismatched
 files even if the newest just-arrived source file has not yet landed in the
 next transfer batch.
+
+The **Cloud failover** section is snapshot-backed. It probes:
+
+- `https://data.gamb2le.co.uk/app`
+- `https://data-ocean.gamb2le.co.uk/app`
+
+Each probe requires a successful HTTP response and the full `AURORA Data
+Viewer` document. A small Bokeh shell with title `Bokeh Application` is treated
+as unhealthy because it usually means the Python app handler crashed before
+rendering the dashboard. The standby normally renders the replicated primary
+operations snapshot, so both public dashboards show the same primary/standby
+endpoint status while the droplet remains in warm standby.
 
 ## Archived products
 
