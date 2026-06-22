@@ -28,6 +28,10 @@ CASE_ROOT = Path(os.environ.get("AURORA_MODEL_EVALUATION_CASE_ROOT", "/data/auro
 CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_pilot_20260520_20260602")
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
+CM1_CANDIDATE_LEADERBOARD_STEM = "cm1_candidate_leaderboard_20260622"
+CM1_CANDIDATE_LEADERBOARD_DIR = (
+    OUTPUT_ROOT / "diagnostics" / CM1_CANDIDATE_LEADERBOARD_STEM
+)
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
@@ -1168,6 +1172,146 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
     return []
 
 
+def _leaderboard_paths() -> dict[str, Path]:
+    return {
+        "json": CM1_CANDIDATE_LEADERBOARD_DIR / f"{CM1_CANDIDATE_LEADERBOARD_STEM}.json",
+        "markdown": CM1_CANDIDATE_LEADERBOARD_DIR / f"{CM1_CANDIDATE_LEADERBOARD_STEM}.md",
+        "png": CM1_CANDIDATE_LEADERBOARD_DIR / f"{CM1_CANDIDATE_LEADERBOARD_STEM}.png",
+    }
+
+
+def _leaderboard_json() -> dict[str, object] | None:
+    path = _leaderboard_paths()["json"]
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _leaderboard_cards(payload: dict[str, object] | None) -> list[str]:
+    if not payload:
+        return [_card("leaderboard", "missing")]
+    selected = payload.get("selected_candidate")
+    selected = selected if isinstance(selected, dict) else {}
+    recommendation = payload.get("recommendation")
+    recommendation = recommendation if isinstance(recommendation, dict) else {}
+    candidates = payload.get("candidates")
+    candidates = candidates if isinstance(candidates, list) else []
+    radar = selected.get("radar")
+    radar = radar if isinstance(radar, dict) else {}
+    placement = selected.get("placement")
+    placement = placement if isinstance(placement, dict) else {}
+    displacement = placement.get("displacement")
+    displacement = displacement if isinstance(displacement, dict) else {}
+    return [
+        _card("selected", selected.get("label", "n/a")),
+        _card("score", _compact_float(selected.get("combined_score"))),
+        _card("radar CSI", _compact_float(radar.get("critical_success_index"))),
+        _card("bias dB", _compact_float(radar.get("reflectivity_mean_bias_db"))),
+        _card("center offset m", _compact_float(displacement.get("center_offset_m"))),
+        _card("candidates", len(candidates)),
+        _card("rejected", recommendation.get("rejected_candidates", "n/a")),
+    ]
+
+
+def _leaderboard_table(payload: dict[str, object] | None) -> str:
+    if not payload:
+        return ""
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return ""
+    rows = []
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            continue
+        radar = candidate.get("radar")
+        radar = radar if isinstance(radar, dict) else {}
+        lwc = candidate.get("lwc")
+        lwc = lwc if isinstance(lwc, dict) else {}
+        primary = lwc.get("primary")
+        primary = primary if isinstance(primary, dict) else {}
+        placement = candidate.get("placement")
+        placement = placement if isinstance(placement, dict) else {}
+        displacement = placement.get("displacement")
+        displacement = displacement if isinstance(displacement, dict) else {}
+        decision = candidate.get("decision")
+        decision = decision if isinstance(decision, dict) else {}
+        rows.append(
+            "<tr>"
+            f"<td>{index}</td>"
+            f"<td><code>{escape(str(candidate.get('label', 'n/a')))}</code></td>"
+            f"<td>{escape(str(_compact_float(candidate.get('combined_score'))))}</td>"
+            f"<td>{escape(str(_compact_float(radar.get('critical_success_index'))))}</td>"
+            f"<td>{escape(str(_compact_float(radar.get('reflectivity_mean_bias_db'))))}</td>"
+            f"<td>{escape(str(_compact_float(primary.get('critical_success_index'))))}</td>"
+            f"<td>{escape(str(_compact_float(primary.get('model_lwp_mean_kg_m2'))))}</td>"
+            f"<td>{escape(str(_compact_float(primary.get('observed_lwp_mean_kg_m2'))))}</td>"
+            f"<td>{escape(str(_compact_float(displacement.get('center_offset_m'))))}</td>"
+            f"<td>{escape(str(decision.get('status', 'n/a')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table leaderboard-table'>"
+        "<thead><tr>"
+        "<th>rank</th><th>candidate</th><th>score</th><th>radar CSI</th>"
+        "<th>bias dB</th><th>LWC CSI</th><th>model LWP</th><th>obs LWP</th>"
+        "<th>center offset m</th><th>decision</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _leaderboard_panel(_clicks: int = 0) -> pn.Column:
+    paths = _leaderboard_paths()
+    payload = _leaderboard_json()
+    cards = "".join(_leaderboard_cards(payload))
+    created = payload.get("created_at_utc") if isinstance(payload, dict) else None
+    json_state = (
+        f"{_format_size(paths['json'])}; {_format_mtime(paths['json'])}"
+        if paths["json"].exists()
+        else "missing"
+    )
+    summary = (
+        "<div class='model-shell leaderboard-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>CM1 Candidate Leaderboard</div>"
+        "<div class='model-subtitle'>Standalone multi-observation gate for CM1 tuning candidates</div>"
+        "</div>"
+        f"<div class='model-pill'>{escape(str(created or json_state))}</div>"
+        "</div>"
+        f"<div class='model-grid'>{cards}</div>"
+        f"{_leaderboard_table(payload)}"
+        "</div>"
+    )
+    panes: list[object] = [pn.pane.HTML(summary, sizing_mode="stretch_width")]
+    if paths["png"].exists():
+        data_uri = _asset_data_uri(paths["png"])
+        panes.append(
+            pn.pane.HTML(
+                f"<img class='scorecard-image' src='{data_uri}' alt='CM1 candidate leaderboard'>",
+                sizing_mode="stretch_width",
+            )
+        )
+    else:
+        panes.append(pn.pane.Markdown("CM1 candidate leaderboard image is missing."))
+    if paths["markdown"].exists():
+        panes.append(
+            pn.Card(
+                pn.pane.Markdown(paths["markdown"].read_text(encoding="utf-8"), sizing_mode="stretch_width"),
+                title="Leaderboard tables",
+                collapsible=True,
+                collapsed=True,
+                sizing_mode="stretch_width",
+            )
+        )
+    return pn.Column(*panes, sizing_mode="stretch_width")
+
+
 def _scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
     scorecard = _scorecard_json(run_id, spec)
     if not scorecard:
@@ -1865,6 +2009,7 @@ plot_panel = pn.bind(
     variable_select.param.value,
     refresh_button.param.clicks,
 )
+leaderboard_panel = pn.bind(_leaderboard_panel, refresh_button.param.clicks)
 
 CSS = """
 body, .bk {
@@ -1971,6 +2116,9 @@ body, .bk {
     word-break: break-all;
     color: #243b53;
 }
+.leaderboard-table {
+    min-width: 860px;
+}
 .scorecard-image {
     display: block;
     width: 100%;
@@ -2035,6 +2183,13 @@ share = pn.Card(
 
 template.main[:] = [
     pn.Column(
+        pn.Card(
+            pn.panel(leaderboard_panel, sizing_mode="stretch_width"),
+            title="Candidate Leaderboard",
+            collapsible=True,
+            collapsed=False,
+            sizing_mode="stretch_width",
+        ),
         controls,
         pn.panel(summary_panel, sizing_mode="stretch_width"),
         pn.panel(plot_panel, sizing_mode="stretch_width"),
