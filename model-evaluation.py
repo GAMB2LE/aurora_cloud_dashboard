@@ -41,6 +41,7 @@ PAMTRA_WBAND_RADAR_SENSITIVITY_SWEEP_STEM = (
 PAMTRA_WBAND_HYDROMETEOR_SWEEP_STEM = "pamtra_wband_hydrometeor_contribution_sweep_20260622"
 PAMTRA_WBAND_DESCRIPTOR_GROUP_SWEEP_STEM = "pamtra_wband_descriptor_group_sweep_20260622"
 PAMTRA_WBAND_AMPLITUDE_SWEEP_STEM = "pamtra_wband_amplitude_sweep_20260622"
+PAMTRA_WBAND_TARGETED_CALIBRATION_STEM = "pamtra_wband_targeted_calibration_20260622"
 PAMTRA_WBAND_CALIBRATION_GATE_STEM = "pamtra_wband_constrained_calibration_gate_20260622"
 ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
@@ -53,6 +54,7 @@ ARTIFACT_STEMS = {
     "pamtra_wband_hydrometeor_sweep": PAMTRA_WBAND_HYDROMETEOR_SWEEP_STEM,
     "pamtra_wband_descriptor_group_sweep": PAMTRA_WBAND_DESCRIPTOR_GROUP_SWEEP_STEM,
     "pamtra_wband_amplitude_sweep": PAMTRA_WBAND_AMPLITUDE_SWEEP_STEM,
+    "pamtra_wband_targeted_calibration": PAMTRA_WBAND_TARGETED_CALIBRATION_STEM,
     "pamtra_wband_calibration_gate": PAMTRA_WBAND_CALIBRATION_GATE_STEM,
 }
 ARTIFACT_TITLES = {
@@ -66,6 +68,7 @@ ARTIFACT_TITLES = {
     "pamtra_wband_hydrometeor_sweep": "PAMTRA W-band hydrometeor sweep",
     "pamtra_wband_descriptor_group_sweep": "PAMTRA W-band descriptor-group sweep",
     "pamtra_wband_amplitude_sweep": "PAMTRA W-band amplitude sweep",
+    "pamtra_wband_targeted_calibration": "PAMTRA W-band targeted calibration",
     "pamtra_wband_calibration_gate": "PAMTRA W-band calibration gate",
 }
 
@@ -856,6 +859,7 @@ DATASETS = OrderedDict(
         ("PAMTRA W-band hydrometeor sweep", "pamtra_wband_hydrometeor_sweep"),
         ("PAMTRA W-band descriptor group sweep", "pamtra_wband_descriptor_group_sweep"),
         ("PAMTRA W-band amplitude sweep", "pamtra_wband_amplitude_sweep"),
+        ("PAMTRA W-band targeted calibration", "pamtra_wband_targeted_calibration"),
         ("PAMTRA W-band calibration gate", "pamtra_wband_calibration_gate"),
     ]
 )
@@ -1125,7 +1129,7 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _pamtra_wband_hydrometeor_sweep_cards(run_id, spec, dataset_id)
     if dataset_id == "pamtra_wband_descriptor_group_sweep":
         return _pamtra_wband_hydrometeor_sweep_cards(run_id, spec, dataset_id)
-    if dataset_id == "pamtra_wband_amplitude_sweep":
+    if dataset_id in {"pamtra_wband_amplitude_sweep", "pamtra_wband_targeted_calibration"}:
         return _pamtra_wband_amplitude_sweep_cards(run_id, spec)
     if dataset_id == "pamtra_wband_calibration_gate":
         return _pamtra_wband_calibration_gate_cards(run_id, spec)
