@@ -30,6 +30,7 @@ OUTPUT_ROOT = CASE_ROOT / CASE_ID
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
+LWP_SCORECARD_STEM = "scorecard_lwp_model_lwp_vs_hatpro_lwp_20260622"
 CL61_SCORECARD_STEM = "scorecard_cl61_beta_att_v0_20260621"
 WBAND_RADAR_SCORECARD_STEM = "scorecard_wband_radar_z_vs_cloudnet_z_20260622"
 PAMTRA_WBAND_RADAR_SCORECARD_STEM = (
@@ -49,6 +50,7 @@ ARTIFACT_STEMS = {
     "scorecard": SCORECARD_CF_V0_STEM,
     "observation_audit": OBSERVATION_AUDIT_STEM,
     "iwc_scorecard": IWC_SCORECARD_STEM,
+    "lwp_scorecard": LWP_SCORECARD_STEM,
     "cl61_scorecard": CL61_SCORECARD_STEM,
     "wband_radar_scorecard": WBAND_RADAR_SCORECARD_STEM,
     "pamtra_wband_radar_scorecard": PAMTRA_WBAND_RADAR_SCORECARD_STEM,
@@ -65,6 +67,7 @@ ARTIFACT_TITLES = {
     "scorecard": "CF scorecard",
     "observation_audit": "Observation audit",
     "iwc_scorecard": "IWC scorecard",
+    "lwp_scorecard": "HATPRO LWP diagnostic",
     "cl61_scorecard": "CL61 diagnostic",
     "wband_radar_scorecard": "W-band radar scorecard",
     "pamtra_wband_radar_scorecard": "PAMTRA W-band sensitivity scorecard",
@@ -857,6 +860,7 @@ DATASETS = OrderedDict(
         ("PAMTRA W-band radar", "pamtra_wband_radar"),
         ("CF scorecard", "scorecard"),
         ("IWC scorecard", "iwc_scorecard"),
+        ("HATPRO LWP diagnostic", "lwp_scorecard"),
         ("Observation audit", "observation_audit"),
         ("CL61 diagnostic", "cl61_scorecard"),
         ("W-band radar scorecard", "wband_radar_scorecard"),
@@ -1127,6 +1131,8 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
         return _observation_audit_cards(run_id, spec)
     if dataset_id == "iwc_scorecard":
         return _iwc_scorecard_cards(run_id, spec)
+    if dataset_id == "lwp_scorecard":
+        return _lwp_scorecard_cards(run_id, spec)
     if dataset_id == "cl61_scorecard":
         return _cl61_scorecard_cards(run_id, spec)
     if dataset_id in {"wband_radar_scorecard", "pamtra_wband_radar_scorecard"}:
@@ -1225,6 +1231,43 @@ def _iwc_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
         _card("IWP bias", _compact_float(iwp.get("iwp_bias_mean_kg_m2"))),
         _card("IWP RMSE", _compact_float(iwp.get("iwp_root_mean_square_error_kg_m2"))),
         _card("hits", occurrence.get("hits", "n/a")),
+        _card("CSI", _compact_float(occurrence.get("critical_success_index"))),
+    ]
+
+
+def _lwp_scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
+    scorecard = _artifact_json(run_id, spec, "lwp_scorecard")
+    if not scorecard:
+        return []
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return []
+    comparison = comparisons.get("hatpro_lwp") or next(iter(comparisons.values()), None)
+    if not isinstance(comparison, dict):
+        return []
+    point = comparison.get("point_metrics")
+    point = point if isinstance(point, dict) else {}
+    lwp = comparison.get("lwp_metrics")
+    lwp = lwp if isinstance(lwp, dict) else {}
+    occurrence = comparison.get("liquid_occurrence")
+    occurrence = occurrence if isinstance(occurrence, dict) else {}
+    model_mean = lwp.get("model_lwp_mean_kg_m2")
+    observed_mean = lwp.get("observed_lwp_mean_kg_m2")
+    target = (
+        float(observed_mean) / float(model_mean)
+        if isinstance(model_mean, (int, float))
+        and isinstance(observed_mean, (int, float))
+        and float(model_mean) > 0.0
+        else None
+    )
+    return [
+        _card("status", scorecard.get("scoring_status", "n/a")),
+        _card("valid times", point.get("valid_times", "n/a")),
+        _card("model LWP", _compact_float(model_mean)),
+        _card("HATPRO LWP", _compact_float(observed_mean)),
+        _card("bias kg m-2", _compact_float(lwp.get("lwp_bias_mean_kg_m2"))),
+        _card("RMSE kg m-2", _compact_float(lwp.get("lwp_root_mean_square_error_kg_m2"))),
+        _card("target ql", _compact_float(target)),
         _card("CSI", _compact_float(occurrence.get("critical_success_index"))),
     ]
 
