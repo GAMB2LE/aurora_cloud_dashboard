@@ -1029,6 +1029,9 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "cloudnet": _cloudnet_status_summary(payload.get("cloudnet")),
                 "scorecards": _scorecard_status_summary(payload.get("scorecards")),
                 "seb": _nested_status(payload, ["forward_operators", "rrtmgp_surface_energy_budget"]),
+                "scheduler_policy": _nested_status(payload, ["scheduler_policy"]),
+                "scheduler_priority": _nested_value(payload, ["scheduler_policy", "priority"], "n/a"),
+                "scheduler_actions": _scheduler_action_summary(payload.get("scheduler_policy")),
             }
         )
     return rows
@@ -1097,6 +1100,29 @@ def _nested_status(payload: dict[str, object], keys: list[str]) -> str:
             return "missing"
         value = value.get(key)
     return _dict_status(value)
+
+
+def _nested_value(payload: dict[str, object], keys: list[str], default: object = "missing") -> object:
+    value: object = payload
+    for key in keys:
+        if not isinstance(value, dict):
+            return default
+        value = value.get(key, default)
+    return value
+
+
+def _scheduler_action_summary(policy: object, limit: int = 3) -> str:
+    if not isinstance(policy, dict):
+        return "-"
+    actions = policy.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return "-"
+    names = [
+        str(action.get("action", "unknown")) if isinstance(action, dict) else str(action)
+        for action in actions
+    ]
+    suffix = "" if len(names) <= limit else f" +{len(names) - limit}"
+    return ", ".join(names[:limit]) + suffix
 
 
 def _dict_status(value: object) -> str:
@@ -1311,6 +1337,94 @@ def _operator_policy_rollup_table(index: dict[str, object] | None) -> str:
     )
 
 
+def _scheduler_policy_rollup(index: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(index, dict):
+        return {}
+    rollup = index.get("scheduler_policy_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
+def _scheduler_policy_rollup_table(index: dict[str, object] | None) -> str:
+    rollup = _scheduler_policy_rollup(index)
+    if not rollup:
+        return ""
+    action_counts = rollup.get("action_counts")
+    action_days = rollup.get("action_days")
+    if not isinstance(action_counts, dict):
+        return ""
+    action_days = action_days if isinstance(action_days, dict) else {}
+    body = []
+    for action, count in sorted(
+        action_counts.items(),
+        key=lambda item: (-int(item[1]), str(item[0])),
+    ):
+        days = action_days.get(action) if isinstance(action_days, dict) else None
+        day_text = ", ".join(str(day) for day in days) if isinstance(days, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(action))}</td>"
+            f"<td>{escape(str(count))}</td>"
+            f"<td>{escape(day_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    status_counts = rollup.get("status_counts")
+    priority_counts = rollup.get("priority_counts")
+    caveat_counts = rollup.get("caveat_counts")
+    status_text = _count_dict_text(status_counts)
+    priority_text = _count_dict_text(priority_counts)
+    caveat_text = _count_dict_text(caveat_counts)
+    return (
+        "<div class='model-section-title'>Scheduler Policy Rollup</div>"
+        f"<div class='model-subtitle'>status: {escape(status_text)}; "
+        f"priority: {escape(priority_text)}; caveats: {escape(caveat_text)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table scheduler-policy-table'>"
+        "<thead><tr><th>action</th><th>days</th><th>day list</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
+    if not isinstance(index, dict):
+        return ""
+    days = index.get("days")
+    if not isinstance(days, list):
+        return ""
+    body = []
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        actions = day.get("scheduler_policy_actions")
+        action_text = ", ".join(str(item) for item in actions) if isinstance(actions, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(day.get('day', '')))}</td>"
+            f"<td>{escape(str(day.get('scheduler_policy_status', 'unknown')))}</td>"
+            f"<td>{escape(str(day.get('scheduler_policy_priority', 'normal')))}</td>"
+            f"<td>{escape(action_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Daily Scheduler Policy</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table scheduler-policy-table'>"
+        "<thead><tr><th>day</th><th>status</th><th>priority</th><th>actions</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _count_dict_text(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    return ", ".join(f"{key}:{count}" for key, count in sorted(value.items()))
+
+
 def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key: str) -> dict[str, object]:
     if not scorecard:
         return {}
@@ -1343,12 +1457,17 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
         process_labels = summary.get("process_labels") if isinstance(summary, dict) else []
         if not isinstance(process_labels, list):
             process_labels = []
+        scheduler_policy = summary.get("scheduler_policy") if isinstance(summary, dict) else {}
+        scheduler_policy = scheduler_policy if isinstance(scheduler_policy, dict) else {}
         rows.append(
             {
                 "day": day,
                 "run_status": payload.get("status", "n/a"),
                 "summary_status": summary.get("status", "missing") if summary else "missing",
                 "gate": gate.get("status", "n/a"),
+                "scheduler": scheduler_policy.get("status", "missing"),
+                "scheduler_priority": scheduler_policy.get("priority", "n/a"),
+                "scheduler_actions": _scheduler_action_summary(scheduler_policy),
                 "era5_cf_csi": _cf_csi(summary, "era5_cloud_fraction"),
                 "les_cf_csi": _cf_csi(summary, "les_bridge_cloud_fraction"),
                 "wband_csi": _compact_float(wband_contingency.get("critical_success_index")),
@@ -1372,12 +1491,15 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['run_status']))}</td>"
             f"<td>{escape(str(row['summary_status']))}</td>"
             f"<td>{escape(str(row['gate']))}</td>"
+            f"<td>{escape(str(row['scheduler']))}</td>"
+            f"<td>{escape(str(row['scheduler_priority']))}</td>"
             f"<td>{escape(str(row['era5_cf_csi']))}</td>"
             f"<td>{escape(str(row['les_cf_csi']))}</td>"
             f"<td>{escape(str(row['wband_csi']))}</td>"
             f"<td>{escape(str(row['iwc_points']))}</td>"
             f"<td>{escape(str(row['iwc_csi']))}</td>"
             f"<td>{escape(str(row['lwc_points']))}</td>"
+            f"<td>{escape(str(row['scheduler_actions']))}</td>"
             f"<td>{escape(str(row['labels']))}</td>"
             "</tr>"
         )
@@ -1386,8 +1508,9 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
         "<table class='model-table operational-table'>"
         "<thead><tr>"
         "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
+        "<th>scheduler</th><th>priority</th>"
         "<th>ERA5 CF CSI</th><th>LES CF CSI</th><th>W-band CSI</th>"
-        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>labels</th>"
+        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>actions</th><th>labels</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -1903,6 +2026,9 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row.get('mmdf', '')))}</td>"
             f"<td>{escape(str(row.get('cloudnet', '')))}</td>"
             f"<td>{escape(str(row.get('seb', '')))}</td>"
+            f"<td>{escape(str(row.get('scheduler_policy', '')))}</td>"
+            f"<td>{escape(str(row.get('scheduler_priority', '')))}</td>"
+            f"<td>{escape(str(row.get('scheduler_actions', '')))}</td>"
             f"<td>{escape(str(row.get('scorecards', '')))}</td>"
             f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
             f"<td><code>{escape(str(row.get('compliance_json', '')))}</code></td>"
@@ -1913,7 +2039,8 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
         "<table class='model-table operational-table lasso-table'>"
         "<thead><tr>"
         "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
-        "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th><th>scorecards</th>"
+        "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th>"
+        "<th>scheduler</th><th>priority</th><th>actions</th><th>scorecards</th>"
         "<th>bundle path</th><th>compliance path</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -1928,6 +2055,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
     rows = _lasso_bundle_rows(paths)
     process_rollup = _process_skill_rollup(index)
     process_diagnoses = _process_diagnoses(diagnosis)
+    scheduler_rollup = _scheduler_policy_rollup(index)
     ready_count = sum(1 for row in rows if row.get("status") == "ready")
     compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
@@ -1940,6 +2068,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
         _card("process regimes", len(process_rollup)),
         _card("diagnosed regimes", len(process_diagnoses)),
+        _card("targeted checks", scheduler_rollup.get("targeted_day_count", "n/a")),
         _card("mixed-phase days", _process_day_count(index, "forcing_mixed_phase_support")),
         _card(
             "mixed-phase top bias",
@@ -1979,6 +2108,8 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>standalone development view</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_scheduler_policy_rollup_table(index)}"
+        f"{_scheduler_policy_day_table(index)}"
         f"{_process_diagnosis_table(diagnosis)}"
         f"{_process_skill_rollup_table(index)}"
         f"{_process_evidence_table(index)}"
@@ -2000,9 +2131,11 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "operational_run.json"
     index_pending = _index_required_pending(index)
     index_days = index.get("days", []) if isinstance(index, dict) else []
+    scheduler_rollup = _scheduler_policy_rollup(index)
     cards = [
         _card("campaign index", index.get("status", "missing") if index else "missing"),
         _card("indexed days", len(index_days) if isinstance(index_days, list) else 0),
+        _card("targeted checks", scheduler_rollup.get("targeted_day_count", "n/a")),
         _card("ERA5 CF CSI mean", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
         _card("LES CF CSI mean", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
         _card("required pending", len(index_pending)),
@@ -2027,6 +2160,8 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
+        f"{_scheduler_policy_rollup_table(index)}"
+        f"{_scheduler_policy_day_table(index)}"
         f"{_operator_policy_rollup_table(index)}"
         f"{_operational_table(rows)}"
         f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
