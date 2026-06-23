@@ -976,6 +976,33 @@ def _campaign_index() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json")
 
 
+def _operational_summary_for_day(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / "operational_summary.json")
+
+
+def _latest_operational_summary(
+    index: dict[str, object] | None,
+    paths: list[Path],
+) -> tuple[str | None, dict[str, object] | None]:
+    if isinstance(index, dict):
+        days = index.get("days")
+        if isinstance(days, list) and days:
+            for item in reversed(days):
+                if not isinstance(item, dict):
+                    continue
+                day = item.get("day")
+                if day:
+                    summary = _operational_summary_for_day(str(day))
+                    if summary:
+                        return str(day), summary
+    for path in paths:
+        day = path.parent.name
+        summary = _operational_summary_for_day(day)
+        if summary:
+            return day, summary
+    return None, None
+
+
 def _summary_scorecard(summary: dict[str, object] | None, name: str) -> dict[str, object]:
     if not summary:
         return {}
@@ -1124,6 +1151,183 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
     )
 
 
+def _scorecard_metric(comparison: dict[str, object], name: str) -> object:
+    metrics = comparison.get("metrics")
+    if not isinstance(metrics, dict):
+        return "n/a"
+    return _compact_float(metrics.get(name, "n/a"))
+
+
+def _asfs_gas_table(summary: dict[str, object] | None) -> str:
+    scorecard = _summary_scorecard(summary, "asfs_gas")
+    if not scorecard:
+        return ""
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return ""
+    body = []
+    for name in ("h2o_mole_fraction", "co2_molar_density", "licor_cell_pressure", "licor_cell_temperature"):
+        comparison = comparisons.get(name)
+        if not isinstance(comparison, dict):
+            continue
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(comparison.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('model_variable', 'missing')))}</td>"
+            f"<td>{escape(str(comparison.get('observed_variable', 'n/a')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'valid_times')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'model_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'observed_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'bias_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'root_mean_square_error')))}</td>"
+            f"<td>{escape(str(comparison.get('target_units', '')))}</td>"
+            f"<td>{escape(str(comparison.get('reason', '')))}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>ASFS Gas Readiness</div>"
+        "<div class='model-subtitle'>"
+        f"gas operator ready: {escape(str(scorecard.get('gas_operator_ready', 'n/a')))}; "
+        f"status: {escape(str(scorecard.get('scoring_status', 'n/a')))}"
+        "</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>comparison</th><th>status</th><th>model var</th><th>obs var</th>"
+        "<th>valid</th><th>model mean</th><th>obs mean</th><th>bias</th><th>RMSE</th>"
+        "<th>units</th><th>reason</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _asfs_sonic_summary(summary: dict[str, object] | None) -> str:
+    scorecard = _summary_scorecard(summary, "asfs_sonic_turbulence")
+    if not scorecard:
+        return ""
+    availability = scorecard.get("input_variable_availability")
+    availability = availability if isinstance(availability, dict) else {}
+    blockers = scorecard.get("readiness_blockers")
+    blocker_text = ", ".join(str(item) for item in blockers) if isinstance(blockers, list) else "n/a"
+    availability_rows = []
+    for key in (
+        "raw_sonic_wind_available",
+        "raw_sonic_wind_variables",
+        "earth_aligned_wind_available",
+        "earth_aligned_wind_variables",
+        "quality_flag_variables",
+        "inclinometer_variables",
+    ):
+        value = availability.get(key, "n/a")
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value) if value else "none"
+        availability_rows.append(
+            "<tr>"
+            f"<th>{escape(key)}</th>"
+            f"<td>{escape(str(value))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>ASFS Sonic Readiness</div>"
+        "<div class='model-subtitle'>"
+        f"turbulence ready: {escape(str(scorecard.get('turbulence_operator_ready', 'n/a')))}; "
+        f"observation processing ready: {escape(str(scorecard.get('observation_processing_ready', 'n/a')))}; "
+        f"rotation: {escape(str(scorecard.get('rotation_policy', 'n/a')))}"
+        "</div>"
+        "<div class='model-subtitle'>"
+        f"blockers: {escape(blocker_text)}"
+        "</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        f"<tbody>{''.join(availability_rows)}</tbody>"
+        "</table></div>"
+        f"{_asfs_sonic_mean_table(scorecard)}"
+        f"{_asfs_sonic_turbulence_table(scorecard)}"
+    )
+
+
+def _asfs_sonic_mean_table(scorecard: dict[str, object]) -> str:
+    comparisons = scorecard.get("mean_comparisons")
+    if not isinstance(comparisons, dict):
+        return ""
+    body = []
+    for name, comparison in comparisons.items():
+        if not isinstance(comparison, dict):
+            continue
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{escape(str(comparison.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('model_variable', 'missing')))}</td>"
+            f"<td>{escape(str(comparison.get('observed_variable', 'n/a')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'valid_times')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'bias_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'root_mean_square_error')))}</td>"
+            f"<td>{escape(str(comparison.get('target_units', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>sonic mean</th><th>status</th><th>model var</th><th>obs var</th>"
+        "<th>valid</th><th>bias</th><th>RMSE</th><th>units</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _asfs_sonic_turbulence_table(scorecard: dict[str, object]) -> str:
+    turbulence = scorecard.get("turbulence_summary")
+    if not isinstance(turbulence, dict):
+        return ""
+    names = (
+        "observed_tke_proxy",
+        "model_surface_tke",
+        "model_surface_wind_variance",
+        "model_surface_temperature_variance",
+        "tke_proxy_comparison",
+    )
+    body = []
+    for name in names:
+        item = turbulence.get(name)
+        if not isinstance(item, dict):
+            continue
+        mean = (
+            item.get("window_tke_proxy_mean")
+            if "window_tke_proxy_mean" in item
+            else item.get("value_mean")
+        )
+        if mean is None and isinstance(item.get("metrics"), dict):
+            mean = item["metrics"].get("model_mean")
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(item.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(item.get('science_policy', '')))}</td>"
+            f"<td>{escape(str(item.get('model_variable', item.get('observed_variable', 'n/a'))))}</td>"
+            f"<td>{escape(str(_compact_float(item.get('valid_times', item.get('valid_windows', 'n/a')))))}</td>"
+            f"<td>{escape(str(_compact_float(mean)))}</td>"
+            f"<td>{escape(str(item.get('target_units', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>turbulence item</th><th>status</th><th>policy</th><th>variable</th>"
+        "<th>valid</th><th>mean</th><th>units</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _campaign_index_table(index: dict[str, object] | None) -> str:
     if not index:
         return ""
@@ -1164,6 +1368,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
     paths = _operational_run_paths()
     rows = _operational_rows(paths)
     latest = rows[0] if rows else {}
+    latest_summary_day, latest_summary = _latest_operational_summary(index, paths)
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "operational_run.json"
     index_pending = _index_required_pending(index)
     index_days = index.get("days", []) if isinstance(index, dict) else []
@@ -1195,6 +1400,9 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
         f"{_operational_table(rows)}"
+        f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
+        f"{_asfs_sonic_summary(latest_summary)}"
+        f"{_asfs_gas_table(latest_summary)}"
         f"<div class='model-subtitle'>pending required: {escape(', '.join(index_pending) if index_pending else 'none')}</div>"
         f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
         "</div>"
@@ -2317,6 +2525,12 @@ body, .bk {
     font-size: 12px;
     color: #5f6c7b;
 }
+.model-section-title {
+    margin-top: 8px;
+    font-size: 14px;
+    font-weight: 650;
+    color: #22313f;
+}
 .model-pill {
     display: inline-flex;
     align-items: center;
@@ -2382,6 +2596,9 @@ body, .bk {
 }
 .operational-table {
     min-width: 980px;
+}
+.asfs-detail-table {
+    min-width: 920px;
 }
 .scorecard-image {
     display: block;
