@@ -976,6 +976,108 @@ def _campaign_index() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json")
 
 
+def _lasso_bundle_paths(limit: int = 31) -> list[Path]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return []
+    paths = sorted(days_root.glob("*/lasso_bundle/bundle.json"), reverse=True)
+    return paths[:limit]
+
+
+def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
+    rows = []
+    for path in paths:
+        payload = _read_json(path)
+        if not payload:
+            rows.append(
+                {
+                    "day": path.parents[1].name,
+                    "status": "unreadable",
+                    "bundle_json": str(path),
+                    "modf": "missing",
+                    "mmdf": "missing",
+                    "cloudnet": "missing",
+                    "scorecards": "missing",
+                    "seb": "missing",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "day": payload.get("day", path.parents[1].name),
+                "status": payload.get("status", "unknown"),
+                "bundle_json": payload.get("bundle_json", str(path)),
+                "bundle_markdown": payload.get("bundle_markdown"),
+                "modf": _product_status_summary(payload.get("modf_products")),
+                "mmdf": _product_status_summary(payload.get("mmdf_products")),
+                "cloudnet": _cloudnet_status_summary(payload.get("cloudnet")),
+                "scorecards": _scorecard_status_summary(payload.get("scorecards")),
+                "seb": _nested_status(payload, ["forward_operators", "rrtmgp_surface_energy_budget"]),
+            }
+        )
+    return rows
+
+
+def _product_status_summary(products: object) -> str:
+    if not isinstance(products, dict) or not products:
+        return "missing"
+    counts: dict[str, int] = {}
+    for product in products.values():
+        if isinstance(product, dict):
+            status = str(product.get("status", "unknown"))
+            counts[status] = counts.get(status, 0) + 1
+    if not counts:
+        return "missing"
+    return ", ".join(f"{status}:{count}" for status, count in sorted(counts.items()))
+
+
+def _cloudnet_status_summary(cloudnet: object) -> str:
+    if not isinstance(cloudnet, dict):
+        return "missing"
+    products = cloudnet.get("products")
+    if not isinstance(products, dict):
+        return "missing"
+    categorize = _dict_status(products.get("categorize"))
+    l3_cf = _dict_status(products.get("l3_cf_era5"))
+    lwc = _dict_status(products.get("lwc_source"))
+    iwc = _dict_status(products.get("iwc_source"))
+    return f"cat:{categorize}; cf:{l3_cf}; lwc:{lwc}; iwc:{iwc}"
+
+
+def _scorecard_status_summary(scorecards: object) -> str:
+    if not isinstance(scorecards, dict):
+        return "missing"
+    written = 0
+    diagnostic = 0
+    missing = 0
+    for scorecard in scorecards.values():
+        if not isinstance(scorecard, dict):
+            continue
+        status = str(scorecard.get("status", "missing"))
+        if status == "ready":
+            written += 1
+        elif status == "diagnostic_only":
+            diagnostic += 1
+        else:
+            missing += 1
+    return f"ready:{written}; diagnostic:{diagnostic}; missing:{missing}"
+
+
+def _nested_status(payload: dict[str, object], keys: list[str]) -> str:
+    value: object = payload
+    for key in keys:
+        if not isinstance(value, dict):
+            return "missing"
+        value = value.get(key)
+    return _dict_status(value)
+
+
+def _dict_status(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("status", "missing"))
+    return "missing"
+
+
 def _operational_summary_for_day(day: str) -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / "operational_summary.json")
 
@@ -1469,6 +1571,66 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
     )
+
+
+def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{escape(str(row.get('status', '')))}</td>"
+            f"<td>{escape(str(row.get('modf', '')))}</td>"
+            f"<td>{escape(str(row.get('mmdf', '')))}</td>"
+            f"<td>{escape(str(row.get('cloudnet', '')))}</td>"
+            f"<td>{escape(str(row.get('seb', '')))}</td>"
+            f"<td>{escape(str(row.get('scorecards', '')))}</td>"
+            f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table lasso-table'>"
+        "<thead><tr>"
+        "<th>day</th><th>bundle</th><th>MODF</th><th>MMDF</th>"
+        "<th>Cloudnet</th><th>SEB</th><th>scorecards</th><th>path</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
+    paths = _lasso_bundle_paths()
+    rows = _lasso_bundle_rows(paths)
+    ready_count = sum(1 for row in rows if row.get("status") == "ready")
+    latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
+    cards = [
+        _card("bundles", len(rows)),
+        _card("ready", ready_count),
+        _card("latest day", rows[0].get("day", "missing") if rows else "missing"),
+        _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
+        _card("latest updated", _format_mtime(latest_path)),
+    ]
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>AURORA-LASSO Case Library</div>"
+        "<div class='model-subtitle'>Daily Cloudnet-centred MODF/MMDF virtual-observatory bundles</div>"
+        "</div>"
+        "<div class='model-pill'>standalone development view</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_lasso_bundle_table(rows)}"
+        f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
+        "</div>"
+    )
+    if not rows:
+        html += "<p>No AURORA-LASSO bundles found yet.</p>"
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
 
 
 def _operational_panel(_clicks: int = 0) -> pn.Column:
@@ -2589,6 +2751,7 @@ plot_panel = pn.bind(
 )
 leaderboard_panel = pn.bind(_leaderboard_panel, refresh_button.param.clicks)
 operational_panel = pn.bind(_operational_panel, refresh_button.param.clicks)
+lasso_bundle_panel = pn.bind(_lasso_bundle_panel, refresh_button.param.clicks)
 
 CSS = """
 body, .bk {
@@ -2774,6 +2937,13 @@ share = pn.Card(
 
 template.main[:] = [
     pn.Column(
+        pn.Card(
+            pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
+            title="AURORA-LASSO Case Library",
+            collapsible=True,
+            collapsed=False,
+            sizing_mode="stretch_width",
+        ),
         pn.Card(
             pn.panel(operational_panel, sizing_mode="stretch_width"),
             title="Operational Campaign",
