@@ -972,6 +972,10 @@ def _direct_scorecard(day: str, name: str) -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{name}.json")
 
 
+def _campaign_index() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json")
+
+
 def _summary_scorecard(summary: dict[str, object] | None, name: str) -> dict[str, object]:
     if not summary:
         return {}
@@ -991,6 +995,50 @@ def _cf_csi(summary: dict[str, object] | None, name: str) -> object:
     if not isinstance(comparison, dict):
         return "n/a"
     return _compact_float(comparison.get("critical_success_index"))
+
+
+def _index_cf_metric(
+    index: dict[str, object] | None,
+    scorecard_name: str,
+    observed_variable: str,
+    metric: str = "critical_success_index_mean",
+) -> object:
+    if not index:
+        return "n/a"
+    scorecards = index.get("scorecard_rollup")
+    if not isinstance(scorecards, dict):
+        return "n/a"
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    metrics = scorecard.get("cloud_fraction_metrics")
+    if not isinstance(metrics, dict):
+        return "n/a"
+    variable = metrics.get(observed_variable)
+    if not isinstance(variable, dict):
+        return "n/a"
+    return _compact_float(variable.get(metric))
+
+
+def _index_required_pending(index: dict[str, object] | None) -> list[str]:
+    if not index:
+        return []
+    components = index.get("component_rollup")
+    if not isinstance(components, dict):
+        return []
+    pending = []
+    for name, component in components.items():
+        if not isinstance(component, dict):
+            continue
+        if not component.get("required_for_full_virtual_observatory"):
+            continue
+        try:
+            not_ready = int(component.get("not_ready_day_count", 0))
+        except (TypeError, ValueError):
+            not_ready = 0
+        if not_ready:
+            pending.append(f"{name} ({not_ready} d)")
+    return pending
 
 
 def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key: str) -> dict[str, object]:
@@ -1076,12 +1124,55 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
     )
 
 
+def _campaign_index_table(index: dict[str, object] | None) -> str:
+    if not index:
+        return ""
+    days = index.get("days")
+    if not isinstance(days, list) or not days:
+        return ""
+    body = []
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        missing = day.get("missing_required_components")
+        if isinstance(missing, list) and missing:
+            missing_text = ", ".join(str(item) for item in missing[:5])
+        else:
+            missing_text = "none"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(day.get('day', '')))}</td>"
+            f"<td>{escape(str(day.get('summary_status', '')))}</td>"
+            f"<td>{escape(str(day.get('release_gate_status', '')))}</td>"
+            f"<td>{escape(str(_compact_float(day.get('common_overlap_hours'))))}</td>"
+            f"<td>{escape(missing_text)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr>"
+        "<th>day</th><th>summary</th><th>release gate</th><th>overlap h</th><th>missing required</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _operational_panel(_clicks: int = 0) -> pn.Column:
+    index = _campaign_index()
     paths = _operational_run_paths()
     rows = _operational_rows(paths)
     latest = rows[0] if rows else {}
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "operational_run.json"
+    index_pending = _index_required_pending(index)
+    index_days = index.get("days", []) if isinstance(index, dict) else []
     cards = [
+        _card("campaign index", index.get("status", "missing") if index else "missing"),
+        _card("indexed days", len(index_days) if isinstance(index_days, list) else 0),
+        _card("ERA5 CF CSI mean", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
+        _card("LES CF CSI mean", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
+        _card("required pending", len(index_pending)),
         _card("latest day", latest.get("day", "missing")),
         _card("run", latest.get("run_status", "missing")),
         _card("gate", latest.get("gate", "missing")),
@@ -1102,7 +1193,9 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-pill'>{escape(str(_format_mtime(latest_path)))}</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_campaign_index_table(index)}"
         f"{_operational_table(rows)}"
+        f"<div class='model-subtitle'>pending required: {escape(', '.join(index_pending) if index_pending else 'none')}</div>"
         f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
         "</div>"
     )
