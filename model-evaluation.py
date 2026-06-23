@@ -1068,6 +1068,50 @@ def _index_required_pending(index: dict[str, object] | None) -> list[str]:
     return pending
 
 
+def _operator_policy_rollup_table(index: dict[str, object] | None) -> str:
+    if not isinstance(index, dict):
+        return ""
+    rollup = index.get("operator_policy_rollup")
+    if not isinstance(rollup, dict):
+        return ""
+    body = []
+    for name in ("gas", "turbulence", "radiation"):
+        policy = rollup.get(name)
+        if not isinstance(policy, dict):
+            continue
+        blockers = policy.get("blocker_counts")
+        top_blockers = "-"
+        if isinstance(blockers, dict) and blockers:
+            ranked = sorted(
+                blockers.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )
+            top_blockers = ", ".join(f"{key} ({value})" for key, value in ranked[:4])
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(policy.get('ready_day_count', 0)))}</td>"
+            f"<td>{escape(str(policy.get('not_ready_day_count', 0)))}</td>"
+            f"<td>{escape(str(policy.get('latest_status', 'unknown')))}</td>"
+            f"<td>{escape(str(policy.get('latest_ready', False)))}</td>"
+            f"<td>{escape(top_blockers)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Campaign Operator Policy Rollup</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>operator</th><th>ready days</th><th>not-ready days</th>"
+        "<th>latest status</th><th>latest ready</th><th>top blockers</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key: str) -> dict[str, object]:
     if not scorecard:
         return {}
@@ -1458,6 +1502,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
+        f"{_operator_policy_rollup_table(index)}"
         f"{_operational_table(rows)}"
         f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
         f"{_operator_policy_table(latest_summary)}"
