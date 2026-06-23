@@ -1165,6 +1165,8 @@ def _asfs_gas_table(summary: dict[str, object] | None) -> str:
     comparisons = scorecard.get("comparisons")
     if not isinstance(comparisons, dict):
         return ""
+    blockers = scorecard.get("gas_operator_blockers")
+    blocker_text = ", ".join(str(item) for item in blockers) if isinstance(blockers, list) else "n/a"
     body = []
     for name in ("h2o_mole_fraction", "co2_molar_density", "licor_cell_pressure", "licor_cell_temperature"):
         comparison = comparisons.get(name)
@@ -1174,6 +1176,8 @@ def _asfs_gas_table(summary: dict[str, object] | None) -> str:
             "<tr>"
             f"<td>{escape(name)}</td>"
             f"<td>{escape(str(comparison.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('production_ready', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('model_science_policy', '')))}</td>"
             f"<td>{escape(str(comparison.get('model_variable', 'missing')))}</td>"
             f"<td>{escape(str(comparison.get('observed_variable', 'n/a')))}</td>"
             f"<td>{escape(str(_scorecard_metric(comparison, 'valid_times')))}</td>"
@@ -1193,10 +1197,13 @@ def _asfs_gas_table(summary: dict[str, object] | None) -> str:
         f"gas operator ready: {escape(str(scorecard.get('gas_operator_ready', 'n/a')))}; "
         f"status: {escape(str(scorecard.get('scoring_status', 'n/a')))}"
         "</div>"
+        "<div class='model-subtitle'>"
+        f"blockers: {escape(blocker_text)}"
+        "</div>"
         "<div class='model-table-wrap'>"
         "<table class='model-table asfs-detail-table'>"
         "<thead><tr>"
-        "<th>comparison</th><th>status</th><th>model var</th><th>obs var</th>"
+        "<th>comparison</th><th>status</th><th>production</th><th>policy</th><th>model var</th><th>obs var</th>"
         "<th>valid</th><th>model mean</th><th>obs mean</th><th>bias</th><th>RMSE</th>"
         "<th>units</th><th>reason</th>"
         "</tr></thead>"
