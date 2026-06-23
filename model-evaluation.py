@@ -1172,6 +1172,47 @@ def _index_cf_metric(
     return _compact_float(variable.get(metric))
 
 
+def _process_skill_rollup(index: dict[str, object] | None) -> dict[str, object]:
+    if not index:
+        return {}
+    rollup = index.get("process_skill_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
+def _process_skill_metric(
+    index: dict[str, object] | None,
+    label: str,
+    scorecard_name: str,
+    observed_variable: str,
+    metric: str = "critical_success_index_mean",
+) -> object:
+    rollup = _process_skill_rollup(index)
+    item = rollup.get(label)
+    if not isinstance(item, dict):
+        return "n/a"
+    scorecards = item.get("scorecards")
+    if not isinstance(scorecards, dict):
+        return "n/a"
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    metrics = scorecard.get("cloud_fraction_metrics")
+    if not isinstance(metrics, dict):
+        return "n/a"
+    variable = metrics.get(observed_variable)
+    if not isinstance(variable, dict):
+        return "n/a"
+    return _compact_float(variable.get(metric))
+
+
+def _process_day_count(index: dict[str, object] | None, label: str) -> object:
+    rollup = _process_skill_rollup(index)
+    item = rollup.get(label)
+    if not isinstance(item, dict):
+        return 0
+    return item.get("day_count", 0)
+
+
 def _index_required_pending(index: dict[str, object] | None) -> list[str]:
     if not index:
         return []
@@ -1596,6 +1637,73 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
     )
 
 
+def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16) -> str:
+    rollup = _process_skill_rollup(index)
+    if not rollup:
+        return ""
+    rows = []
+    for label, item in sorted(
+        rollup.items(),
+        key=lambda pair: (
+            -int(pair[1].get("day_count", 0)) if isinstance(pair[1], dict) else 0,
+            str(pair[0]),
+        ),
+    )[:limit]:
+        if not isinstance(item, dict):
+            continue
+        scorecards = item.get("scorecards")
+        scorecards = scorecards if isinstance(scorecards, dict) else {}
+        era5 = _metric_block(scorecards, "era5_cloud_fraction", "cf_V")
+        les = _metric_block(scorecards, "les_bridge_cloud_fraction", "cf_V")
+        cloudnet = _metric_block(scorecards, "cloudnet_cloud_fraction", "cf_V")
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(label))}</td>"
+            f"<td>{escape(str(item.get('day_count', 0)))}</td>"
+            f"<td>{escape(str(item.get('full_virtual_observatory_ready_day_count', 0)))}</td>"
+            f"<td>{escape(str(era5.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(era5.get('pod', 'n/a')))}</td>"
+            f"<td>{escape(str(era5.get('far', 'n/a')))}</td>"
+            f"<td>{escape(str(les.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(cloudnet.get('csi', 'n/a')))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table process-skill-table'>"
+        "<thead><tr>"
+        "<th>process label</th><th>days</th><th>full VO days</th>"
+        "<th>ERA5 CSI</th><th>ERA5 POD</th><th>ERA5 FAR</th>"
+        "<th>LES CSI</th><th>Cloudnet CSI</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _metric_block(
+    scorecards: dict[str, object],
+    scorecard_name: str,
+    observed_variable: str,
+) -> dict[str, object]:
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return {}
+    metrics = scorecard.get("cloud_fraction_metrics")
+    if not isinstance(metrics, dict):
+        return {}
+    variable = metrics.get(observed_variable)
+    if not isinstance(variable, dict):
+        return {}
+    return {
+        "csi": _compact_float(variable.get("critical_success_index_mean")),
+        "pod": _compact_float(variable.get("probability_of_detection_mean")),
+        "far": _compact_float(variable.get("false_alarm_ratio_mean")),
+    }
+
+
 def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
     if not rows:
         return ""
@@ -1630,8 +1738,10 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
 
 
 def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
+    index = _campaign_index()
     paths = _lasso_bundle_paths()
     rows = _lasso_bundle_rows(paths)
+    process_rollup = _process_skill_rollup(index)
     ready_count = sum(1 for row in rows if row.get("status") == "ready")
     compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
@@ -1642,6 +1752,26 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest day", rows[0].get("day", "missing") if rows else "missing"),
         _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
         _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
+        _card("process regimes", len(process_rollup)),
+        _card("mixed-phase days", _process_day_count(index, "forcing_mixed_phase_support")),
+        _card(
+            "high-cloud ERA5 CSI",
+            _process_skill_metric(
+                index,
+                "forcing_high_cloud_support",
+                "era5_cloud_fraction",
+                "cf_V",
+            ),
+        ),
+        _card(
+            "mid-cloud ERA5 CSI",
+            _process_skill_metric(
+                index,
+                "forcing_mid_cloud_support",
+                "era5_cloud_fraction",
+                "cf_V",
+            ),
+        ),
         _card("latest updated", _format_mtime(latest_path)),
     ]
     html = (
@@ -1654,6 +1784,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>standalone development view</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_process_skill_rollup_table(index)}"
         f"{_lasso_bundle_table(rows)}"
         f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
         "</div>"
