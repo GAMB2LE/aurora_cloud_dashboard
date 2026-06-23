@@ -976,6 +976,10 @@ def _campaign_index() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json")
 
 
+def _campaign_process_diagnosis() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_process_diagnosis.json")
+
+
 def _lasso_bundle_paths(limit: int = 31) -> list[Path]:
     days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
     if not days_root.exists():
@@ -1211,6 +1215,35 @@ def _process_day_count(index: dict[str, object] | None, label: str) -> object:
     if not isinstance(item, dict):
         return 0
     return item.get("day_count", 0)
+
+
+def _process_diagnoses(diagnosis: dict[str, object] | None) -> dict[str, object]:
+    if not diagnosis:
+        return {}
+    processes = diagnosis.get("process_diagnoses")
+    return processes if isinstance(processes, dict) else {}
+
+
+def _diagnosis_metric(
+    diagnosis: dict[str, object] | None,
+    label: str,
+    metric: str,
+    scorecard_name: str = "era5_cloud_fraction",
+    observed_variable: str = "cf_V",
+) -> object:
+    process = _process_diagnoses(diagnosis).get(label)
+    if not isinstance(process, dict):
+        return "n/a"
+    scorecards = process.get("scorecards")
+    if not isinstance(scorecards, dict):
+        return "n/a"
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    comparison = scorecard.get(observed_variable)
+    if not isinstance(comparison, dict):
+        return "n/a"
+    return _compact_float(comparison.get(metric))
 
 
 def _index_required_pending(index: dict[str, object] | None) -> list[str]:
@@ -1736,6 +1769,64 @@ def _process_evidence_table(
     )
 
 
+def _process_diagnosis_table(diagnosis: dict[str, object] | None, limit: int = 16) -> str:
+    processes = _process_diagnoses(diagnosis)
+    if not processes:
+        return ""
+    body = []
+    for label, process in sorted(
+        processes.items(),
+        key=lambda pair: (
+            -int(pair[1].get("day_count", 0)) if isinstance(pair[1], dict) else 0,
+            str(pair[0]),
+        ),
+    )[:limit]:
+        if not isinstance(process, dict):
+            continue
+        scorecards = process.get("scorecards")
+        scorecards = scorecards if isinstance(scorecards, dict) else {}
+        era5 = _diagnosis_comparison(scorecards, "era5_cloud_fraction", "cf_V")
+        labels = era5.get("diagnosis_labels", [])
+        label_text = ", ".join(str(item) for item in labels) if isinstance(labels, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(label))}</td>"
+            f"<td>{escape(str(process.get('day_count', 0)))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('critical_success_index_mean'))))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('false_alarm_ratio_mean'))))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('cloud_base_bias_mean_m'))))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('cloud_top_bias_mean_m'))))}</td>"
+            f"<td>{escape(label_text)}</td>"
+            f"<td>{escape(str(era5.get('interpretation', 'n/a')))}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Process Diagnosis</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table process-diagnosis-table'>"
+        "<thead><tr>"
+        "<th>process label</th><th>days</th><th>ERA5 CSI</th><th>ERA5 FAR</th>"
+        "<th>base bias m</th><th>top bias m</th><th>dominant labels</th><th>interpretation</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _diagnosis_comparison(
+    scorecards: dict[str, object],
+    scorecard_name: str,
+    observed_variable: str,
+) -> dict[str, object]:
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return {}
+    comparison = scorecard.get(observed_variable)
+    return comparison if isinstance(comparison, dict) else {}
+
+
 def _index_day_rows(index: dict[str, object] | None) -> dict[str, dict[str, object]]:
     if not isinstance(index, dict):
         return {}
@@ -1832,9 +1923,11 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
 
 def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
     index = _campaign_index()
+    diagnosis = _campaign_process_diagnosis()
     paths = _lasso_bundle_paths()
     rows = _lasso_bundle_rows(paths)
     process_rollup = _process_skill_rollup(index)
+    process_diagnoses = _process_diagnoses(diagnosis)
     ready_count = sum(1 for row in rows if row.get("status") == "ready")
     compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
@@ -1846,7 +1939,16 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
         _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
         _card("process regimes", len(process_rollup)),
+        _card("diagnosed regimes", len(process_diagnoses)),
         _card("mixed-phase days", _process_day_count(index, "forcing_mixed_phase_support")),
+        _card(
+            "mixed-phase top bias",
+            _diagnosis_metric(
+                diagnosis,
+                "forcing_mixed_phase_support",
+                "cloud_top_bias_mean_m",
+            ),
+        ),
         _card(
             "high-cloud ERA5 CSI",
             _process_skill_metric(
@@ -1877,6 +1979,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>standalone development view</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_process_diagnosis_table(diagnosis)}"
         f"{_process_skill_rollup_table(index)}"
         f"{_process_evidence_table(index)}"
         f"{_lasso_bundle_table(rows)}"
