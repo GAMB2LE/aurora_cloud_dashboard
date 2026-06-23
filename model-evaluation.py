@@ -988,12 +988,21 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
     rows = []
     for path in paths:
         payload = _read_json(path)
+        compliance_path = path.parent / "compliance.json"
+        compliance = _read_json(compliance_path)
+        compliance_status = (
+            str(compliance.get("status", "missing")) if isinstance(compliance, dict) else "missing"
+        )
+        compliance_detail = _lasso_compliance_detail(compliance)
         if not payload:
             rows.append(
                 {
                     "day": path.parents[1].name,
                     "status": "unreadable",
                     "bundle_json": str(path),
+                    "compliance": compliance_status,
+                    "compliance_detail": compliance_detail,
+                    "compliance_json": str(compliance_path),
                     "modf": "missing",
                     "mmdf": "missing",
                     "cloudnet": "missing",
@@ -1008,6 +1017,9 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "status": payload.get("status", "unknown"),
                 "bundle_json": payload.get("bundle_json", str(path)),
                 "bundle_markdown": payload.get("bundle_markdown"),
+                "compliance": compliance_status,
+                "compliance_detail": compliance_detail,
+                "compliance_json": str(compliance_path),
                 "modf": _product_status_summary(payload.get("modf_products")),
                 "mmdf": _product_status_summary(payload.get("mmdf_products")),
                 "cloudnet": _cloudnet_status_summary(payload.get("cloudnet")),
@@ -1016,6 +1028,17 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
             }
         )
     return rows
+
+
+def _lasso_compliance_detail(compliance: dict[str, object] | None) -> str:
+    if not isinstance(compliance, dict):
+        return "missing"
+    failures = compliance.get("failures")
+    warnings = compliance.get("warnings")
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    warning_count = len(warnings) if isinstance(warnings, list) else 0
+    level = compliance.get("compliance_level", "unknown")
+    return f"{level}; failures:{failure_count}; warnings:{warning_count}"
 
 
 def _product_status_summary(products: object) -> str:
@@ -1582,20 +1605,24 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
             "<tr>"
             f"<td>{escape(str(row.get('day', '')))}</td>"
             f"<td>{escape(str(row.get('status', '')))}</td>"
+            f"<td>{escape(str(row.get('compliance', '')))}</td>"
+            f"<td>{escape(str(row.get('compliance_detail', '')))}</td>"
             f"<td>{escape(str(row.get('modf', '')))}</td>"
             f"<td>{escape(str(row.get('mmdf', '')))}</td>"
             f"<td>{escape(str(row.get('cloudnet', '')))}</td>"
             f"<td>{escape(str(row.get('seb', '')))}</td>"
             f"<td>{escape(str(row.get('scorecards', '')))}</td>"
             f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
+            f"<td><code>{escape(str(row.get('compliance_json', '')))}</code></td>"
             "</tr>"
         )
     return (
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table lasso-table'>"
         "<thead><tr>"
-        "<th>day</th><th>bundle</th><th>MODF</th><th>MMDF</th>"
-        "<th>Cloudnet</th><th>SEB</th><th>scorecards</th><th>path</th>"
+        "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
+        "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th><th>scorecards</th>"
+        "<th>bundle path</th><th>compliance path</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -1606,12 +1633,15 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
     paths = _lasso_bundle_paths()
     rows = _lasso_bundle_rows(paths)
     ready_count = sum(1 for row in rows if row.get("status") == "ready")
+    compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
     cards = [
         _card("bundles", len(rows)),
         _card("ready", ready_count),
+        _card("compliance pass", compliance_pass_count),
         _card("latest day", rows[0].get("day", "missing") if rows else "missing"),
         _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
+        _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
         _card("latest updated", _format_mtime(latest_path)),
     ]
     html = (
