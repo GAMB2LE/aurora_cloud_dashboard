@@ -1158,6 +1158,58 @@ def _scorecard_metric(comparison: dict[str, object], name: str) -> object:
     return _compact_float(metrics.get(name, "n/a"))
 
 
+def _operator_policy_table(summary: dict[str, object] | None) -> str:
+    if not isinstance(summary, dict):
+        return ""
+    policies = summary.get("operator_policies")
+    if not isinstance(policies, dict):
+        return ""
+    body = []
+    for name in ("gas", "turbulence", "radiation"):
+        policy = policies.get(name)
+        if not isinstance(policy, dict):
+            continue
+        blockers = policy.get("blockers")
+        blocker_text = (
+            ", ".join(str(item) for item in blockers)
+            if isinstance(blockers, list) and blockers
+            else "-"
+        )
+        detail = []
+        if "observation_processing_ready" in policy:
+            detail.append(
+                "obs processing: "
+                + str(policy.get("observation_processing_ready", "n/a"))
+            )
+        if "full_operator_ready" in policy:
+            detail.append("full operator: " + str(policy.get("full_operator_ready", "n/a")))
+        if "comparison_count" in policy:
+            detail.append("comparisons: " + str(policy.get("comparison_count", "n/a")))
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(policy.get('status', 'unknown')))}</td>"
+            f"<td>{escape(str(policy.get('ready', False)))}</td>"
+            f"<td>{escape(str(policy.get('policy', '')))}</td>"
+            f"<td>{escape('; '.join(detail) or '-')}</td>"
+            f"<td>{escape(blocker_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Operator Policy Gate</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>operator</th><th>status</th><th>ready</th><th>policy</th>"
+        "<th>detail</th><th>blockers</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _asfs_gas_table(summary: dict[str, object] | None) -> str:
     scorecard = _summary_scorecard(summary, "asfs_gas")
     if not scorecard:
@@ -1408,6 +1460,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         f"{_campaign_index_table(index)}"
         f"{_operational_table(rows)}"
         f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
+        f"{_operator_policy_table(latest_summary)}"
         f"{_asfs_sonic_summary(latest_summary)}"
         f"{_asfs_gas_table(latest_summary)}"
         f"<div class='model-subtitle'>pending required: {escape(', '.join(index_pending) if index_pending else 'none')}</div>"
