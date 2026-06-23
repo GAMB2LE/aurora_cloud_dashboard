@@ -1225,6 +1225,11 @@ def _operator_policy_table(summary: dict[str, object] | None) -> str:
                 "obs processing: "
                 + str(policy.get("observation_processing_ready", "n/a"))
             )
+        if "turbulence_observation_processing_ready" in policy:
+            detail.append(
+                "turb obs: "
+                + str(policy.get("turbulence_observation_processing_ready", "n/a"))
+            )
         if "full_operator_ready" in policy:
             detail.append("full operator: " + str(policy.get("full_operator_ready", "n/a")))
         if "comparison_count" in policy:
