@@ -1683,6 +1683,99 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
     )
 
 
+def _process_evidence_table(
+    index: dict[str, object] | None,
+    label_limit: int = 10,
+    day_limit_per_label: int = 6,
+) -> str:
+    rollup = _process_skill_rollup(index)
+    if not rollup:
+        return ""
+    day_rows = _index_day_rows(index)
+    body = []
+    for label, item in sorted(
+        rollup.items(),
+        key=lambda pair: (
+            -int(pair[1].get("day_count", 0)) if isinstance(pair[1], dict) else 0,
+            str(pair[0]),
+        ),
+    )[:label_limit]:
+        if not isinstance(item, dict):
+            continue
+        days = item.get("days")
+        if not isinstance(days, list):
+            continue
+        for day in days[:day_limit_per_label]:
+            day_text = str(day)
+            row = day_rows.get(day_text, {})
+            summary = _operational_summary_for_day(day_text)
+            body.append(
+                "<tr>"
+                f"<td>{escape(str(label))}</td>"
+                f"<td>{escape(day_text)}</td>"
+                f"<td>{escape(str(row.get('release_gate_status', 'n/a')))}</td>"
+                f"<td>{escape(str(_cf_csi(summary, 'era5_cloud_fraction')))}</td>"
+                f"<td>{escape(str(_cf_csi(summary, 'les_bridge_cloud_fraction')))}</td>"
+                f"<td><code>{escape(_evidence_bundle_path(row, day_text))}</code></td>"
+                f"<td><code>{escape(_evidence_summary_path(row, day_text))}</code></td>"
+                f"<td><code>{escape(_evidence_scorecards_path(day_text))}</code></td>"
+                "</tr>"
+            )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Process-Regime Evidence Drill-Down</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table process-evidence-table'>"
+        "<thead><tr>"
+        "<th>process label</th><th>day</th><th>gate</th><th>ERA5 CSI</th><th>LES CSI</th>"
+        "<th>bundle</th><th>summary</th><th>scorecards</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _index_day_rows(index: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    if not isinstance(index, dict):
+        return {}
+    days = index.get("days")
+    if not isinstance(days, list):
+        return {}
+    rows: dict[str, dict[str, object]] = {}
+    for row in days:
+        if not isinstance(row, dict):
+            continue
+        day = row.get("day")
+        if day is not None:
+            rows[str(day)] = row
+    return rows
+
+
+def _evidence_bundle_path(row: dict[str, object], day: str) -> str:
+    value = row.get("lasso_bundle_json")
+    if value:
+        return str(value)
+    return str(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "bundle.json")
+
+
+def _evidence_summary_path(row: dict[str, object], day: str) -> str:
+    value = row.get("output_json")
+    if value:
+        return str(value)
+    return str(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / "operational_summary.json")
+
+
+def _evidence_scorecards_path(day: str) -> str:
+    scorecard_root = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards"
+    key_files = (
+        scorecard_root / "forcing_diagnostic.json",
+        scorecard_root / "era5_cloud_fraction.json",
+        scorecard_root / "les_bridge_cloud_fraction.json",
+    )
+    return " | ".join(str(path) for path in key_files)
+
+
 def _metric_block(
     scorecards: dict[str, object],
     scorecard_name: str,
@@ -1785,6 +1878,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_process_skill_rollup_table(index)}"
+        f"{_process_evidence_table(index)}"
         f"{_lasso_bundle_table(rows)}"
         f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
         "</div>"
