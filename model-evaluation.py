@@ -27,6 +27,12 @@ APP_DIR = Path(__file__).resolve().parent
 CASE_ROOT = Path(os.environ.get("AURORA_MODEL_EVALUATION_CASE_ROOT", "/data/aurora/les/cases"))
 CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_pilot_20260520_20260602")
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
+OPERATIONAL_CAMPAIGN_ROOT = Path(
+    os.environ.get(
+        "AURORA_MODEL_EVALUATION_CAMPAIGN_ROOT",
+        f"/data/aurora/les/campaigns/{CASE_ID}",
+    )
+)
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 CM1_CANDIDATE_LEADERBOARD_STEM = "cm1_candidate_leaderboard_20260622"
 CM1_CANDIDATE_LEADERBOARD_DIR = (
@@ -942,6 +948,167 @@ def _dataset_path(run_id: str, dataset_id: str) -> Path | None:
 
 def _scorecard_path(run_id: str, spec: dict[str, object], kind: str) -> Path | None:
     return _artifact_path(run_id, spec, "scorecard", kind)
+
+
+def _read_json(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _operational_run_paths(limit: int = 14) -> list[Path]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return []
+    paths = sorted(days_root.glob("*/operational_run.json"), reverse=True)
+    return paths[:limit]
+
+
+def _direct_scorecard(day: str, name: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{name}.json")
+
+
+def _summary_scorecard(summary: dict[str, object] | None, name: str) -> dict[str, object]:
+    if not summary:
+        return {}
+    scorecards = summary.get("scorecards")
+    if not isinstance(scorecards, dict):
+        return {}
+    scorecard = scorecards.get(name)
+    return scorecard if isinstance(scorecard, dict) else {}
+
+
+def _cf_csi(summary: dict[str, object] | None, name: str) -> object:
+    scorecard = _summary_scorecard(summary, name)
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return "n/a"
+    comparison = comparisons.get("cf_V") or comparisons.get("cf_A")
+    if not isinstance(comparison, dict):
+        return "n/a"
+    return _compact_float(comparison.get("critical_success_index"))
+
+
+def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key: str) -> dict[str, object]:
+    if not scorecard:
+        return {}
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return {}
+    comparison = comparisons.get(variable)
+    if not isinstance(comparison, dict):
+        comparison = next((item for item in comparisons.values() if isinstance(item, dict)), {})
+    occurrence = comparison.get(key) if isinstance(comparison, dict) else {}
+    return occurrence if isinstance(occurrence, dict) else {}
+
+
+def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for path in paths:
+        payload = _read_json(path)
+        if not payload:
+            continue
+        day = str(payload.get("day") or path.parent.name)
+        summary = payload.get("summary")
+        summary = summary if isinstance(summary, dict) else None
+        gate = summary.get("release_gate") if isinstance(summary, dict) else {}
+        gate = gate if isinstance(gate, dict) else {}
+        wband = _summary_scorecard(summary, "wband_radar")
+        wband_contingency = wband.get("contingency") if isinstance(wband, dict) else {}
+        wband_contingency = wband_contingency if isinstance(wband_contingency, dict) else {}
+        era5_iwc = _generic_contingency(_direct_scorecard(day, "era5_iwc"), "iwc", "ice_occurrence")
+        era5_lwc = _generic_contingency(_direct_scorecard(day, "era5_lwc"), "lwc", "liquid_occurrence")
+        process_labels = summary.get("process_labels") if isinstance(summary, dict) else []
+        if not isinstance(process_labels, list):
+            process_labels = []
+        rows.append(
+            {
+                "day": day,
+                "run_status": payload.get("status", "n/a"),
+                "summary_status": summary.get("status", "missing") if summary else "missing",
+                "gate": gate.get("status", "n/a"),
+                "era5_cf_csi": _cf_csi(summary, "era5_cloud_fraction"),
+                "les_cf_csi": _cf_csi(summary, "les_bridge_cloud_fraction"),
+                "wband_csi": _compact_float(wband_contingency.get("critical_success_index")),
+                "iwc_points": era5_iwc.get("valid_points", "n/a"),
+                "iwc_csi": _compact_float(era5_iwc.get("critical_success_index")),
+                "lwc_points": era5_lwc.get("valid_points", "n/a"),
+                "labels": ", ".join(str(item) for item in process_labels[:4]),
+            }
+        )
+    return rows
+
+
+def _operational_table(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row['day']))}</td>"
+            f"<td>{escape(str(row['run_status']))}</td>"
+            f"<td>{escape(str(row['summary_status']))}</td>"
+            f"<td>{escape(str(row['gate']))}</td>"
+            f"<td>{escape(str(row['era5_cf_csi']))}</td>"
+            f"<td>{escape(str(row['les_cf_csi']))}</td>"
+            f"<td>{escape(str(row['wband_csi']))}</td>"
+            f"<td>{escape(str(row['iwc_points']))}</td>"
+            f"<td>{escape(str(row['iwc_csi']))}</td>"
+            f"<td>{escape(str(row['lwc_points']))}</td>"
+            f"<td>{escape(str(row['labels']))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr>"
+        "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
+        "<th>ERA5 CF CSI</th><th>LES CF CSI</th><th>W-band CSI</th>"
+        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>labels</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operational_panel(_clicks: int = 0) -> pn.Column:
+    paths = _operational_run_paths()
+    rows = _operational_rows(paths)
+    latest = rows[0] if rows else {}
+    latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "operational_run.json"
+    cards = [
+        _card("latest day", latest.get("day", "missing")),
+        _card("run", latest.get("run_status", "missing")),
+        _card("gate", latest.get("gate", "missing")),
+        _card("ERA5 CF CSI", latest.get("era5_cf_csi", "n/a")),
+        _card("LES CF CSI", latest.get("les_cf_csi", "n/a")),
+        _card("W-band CSI", latest.get("wband_csi", "n/a")),
+        _card("IWC gates", latest.get("iwc_points", "n/a")),
+        _card("LWC gates", latest.get("lwc_points", "n/a")),
+        _card("records", len(rows)),
+    ]
+    summary = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Operational Campaign</div>"
+        "<div class='model-subtitle'>Daily ERA5/LES virtual-observatory evaluation records</div>"
+        "</div>"
+        f"<div class='model-pill'>{escape(str(_format_mtime(latest_path)))}</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_operational_table(rows)}"
+        f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
+        "</div>"
+    )
+    if not rows:
+        summary += "<p>No operational run records found yet.</p>"
+    return pn.Column(pn.pane.HTML(summary, sizing_mode="stretch_width"), sizing_mode="stretch_width")
 
 
 def _artifact_path(
@@ -2010,6 +2177,7 @@ plot_panel = pn.bind(
     refresh_button.param.clicks,
 )
 leaderboard_panel = pn.bind(_leaderboard_panel, refresh_button.param.clicks)
+operational_panel = pn.bind(_operational_panel, refresh_button.param.clicks)
 
 CSS = """
 body, .bk {
@@ -2119,6 +2287,9 @@ body, .bk {
 .leaderboard-table {
     min-width: 860px;
 }
+.operational-table {
+    min-width: 980px;
+}
 .scorecard-image {
     display: block;
     width: 100%;
@@ -2183,6 +2354,13 @@ share = pn.Card(
 
 template.main[:] = [
     pn.Column(
+        pn.Card(
+            pn.panel(operational_panel, sizing_mode="stretch_width"),
+            title="Operational Campaign",
+            collapsible=True,
+            collapsed=False,
+            sizing_mode="stretch_width",
+        ),
         pn.Card(
             pn.panel(leaderboard_panel, sizing_mode="stretch_width"),
             title="Candidate Leaderboard",
