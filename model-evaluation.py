@@ -881,118 +881,196 @@ DEFAULT_RUN_IDS = (
 
 INSTRUMENT_COMPARISON_SPECS = (
     {
-        "instrument": "Cloudnet cloud fraction",
+        "instrument": "Cloudnet CF",
         "model": "ERA5",
+        "model_group": "era5",
         "scorecard": "era5_cloud_fraction",
         "comparison": "cf_V",
         "basis": "Cloudnet L3 CF cf_V",
         "occurrence": "contingency",
+        "metric_family": "occurrence",
+        "caveat": "ready",
     },
     {
-        "instrument": "Cloudnet cloud fraction",
+        "instrument": "Cloudnet CF",
         "model": "LES bridge",
+        "model_group": "les_bridge",
         "scorecard": "les_bridge_cloud_fraction",
         "comparison": "cf_V",
         "basis": "Cloudnet L3 CF cf_V",
         "occurrence": "contingency",
+        "metric_family": "occurrence",
+        "caveat": "ready",
     },
     {
         "instrument": "Cloudnet LWC",
         "model": "ERA5",
+        "model_group": "era5",
         "scorecard": "era5_lwc",
         "comparison": "lwc",
         "basis": "Cloudnet L3 LWC",
         "occurrence": "liquid_occurrence",
         "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
     },
     {
         "instrument": "Cloudnet LWC",
         "model": "LES bridge",
+        "model_group": "les_bridge",
         "scorecard": "les_bridge_lwc",
         "comparison": "lwc",
         "basis": "Cloudnet L3 LWC",
         "occurrence": "liquid_occurrence",
         "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "HATPRO/LWP",
+        "model": "ERA5",
+        "model_group": "era5",
+        "scorecard": "era5_lwc",
+        "comparison": "lwc",
+        "basis": "model LWP vs audit-gated HATPRO LWP",
+        "metrics": "lwp_metrics",
+        "metric_family": "column",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "HATPRO/LWP",
+        "model": "LES bridge",
+        "model_group": "les_bridge",
+        "scorecard": "les_bridge_lwc",
+        "comparison": "lwc",
+        "basis": "model LWP vs audit-gated HATPRO LWP",
+        "metrics": "lwp_metrics",
+        "metric_family": "column",
+        "caveat": "ready",
     },
     {
         "instrument": "Cloudnet IWC",
         "model": "ERA5",
+        "model_group": "era5",
         "scorecard": "era5_iwc",
         "comparison": "iwc",
         "basis": "Cloudnet L3 IWC",
         "occurrence": "ice_occurrence",
         "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
     },
     {
         "instrument": "Cloudnet IWC",
         "model": "LES bridge",
+        "model_group": "les_bridge",
         "scorecard": "les_bridge_iwc",
         "comparison": "iwc",
         "basis": "Cloudnet L3 IWC",
         "occurrence": "ice_occurrence",
         "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
     },
     {
         "instrument": "W-band radar",
         "model": "PAMTRA/proxy",
+        "model_group": "synthetic",
         "scorecard": "wband_radar",
         "basis": "synthetic radar vs Cloudnet Z",
         "occurrence": "contingency",
         "metrics": "reflectivity_metrics",
+        "metric_family": "occurrence",
+        "caveat": "ready",
     },
     {
         "instrument": "CL61 lidar",
         "model": "synthetic diagnostic",
+        "model_group": "synthetic",
         "scorecard": "cl61_diagnostic",
         "basis": "diagnostic only; not colocated",
         "occurrence": "contingency",
+        "metric_family": "occurrence",
+        "caveat": "not_colocated",
     },
     {
         "instrument": "Surface met",
         "model": "ERA5/LES surface",
+        "model_group": "surface",
         "scorecard": "surface_met",
         "comparison": "air_temperature",
         "basis": "met station air temperature",
         "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
     },
     {
         "instrument": "ASFS radiation",
         "model": "RRTMGP/SEB",
+        "model_group": "surface",
         "scorecard": "asfs_logger_radiation_surface",
         "comparison": "longwave_downwelling",
         "basis": "ASFS logger longwave down",
         "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
     },
     {
         "instrument": "ASFS sonic",
         "model": "surface diagnostics",
+        "model_group": "surface",
         "scorecard": "asfs_sonic_turbulence",
         "comparison": "mean_x_wind",
         "basis": "sonic mean wind and turbulence",
         "metrics_group": "mean_comparisons",
         "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
     },
     {
         "instrument": "ASFS gas",
         "model": "diagnostic background",
+        "model_group": "surface",
         "scorecard": "asfs_gas",
         "comparison": "co2_molar_density",
         "basis": "LI-COR CO2 diagnostic",
         "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "diagnostic_only",
     },
 )
 
-INSTRUMENT_GALLERY_SCORECARDS = (
-    ("Cloudnet CF: ERA5", "era5_cloud_fraction"),
-    ("Cloudnet CF: LES bridge", "les_bridge_cloud_fraction"),
-    ("Cloudnet LWC: ERA5", "era5_lwc"),
-    ("Cloudnet IWC: ERA5", "era5_iwc"),
-    ("W-band radar", "wband_radar"),
-    ("CL61 lidar diagnostic", "cl61_diagnostic"),
-    ("Surface met", "surface_met"),
-    ("ASFS radiation", "asfs_logger_radiation_surface"),
-    ("ASFS sonic/turbulence", "asfs_sonic_turbulence"),
-    ("ASFS gas", "asfs_gas"),
+INSTRUMENT_GALLERY_SCORECARDS = {
+    "Cloudnet CF": (("Cloudnet CF: ERA5", "era5_cloud_fraction"), ("Cloudnet CF: LES bridge", "les_bridge_cloud_fraction")),
+    "Cloudnet LWC": (("Cloudnet LWC: ERA5", "era5_lwc"), ("Cloudnet LWC: LES bridge", "les_bridge_lwc")),
+    "HATPRO/LWP": (("LWP context: ERA5", "era5_lwc"), ("LWP context: LES bridge", "les_bridge_lwc")),
+    "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: LES bridge", "les_bridge_iwc")),
+    "W-band radar": (("W-band radar", "wband_radar"),),
+    "CL61 lidar": (("CL61 lidar diagnostic", "cl61_diagnostic"),),
+    "Surface met": (("Surface met", "surface_met"),),
+    "ASFS radiation": (("ASFS radiation", "asfs_logger_radiation_surface"),),
+    "ASFS sonic": (("ASFS sonic/turbulence", "asfs_sonic_turbulence"),),
+    "ASFS gas": (("ASFS gas", "asfs_gas"),),
+}
+
+MODEL_FILTERS = OrderedDict(
+    [
+        ("All model outputs", "all"),
+        ("ERA5", "era5"),
+        ("LES bridge", "les_bridge"),
+        ("Synthetic / forward operator", "synthetic"),
+        ("Surface / SEB diagnostics", "surface"),
+    ]
+)
+
+METRIC_FAMILY_FILTERS = OrderedDict(
+    [
+        ("All metric families", "all"),
+        ("Occurrence skill", "occurrence"),
+        ("Continuous values", "continuous"),
+        ("Column / base-top", "column"),
+        ("Readiness only", "readiness"),
+    ]
 )
 
 DATASETS = OrderedDict(
@@ -1106,6 +1184,18 @@ def _campaign_index() -> dict[str, object] | None:
 
 def _campaign_process_diagnosis() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_process_diagnosis.json")
+
+
+def load_campaign_index() -> dict[str, object] | None:
+    return _campaign_index()
+
+
+def load_day_bundle(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "bundle.json")
+
+
+def load_scorecard(day: str, name: str) -> dict[str, object] | None:
+    return _direct_scorecard(day, name)
 
 
 def _lasso_bundle_paths(limit: int = 31) -> list[Path]:
@@ -1694,9 +1784,41 @@ def _metric_from(metric_block: object, names: tuple[str, ...]) -> object:
     return "n/a"
 
 
+def _scorecard_caveat(scorecard: dict[str, object] | None, spec: dict[str, object]) -> str:
+    if not isinstance(scorecard, dict):
+        return "blocked_missing_input"
+    if scorecard.get("excluded_from_scoring"):
+        status = str(scorecard.get("scoring_status", "")).lower()
+        if "non_colocated" in status or "not colocated" in status:
+            return "not_colocated"
+        return "diagnostic_only"
+    payload_caveat = str(spec.get("caveat", "ready"))
+    if payload_caveat != "ready":
+        return payload_caveat
+    context = scorecard.get("lwp_context")
+    if isinstance(context, dict):
+        readiness = str(context.get("readiness_state", "ready"))
+        if readiness.startswith("blocked"):
+            return readiness
+    return "ready"
+
+
+def _badge(value: object) -> str:
+    text = str(value or "unknown")
+    css = "badge-ready"
+    lower = text.lower()
+    if "diagnostic" in lower or "excluded" in lower:
+        css = "badge-diagnostic"
+    elif "blocked" in lower or "missing" in lower:
+        css = "badge-blocked"
+    elif "colocated" in lower:
+        css = "badge-warning"
+    return f"<span class='status-badge {css}'>{escape(text)}</span>"
+
+
 def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, object]:
     scorecard_name = str(spec["scorecard"])
-    scorecard = _direct_scorecard(day, scorecard_name)
+    scorecard = load_scorecard(day, scorecard_name)
     payload = _comparison_payload(scorecard, spec)
     occurrence_key = spec.get("occurrence")
     occurrence = {}
@@ -1738,14 +1860,21 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
             note = str(payload.get("readiness_note", "diagnostic"))
         elif scorecard_name.endswith("_lwc"):
             note = _lwp_policy_summary(scorecard)
+    base_top = payload.get("cloud_base_top") if isinstance(payload, dict) else None
+    if not isinstance(base_top, dict) and isinstance(scorecard, dict):
+        base_top = scorecard.get("cloud_base_top")
+    base_top = base_top if isinstance(base_top, dict) else {}
 
     return {
         "day": day,
         "instrument": spec.get("instrument", ""),
         "model": spec.get("model", ""),
+        "model_group": spec.get("model_group", "all"),
+        "metric_family": spec.get("metric_family", "readiness"),
         "basis": spec.get("basis", ""),
         "scorecard": scorecard_name,
         "status": status,
+        "caveat": _scorecard_caveat(scorecard, spec),
         "valid": valid,
         "pod": _metric_from(occurrence, ("probability_of_detection",)),
         "far": _metric_from(occurrence, ("false_alarm_ratio",)),
@@ -1768,6 +1897,12 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
                 "iwp_root_mean_square_error_kg_m2",
             ),
         ),
+        "correlation": _metric_from(
+            metrics,
+            ("pearson_correlation", "lwp_pearson_correlation", "iwp_pearson_correlation"),
+        ),
+        "base_bias_m": _metric_from(base_top, ("cloud_base_bias_mean_m", "model_cloud_base_bias_mean_m")),
+        "top_bias_m": _metric_from(base_top, ("cloud_top_bias_mean_m", "model_cloud_top_bias_mean_m")),
         "note": note,
     }
 
@@ -1780,6 +1915,98 @@ def _instrument_comparison_rows(days: list[str]) -> list[dict[str, object]]:
     ]
 
 
+def build_instrument_catalog(days: list[str] | None = None) -> list[dict[str, object]]:
+    selected_days = days if days is not None else _campaign_days()
+    return _instrument_comparison_rows(selected_days)
+
+
+def _filter_instrument_rows(
+    rows: list[dict[str, object]],
+    instrument: str = "all",
+    model_group: str = "all",
+    metric_family: str = "all",
+) -> list[dict[str, object]]:
+    filtered = []
+    for row in rows:
+        if instrument != "all" and row.get("instrument") != instrument:
+            continue
+        if model_group != "all" and row.get("model_group") != model_group:
+            continue
+        if metric_family != "all" and row.get("metric_family") != metric_family:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def build_instrument_detail(
+    day: str,
+    instrument: str = "all",
+    model: str = "all",
+    metric_family: str = "all",
+) -> dict[str, object]:
+    rows = _filter_instrument_rows(
+        build_instrument_catalog([day]),
+        instrument=instrument,
+        model_group=model,
+        metric_family=metric_family,
+    )
+    caveat_counts: dict[str, int] = {}
+    for row in rows:
+        caveat = str(row.get("caveat", "unknown"))
+        caveat_counts[caveat] = caveat_counts.get(caveat, 0) + 1
+    return {
+        "day": day,
+        "instrument": instrument,
+        "model": model,
+        "metric_family": metric_family,
+        "rows": rows,
+        "caveat_counts": caveat_counts,
+    }
+
+
+def _instrument_options() -> OrderedDict[str, str]:
+    instruments = sorted({str(spec["instrument"]) for spec in INSTRUMENT_COMPARISON_SPECS})
+    return OrderedDict([("All instruments", "all"), *[(name, name) for name in instruments]])
+
+
+def _day_options() -> OrderedDict[str, str]:
+    days = _campaign_days(limit=60)
+    if not days:
+        return OrderedDict([("No campaign days found", "")])
+    return OrderedDict((day, day) for day in days)
+
+
+def _instrument_metric_cards(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        cards = [_card("selected products", 0), _card("status", "missing")]
+        return f"<div class='model-grid'>{''.join(cards)}</div>"
+    ready = sum(1 for row in rows if row.get("caveat") == "ready")
+    diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
+    blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
+    csi_values = [
+        float(row["csi"])
+        for row in rows
+        if isinstance(row.get("csi"), str) and _is_float_string(str(row.get("csi")))
+    ]
+    csi_mean = sum(csi_values) / len(csi_values) if csi_values else None
+    cards = [
+        _card("selected products", len(rows)),
+        _card("ready", ready),
+        _card("diagnostic", diagnostic),
+        _card("blocked", blocked),
+        _card("mean CSI", _compact_float(csi_mean) if csi_mean is not None else "n/a"),
+    ]
+    return f"<div class='model-grid'>{''.join(cards)}</div>"
+
+
+def _is_float_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
     if not rows:
         return "<p>No instrument comparison records found yet.</p>"
@@ -1790,6 +2017,7 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['day']))}</td>"
             f"<td>{escape(str(row['instrument']))}</td>"
             f"<td>{escape(str(row['model']))}</td>"
+            f"<td>{_badge(row['caveat'])}</td>"
             f"<td>{escape(str(row['status']))}</td>"
             f"<td>{escape(str(row['basis']))}</td>"
             f"<td>{escape(str(row['valid']))}</td>"
@@ -1798,6 +2026,9 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['csi']))}</td>"
             f"<td>{escape(str(row['bias']))}</td>"
             f"<td>{escape(str(row['rmse']))}</td>"
+            f"<td>{escape(str(row['correlation']))}</td>"
+            f"<td>{escape(str(row['base_bias_m']))}</td>"
+            f"<td>{escape(str(row['top_bias_m']))}</td>"
             f"<td><code>{escape(str(row['scorecard']))}</code></td>"
             f"<td>{escape(str(row['note']))}</td>"
             "</tr>"
@@ -1806,8 +2037,9 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table instrument-comparison-table'>"
         "<thead><tr><th>day</th><th>instrument</th><th>model/output</th>"
-        "<th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
-        "<th>CSI</th><th>bias</th><th>RMSE</th><th>scorecard</th><th>note</th>"
+        "<th>caveat</th><th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
+        "<th>CSI</th><th>bias</th><th>RMSE</th><th>corr</th><th>base bias m</th>"
+        "<th>top bias m</th><th>scorecard</th><th>note</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -1815,7 +2047,7 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
 
 
 def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
-    scorecard = _direct_scorecard(day, scorecard_name)
+    scorecard = load_scorecard(day, scorecard_name)
     if not isinstance(scorecard, dict):
         return None
     value = scorecard.get("output_png")
@@ -1827,11 +2059,19 @@ def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
     return fallback if fallback.exists() else None
 
 
-def _instrument_scorecard_gallery(day: str | None) -> str:
+def render_scorecard_gallery(day: str | None, instrument: str = "all") -> str:
     if not day:
         return ""
     cards = []
-    for title, scorecard_name in INSTRUMENT_GALLERY_SCORECARDS:
+    if instrument == "all":
+        gallery_items = [
+            item
+            for items in INSTRUMENT_GALLERY_SCORECARDS.values()
+            for item in items
+        ]
+    else:
+        gallery_items = list(INSTRUMENT_GALLERY_SCORECARDS.get(instrument, ()))
+    for title, scorecard_name in gallery_items:
         png_path = _scorecard_png_path(day, scorecard_name)
         if png_path is None:
             continue
@@ -1849,39 +2089,29 @@ def _instrument_scorecard_gallery(day: str | None) -> str:
     return "<div class='instrument-plot-grid'>" + "".join(cards) + "</div>"
 
 
-def _instrument_comparison_panel(_clicks: int = 0) -> pn.Column:
-    days = _campaign_days()
-    latest_day = days[0] if days else None
-    rows = _instrument_comparison_rows(days)
-    ready_like = sum(
-        1
-        for row in rows
-        if str(row.get("status", "")).lower() in {"scored", "available", "ready"}
-    )
-    diagnostic = sum(
-        1
-        for row in rows
-        if "diagnostic" in str(row.get("status", "")).lower()
-        or "excluded" in str(row.get("status", "")).lower()
-    )
-    cards = [
-        _card("latest day", latest_day or "missing"),
-        _card("days shown", len(days)),
-        _card("comparison rows", len(rows)),
-        _card("scored/available", ready_like),
-        _card("diagnostic/excluded", diagnostic),
-    ]
+def _instrument_comparison_panel(
+    day: str,
+    instrument: str,
+    model_group: str,
+    metric_family: str,
+    _clicks: int = 0,
+) -> pn.Column:
+    detail = build_instrument_detail(day, instrument, model_group, metric_family)
+    rows = detail["rows"] if isinstance(detail.get("rows"), list) else []
+    caveats = detail.get("caveat_counts")
+    caveat_text = _count_dict_text(caveats)
     html = (
         "<div class='model-shell operational-shell'>"
         "<div class='model-headline'>"
         "<div>"
         "<div class='model-title'>Instrument Comparisons</div>"
-        "<div class='model-subtitle'>Current campaign model outputs compared with observation products</div>"
+        "<div class='model-subtitle'>Model and synthetic outputs compared with active observation products</div>"
         "</div>"
-        "<div class='model-pill'>active products only</div>"
+        f"<div class='model-pill'>{escape(day or 'no day selected')}</div>"
         "</div>"
-        f"<div class='model-grid'>{''.join(cards)}</div>"
-        f"{_instrument_scorecard_gallery(latest_day)}"
+        f"{_instrument_metric_cards(rows)}"
+        f"<div class='model-subtitle'>caveats: {escape(caveat_text)}</div>"
+        f"{render_scorecard_gallery(day, instrument)}"
         f"{_instrument_comparison_table(rows)}"
         "</div>"
     )
@@ -2477,11 +2707,91 @@ def _metric_block(
     }
 
 
-def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
+def _evaluation_schematic() -> str:
+    return """
+    <div class="schematic">
+      <div class="schematic-col">
+        <div class="schematic-title">Observations</div>
+        <div class="schematic-box">Cloud radar / W-band</div>
+        <div class="schematic-box">CL61 lidar</div>
+        <div class="schematic-box">HATPRO LWP</div>
+        <div class="schematic-box">ASFS met, radiation, sonic, gas</div>
+        <div class="schematic-box">Cloudnet source products</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-col">
+        <div class="schematic-title">Model Inputs</div>
+        <div class="schematic-box">ERA5</div>
+        <div class="schematic-box">CM1 / LES daily recipe</div>
+        <div class="schematic-box">LES bridge subcolumn product</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-col">
+        <div class="schematic-title">Forward Operators</div>
+        <div class="schematic-box">Cloudnet CF / LWC / IWC</div>
+        <div class="schematic-box">PAMTRA / W-band radar</div>
+        <div class="schematic-box">CL61 diagnostic lidar</div>
+        <div class="schematic-box">RRTMGP / SEB</div>
+        <div class="schematic-box">ASFS surface diagnostics</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-col">
+        <div class="schematic-title">Review Outputs</div>
+        <div class="schematic-box">Scorecards</div>
+        <div class="schematic-box">AURORA-LASSO bundle</div>
+        <div class="schematic-box">Dashboard</div>
+      </div>
+    </div>
+    """
+
+
+def _overview_panel(_clicks: int = 0) -> pn.Column:
+    index = load_campaign_index()
+    days = _campaign_days()
+    latest_day = days[0] if days else ""
+    operational_qa = _operational_qa_rollup(index)
+    rows = build_instrument_catalog([latest_day]) if latest_day else []
+    ready = sum(1 for row in rows if row.get("caveat") == "ready")
+    diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
+    blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
+    cards = [
+        _card("latest day", latest_day or "missing"),
+        _card("campaign", index.get("status", "missing") if isinstance(index, dict) else "missing"),
+        _card("QA ready days", operational_qa.get("ready_day_count", "n/a")),
+        _card("QA incomplete", operational_qa.get("qa_incomplete_day_count", "n/a")),
+        _card("ready products", ready),
+        _card("diagnostic products", diagnostic),
+        _card("blocked products", blocked),
+        _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
+        _card("LES CF CSI", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
+    ]
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>AURORA-LASSO Evaluation Overview</div>"
+        "<div class='model-subtitle'>External science-review view of active campaign products</div>"
+        "</div>"
+        "<div class='model-pill'>active campaign only</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_evaluation_schematic()}"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = False) -> str:
     if not rows:
         return ""
     body = []
     for row in rows:
+        path_cells = ""
+        if include_paths:
+            path_cells = (
+                f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
+                f"<td><code>{escape(str(row.get('compliance_json', '')))}</code></td>"
+            )
         body.append(
             "<tr>"
             f"<td>{escape(str(row.get('day', '')))}</td>"
@@ -2497,10 +2807,10 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row.get('operational_qa', '')))}</td>"
             f"<td>{escape(str(row.get('scheduler_actions', '')))}</td>"
             f"<td>{escape(str(row.get('scorecards', '')))}</td>"
-            f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
-            f"<td><code>{escape(str(row.get('compliance_json', '')))}</code></td>"
+            f"{path_cells}"
             "</tr>"
         )
+    path_headers = "<th>bundle path</th><th>compliance path</th>" if include_paths else ""
     return (
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table lasso-table'>"
@@ -2508,7 +2818,7 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
         "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
         "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th>"
         "<th>scheduler</th><th>priority</th><th>QA</th><th>actions</th><th>scorecards</th>"
-        "<th>bundle path</th><th>compliance path</th>"
+        f"{path_headers}"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -2558,12 +2868,40 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{detail_html}"
-        f"{_lasso_bundle_table(rows)}"
-        f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
+        f"{_lasso_bundle_table(rows, include_paths=False)}"
         "</div>"
     )
     if not rows:
         html += "<p>No AURORA-LASSO bundles found yet.</p>"
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
+    index = load_campaign_index()
+    diagnosis = _campaign_process_diagnosis()
+    bundle_rows = _lasso_bundle_rows(_lasso_bundle_paths())
+    operational_rows = _operational_rows(_operational_run_paths())
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Details / Provenance</div>"
+        "<div class='model-subtitle'>Technical evidence for scheduler policy, process labels, paths and generated records</div>"
+        "</div>"
+        "<div class='model-pill'>collapsible evidence</div>"
+        "</div>"
+        f"{_scheduler_policy_rollup_table(index)}"
+        f"{_operational_qa_rollup_table(index)}"
+        f"{_scheduler_policy_day_table(index)}"
+        f"{_operator_policy_rollup_table(index)}"
+        f"{_process_diagnosis_table(diagnosis)}"
+        f"{_process_skill_rollup_table(index)}"
+        f"{_process_evidence_table(index)}"
+        f"{_operational_table(operational_rows)}"
+        f"{_lasso_bundle_table(bundle_rows, include_paths=True)}"
+        f"<div class='model-subtitle'>campaign root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
+        "</div>"
+    )
     return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
 
 
@@ -3576,6 +3914,26 @@ run_select = pn.widgets.Select(
 )
 dataset_select = pn.widgets.Select(name="Dataset", value="l3_cf", options=DATASETS)
 variable_select = pn.widgets.Select(name="Variable", options=OrderedDict())
+day_select = pn.widgets.Select(
+    name="Day",
+    value=next(iter(_day_options().values()), ""),
+    options=_day_options(),
+)
+instrument_select = pn.widgets.Select(
+    name="Instrument",
+    value="all",
+    options=_instrument_options(),
+)
+model_filter_select = pn.widgets.Select(
+    name="Model / output",
+    value="all",
+    options=MODEL_FILTERS,
+)
+metric_family_select = pn.widgets.Select(
+    name="Metric family",
+    value="all",
+    options=METRIC_FAMILY_FILTERS,
+)
 refresh_button = pn.widgets.Button(name="Refresh", button_type="primary", width=100)
 share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 copy_button = pn.widgets.Button(name="Copy link", button_type="default", width=110)
@@ -3628,6 +3986,10 @@ def _share_link() -> str:
     host = _request_header("Host") or "127.0.0.1:5006"
     query = urlencode(
         {
+            "day": day_select.value or "",
+            "instrument": instrument_select.value or "",
+            "model": model_filter_select.value or "",
+            "metric_family": metric_family_select.value or "",
             "run": run_select.value or "",
             "dataset": dataset_select.value or "",
             "variable": variable_select.value or "",
@@ -3642,6 +4004,14 @@ def _refresh_share(*_events) -> None:
 
 def _apply_query_state() -> None:
     args = _request_args()
+    if args.get("day") in set(day_select.options.values()):
+        day_select.value = args["day"]
+    if args.get("instrument") in set(instrument_select.options.values()):
+        instrument_select.value = args["instrument"]
+    if args.get("model") in set(model_filter_select.options.values()):
+        model_filter_select.value = args["model"]
+    if args.get("metric_family") in set(metric_family_select.options.values()):
+        metric_family_select.value = args["metric_family"]
     if args.get("run") in set(run_select.options.values()):
         run_select.value = args["run"]
     if args.get("dataset") in set(DATASETS.values()):
@@ -3659,6 +4029,8 @@ run_select.param.watch(_sync_variable_options, "value")
 dataset_select.param.watch(_sync_variable_options, "value")
 refresh_button.on_click(_sync_variable_options)
 for widget in (run_select, dataset_select, variable_select):
+    widget.param.watch(_refresh_share, "value")
+for widget in (day_select, instrument_select, model_filter_select, metric_family_select):
     widget.param.watch(_refresh_share, "value")
 
 copy_button.js_on_click(
@@ -3697,7 +4069,16 @@ plot_panel = pn.bind(
 leaderboard_panel = pn.bind(_leaderboard_panel, refresh_button.param.clicks)
 operational_panel = pn.bind(_operational_panel, refresh_button.param.clicks)
 lasso_bundle_panel = pn.bind(_lasso_bundle_panel, refresh_button.param.clicks)
-instrument_comparison_panel = pn.bind(_instrument_comparison_panel, refresh_button.param.clicks)
+overview_panel = pn.bind(_overview_panel, refresh_button.param.clicks)
+instrument_comparison_panel = pn.bind(
+    _instrument_comparison_panel,
+    day_select.param.value,
+    instrument_select.param.value,
+    model_filter_select.param.value,
+    metric_family_select.param.value,
+    refresh_button.param.clicks,
+)
+details_provenance_panel = pn.bind(_details_provenance_panel, refresh_button.param.clicks)
 
 CSS = """
 body, .bk {
@@ -3759,6 +4140,36 @@ body, .bk {
     background: #f1fbf8;
     color: #0b6b5d;
     font-size: 12px;
+}
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid #d8e1e8;
+    font-size: 11px;
+    font-weight: 650;
+}
+.badge-ready {
+    border-color: #b7e4dc;
+    background: #f1fbf8;
+    color: #0b6b5d;
+}
+.badge-diagnostic {
+    border-color: #f0d58c;
+    background: #fff8df;
+    color: #7a5b00;
+}
+.badge-warning {
+    border-color: #f1b7a8;
+    background: #fff3ef;
+    color: #8a3c24;
+}
+.badge-blocked {
+    border-color: #d1d8e0;
+    background: #f5f7fa;
+    color: #4b5563;
 }
 .model-grid {
     display: grid;
@@ -3846,6 +4257,41 @@ body, .bk {
     max-height: 430px;
     object-fit: contain;
 }
+.schematic {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) auto minmax(180px, 1fr) auto minmax(180px, 1fr);
+    gap: 10px;
+    align-items: stretch;
+    margin-top: 12px;
+}
+.schematic-col {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px;
+}
+.schematic-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #22313f;
+    margin-bottom: 8px;
+}
+.schematic-box {
+    border: 1px solid #e1e7ee;
+    border-radius: 6px;
+    background: #fbfcfd;
+    padding: 7px 8px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #3b4a5a;
+}
+.schematic-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0b7285;
+    font-weight: 700;
+}
 .scorecard-image {
     display: block;
     width: 100%;
@@ -3873,6 +4319,13 @@ body, .bk {
     .model-table {
         min-width: 620px;
     }
+    .schematic {
+        grid-template-columns: 1fr;
+    }
+    .schematic-arrow {
+        transform: rotate(90deg);
+        min-height: 20px;
+    }
 }
 """
 
@@ -3892,6 +4345,20 @@ controls = pn.Card(
         run_select,
         dataset_select,
         variable_select,
+        sizing_mode="stretch_width",
+        css_classes=["model-controls"],
+    ),
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+)
+
+review_controls = pn.Card(
+    pn.Row(
+        day_select,
+        instrument_select,
+        model_filter_select,
+        metric_family_select,
         refresh_button,
         sizing_mode="stretch_width",
         css_classes=["model-controls"],
@@ -3910,24 +4377,33 @@ share = pn.Card(
 
 main_sections = [
     pn.Card(
-        pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
-        title="AURORA-LASSO Case Library",
+        pn.panel(overview_panel, sizing_mode="stretch_width"),
+        title="Overview",
         collapsible=True,
         collapsed=False,
         sizing_mode="stretch_width",
     ),
     pn.Card(
+        review_controls,
         pn.panel(instrument_comparison_panel, sizing_mode="stretch_width"),
+        share,
         title="Instrument Comparisons",
         collapsible=True,
         collapsed=False,
         sizing_mode="stretch_width",
     ),
     pn.Card(
-        pn.panel(operational_panel, sizing_mode="stretch_width"),
-        title="Operational Campaign",
+        pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
+        title="Case Library",
         collapsible=True,
         collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(details_provenance_panel, sizing_mode="stretch_width"),
+        title="Details / Provenance",
+        collapsible=True,
+        collapsed=True,
         sizing_mode="stretch_width",
     ),
 ]
