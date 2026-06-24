@@ -879,6 +879,122 @@ DEFAULT_RUN_IDS = (
     "les_bridge_reference",
 )
 
+INSTRUMENT_COMPARISON_SPECS = (
+    {
+        "instrument": "Cloudnet cloud fraction",
+        "model": "ERA5",
+        "scorecard": "era5_cloud_fraction",
+        "comparison": "cf_V",
+        "basis": "Cloudnet L3 CF cf_V",
+        "occurrence": "contingency",
+    },
+    {
+        "instrument": "Cloudnet cloud fraction",
+        "model": "LES bridge",
+        "scorecard": "les_bridge_cloud_fraction",
+        "comparison": "cf_V",
+        "basis": "Cloudnet L3 CF cf_V",
+        "occurrence": "contingency",
+    },
+    {
+        "instrument": "Cloudnet LWC",
+        "model": "ERA5",
+        "scorecard": "era5_lwc",
+        "comparison": "lwc",
+        "basis": "Cloudnet L3 LWC",
+        "occurrence": "liquid_occurrence",
+        "metrics": "point_metrics",
+    },
+    {
+        "instrument": "Cloudnet LWC",
+        "model": "LES bridge",
+        "scorecard": "les_bridge_lwc",
+        "comparison": "lwc",
+        "basis": "Cloudnet L3 LWC",
+        "occurrence": "liquid_occurrence",
+        "metrics": "point_metrics",
+    },
+    {
+        "instrument": "Cloudnet IWC",
+        "model": "ERA5",
+        "scorecard": "era5_iwc",
+        "comparison": "iwc",
+        "basis": "Cloudnet L3 IWC",
+        "occurrence": "ice_occurrence",
+        "metrics": "point_metrics",
+    },
+    {
+        "instrument": "Cloudnet IWC",
+        "model": "LES bridge",
+        "scorecard": "les_bridge_iwc",
+        "comparison": "iwc",
+        "basis": "Cloudnet L3 IWC",
+        "occurrence": "ice_occurrence",
+        "metrics": "point_metrics",
+    },
+    {
+        "instrument": "W-band radar",
+        "model": "PAMTRA/proxy",
+        "scorecard": "wband_radar",
+        "basis": "synthetic radar vs Cloudnet Z",
+        "occurrence": "contingency",
+        "metrics": "reflectivity_metrics",
+    },
+    {
+        "instrument": "CL61 lidar",
+        "model": "synthetic diagnostic",
+        "scorecard": "cl61_diagnostic",
+        "basis": "diagnostic only; not colocated",
+        "occurrence": "contingency",
+    },
+    {
+        "instrument": "Surface met",
+        "model": "ERA5/LES surface",
+        "scorecard": "surface_met",
+        "comparison": "air_temperature",
+        "basis": "met station air temperature",
+        "metrics": "metrics",
+    },
+    {
+        "instrument": "ASFS radiation",
+        "model": "RRTMGP/SEB",
+        "scorecard": "asfs_logger_radiation_surface",
+        "comparison": "longwave_downwelling",
+        "basis": "ASFS logger longwave down",
+        "metrics": "metrics",
+    },
+    {
+        "instrument": "ASFS sonic",
+        "model": "surface diagnostics",
+        "scorecard": "asfs_sonic_turbulence",
+        "comparison": "mean_x_wind",
+        "basis": "sonic mean wind and turbulence",
+        "metrics_group": "mean_comparisons",
+        "metrics": "metrics",
+    },
+    {
+        "instrument": "ASFS gas",
+        "model": "diagnostic background",
+        "scorecard": "asfs_gas",
+        "comparison": "co2_molar_density",
+        "basis": "LI-COR CO2 diagnostic",
+        "metrics": "metrics",
+    },
+)
+
+INSTRUMENT_GALLERY_SCORECARDS = (
+    ("Cloudnet CF: ERA5", "era5_cloud_fraction"),
+    ("Cloudnet CF: LES bridge", "les_bridge_cloud_fraction"),
+    ("Cloudnet LWC: ERA5", "era5_lwc"),
+    ("Cloudnet IWC: ERA5", "era5_iwc"),
+    ("W-band radar", "wband_radar"),
+    ("CL61 lidar diagnostic", "cl61_diagnostic"),
+    ("Surface met", "surface_met"),
+    ("ASFS radiation", "asfs_logger_radiation_surface"),
+    ("ASFS sonic/turbulence", "asfs_sonic_turbulence"),
+    ("ASFS gas", "asfs_gas"),
+)
+
 DATASETS = OrderedDict(
     [
         ("Cloudnet L3 CF", "l3_cf"),
@@ -1535,6 +1651,241 @@ def _lwp_policy_summary(scorecard: dict[str, object] | None) -> str:
     if source_policy and source_policy != "unknown":
         return f"{readiness}: {source_policy}"
     return readiness
+
+
+def _campaign_days(limit: int = 7) -> list[str]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return []
+    days = sorted(
+        path.name for path in days_root.iterdir() if path.is_dir() and path.name[:4].isdigit()
+    )
+    return list(reversed(days))[:limit]
+
+
+def _comparison_payload(
+    scorecard: dict[str, object] | None,
+    spec: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(scorecard, dict):
+        return {}
+    comparison_name = spec.get("comparison")
+    metrics_group = spec.get("metrics_group")
+    if isinstance(metrics_group, str):
+        group = scorecard.get(metrics_group)
+        if isinstance(group, dict) and comparison_name in group:
+            value = group.get(comparison_name)
+            return value if isinstance(value, dict) else {}
+        return {}
+    comparisons = scorecard.get("comparisons")
+    if isinstance(comparisons, dict) and isinstance(comparison_name, str):
+        value = comparisons.get(comparison_name)
+        return value if isinstance(value, dict) else {}
+    return scorecard
+
+
+def _metric_from(metric_block: object, names: tuple[str, ...]) -> object:
+    if not isinstance(metric_block, dict):
+        return "n/a"
+    for name in names:
+        value = metric_block.get(name)
+        if value is not None:
+            return _compact_float(value)
+    return "n/a"
+
+
+def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, object]:
+    scorecard_name = str(spec["scorecard"])
+    scorecard = _direct_scorecard(day, scorecard_name)
+    payload = _comparison_payload(scorecard, spec)
+    occurrence_key = spec.get("occurrence")
+    occurrence = {}
+    if isinstance(occurrence_key, str):
+        if occurrence_key == "contingency" and isinstance(scorecard, dict):
+            occurrence = scorecard.get("contingency", {})
+        if not isinstance(occurrence, dict) or not occurrence:
+            occurrence = payload.get(occurrence_key, {}) if isinstance(payload, dict) else {}
+        if occurrence_key == "contingency" and isinstance(payload, dict) and not occurrence:
+            occurrence = payload.get("contingency", {})
+    occurrence = occurrence if isinstance(occurrence, dict) else {}
+
+    metrics_key = spec.get("metrics")
+    metrics = {}
+    if isinstance(metrics_key, str):
+        metrics = payload.get(metrics_key, {}) if isinstance(payload, dict) else {}
+        if not isinstance(metrics, dict) and isinstance(scorecard, dict):
+            metrics = scorecard.get(metrics_key, {})
+    metrics = metrics if isinstance(metrics, dict) else {}
+
+    status = "missing"
+    if isinstance(scorecard, dict):
+        status = str(
+            scorecard.get("scoring_status")
+            or scorecard.get("status")
+            or payload.get("status", "available")
+        )
+        if scorecard.get("excluded_from_scoring"):
+            status = str(scorecard.get("scoring_status", "diagnostic_only"))
+    valid = occurrence.get("valid_points")
+    if valid is None:
+        valid = metrics.get("valid_points", metrics.get("valid_times", "n/a"))
+
+    note = ""
+    if isinstance(scorecard, dict):
+        if scorecard.get("excluded_from_scoring"):
+            note = "excluded from ranking"
+        elif payload.get("production_ready") is False:
+            note = str(payload.get("readiness_note", "diagnostic"))
+        elif scorecard_name.endswith("_lwc"):
+            note = _lwp_policy_summary(scorecard)
+
+    return {
+        "day": day,
+        "instrument": spec.get("instrument", ""),
+        "model": spec.get("model", ""),
+        "basis": spec.get("basis", ""),
+        "scorecard": scorecard_name,
+        "status": status,
+        "valid": valid,
+        "pod": _metric_from(occurrence, ("probability_of_detection",)),
+        "far": _metric_from(occurrence, ("false_alarm_ratio",)),
+        "csi": _metric_from(occurrence, ("critical_success_index",)),
+        "bias": _metric_from(
+            metrics,
+            (
+                "bias_mean",
+                "mean_bias_db",
+                "lwp_bias_mean_kg_m2",
+                "iwp_bias_mean_kg_m2",
+            ),
+        ),
+        "rmse": _metric_from(
+            metrics,
+            (
+                "root_mean_square_error",
+                "root_mean_square_error_db",
+                "lwp_root_mean_square_error_kg_m2",
+                "iwp_root_mean_square_error_kg_m2",
+            ),
+        ),
+        "note": note,
+    }
+
+
+def _instrument_comparison_rows(days: list[str]) -> list[dict[str, object]]:
+    return [
+        _instrument_comparison_row(day, spec)
+        for day in days
+        for spec in INSTRUMENT_COMPARISON_SPECS
+    ]
+
+
+def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "<p>No instrument comparison records found yet.</p>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row['day']))}</td>"
+            f"<td>{escape(str(row['instrument']))}</td>"
+            f"<td>{escape(str(row['model']))}</td>"
+            f"<td>{escape(str(row['status']))}</td>"
+            f"<td>{escape(str(row['basis']))}</td>"
+            f"<td>{escape(str(row['valid']))}</td>"
+            f"<td>{escape(str(row['pod']))}</td>"
+            f"<td>{escape(str(row['far']))}</td>"
+            f"<td>{escape(str(row['csi']))}</td>"
+            f"<td>{escape(str(row['bias']))}</td>"
+            f"<td>{escape(str(row['rmse']))}</td>"
+            f"<td><code>{escape(str(row['scorecard']))}</code></td>"
+            f"<td>{escape(str(row['note']))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table instrument-comparison-table'>"
+        "<thead><tr><th>day</th><th>instrument</th><th>model/output</th>"
+        "<th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
+        "<th>CSI</th><th>bias</th><th>RMSE</th><th>scorecard</th><th>note</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
+    scorecard = _direct_scorecard(day, scorecard_name)
+    if not isinstance(scorecard, dict):
+        return None
+    value = scorecard.get("output_png")
+    if isinstance(value, str) and value:
+        path = Path(value)
+        if path.exists():
+            return path
+    fallback = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{scorecard_name}.png"
+    return fallback if fallback.exists() else None
+
+
+def _instrument_scorecard_gallery(day: str | None) -> str:
+    if not day:
+        return ""
+    cards = []
+    for title, scorecard_name in INSTRUMENT_GALLERY_SCORECARDS:
+        png_path = _scorecard_png_path(day, scorecard_name)
+        if png_path is None:
+            continue
+        data_uri = _asset_data_uri(png_path)
+        if not data_uri:
+            continue
+        cards.append(
+            "<div class='instrument-plot-card'>"
+            f"<div class='instrument-plot-title'>{escape(title)}</div>"
+            f"<img class='instrument-plot-image' src='{data_uri}' alt='{escape(title)}'>"
+            "</div>"
+        )
+    if not cards:
+        return "<p>No scorecard plots found for the latest day.</p>"
+    return "<div class='instrument-plot-grid'>" + "".join(cards) + "</div>"
+
+
+def _instrument_comparison_panel(_clicks: int = 0) -> pn.Column:
+    days = _campaign_days()
+    latest_day = days[0] if days else None
+    rows = _instrument_comparison_rows(days)
+    ready_like = sum(
+        1
+        for row in rows
+        if str(row.get("status", "")).lower() in {"scored", "available", "ready"}
+    )
+    diagnostic = sum(
+        1
+        for row in rows
+        if "diagnostic" in str(row.get("status", "")).lower()
+        or "excluded" in str(row.get("status", "")).lower()
+    )
+    cards = [
+        _card("latest day", latest_day or "missing"),
+        _card("days shown", len(days)),
+        _card("comparison rows", len(rows)),
+        _card("scored/available", ready_like),
+        _card("diagnostic/excluded", diagnostic),
+    ]
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Instrument Comparisons</div>"
+        "<div class='model-subtitle'>Current campaign model outputs compared with observation products</div>"
+        "</div>"
+        "<div class='model-pill'>active products only</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_instrument_scorecard_gallery(latest_day)}"
+        f"{_instrument_comparison_table(rows)}"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
 
 
 def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
@@ -3346,6 +3697,7 @@ plot_panel = pn.bind(
 leaderboard_panel = pn.bind(_leaderboard_panel, refresh_button.param.clicks)
 operational_panel = pn.bind(_operational_panel, refresh_button.param.clicks)
 lasso_bundle_panel = pn.bind(_lasso_bundle_panel, refresh_button.param.clicks)
+instrument_comparison_panel = pn.bind(_instrument_comparison_panel, refresh_button.param.clicks)
 
 CSS = """
 body, .bk {
@@ -3467,6 +3819,33 @@ body, .bk {
 .asfs-detail-table {
     min-width: 920px;
 }
+.instrument-comparison-table {
+    min-width: 1180px;
+}
+.instrument-plot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+    margin: 12px 0 16px;
+}
+.instrument-plot-card {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px;
+}
+.instrument-plot-title {
+    font-size: 13px;
+    font-weight: 650;
+    color: #22313f;
+    margin-bottom: 8px;
+}
+.instrument-plot-image {
+    display: block;
+    width: 100%;
+    max-height: 430px;
+    object-fit: contain;
+}
 .scorecard-image {
     display: block;
     width: 100%;
@@ -3533,6 +3912,13 @@ main_sections = [
     pn.Card(
         pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
         title="AURORA-LASSO Case Library",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(instrument_comparison_panel, sizing_mode="stretch_width"),
+        title="Instrument Comparisons",
         collapsible=True,
         collapsed=False,
         sizing_mode="stretch_width",
