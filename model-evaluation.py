@@ -876,7 +876,6 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
 
 DEFAULT_RUN_IDS = (
     "era5_reference",
-    "les_bridge_reference",
 )
 
 INSTRUMENT_COMPARISON_SPECS = (
@@ -893,11 +892,11 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "Cloudnet CF",
-        "model": "LES bridge",
-        "model_group": "les_bridge",
-        "scorecard": "les_bridge_cloud_fraction",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cloud_fraction",
         "comparison": "cf_V",
-        "basis": "Cloudnet L3 CF cf_V",
+        "basis": "CM1 Cloudnet L3 CF cf_V",
         "occurrence": "contingency",
         "metric_family": "occurrence",
         "caveat": "ready",
@@ -916,11 +915,11 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "Cloudnet LWC",
-        "model": "LES bridge",
-        "model_group": "les_bridge",
-        "scorecard": "les_bridge_lwc",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cm1_lwc",
         "comparison": "lwc",
-        "basis": "Cloudnet L3 LWC",
+        "basis": "CM1 Cloudnet L3 LWC",
         "occurrence": "liquid_occurrence",
         "metrics": "point_metrics",
         "metric_family": "continuous",
@@ -939,11 +938,11 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "HATPRO/LWP",
-        "model": "LES bridge",
-        "model_group": "les_bridge",
-        "scorecard": "les_bridge_lwc",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cm1_lwc",
         "comparison": "lwc",
-        "basis": "model LWP vs audit-gated HATPRO LWP",
+        "basis": "CM1 LWP vs audit-gated HATPRO LWP",
         "metrics": "lwp_metrics",
         "metric_family": "column",
         "caveat": "ready",
@@ -962,11 +961,11 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "Cloudnet IWC",
-        "model": "LES bridge",
-        "model_group": "les_bridge",
-        "scorecard": "les_bridge_iwc",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cm1_iwc",
         "comparison": "iwc",
-        "basis": "Cloudnet L3 IWC",
+        "basis": "CM1 Cloudnet L3 IWC",
         "occurrence": "ice_occurrence",
         "metrics": "point_metrics",
         "metric_family": "continuous",
@@ -974,10 +973,10 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "W-band radar",
-        "model": "PAMTRA/proxy",
+        "model": "CM1 virtual observatory",
         "model_group": "synthetic",
         "scorecard": "wband_radar",
-        "basis": "synthetic radar vs Cloudnet Z",
+        "basis": "CM1 synthetic radar vs Cloudnet Z",
         "occurrence": "contingency",
         "metrics": "reflectivity_metrics",
         "metric_family": "occurrence",
@@ -985,7 +984,7 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "CL61 lidar",
-        "model": "synthetic diagnostic",
+        "model": "CM1 virtual observatory",
         "model_group": "synthetic",
         "scorecard": "cl61_diagnostic",
         "basis": "diagnostic only; not colocated",
@@ -995,7 +994,7 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "Surface met",
-        "model": "ERA5/LES surface",
+        "model": "CM1/ERA5 surface",
         "model_group": "surface",
         "scorecard": "surface_met",
         "comparison": "air_temperature",
@@ -1006,7 +1005,7 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "ASFS radiation",
-        "model": "RRTMGP/SEB",
+        "model": "CM1 + RRTMGP/SEB",
         "model_group": "surface",
         "scorecard": "asfs_logger_radiation_surface",
         "comparison": "longwave_downwelling",
@@ -1017,7 +1016,7 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "ASFS sonic",
-        "model": "surface diagnostics",
+        "model": "CM1 surface diagnostics",
         "model_group": "surface",
         "scorecard": "asfs_sonic_turbulence",
         "comparison": "mean_x_wind",
@@ -1029,7 +1028,7 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "ASFS gas",
-        "model": "diagnostic background",
+        "model": "CM1 diagnostic background",
         "model_group": "surface",
         "scorecard": "asfs_gas",
         "comparison": "co2_molar_density",
@@ -1041,10 +1040,10 @@ INSTRUMENT_COMPARISON_SPECS = (
 )
 
 INSTRUMENT_GALLERY_SCORECARDS = {
-    "Cloudnet CF": (("Cloudnet CF: ERA5", "era5_cloud_fraction"), ("Cloudnet CF: LES bridge", "les_bridge_cloud_fraction")),
-    "Cloudnet LWC": (("Cloudnet LWC: ERA5", "era5_lwc"), ("Cloudnet LWC: LES bridge", "les_bridge_lwc")),
-    "HATPRO/LWP": (("LWP context: ERA5", "era5_lwc"), ("LWP context: LES bridge", "les_bridge_lwc")),
-    "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: LES bridge", "les_bridge_iwc")),
+    "Cloudnet CF": (("Cloudnet CF: ERA5", "era5_cloud_fraction"), ("Cloudnet CF: CM1 full LES", "cloud_fraction")),
+    "Cloudnet LWC": (("Cloudnet LWC: ERA5", "era5_lwc"), ("Cloudnet LWC: CM1 full LES", "cm1_lwc")),
+    "HATPRO/LWP": (("LWP context: ERA5", "era5_lwc"), ("LWP context: CM1 full LES", "cm1_lwc")),
+    "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: CM1 full LES", "cm1_iwc")),
     "W-band radar": (("W-band radar", "wband_radar"),),
     "CL61 lidar": (("CL61 lidar diagnostic", "cl61_diagnostic"),),
     "Surface met": (("Surface met", "surface_met"),),
@@ -1057,7 +1056,7 @@ MODEL_FILTERS = OrderedDict(
     [
         ("All model outputs", "all"),
         ("ERA5", "era5"),
-        ("LES bridge", "les_bridge"),
+        ("CM1 full LES", "cm1"),
         ("Synthetic / forward operator", "synthetic"),
         ("Surface / SEB diagnostics", "surface"),
     ]
@@ -1398,6 +1397,21 @@ def _cf_csi(summary: dict[str, object] | None, name: str) -> object:
     if not isinstance(comparisons, dict):
         return "n/a"
     comparison = comparisons.get("cf_V") or comparisons.get("cf_A")
+    if not isinstance(comparison, dict):
+        return "n/a"
+    return _compact_float(comparison.get("critical_success_index"))
+
+
+def _cm1_cf_csi(day: str, summary: dict[str, object] | None) -> object:
+    value = _cf_csi(summary, "cloud_fraction")
+    if value != "n/a":
+        return value
+    scorecard = _direct_scorecard(day, "cloud_fraction")
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    comparison = scorecard.get("cf_V") or scorecard.get("cf_A")
+    if not isinstance(comparison, dict):
+        comparison = scorecard.get("comparisons", {}).get("cf_V") if isinstance(scorecard.get("comparisons"), dict) else {}
     if not isinstance(comparison, dict):
         return "n/a"
     return _compact_float(comparison.get("critical_success_index"))
@@ -2160,7 +2174,7 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
                     operational_qa.get("missing_required_scorecards")
                 ),
                 "era5_cf_csi": _cf_csi(summary, "era5_cloud_fraction"),
-                "les_cf_csi": _cf_csi(summary, "les_bridge_cloud_fraction"),
+                "cm1_cf_csi": _cm1_cf_csi(day, summary),
                 "wband_csi": _compact_float(wband_contingency.get("critical_success_index")),
                 "iwc_points": era5_iwc.get("valid_points", "n/a"),
                 "iwc_csi": _compact_float(era5_iwc.get("critical_success_index")),
@@ -2188,7 +2202,7 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['operational_qa']))}</td>"
             f"<td>{escape(str(row['operational_qa_missing']))}</td>"
             f"<td>{escape(str(row['era5_cf_csi']))}</td>"
-            f"<td>{escape(str(row['les_cf_csi']))}</td>"
+            f"<td>{escape(str(row['cm1_cf_csi']))}</td>"
             f"<td>{escape(str(row['wband_csi']))}</td>"
             f"<td>{escape(str(row['iwc_points']))}</td>"
             f"<td>{escape(str(row['iwc_csi']))}</td>"
@@ -2204,7 +2218,7 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
         "<thead><tr>"
         "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
         "<th>scheduler</th><th>priority</th><th>QA</th><th>missing QA</th>"
-        "<th>ERA5 CF CSI</th><th>LES CF CSI</th><th>W-band CSI</th>"
+        "<th>ERA5 CF CSI</th><th>CM1 LES CF CSI</th><th>W-band CSI</th>"
         "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>LWP policy</th>"
         "<th>actions</th><th>labels</th>"
         "</tr></thead>"
@@ -2506,7 +2520,7 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
         scorecards = item.get("scorecards")
         scorecards = scorecards if isinstance(scorecards, dict) else {}
         era5 = _metric_block(scorecards, "era5_cloud_fraction", "cf_V")
-        les = _metric_block(scorecards, "les_bridge_cloud_fraction", "cf_V")
+        cm1 = _metric_block(scorecards, "cloud_fraction", "cf_V")
         cloudnet = _metric_block(scorecards, "cloudnet_cloud_fraction", "cf_V")
         rows.append(
             "<tr>"
@@ -2516,7 +2530,7 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
             f"<td>{escape(str(era5.get('csi', 'n/a')))}</td>"
             f"<td>{escape(str(era5.get('pod', 'n/a')))}</td>"
             f"<td>{escape(str(era5.get('far', 'n/a')))}</td>"
-            f"<td>{escape(str(les.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(cm1.get('csi', 'n/a')))}</td>"
             f"<td>{escape(str(cloudnet.get('csi', 'n/a')))}</td>"
             "</tr>"
         )
@@ -2528,7 +2542,7 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
         "<thead><tr>"
         "<th>process label</th><th>days</th><th>full VO days</th>"
         "<th>ERA5 CSI</th><th>ERA5 POD</th><th>ERA5 FAR</th>"
-        "<th>LES CSI</th><th>Cloudnet CSI</th>"
+        "<th>CM1 LES CSI</th><th>Cloudnet CSI</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table></div>"
@@ -2567,7 +2581,7 @@ def _process_evidence_table(
                 f"<td>{escape(day_text)}</td>"
                 f"<td>{escape(str(row.get('release_gate_status', 'n/a')))}</td>"
                 f"<td>{escape(str(_cf_csi(summary, 'era5_cloud_fraction')))}</td>"
-                f"<td>{escape(str(_cf_csi(summary, 'les_bridge_cloud_fraction')))}</td>"
+                f"<td>{escape(str(_cm1_cf_csi(day_text, summary)))}</td>"
                 f"<td><code>{escape(_evidence_bundle_path(row, day_text))}</code></td>"
                 f"<td><code>{escape(_evidence_summary_path(row, day_text))}</code></td>"
                 f"<td><code>{escape(_evidence_scorecards_path(day_text))}</code></td>"
@@ -2580,7 +2594,7 @@ def _process_evidence_table(
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table process-evidence-table'>"
         "<thead><tr>"
-        "<th>process label</th><th>day</th><th>gate</th><th>ERA5 CSI</th><th>LES CSI</th>"
+        "<th>process label</th><th>day</th><th>gate</th><th>ERA5 CSI</th><th>CM1 LES CSI</th>"
         "<th>bundle</th><th>summary</th><th>scorecards</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -2681,7 +2695,7 @@ def _evidence_scorecards_path(day: str) -> str:
     key_files = (
         scorecard_root / "forcing_diagnostic.json",
         scorecard_root / "era5_cloud_fraction.json",
-        scorecard_root / "les_bridge_cloud_fraction.json",
+        scorecard_root / "cloud_fraction.json",
     )
     return " | ".join(str(path) for path in key_files)
 
@@ -2722,8 +2736,8 @@ def _evaluation_schematic() -> str:
       <div class="schematic-col">
         <div class="schematic-title">Model Inputs</div>
         <div class="schematic-box">ERA5</div>
-        <div class="schematic-box">CM1 / LES daily recipe</div>
-        <div class="schematic-box">LES bridge subcolumn product</div>
+        <div class="schematic-box">CM1 / full LES daily recipe</div>
+        <div class="schematic-box">CM1 virtual-observatory products</div>
       </div>
       <div class="schematic-arrow">-></div>
       <div class="schematic-col">
@@ -2763,7 +2777,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         _card("diagnostic products", diagnostic),
         _card("blocked products", blocked),
         _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
-        _card("LES CF CSI", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
+        _card("CM1 LES CF CSI", _index_cf_metric(index, "cloud_fraction", "cf_V")),
     ]
     html = (
         "<div class='model-shell operational-shell'>"
@@ -2922,7 +2936,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         _card("QA ready", operational_qa_rollup.get("ready_day_count", "n/a")),
         _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("ERA5 CF CSI mean", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
-        _card("LES CF CSI mean", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
+        _card("CM1 LES CF CSI mean", _index_cf_metric(index, "cloud_fraction", "cf_V")),
         _card("latest day", latest.get("day", "missing")),
         _card("gate", latest.get("gate", "missing")),
         _card("W-band CSI", latest.get("wband_csi", "n/a")),
