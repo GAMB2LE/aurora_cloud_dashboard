@@ -33,6 +33,13 @@ OPERATIONAL_CAMPAIGN_ROOT = Path(
         f"/data/aurora/les/campaigns/{CASE_ID}",
     )
 )
+SHOW_LEGACY_EXPLORER = os.environ.get("AURORA_MODEL_EVALUATION_SHOW_LEGACY_EXPLORER") == "1"
+SHOW_CANDIDATE_LEADERBOARD = (
+    os.environ.get("AURORA_MODEL_EVALUATION_SHOW_CANDIDATE_LEADERBOARD") == "1"
+)
+SHOW_OPERATIONAL_DETAILS = (
+    os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
+)
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 CM1_CANDIDATE_LEADERBOARD_STEM = "cm1_candidate_leaderboard_20260622"
 CM1_CANDIDATE_LEADERBOARD_DIR = (
@@ -865,6 +872,11 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
             },
         ),
     ]
+)
+
+DEFAULT_RUN_IDS = (
+    "era5_reference",
+    "les_bridge_reference",
 )
 
 DATASETS = OrderedDict(
@@ -2171,39 +2183,19 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest day", rows[0].get("day", "missing") if rows else "missing"),
         _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
         _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
-        _card("process regimes", len(process_rollup)),
-        _card("diagnosed regimes", len(process_diagnoses)),
-        _card("targeted checks", scheduler_rollup.get("targeted_day_count", "n/a")),
         _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
-        _card("mixed-phase days", _process_day_count(index, "forcing_mixed_phase_support")),
-        _card(
-            "mixed-phase top bias",
-            _diagnosis_metric(
-                diagnosis,
-                "forcing_mixed_phase_support",
-                "cloud_top_bias_mean_m",
-            ),
-        ),
-        _card(
-            "high-cloud ERA5 CSI",
-            _process_skill_metric(
-                index,
-                "forcing_high_cloud_support",
-                "era5_cloud_fraction",
-                "cf_V",
-            ),
-        ),
-        _card(
-            "mid-cloud ERA5 CSI",
-            _process_skill_metric(
-                index,
-                "forcing_mid_cloud_support",
-                "era5_cloud_fraction",
-                "cf_V",
-            ),
-        ),
         _card("latest updated", _format_mtime(latest_path)),
     ]
+    detail_html = ""
+    if SHOW_OPERATIONAL_DETAILS:
+        detail_html = (
+            f"{_scheduler_policy_rollup_table(index)}"
+            f"{_operational_qa_rollup_table(index)}"
+            f"{_scheduler_policy_day_table(index)}"
+            f"{_process_diagnosis_table(diagnosis)}"
+            f"{_process_skill_rollup_table(index)}"
+            f"{_process_evidence_table(index)}"
+        )
     html = (
         "<div class='model-shell operational-shell'>"
         "<div class='model-headline'>"
@@ -2214,12 +2206,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>standalone development view</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
-        f"{_scheduler_policy_rollup_table(index)}"
-        f"{_operational_qa_rollup_table(index)}"
-        f"{_scheduler_policy_day_table(index)}"
-        f"{_process_diagnosis_table(diagnosis)}"
-        f"{_process_skill_rollup_table(index)}"
-        f"{_process_evidence_table(index)}"
+        f"{detail_html}"
         f"{_lasso_bundle_table(rows)}"
         f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
         "</div>"
@@ -2243,23 +2230,28 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
     cards = [
         _card("campaign index", index.get("status", "missing") if index else "missing"),
         _card("indexed days", len(index_days) if isinstance(index_days, list) else 0),
-        _card("targeted checks", scheduler_rollup.get("targeted_day_count", "n/a")),
         _card("QA ready", operational_qa_rollup.get("ready_day_count", "n/a")),
         _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("ERA5 CF CSI mean", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
         _card("LES CF CSI mean", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
-        _card("required pending", len(index_pending)),
         _card("latest day", latest.get("day", "missing")),
-        _card("run", latest.get("run_status", "missing")),
         _card("gate", latest.get("gate", "missing")),
-        _card("ERA5 CF CSI", latest.get("era5_cf_csi", "n/a")),
-        _card("LES CF CSI", latest.get("les_cf_csi", "n/a")),
         _card("W-band CSI", latest.get("wband_csi", "n/a")),
-        _card("IWC gates", latest.get("iwc_points", "n/a")),
-        _card("LWC gates", latest.get("lwc_points", "n/a")),
         _card("LWP policy", latest.get("lwp_policy", "n/a")),
         _card("records", len(rows)),
     ]
+    detail_html = ""
+    if SHOW_OPERATIONAL_DETAILS:
+        detail_html = (
+            f"{_scheduler_policy_rollup_table(index)}"
+            f"{_operational_qa_rollup_table(index)}"
+            f"{_scheduler_policy_day_table(index)}"
+            f"{_operator_policy_rollup_table(index)}"
+            f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
+            f"{_operator_policy_table(latest_summary)}"
+            f"{_asfs_sonic_summary(latest_summary)}"
+            f"{_asfs_gas_table(latest_summary)}"
+        )
     summary = (
         "<div class='model-shell operational-shell'>"
         "<div class='model-headline'>"
@@ -2271,15 +2263,8 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
-        f"{_scheduler_policy_rollup_table(index)}"
-        f"{_operational_qa_rollup_table(index)}"
-        f"{_scheduler_policy_day_table(index)}"
-        f"{_operator_policy_rollup_table(index)}"
         f"{_operational_table(rows)}"
-        f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
-        f"{_operator_policy_table(latest_summary)}"
-        f"{_asfs_sonic_summary(latest_summary)}"
-        f"{_asfs_gas_table(latest_summary)}"
+        f"{detail_html}"
         f"<div class='model-subtitle'>pending required: {escape(', '.join(index_pending) if index_pending else 'none')}</div>"
         f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
         "</div>"
@@ -2437,7 +2422,11 @@ def _variable_options(run_id: str, dataset_id: str) -> OrderedDict[str, str]:
 
 
 def _run_options() -> OrderedDict[str, str]:
-    return OrderedDict((str(spec["label"]), run_id) for run_id, spec in RUNS.items())
+    if SHOW_LEGACY_EXPLORER:
+        run_ids = tuple(RUNS)
+    else:
+        run_ids = tuple(run_id for run_id in DEFAULT_RUN_IDS if run_id in RUNS)
+    return OrderedDict((str(RUNS[run_id]["label"]), run_id) for run_id in run_ids)
 
 
 def _card(label: str, value: object) -> str:
@@ -3231,7 +3220,7 @@ def _artifact_panel(run_id: str, dataset_id: str, _clicks: int = 0) -> pn.Column
 
 run_select = pn.widgets.Select(
     name="Run",
-    value="cm1_forced_moist_thompson",
+    value=next(iter(_run_options().values()), None),
     options=_run_options(),
 )
 dataset_select = pn.widgets.Select(name="Dataset", value="l3_cf", options=DATASETS)
@@ -3302,7 +3291,7 @@ def _refresh_share(*_events) -> None:
 
 def _apply_query_state() -> None:
     args = _request_args()
-    if args.get("run") in RUNS:
+    if args.get("run") in set(run_select.options.values()):
         run_select.value = args["run"]
     if args.get("dataset") in set(DATASETS.values()):
         dataset_select.value = args["dataset"]
@@ -3540,33 +3529,51 @@ share = pn.Card(
     sizing_mode="stretch_width",
 )
 
-template.main[:] = [
-    pn.Column(
-        pn.Card(
-            pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
-            title="AURORA-LASSO Case Library",
-            collapsible=True,
-            collapsed=False,
-            sizing_mode="stretch_width",
-        ),
-        pn.Card(
-            pn.panel(operational_panel, sizing_mode="stretch_width"),
-            title="Operational Campaign",
-            collapsible=True,
-            collapsed=False,
-            sizing_mode="stretch_width",
-        ),
+main_sections = [
+    pn.Card(
+        pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
+        title="AURORA-LASSO Case Library",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(operational_panel, sizing_mode="stretch_width"),
+        title="Operational Campaign",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+]
+
+if SHOW_CANDIDATE_LEADERBOARD:
+    main_sections.append(
         pn.Card(
             pn.panel(leaderboard_panel, sizing_mode="stretch_width"),
-            title="Candidate Leaderboard",
+            title="Legacy Candidate Leaderboard",
             collapsible=True,
-            collapsed=False,
+            collapsed=True,
             sizing_mode="stretch_width",
-        ),
-        controls,
-        pn.panel(summary_panel, sizing_mode="stretch_width"),
-        pn.panel(plot_panel, sizing_mode="stretch_width"),
-        share,
+        )
+    )
+
+if SHOW_LEGACY_EXPLORER:
+    main_sections.append(
+        pn.Card(
+            controls,
+            pn.panel(summary_panel, sizing_mode="stretch_width"),
+            pn.panel(plot_panel, sizing_mode="stretch_width"),
+            share,
+            title="Legacy Run Explorer",
+            collapsible=True,
+            collapsed=True,
+            sizing_mode="stretch_width",
+        )
+    )
+
+template.main[:] = [
+    pn.Column(
+        *main_sections,
         sizing_mode="stretch_width",
         margin=0,
     )
