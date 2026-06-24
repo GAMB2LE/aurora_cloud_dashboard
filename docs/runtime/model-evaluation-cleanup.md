@@ -8,7 +8,7 @@ every historic sensitivity test.
 
 - AURORA-LASSO daily bundles
 - Operational campaign readiness
-- Daily ERA5, LES bridge, Cloudnet, radar, LWC/IWC, LWP, SEB, ASFS/met summary
+- Daily ERA5, CM1 LES, Cloudnet, radar, LWC/IWC, LWP, SEB, ASFS/met summary
   records through the campaign products
 - Current campaign artifacts under
   `/data/aurora/les/campaigns/aurora_multistream_pilot_20260520_20260602`
@@ -33,7 +33,7 @@ archived evidence until a separate archive manifest exists.
 Recommended archive classes:
 
 - `active_campaign`: current daily AURORA-LASSO products and scorecards
-- `reference`: ERA5 reference, LES bridge reference, current CM1 daily recipe
+- `reference`: ERA5 reference and current CM1 daily recipe
 - `archived_experiment`: old CM1 sensitivity tests and exploratory PAMTRA sweeps
 - `runtime_proof`: CM1 smoke tests and build/runtime checks
 - `blocked_dead_end`: scripted but intentionally inactive paths such as IFS/HRES

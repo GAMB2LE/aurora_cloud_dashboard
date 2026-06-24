@@ -848,29 +848,6 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                 "summary": "Historical 2026-05-21 IFS/HRES request is scripted and authenticates, but the ECMWF account lacks services/mars access.",
             },
         ),
-        (
-            "les_bridge_reference",
-            {
-                "label": "ERA5 LES bridge",
-                "model": "LES bridge",
-                "status": "diagnostic",
-                "summary": "ERA5-seeded subcolumn representativeness diagnostic",
-                "cloudnet_model": _path("model", "les_bridge_reference", "cloudnet_model.nc"),
-                "l3_cf": _path(
-                    "cloudnet_l3",
-                    "les_bridge_reference",
-                    "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf.nc",
-                ),
-                "l3_cf_candidates": [
-                    _path(
-                        "cloudnet_l3",
-                        "les_bridge_reference",
-                        "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf_2026-05-21.nc",
-                    ),
-                ],
-                "uuid": "0ed9db33-2101-4b32-999e-b3fe61315dc5",
-            },
-        ),
     ]
 )
 
