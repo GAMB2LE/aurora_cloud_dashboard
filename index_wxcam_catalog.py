@@ -10,9 +10,12 @@ from pathlib import Path
 from wxcam_catalog import (
     build_bootstrap_record,
     build_record,
+    clear_unreadable_file,
     ensure_schema,
     existing_file_state,
+    existing_unreadable_file_state,
     iter_raw_images,
+    mark_unreadable_file,
     open_catalog,
     upsert_record,
 )
@@ -140,6 +143,8 @@ def index_catalog(
     inserted = 0
     updated = 0
     skipped = 0
+    skipped_unreadable = 0
+    newly_unreadable = 0
 
     with open_catalog(catalog_path) as conn:
         ensure_schema(conn)
@@ -160,6 +165,7 @@ def index_catalog(
                 pano_pattern=bootstrap_pano_pattern,
             )
         known = existing_file_state(conn)
+        known_unreadable = existing_unreadable_file_state(conn)
         for image_type, path in iter_raw_images(root):
             absolute_path = str(path.resolve())
             stat_result = path.stat()
@@ -167,11 +173,23 @@ def index_catalog(
             if known.get(absolute_path) == current_state:
                 skipped += 1
                 continue
+            if known_unreadable.get(absolute_path) == current_state:
+                skipped_unreadable += 1
+                continue
             try:
                 record = build_record(root, image_type, path)
             except Exception as exc:
+                mark_unreadable_file(
+                    conn,
+                    raw_path=absolute_path,
+                    size_bytes=stat_result.st_size,
+                    mtime_ns=stat_result.st_mtime_ns,
+                    error=str(exc),
+                )
+                newly_unreadable += 1
                 print(f"Skipping unreadable wxcam media {path}: {exc}")
                 continue
+            clear_unreadable_file(conn, absolute_path)
             upsert_record(conn, record)
             if absolute_path in known:
                 updated += 1
@@ -185,6 +203,7 @@ def index_catalog(
         "wxcam catalog updated: "
         f"bootstrapped={bootstrapped} "
         f"inserted={inserted} updated={updated} skipped={skipped} "
+        f"skipped_unreadable={skipped_unreadable} newly_unreadable={newly_unreadable} "
         f"path={catalog_path}"
     )
 
