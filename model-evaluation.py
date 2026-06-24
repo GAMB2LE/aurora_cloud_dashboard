@@ -1512,6 +1512,19 @@ def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key
     return occurrence if isinstance(occurrence, dict) else {}
 
 
+def _lwp_policy_summary(scorecard: dict[str, object] | None) -> str:
+    if not isinstance(scorecard, dict):
+        return "missing"
+    context = scorecard.get("lwp_context")
+    if not isinstance(context, dict):
+        return "missing"
+    readiness = str(context.get("readiness_state", "unknown"))
+    source_policy = str(context.get("source_policy", "unknown"))
+    if context.get("diagnostic_only"):
+        return f"{readiness}: {source_policy}"
+    return readiness
+
+
 def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for path in paths:
@@ -1527,7 +1540,8 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
         wband_contingency = wband.get("contingency") if isinstance(wband, dict) else {}
         wband_contingency = wband_contingency if isinstance(wband_contingency, dict) else {}
         era5_iwc = _generic_contingency(_direct_scorecard(day, "era5_iwc"), "iwc", "ice_occurrence")
-        era5_lwc = _generic_contingency(_direct_scorecard(day, "era5_lwc"), "lwc", "liquid_occurrence")
+        era5_lwc_scorecard = _direct_scorecard(day, "era5_lwc")
+        era5_lwc = _generic_contingency(era5_lwc_scorecard, "lwc", "liquid_occurrence")
         process_labels = summary.get("process_labels") if isinstance(summary, dict) else []
         if not isinstance(process_labels, list):
             process_labels = []
@@ -1558,6 +1572,7 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "iwc_points": era5_iwc.get("valid_points", "n/a"),
                 "iwc_csi": _compact_float(era5_iwc.get("critical_success_index")),
                 "lwc_points": era5_lwc.get("valid_points", "n/a"),
+                "lwp_policy": _lwp_policy_summary(era5_lwc_scorecard),
                 "labels": ", ".join(str(item) for item in process_labels[:4]),
             }
         )
@@ -1585,6 +1600,7 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['iwc_points']))}</td>"
             f"<td>{escape(str(row['iwc_csi']))}</td>"
             f"<td>{escape(str(row['lwc_points']))}</td>"
+            f"<td>{escape(str(row['lwp_policy']))}</td>"
             f"<td>{escape(str(row['scheduler_actions']))}</td>"
             f"<td>{escape(str(row['labels']))}</td>"
             "</tr>"
@@ -1596,7 +1612,8 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
         "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
         "<th>scheduler</th><th>priority</th><th>QA</th><th>missing QA</th>"
         "<th>ERA5 CF CSI</th><th>LES CF CSI</th><th>W-band CSI</th>"
-        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>actions</th><th>labels</th>"
+        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>LWP policy</th>"
+        "<th>actions</th><th>labels</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -2240,6 +2257,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         _card("W-band CSI", latest.get("wband_csi", "n/a")),
         _card("IWC gates", latest.get("iwc_points", "n/a")),
         _card("LWC gates", latest.get("lwc_points", "n/a")),
+        _card("LWP policy", latest.get("lwp_policy", "n/a")),
         _card("records", len(rows)),
     ]
     summary = (
