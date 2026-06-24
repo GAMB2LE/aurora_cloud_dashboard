@@ -1520,7 +1520,7 @@ def _lwp_policy_summary(scorecard: dict[str, object] | None) -> str:
         return "missing"
     readiness = str(context.get("readiness_state", "unknown"))
     source_policy = str(context.get("source_policy", "unknown"))
-    if context.get("diagnostic_only"):
+    if source_policy and source_policy != "unknown":
         return f"{readiness}: {source_policy}"
     return readiness
 
