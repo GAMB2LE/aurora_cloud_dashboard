@@ -1012,6 +1012,7 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                     "cloudnet": "missing",
                     "scorecards": "missing",
                     "seb": "missing",
+                    "operational_qa": "missing",
                 }
             )
             continue
@@ -1032,6 +1033,11 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "scheduler_policy": _nested_status(payload, ["scheduler_policy"]),
                 "scheduler_priority": _nested_value(payload, ["scheduler_policy", "priority"], "n/a"),
                 "scheduler_actions": _scheduler_action_summary(payload.get("scheduler_policy")),
+                "operational_qa": _nested_value(
+                    _operational_summary_for_day(str(payload.get("day", path.parents[1].name))),
+                    ["operational_qa", "status"],
+                    "missing",
+                ),
             }
         )
     return rows
@@ -1344,6 +1350,13 @@ def _scheduler_policy_rollup(index: dict[str, object] | None) -> dict[str, objec
     return rollup if isinstance(rollup, dict) else {}
 
 
+def _operational_qa_rollup(index: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(index, dict):
+        return {}
+    rollup = index.get("operational_qa_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
 def _scheduler_policy_rollup_table(index: dict[str, object] | None) -> str:
     rollup = _scheduler_policy_rollup(index)
     if not rollup:
@@ -1387,6 +1400,48 @@ def _scheduler_policy_rollup_table(index: dict[str, object] | None) -> str:
     )
 
 
+def _operational_qa_rollup_table(index: dict[str, object] | None) -> str:
+    rollup = _operational_qa_rollup(index)
+    if not rollup:
+        return ""
+    missing_counts = rollup.get("missing_required_scorecard_counts")
+    missing_days = rollup.get("missing_required_scorecard_days")
+    blocked_counts = rollup.get("blocked_required_scorecard_counts")
+    status_counts = rollup.get("status_counts")
+    missing_counts = missing_counts if isinstance(missing_counts, dict) else {}
+    missing_days = missing_days if isinstance(missing_days, dict) else {}
+    blocked_counts = blocked_counts if isinstance(blocked_counts, dict) else {}
+    body = []
+    for scorecard, count in sorted(
+        missing_counts.items(),
+        key=lambda item: (-int(item[1]), str(item[0])),
+    ):
+        days = missing_days.get(scorecard)
+        day_text = ", ".join(str(day) for day in days) if isinstance(days, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(scorecard))}</td>"
+            f"<td>{escape(str(count))}</td>"
+            f"<td>{escape(day_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        body.append("<tr><td>-</td><td>0</td><td>-</td></tr>")
+    blocked_text = _count_dict_text(blocked_counts)
+    return (
+        "<div class='model-section-title'>Operational QA Rollup</div>"
+        f"<div class='model-subtitle'>status: {escape(_count_dict_text(status_counts))}; "
+        f"QA-ready days: {escape(str(rollup.get('ready_day_count', 0)))}; "
+        f"QA-incomplete days: {escape(str(rollup.get('qa_incomplete_day_count', 0)))}; "
+        f"blocked required scorecards: {escape(blocked_text)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table scheduler-policy-table'>"
+        "<thead><tr><th>missing required scorecard</th><th>days</th><th>day list</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
     if not isinstance(index, dict):
         return ""
@@ -1399,11 +1454,20 @@ def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
             continue
         actions = day.get("scheduler_policy_actions")
         action_text = ", ".join(str(item) for item in actions) if isinstance(actions, list) else "-"
+        missing_qa = day.get("operational_qa_missing_required_scorecards")
+        missing_qa_text = (
+            ", ".join(str(item) for item in missing_qa)
+            if isinstance(missing_qa, list)
+            else "-"
+        )
         body.append(
             "<tr>"
             f"<td>{escape(str(day.get('day', '')))}</td>"
             f"<td>{escape(str(day.get('scheduler_policy_status', 'unknown')))}</td>"
             f"<td>{escape(str(day.get('scheduler_policy_priority', 'normal')))}</td>"
+            f"<td>{escape(str(day.get('operational_qa_status', 'unknown')))}</td>"
+            f"<td>{escape(str(day.get('operational_qa_ready', 'unknown')))}</td>"
+            f"<td>{escape(missing_qa_text)}</td>"
             f"<td>{escape(action_text)}</td>"
             "</tr>"
         )
@@ -1413,7 +1477,8 @@ def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
         "<div class='model-section-title'>Daily Scheduler Policy</div>"
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table scheduler-policy-table'>"
-        "<thead><tr><th>day</th><th>status</th><th>priority</th><th>actions</th></tr></thead>"
+        "<thead><tr><th>day</th><th>policy</th><th>priority</th>"
+        "<th>QA</th><th>QA ready</th><th>missing QA scorecards</th><th>actions</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
     )
@@ -1423,6 +1488,15 @@ def _count_dict_text(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "none"
     return ", ".join(f"{key}:{count}" for key, count in sorted(value.items()))
+
+
+def _list_summary(value: object, limit: int = 3) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    items = [str(item) for item in value[:limit]]
+    if len(value) > limit:
+        items.append(f"+{len(value) - limit} more")
+    return ", ".join(items)
 
 
 def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key: str) -> dict[str, object]:
@@ -1459,6 +1533,8 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
             process_labels = []
         scheduler_policy = summary.get("scheduler_policy") if isinstance(summary, dict) else {}
         scheduler_policy = scheduler_policy if isinstance(scheduler_policy, dict) else {}
+        operational_qa = summary.get("operational_qa") if isinstance(summary, dict) else {}
+        operational_qa = operational_qa if isinstance(operational_qa, dict) else {}
         rows.append(
             {
                 "day": day,
@@ -1468,6 +1544,14 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "scheduler": scheduler_policy.get("status", "missing"),
                 "scheduler_priority": scheduler_policy.get("priority", "n/a"),
                 "scheduler_actions": _scheduler_action_summary(scheduler_policy),
+                "operational_qa": operational_qa.get("status", "missing"),
+                "operational_qa_ready": operational_qa.get("status") in {
+                    "ready",
+                    "no_targeted_scheduler_actions",
+                },
+                "operational_qa_missing": _list_summary(
+                    operational_qa.get("missing_required_scorecards")
+                ),
                 "era5_cf_csi": _cf_csi(summary, "era5_cloud_fraction"),
                 "les_cf_csi": _cf_csi(summary, "les_bridge_cloud_fraction"),
                 "wband_csi": _compact_float(wband_contingency.get("critical_success_index")),
@@ -1493,6 +1577,8 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['gate']))}</td>"
             f"<td>{escape(str(row['scheduler']))}</td>"
             f"<td>{escape(str(row['scheduler_priority']))}</td>"
+            f"<td>{escape(str(row['operational_qa']))}</td>"
+            f"<td>{escape(str(row['operational_qa_missing']))}</td>"
             f"<td>{escape(str(row['era5_cf_csi']))}</td>"
             f"<td>{escape(str(row['les_cf_csi']))}</td>"
             f"<td>{escape(str(row['wband_csi']))}</td>"
@@ -1508,7 +1594,7 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
         "<table class='model-table operational-table'>"
         "<thead><tr>"
         "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
-        "<th>scheduler</th><th>priority</th>"
+        "<th>scheduler</th><th>priority</th><th>QA</th><th>missing QA</th>"
         "<th>ERA5 CF CSI</th><th>LES CF CSI</th><th>W-band CSI</th>"
         "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>actions</th><th>labels</th>"
         "</tr></thead>"
@@ -2028,6 +2114,7 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row.get('seb', '')))}</td>"
             f"<td>{escape(str(row.get('scheduler_policy', '')))}</td>"
             f"<td>{escape(str(row.get('scheduler_priority', '')))}</td>"
+            f"<td>{escape(str(row.get('operational_qa', '')))}</td>"
             f"<td>{escape(str(row.get('scheduler_actions', '')))}</td>"
             f"<td>{escape(str(row.get('scorecards', '')))}</td>"
             f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
@@ -2040,7 +2127,7 @@ def _lasso_bundle_table(rows: list[dict[str, object]]) -> str:
         "<thead><tr>"
         "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
         "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th>"
-        "<th>scheduler</th><th>priority</th><th>actions</th><th>scorecards</th>"
+        "<th>scheduler</th><th>priority</th><th>QA</th><th>actions</th><th>scorecards</th>"
         "<th>bundle path</th><th>compliance path</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -2056,6 +2143,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
     process_rollup = _process_skill_rollup(index)
     process_diagnoses = _process_diagnoses(diagnosis)
     scheduler_rollup = _scheduler_policy_rollup(index)
+    operational_qa_rollup = _operational_qa_rollup(index)
     ready_count = sum(1 for row in rows if row.get("status") == "ready")
     compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
@@ -2069,6 +2157,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("process regimes", len(process_rollup)),
         _card("diagnosed regimes", len(process_diagnoses)),
         _card("targeted checks", scheduler_rollup.get("targeted_day_count", "n/a")),
+        _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("mixed-phase days", _process_day_count(index, "forcing_mixed_phase_support")),
         _card(
             "mixed-phase top bias",
@@ -2109,6 +2198,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_scheduler_policy_rollup_table(index)}"
+        f"{_operational_qa_rollup_table(index)}"
         f"{_scheduler_policy_day_table(index)}"
         f"{_process_diagnosis_table(diagnosis)}"
         f"{_process_skill_rollup_table(index)}"
@@ -2132,10 +2222,13 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
     index_pending = _index_required_pending(index)
     index_days = index.get("days", []) if isinstance(index, dict) else []
     scheduler_rollup = _scheduler_policy_rollup(index)
+    operational_qa_rollup = _operational_qa_rollup(index)
     cards = [
         _card("campaign index", index.get("status", "missing") if index else "missing"),
         _card("indexed days", len(index_days) if isinstance(index_days, list) else 0),
         _card("targeted checks", scheduler_rollup.get("targeted_day_count", "n/a")),
+        _card("QA ready", operational_qa_rollup.get("ready_day_count", "n/a")),
+        _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("ERA5 CF CSI mean", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
         _card("LES CF CSI mean", _index_cf_metric(index, "les_bridge_cloud_fraction", "cf_V")),
         _card("required pending", len(index_pending)),
@@ -2161,6 +2254,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
         f"{_scheduler_policy_rollup_table(index)}"
+        f"{_operational_qa_rollup_table(index)}"
         f"{_scheduler_policy_day_table(index)}"
         f"{_operator_policy_rollup_table(index)}"
         f"{_operational_table(rows)}"
