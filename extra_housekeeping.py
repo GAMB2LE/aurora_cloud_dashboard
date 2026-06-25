@@ -482,7 +482,24 @@ def _wxcam_representative_offset(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _plot_wxcam_housekeeping_frame(df: pd.DataFrame, title: str, output: Path) -> None:
     if df.empty:
-        raise ValueError("No WXcam housekeeping rows available")
+        fig, ax = plt.subplots(figsize=(13, 3.0))
+        ax.text(
+            0.5,
+            0.5,
+            "No WXcam housekeeping rows available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color="#555555",
+        )
+        ax.set_axis_off()
+        fig.suptitle(title)
+        fig.tight_layout()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output, dpi=150)
+        plt.close(fig)
+        print(f"Wrote {output} with no WXcam rows")
+        return
     image_counts = _wxcam_hourly_series(df[df["media_kind"] == "image"], "time_epoch_ns", "count")
     video_counts = _wxcam_hourly_series(df[df["media_kind"] == "video"], "time_epoch_ns", "count")
     image_sizes = _wxcam_hourly_series(df[df["media_kind"] == "image"], "size_mb", "median")
