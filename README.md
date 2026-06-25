@@ -196,6 +196,12 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
   - `aurora-gws-rsync-products-wxcam.timer`
   - `aurora-gws-rsync-manifests.timer`
 
+Temporary deployment note, 2026-06-25: `aurora-wxcam-source-sync.timer` and
+`aurora-asfs-fast-sonic-source-sync.timer` are disabled on `aurora-cloud`
+because their upstream source host `100.124.55.22` is timing out over SSH. The
+local dashboard and derived replay products remain usable from already mirrored
+data; re-enable those timers only after the source host is reachable again.
+
 Useful commands:
 
 ```bash
