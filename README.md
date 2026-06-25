@@ -31,6 +31,9 @@ Additional housekeeping products now exist for:
 ## Core files
 
 - `app.py` - main Panel application.
+- `model-evaluation.py` - standalone AURORA-LASSO science-review dashboard for
+  active daily bundles, instrument comparisons, scorecards, runtime/evaluation
+  windows, and provenance outside the main tab set.
 - `wxcam_catalog.py` - shared helpers for the wxcam SQLite catalog.
 - `index_wxcam_catalog.py` - indexes local WXcam HDR images and videos, with optional one-shot remote metadata bootstrap if explicitly requested.
 - `build_wxcam_daily_videos.py` - builds daily wxcam MP4 products and hourly thumbnails from raw hourly clips.

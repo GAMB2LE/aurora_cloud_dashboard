@@ -1174,6 +1174,34 @@ def load_scorecard(day: str, name: str) -> dict[str, object] | None:
     return _direct_scorecard(day, name)
 
 
+def _bundle_recipe(day: str) -> dict[str, object]:
+    bundle = load_day_bundle(day)
+    models = bundle.get("models") if isinstance(bundle, dict) else None
+    if not isinstance(models, dict):
+        return {}
+    recipe = models.get("standard_daily_les_recipe")
+    return recipe if isinstance(recipe, dict) else {}
+
+
+def _hours_text(value: object) -> str:
+    compact = _compact_float(value)
+    return "n/a" if compact == "n/a" else str(compact)
+
+
+def _bundle_runtime_summary(day: str) -> dict[str, object]:
+    recipe = _bundle_recipe(day)
+    return {
+        "run_hours": _hours_text(recipe.get("configured_run_time_hours")),
+        "spinup_hours": _hours_text(
+            float(recipe.get("spin_up_seconds", 0.0)) / 3600.0
+            if recipe.get("spin_up_seconds") is not None
+            else None
+        ),
+        "evaluation_hours": _hours_text(recipe.get("evaluation_window_hours")),
+        "recipe_class": recipe.get("daily_recipe_class", "unknown"),
+    }
+
+
 def _lasso_bundle_paths(limit: int = 31) -> list[Path]:
     days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
     if not days_root.exists():
@@ -1193,6 +1221,7 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
         )
         compliance_detail = _lasso_compliance_detail(compliance)
         if not payload:
+            runtime = _bundle_runtime_summary(path.parents[1].name)
             rows.append(
                 {
                     "day": path.parents[1].name,
@@ -1206,13 +1235,18 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                     "cloudnet": "missing",
                     "scorecards": "missing",
                     "seb": "missing",
+                    "cm1_runtime_h": runtime["run_hours"],
+                    "cm1_eval_h": runtime["evaluation_hours"],
+                    "cm1_recipe_class": runtime["recipe_class"],
                     "operational_qa": "missing",
                 }
             )
             continue
+        day = str(payload.get("day", path.parents[1].name))
+        runtime = _bundle_runtime_summary(day)
         rows.append(
             {
-                "day": payload.get("day", path.parents[1].name),
+                "day": day,
                 "status": payload.get("status", "unknown"),
                 "bundle_json": payload.get("bundle_json", str(path)),
                 "bundle_markdown": payload.get("bundle_markdown"),
@@ -1224,11 +1258,14 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "cloudnet": _cloudnet_status_summary(payload.get("cloudnet")),
                 "scorecards": _scorecard_status_summary(payload.get("scorecards")),
                 "seb": _nested_status(payload, ["forward_operators", "rrtmgp_surface_energy_budget"]),
+                "cm1_runtime_h": runtime["run_hours"],
+                "cm1_eval_h": runtime["evaluation_hours"],
+                "cm1_recipe_class": runtime["recipe_class"],
                 "scheduler_policy": _nested_status(payload, ["scheduler_policy"]),
                 "scheduler_priority": _nested_value(payload, ["scheduler_policy", "priority"], "n/a"),
                 "scheduler_actions": _scheduler_action_summary(payload.get("scheduler_policy")),
                 "operational_qa": _nested_value(
-                    _operational_summary_for_day(str(payload.get("day", path.parents[1].name))),
+                    _operational_summary_for_day(day),
                     ["operational_qa", "status"],
                     "missing",
                 ),
@@ -1855,6 +1892,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
     if not isinstance(base_top, dict) and isinstance(scorecard, dict):
         base_top = scorecard.get("cloud_base_top")
     base_top = base_top if isinstance(base_top, dict) else {}
+    runtime = _bundle_runtime_summary(day)
 
     return {
         "day": day,
@@ -1864,6 +1902,9 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         "metric_family": spec.get("metric_family", "readiness"),
         "basis": spec.get("basis", ""),
         "scorecard": scorecard_name,
+        "cm1_runtime_h": runtime["run_hours"],
+        "cm1_eval_h": runtime["evaluation_hours"],
+        "cm1_recipe_class": runtime["recipe_class"],
         "status": status,
         "caveat": _scorecard_caveat(scorecard, spec),
         "valid": valid,
@@ -2009,6 +2050,9 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['instrument']))}</td>"
             f"<td>{escape(str(row['model']))}</td>"
             f"<td>{_badge(row['caveat'])}</td>"
+            f"<td>{escape(str(row['cm1_runtime_h']))}</td>"
+            f"<td>{escape(str(row['cm1_eval_h']))}</td>"
+            f"<td>{escape(str(row['cm1_recipe_class']))}</td>"
             f"<td>{escape(str(row['status']))}</td>"
             f"<td>{escape(str(row['basis']))}</td>"
             f"<td>{escape(str(row['valid']))}</td>"
@@ -2028,7 +2072,8 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table instrument-comparison-table'>"
         "<thead><tr><th>day</th><th>instrument</th><th>model/output</th>"
-        "<th>caveat</th><th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
+        "<th>caveat</th><th>CM1 h</th><th>eval h</th><th>recipe</th>"
+        "<th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
         "<th>CSI</th><th>bias</th><th>RMSE</th><th>corr</th><th>base bias m</th>"
         "<th>top bias m</th><th>scorecard</th><th>note</th>"
         "</tr></thead>"
@@ -2740,6 +2785,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
     days = _campaign_days()
     latest_day = days[0] if days else ""
+    latest_runtime = _bundle_runtime_summary(latest_day) if latest_day else {}
     operational_qa = _operational_qa_rollup(index)
     rows = build_instrument_catalog([latest_day]) if latest_day else []
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
@@ -2750,6 +2796,8 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         _card("campaign", index.get("status", "missing") if isinstance(index, dict) else "missing"),
         _card("QA ready days", operational_qa.get("ready_day_count", "n/a")),
         _card("QA incomplete", operational_qa.get("qa_incomplete_day_count", "n/a")),
+        _card("CM1 run h", latest_runtime.get("run_hours", "n/a")),
+        _card("CM1 eval h", latest_runtime.get("evaluation_hours", "n/a")),
         _card("ready products", ready),
         _card("diagnostic products", diagnostic),
         _card("blocked products", blocked),
@@ -2793,6 +2841,9 @@ def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = Fal
             f"<td>{escape(str(row.get('mmdf', '')))}</td>"
             f"<td>{escape(str(row.get('cloudnet', '')))}</td>"
             f"<td>{escape(str(row.get('seb', '')))}</td>"
+            f"<td>{escape(str(row.get('cm1_runtime_h', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('cm1_eval_h', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('cm1_recipe_class', 'unknown')))}</td>"
             f"<td>{escape(str(row.get('scheduler_policy', '')))}</td>"
             f"<td>{escape(str(row.get('scheduler_priority', '')))}</td>"
             f"<td>{escape(str(row.get('operational_qa', '')))}</td>"
@@ -2808,6 +2859,7 @@ def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = Fal
         "<thead><tr>"
         "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
         "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th>"
+        "<th>CM1 h</th><th>eval h</th><th>recipe</th>"
         "<th>scheduler</th><th>priority</th><th>QA</th><th>actions</th><th>scorecards</th>"
         f"{path_headers}"
         "</tr></thead>"
@@ -2835,6 +2887,8 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest day", rows[0].get("day", "missing") if rows else "missing"),
         _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
         _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
+        _card("latest CM1 h", rows[0].get("cm1_runtime_h", "n/a") if rows else "n/a"),
+        _card("latest eval h", rows[0].get("cm1_eval_h", "n/a") if rows else "n/a"),
         _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("latest updated", _format_mtime(latest_path)),
     ]
