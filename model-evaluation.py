@@ -1756,6 +1756,135 @@ def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
     )
 
 
+def _day_status(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "status.json")
+
+
+def _day_command_state(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "command_state.json")
+
+
+def _missing_required_inputs(status: dict[str, object] | None) -> list[str]:
+    if not isinstance(status, dict):
+        return []
+    checks = status.get("checks")
+    if not isinstance(checks, list):
+        return []
+    missing = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        if check.get("required") and check.get("status") != "ready":
+            missing.append(str(check.get("id", "unknown")))
+    return missing
+
+
+def _command_state_summary(command_state: dict[str, object] | None) -> tuple[str, str]:
+    if not isinstance(command_state, dict):
+        return "not_started", "-"
+    status = str(command_state.get("status", "unknown"))
+    failed = command_state.get("failed_command_id")
+    if failed:
+        return status, str(failed)
+    resume = command_state.get("resume_command_id")
+    if resume:
+        return status, f"resume: {resume}"
+    completed = command_state.get("completed_command_count")
+    total = command_state.get("total_command_count")
+    if completed is not None and total is not None:
+        return status, f"{completed}/{total}"
+    return status, "-"
+
+
+def _daily_review_queue_rows(index: dict[str, object] | None, limit: int = 10) -> list[dict[str, object]]:
+    indexed_days = []
+    if isinstance(index, dict) and isinstance(index.get("days"), list):
+        indexed_days = [str(day.get("day")) for day in index["days"] if isinstance(day, dict)]
+    status_days = []
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if days_root.exists():
+        status_days = [
+            path.parent.name
+            for path in days_root.glob("*/status.json")
+            if path.parent.name[:4].isdigit()
+        ]
+    days = sorted({*indexed_days, *status_days}, reverse=True)[:limit]
+    indexed = {}
+    if isinstance(index, dict) and isinstance(index.get("days"), list):
+        indexed = {
+            str(day.get("day")): day
+            for day in index["days"]
+            if isinstance(day, dict) and day.get("day")
+        }
+    rows = []
+    for day in days:
+        indexed_day = indexed.get(day, {})
+        status = _day_status(day)
+        command_state = _day_command_state(day)
+        command_status, command_detail = _command_state_summary(command_state)
+        instrument_rows = build_instrument_catalog([day])
+        diagnostic = sum(
+            1
+            for row in instrument_rows
+            if row.get("caveat") in {"diagnostic_only", "not_colocated"}
+        )
+        blocked = sum(
+            1
+            for row in instrument_rows
+            if str(row.get("caveat", "")).startswith("blocked")
+        )
+        rows.append(
+            {
+                "day": day,
+                "bundle": indexed_day.get("lasso_bundle_status", "missing"),
+                "qa": indexed_day.get("operational_qa_status", status.get("status") if status else "missing"),
+                "missing_inputs": _missing_required_inputs(status),
+                "diagnostic_streams": diagnostic,
+                "blocked_streams": blocked,
+                "failed_operator": command_detail if "fail" in command_status.lower() else "-",
+                "command_status": command_status,
+                "command_detail": command_detail,
+                "actions": indexed_day.get("scheduler_policy_actions", []),
+            }
+        )
+    return rows
+
+
+def _daily_review_queue_table(index: dict[str, object] | None) -> str:
+    rows = _daily_review_queue_rows(index)
+    if not rows:
+        return "<div class='model-note'>No daily review records found yet.</div>"
+    body = []
+    for row in rows:
+        actions = row.get("actions")
+        action_text = _list_summary(actions, limit=2)
+        missing_text = _list_summary(row.get("missing_inputs"), limit=4)
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{_badge(row.get('bundle'))}</td>"
+            f"<td>{_badge(row.get('qa'))}</td>"
+            f"<td>{escape(missing_text)}</td>"
+            f"<td>{escape(str(row.get('diagnostic_streams', 0)))}</td>"
+            f"<td>{escape(str(row.get('blocked_streams', 0)))}</td>"
+            f"<td>{escape(str(row.get('failed_operator', '-')))}</td>"
+            f"<td>{escape(str(row.get('command_status', 'unknown')))}</td>"
+            f"<td>{escape(str(row.get('command_detail', '-')))}</td>"
+            f"<td>{escape(action_text)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Daily Review Queue</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table daily-review-table'>"
+        "<thead><tr><th>day</th><th>bundle</th><th>QA</th><th>missing inputs</th>"
+        "<th>diagnostic</th><th>blocked</th><th>failed operator</th>"
+        "<th>runner</th><th>runner detail</th><th>QA actions</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _count_dict_text(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "none"
@@ -2813,6 +2942,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
     latest_day = days[0] if days else ""
     latest_runtime = _bundle_runtime_summary(latest_day) if latest_day else {}
     operational_qa = _operational_qa_rollup(index)
+    archive_manifest = _campaign_archive_manifest()
     rows = build_instrument_catalog([latest_day]) if latest_day else []
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
     diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
@@ -2829,6 +2959,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         _card("blocked products", blocked),
         _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
         _card("CM1 LES CF CSI", _index_cf_metric(index, "cloud_fraction", "cf_V")),
+        *_archive_manifest_cards(archive_manifest),
     ]
     html = (
         "<div class='model-shell operational-shell'>"
@@ -2840,6 +2971,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_daily_review_queue_table(index)}"
         f"{_evaluation_schematic()}"
         "</div>"
     )
