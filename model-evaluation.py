@@ -1140,6 +1140,10 @@ def _campaign_process_diagnosis() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_process_diagnosis.json")
 
 
+def _campaign_archive_manifest() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "archive_manifest.json")
+
+
 def load_campaign_index() -> dict[str, object] | None:
     return _campaign_index()
 
@@ -1662,6 +1666,50 @@ def _operational_qa_rollup_table(index: dict[str, object] | None) -> str:
         "<table class='model-table operational-table scheduler-policy-table'>"
         "<thead><tr><th>missing required scorecard</th><th>days</th><th>day list</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _archive_manifest_cards(manifest: dict[str, object] | None) -> list[str]:
+    if not isinstance(manifest, dict):
+        return [_card("archive manifest", "missing")]
+    counts = manifest.get("class_counts")
+    counts = counts if isinstance(counts, dict) else {}
+    items = manifest.get("items")
+    item_count = len(items) if isinstance(items, list) else "n/a"
+    return [
+        _card("archive manifest", manifest.get("status", "unknown")),
+        _card("manifest items", item_count),
+        _card("active", counts.get("active_campaign", 0)),
+        _card("reference", counts.get("reference", 0)),
+        _card("archived", counts.get("archived_experiment", 0)),
+        _card("retired", counts.get("retired_dead_end", 0)),
+    ]
+
+
+def _archive_manifest_table(manifest: dict[str, object] | None) -> str:
+    if not isinstance(manifest, dict):
+        return "<div class='model-note'>archive manifest missing</div>"
+    counts = manifest.get("class_counts")
+    if not isinstance(counts, dict):
+        return "<div class='model-note'>archive manifest has no class counts</div>"
+    descriptions = manifest.get("archive_classes")
+    descriptions = descriptions if isinstance(descriptions, dict) else {}
+    rows = []
+    for name, count in sorted(counts.items()):
+        rows.append(
+            "<tr>"
+            f"<td><code>{escape(str(name))}</code></td>"
+            f"<td>{escape(str(count))}</td>"
+            f"<td>{escape(str(descriptions.get(name, '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Archive Manifest</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table archive-table'>"
+        "<thead><tr><th>class</th><th>count</th><th>policy</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
         "</table></div>"
     )
 
@@ -2849,6 +2897,7 @@ def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = Fal
 def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
     index = _campaign_index()
     diagnosis = _campaign_process_diagnosis()
+    archive_manifest = _campaign_archive_manifest()
     paths = _lasso_bundle_paths()
     rows = _lasso_bundle_rows(paths)
     process_rollup = _process_skill_rollup(index)
@@ -2869,6 +2918,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest eval h", rows[0].get("cm1_eval_h", "n/a") if rows else "n/a"),
         _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("latest updated", _format_mtime(latest_path)),
+        *_archive_manifest_cards(archive_manifest),
     ]
     detail_html = ""
     if SHOW_OPERATIONAL_DETAILS:
@@ -2879,6 +2929,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
             f"{_process_diagnosis_table(diagnosis)}"
             f"{_process_skill_rollup_table(index)}"
             f"{_process_evidence_table(index)}"
+            f"{_archive_manifest_table(archive_manifest)}"
         )
     html = (
         "<div class='model-shell operational-shell'>"
@@ -2902,6 +2953,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
 def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
     diagnosis = _campaign_process_diagnosis()
+    archive_manifest = _campaign_archive_manifest()
     bundle_rows = _lasso_bundle_rows(_lasso_bundle_paths())
     operational_rows = _operational_rows(_operational_run_paths())
     html = (
@@ -2916,6 +2968,7 @@ def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
         f"{_scheduler_policy_rollup_table(index)}"
         f"{_operational_qa_rollup_table(index)}"
         f"{_scheduler_policy_day_table(index)}"
+        f"{_archive_manifest_table(archive_manifest)}"
         f"{_operator_policy_rollup_table(index)}"
         f"{_process_diagnosis_table(diagnosis)}"
         f"{_process_skill_rollup_table(index)}"

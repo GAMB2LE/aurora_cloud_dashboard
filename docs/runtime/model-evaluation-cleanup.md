@@ -29,8 +29,8 @@ that are useful for developers but too noisy for external science review.
 ## Data Retention Policy
 
 Do not advertise old model directories during dashboard cleanup. Treat them as
-archived evidence until a separate archive manifest exists. Active review should
-use only campaign-root products and daily AURORA-LASSO bundles.
+archived evidence and classify them through `archive_manifest.json`. Active
+review should use only campaign-root products and daily AURORA-LASSO bundles.
 
 Recommended archive classes:
 
@@ -41,6 +41,5 @@ Recommended archive classes:
 - `retired_dead_end`: scripted but intentionally inactive paths such as IFS/HRES
   attempts or bridge-era W-band proxy outputs
 
-The next cleanup step should write a machine-readable archive manifest on
-aurora-cloud, then move or hide old products by manifest class rather than by
-ad hoc path deletion.
+The machine-readable archive manifest is the cleanup contract. Move or hide old
+products by manifest class rather than by ad hoc path deletion.
