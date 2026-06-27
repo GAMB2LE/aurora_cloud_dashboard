@@ -13,22 +13,24 @@ every historic sensitivity test.
 - Current campaign artifacts under
   `/data/aurora/les/campaigns/aurora_multistream_pilot_20260520_20260602`
 
-## Hidden Legacy Surface
+## Removed Legacy Surface
 
-The earlier hard-coded run explorer and candidate leaderboard are hidden by
-default. They can be re-enabled only for forensic review with:
+The earlier hard-coded run explorer and candidate leaderboard have been removed
+from the served page. The dashboard is no longer an entry point for old CM1
+smoke tests, moisture-forcing experiments, IFS/HRES attempts, or proxy W-band
+comparisons. Forensic review should use campaign bundle provenance and archived
+files directly, not dashboard modes.
 
-- `AURORA_MODEL_EVALUATION_SHOW_LEGACY_EXPLORER=1`
-- `AURORA_MODEL_EVALUATION_SHOW_CANDIDATE_LEADERBOARD=1`
 - `AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS=1`
 
-This keeps old CM1 smoke tests, moisture-forcing experiments, PAMTRA sweeps and
-blocked IFS/HRES attempts from looking like active operational candidates.
+Operational details remain opt-in because they expose paths and scheduler state
+that are useful for developers but too noisy for external science review.
 
 ## Data Retention Policy
 
-Do not delete old model directories during dashboard cleanup. Treat them as
-archived evidence until a separate archive manifest exists.
+Do not advertise old model directories during dashboard cleanup. Treat them as
+archived evidence until a separate archive manifest exists. Active review should
+use only campaign-root products and daily AURORA-LASSO bundles.
 
 Recommended archive classes:
 
@@ -36,8 +38,8 @@ Recommended archive classes:
 - `reference`: ERA5 reference and current CM1 daily recipe
 - `archived_experiment`: old CM1 sensitivity tests and exploratory PAMTRA sweeps
 - `runtime_proof`: CM1 smoke tests and build/runtime checks
-- `blocked_dead_end`: scripted but intentionally inactive paths such as IFS/HRES
-  without the required ECMWF access
+- `retired_dead_end`: scripted but intentionally inactive paths such as IFS/HRES
+  attempts or bridge-era W-band proxy outputs
 
 The next cleanup step should write a machine-readable archive manifest on
 aurora-cloud, then move or hide old products by manifest class rather than by

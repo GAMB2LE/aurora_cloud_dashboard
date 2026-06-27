@@ -33,18 +33,10 @@ OPERATIONAL_CAMPAIGN_ROOT = Path(
         f"/data/aurora/les/campaigns/{CASE_ID}",
     )
 )
-SHOW_LEGACY_EXPLORER = os.environ.get("AURORA_MODEL_EVALUATION_SHOW_LEGACY_EXPLORER") == "1"
-SHOW_CANDIDATE_LEADERBOARD = (
-    os.environ.get("AURORA_MODEL_EVALUATION_SHOW_CANDIDATE_LEADERBOARD") == "1"
-)
 SHOW_OPERATIONAL_DETAILS = (
     os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
 )
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
-CM1_CANDIDATE_LEADERBOARD_STEM = "cm1_candidate_leaderboard_20260622"
-CM1_CANDIDATE_LEADERBOARD_DIR = (
-    OUTPUT_ROOT / "diagnostics" / CM1_CANDIDATE_LEADERBOARD_STEM
-)
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
 IWC_SCORECARD_STEM = "scorecard_iwc_model_iwc_vs_cloudnet_iwc_iwc_adv_20260621"
@@ -177,11 +169,6 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                     "model",
                     "cm1_0400_thompson_tall_rh105_25_60",
                     "cloudnet_model.nc",
-                ),
-                "wband_radar": _path(
-                    "model",
-                    "cm1_0400_thompson_tall_rh105_25_60",
-                    "wband_radar_proxy_20260622.nc",
                 ),
                 "pamtra_wband_radar": _path(
                     "model",
@@ -837,15 +824,6 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                     "era5_reference",
                     "scorecard_cf_official_categorize_20260620.json",
                 ),
-            },
-        ),
-        (
-            "ifs_hres_reference",
-            {
-                "label": "IFS/HRES reference (pending)",
-                "model": "IFS",
-                "status": "blocked: MARS entitlement",
-                "summary": "Historical 2026-05-21 IFS/HRES request is scripted and authenticates, but the ECMWF account lacks services/mars access.",
             },
         ),
     ]
@@ -3156,10 +3134,7 @@ def _variable_options(run_id: str, dataset_id: str) -> OrderedDict[str, str]:
 
 
 def _run_options() -> OrderedDict[str, str]:
-    if SHOW_LEGACY_EXPLORER:
-        run_ids = tuple(RUNS)
-    else:
-        run_ids = tuple(run_id for run_id in DEFAULT_RUN_IDS if run_id in RUNS)
+    run_ids = tuple(run_id for run_id in DEFAULT_RUN_IDS if run_id in RUNS)
     return OrderedDict((str(RUNS[run_id]["label"]), run_id) for run_id in run_ids)
 
 
@@ -3238,146 +3213,6 @@ def _artifact_cards(run_id: str, spec: dict[str, object], dataset_id: str) -> li
     }:
         return _pamtra_wband_descriptor_physics_sweep_cards(run_id, spec, dataset_id)
     return []
-
-
-def _leaderboard_paths() -> dict[str, Path]:
-    return {
-        "json": CM1_CANDIDATE_LEADERBOARD_DIR / f"{CM1_CANDIDATE_LEADERBOARD_STEM}.json",
-        "markdown": CM1_CANDIDATE_LEADERBOARD_DIR / f"{CM1_CANDIDATE_LEADERBOARD_STEM}.md",
-        "png": CM1_CANDIDATE_LEADERBOARD_DIR / f"{CM1_CANDIDATE_LEADERBOARD_STEM}.png",
-    }
-
-
-def _leaderboard_json() -> dict[str, object] | None:
-    path = _leaderboard_paths()["json"]
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _leaderboard_cards(payload: dict[str, object] | None) -> list[str]:
-    if not payload:
-        return [_card("leaderboard", "missing")]
-    selected = payload.get("selected_candidate")
-    selected = selected if isinstance(selected, dict) else {}
-    recommendation = payload.get("recommendation")
-    recommendation = recommendation if isinstance(recommendation, dict) else {}
-    candidates = payload.get("candidates")
-    candidates = candidates if isinstance(candidates, list) else []
-    radar = selected.get("radar")
-    radar = radar if isinstance(radar, dict) else {}
-    placement = selected.get("placement")
-    placement = placement if isinstance(placement, dict) else {}
-    displacement = placement.get("displacement")
-    displacement = displacement if isinstance(displacement, dict) else {}
-    return [
-        _card("selected", selected.get("label", "n/a")),
-        _card("score", _compact_float(selected.get("combined_score"))),
-        _card("radar CSI", _compact_float(radar.get("critical_success_index"))),
-        _card("bias dB", _compact_float(radar.get("reflectivity_mean_bias_db"))),
-        _card("center offset m", _compact_float(displacement.get("center_offset_m"))),
-        _card("candidates", len(candidates)),
-        _card("rejected", recommendation.get("rejected_candidates", "n/a")),
-    ]
-
-
-def _leaderboard_table(payload: dict[str, object] | None) -> str:
-    if not payload:
-        return ""
-    candidates = payload.get("candidates")
-    if not isinstance(candidates, list):
-        return ""
-    rows = []
-    for index, candidate in enumerate(candidates, start=1):
-        if not isinstance(candidate, dict):
-            continue
-        radar = candidate.get("radar")
-        radar = radar if isinstance(radar, dict) else {}
-        lwc = candidate.get("lwc")
-        lwc = lwc if isinstance(lwc, dict) else {}
-        primary = lwc.get("primary")
-        primary = primary if isinstance(primary, dict) else {}
-        placement = candidate.get("placement")
-        placement = placement if isinstance(placement, dict) else {}
-        displacement = placement.get("displacement")
-        displacement = displacement if isinstance(displacement, dict) else {}
-        decision = candidate.get("decision")
-        decision = decision if isinstance(decision, dict) else {}
-        rows.append(
-            "<tr>"
-            f"<td>{index}</td>"
-            f"<td><code>{escape(str(candidate.get('label', 'n/a')))}</code></td>"
-            f"<td>{escape(str(_compact_float(candidate.get('combined_score'))))}</td>"
-            f"<td>{escape(str(_compact_float(radar.get('critical_success_index'))))}</td>"
-            f"<td>{escape(str(_compact_float(radar.get('reflectivity_mean_bias_db'))))}</td>"
-            f"<td>{escape(str(_compact_float(primary.get('critical_success_index'))))}</td>"
-            f"<td>{escape(str(_compact_float(primary.get('model_lwp_mean_kg_m2'))))}</td>"
-            f"<td>{escape(str(_compact_float(primary.get('observed_lwp_mean_kg_m2'))))}</td>"
-            f"<td>{escape(str(_compact_float(displacement.get('center_offset_m'))))}</td>"
-            f"<td>{escape(str(decision.get('status', 'n/a')))}</td>"
-            "</tr>"
-        )
-    return (
-        "<div class='model-table-wrap'>"
-        "<table class='model-table leaderboard-table'>"
-        "<thead><tr>"
-        "<th>rank</th><th>candidate</th><th>score</th><th>radar CSI</th>"
-        "<th>bias dB</th><th>LWC CSI</th><th>model LWP</th><th>obs LWP</th>"
-        "<th>center offset m</th><th>decision</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody>"
-        "</table></div>"
-    )
-
-
-def _leaderboard_panel(_clicks: int = 0) -> pn.Column:
-    paths = _leaderboard_paths()
-    payload = _leaderboard_json()
-    cards = "".join(_leaderboard_cards(payload))
-    created = payload.get("created_at_utc") if isinstance(payload, dict) else None
-    json_state = (
-        f"{_format_size(paths['json'])}; {_format_mtime(paths['json'])}"
-        if paths["json"].exists()
-        else "missing"
-    )
-    summary = (
-        "<div class='model-shell leaderboard-shell'>"
-        "<div class='model-headline'>"
-        "<div>"
-        "<div class='model-title'>CM1 Candidate Leaderboard</div>"
-        "<div class='model-subtitle'>Standalone multi-observation gate for CM1 tuning candidates</div>"
-        "</div>"
-        f"<div class='model-pill'>{escape(str(created or json_state))}</div>"
-        "</div>"
-        f"<div class='model-grid'>{cards}</div>"
-        f"{_leaderboard_table(payload)}"
-        "</div>"
-    )
-    panes: list[object] = [pn.pane.HTML(summary, sizing_mode="stretch_width")]
-    if paths["png"].exists():
-        data_uri = _asset_data_uri(paths["png"])
-        panes.append(
-            pn.pane.HTML(
-                f"<img class='scorecard-image' src='{data_uri}' alt='CM1 candidate leaderboard'>",
-                sizing_mode="stretch_width",
-            )
-        )
-    else:
-        panes.append(pn.pane.Markdown("CM1 candidate leaderboard image is missing."))
-    if paths["markdown"].exists():
-        panes.append(
-            pn.Card(
-                pn.pane.Markdown(paths["markdown"].read_text(encoding="utf-8"), sizing_mode="stretch_width"),
-                title="Leaderboard tables",
-                collapsible=True,
-                collapsed=True,
-                sizing_mode="stretch_width",
-            )
-        )
-    return pn.Column(*panes, sizing_mode="stretch_width")
 
 
 def _scorecard_cards(run_id: str, spec: dict[str, object]) -> list[str]:
@@ -4111,7 +3946,6 @@ plot_panel = pn.bind(
     variable_select.param.value,
     refresh_button.param.clicks,
 )
-leaderboard_panel = pn.bind(_leaderboard_panel, refresh_button.param.clicks)
 operational_panel = pn.bind(_operational_panel, refresh_button.param.clicks)
 lasso_bundle_panel = pn.bind(_lasso_bundle_panel, refresh_button.param.clicks)
 overview_panel = pn.bind(_overview_panel, refresh_button.param.clicks)
@@ -4452,31 +4286,6 @@ main_sections = [
         sizing_mode="stretch_width",
     ),
 ]
-
-if SHOW_CANDIDATE_LEADERBOARD:
-    main_sections.append(
-        pn.Card(
-            pn.panel(leaderboard_panel, sizing_mode="stretch_width"),
-            title="Legacy Candidate Leaderboard",
-            collapsible=True,
-            collapsed=True,
-            sizing_mode="stretch_width",
-        )
-    )
-
-if SHOW_LEGACY_EXPLORER:
-    main_sections.append(
-        pn.Card(
-            controls,
-            pn.panel(summary_panel, sizing_mode="stretch_width"),
-            pn.panel(plot_panel, sizing_mode="stretch_width"),
-            share,
-            title="Legacy Run Explorer",
-            collapsible=True,
-            collapsed=True,
-            sizing_mode="stretch_width",
-        )
-    )
 
 template.main[:] = [
     pn.Column(
