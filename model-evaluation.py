@@ -1714,6 +1714,25 @@ def _archive_manifest_table(manifest: dict[str, object] | None) -> str:
     )
 
 
+def _day_archive_class_summary(day: str, manifest: dict[str, object] | None) -> str:
+    if not isinstance(manifest, dict):
+        return "missing"
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        return "missing"
+    marker = f"/days/{day}/"
+    counts: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", ""))
+        if marker not in path:
+            continue
+        archive_class = str(item.get("archive_class", "unknown"))
+        counts[archive_class] = counts.get(archive_class, 0) + 1
+    return _count_dict_text(counts)
+
+
 def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
     if not isinstance(index, dict):
         return ""
@@ -1797,6 +1816,7 @@ def _command_state_summary(command_state: dict[str, object] | None) -> tuple[str
 
 
 def _daily_review_queue_rows(index: dict[str, object] | None, limit: int = 10) -> list[dict[str, object]]:
+    archive_manifest = _campaign_archive_manifest()
     indexed_days = []
     if isinstance(index, dict) and isinstance(index.get("days"), list):
         indexed_days = [str(day.get("day")) for day in index["days"] if isinstance(day, dict)]
@@ -1844,6 +1864,7 @@ def _daily_review_queue_rows(index: dict[str, object] | None, limit: int = 10) -
                 "failed_operator": command_detail if "fail" in command_status.lower() else "-",
                 "command_status": command_status,
                 "command_detail": command_detail,
+                "archive_classes": _day_archive_class_summary(day, archive_manifest),
                 "actions": indexed_day.get("scheduler_policy_actions", []),
             }
         )
@@ -1870,6 +1891,7 @@ def _daily_review_queue_table(index: dict[str, object] | None) -> str:
             f"<td>{escape(str(row.get('failed_operator', '-')))}</td>"
             f"<td>{escape(str(row.get('command_status', 'unknown')))}</td>"
             f"<td>{escape(str(row.get('command_detail', '-')))}</td>"
+            f"<td>{escape(str(row.get('archive_classes', 'missing')))}</td>"
             f"<td>{escape(action_text)}</td>"
             "</tr>"
         )
@@ -1879,7 +1901,7 @@ def _daily_review_queue_table(index: dict[str, object] | None) -> str:
         "<table class='model-table operational-table daily-review-table'>"
         "<thead><tr><th>day</th><th>bundle</th><th>QA</th><th>missing inputs</th>"
         "<th>diagnostic</th><th>blocked</th><th>failed operator</th>"
-        "<th>runner</th><th>runner detail</th><th>QA actions</th></tr></thead>"
+        "<th>runner</th><th>runner detail</th><th>archive classes</th><th>QA actions</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
     )

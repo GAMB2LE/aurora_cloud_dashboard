@@ -10,6 +10,9 @@ every historic sensitivity test.
 - Operational campaign readiness
 - Daily ERA5, CM1 LES, Cloudnet, radar, LWC/IWC, LWP, SEB, ASFS/met summary
   records through the campaign products
+- Daily review queue rows with bundle/QA status, missing inputs, diagnostic and
+  blocked stream counts, runner status, QA actions, and per-day archive class
+  counts
 - Current campaign artifacts under
   `/data/aurora/les/campaigns/aurora_multistream_pilot_20260520_20260602`
 
