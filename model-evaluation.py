@@ -1211,6 +1211,39 @@ def _group_status_summary(groups: object) -> str:
     )
 
 
+def _iceland_audit_summary(preflight: dict[str, object]) -> str:
+    audit = preflight.get("site_metadata_audit")
+    if not isinstance(audit, dict):
+        return (
+            "<div class='model-note'>"
+            "Site metadata audit has not been written yet. Run the audit before treating "
+            "Iceland inputs as production-ready."
+            "</div>"
+        )
+    blockers = audit.get("blockers", [])
+    top_blockers = blockers[:5] if isinstance(blockers, list) else []
+    blocker_html = "".join(f"<li>{escape(str(blocker))}</li>" for blocker in top_blockers)
+    cards = [
+        _card("metadata audit", audit.get("status", "unknown")),
+        _card("metadata ready", audit.get("production_ready", False)),
+        _card(
+            "colocated",
+            f"{audit.get('required_ready_count', 'n/a')}/{audit.get('required_count', 'n/a')}",
+        ),
+        _card("reference", audit.get("reference_dataset_id", "missing")),
+    ]
+    return (
+        "<div class='model-subsection-title'>Site Metadata Audit</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"coordinate source: {escape(str(audit.get('coordinate_source', 'missing')))}; "
+        f"site: {escape(str(audit.get('site_latitude', 'n/a')))}, "
+        f"{escape(str(audit.get('site_longitude', 'n/a')))}"
+        "</div>"
+        + (f"<ul class='model-compact-list'>{blocker_html}</ul>" if blocker_html else "")
+    )
+
+
 def _iceland_readiness_panel() -> str:
     preflight = _iceland_preflight()
     if not isinstance(preflight, dict):
@@ -1244,6 +1277,7 @@ def _iceland_readiness_panel() -> str:
         "<div class='model-note'>"
         f"{escape(str(preflight.get('resume_condition', 'Run preflight before execution.')))}"
         "</div>"
+        f"{_iceland_audit_summary(preflight)}"
         f"{_group_status_summary(groups)}"
         + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
     )
