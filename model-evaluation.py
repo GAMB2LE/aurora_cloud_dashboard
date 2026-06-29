@@ -1158,6 +1158,20 @@ def _campaign_process_diagnosis() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_process_diagnosis.json")
 
 
+def _campaign_operator_physics_diagnosis() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_operator_physics_diagnosis.json")
+
+
+def _operator_physics_day(day: str) -> dict[str, object] | None:
+    return _read_json(
+        OPERATIONAL_CAMPAIGN_ROOT
+        / "days"
+        / day
+        / "scorecards"
+        / "operator_physics_diagnosis.json"
+    )
+
+
 def _campaign_archive_manifest() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "archive_manifest.json")
 
@@ -3329,6 +3343,243 @@ def _process_diagnosis_table(diagnosis: dict[str, object] | None, limit: int = 1
     )
 
 
+def _operator_physics_campaign_days(
+    diagnosis: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    if isinstance(diagnosis, dict) and isinstance(diagnosis.get("days"), list):
+        return [row for row in diagnosis["days"] if isinstance(row, dict)]
+    rows: list[dict[str, object]] = []
+    for day in reversed(_campaign_days()):
+        daily = _operator_physics_day(day)
+        if not isinstance(daily, dict):
+            continue
+        rows.append(_operator_physics_day_row(daily))
+    return rows
+
+
+def _operator_physics_day_row(payload: dict[str, object]) -> dict[str, object]:
+    wband = payload.get("wband")
+    wband = wband if isinstance(wband, dict) else {}
+    cloudnet = payload.get("cloudnet_microphysics")
+    cloudnet = cloudnet if isinstance(cloudnet, dict) else {}
+    seb = payload.get("seb")
+    seb = seb if isinstance(seb, dict) else {}
+    hypotheses = payload.get("hypotheses")
+    top = hypotheses[0] if isinstance(hypotheses, list) and hypotheses else {}
+    metrics = wband.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    return {
+        "day": payload.get("day"),
+        "status": payload.get("status", "missing"),
+        "wband_status": wband.get("status", "missing"),
+        "wband_failure_modes": wband.get("failure_modes", []),
+        "wband_csi": metrics.get("critical_success_index"),
+        "wband_bias_db": metrics.get("mean_bias_db"),
+        "lwc_state": _nested_value(cloudnet, ["lwc", "state"], "missing"),
+        "iwc_state": _nested_value(cloudnet, ["iwc", "state"], "missing"),
+        "seb_status": seb.get("status", "missing"),
+        "top_hypothesis": top.get("id", "missing") if isinstance(top, dict) else "missing",
+        "top_priority": top.get("priority", "missing") if isinstance(top, dict) else "missing",
+    }
+
+
+def _operator_physics_latest_day(
+    diagnosis: dict[str, object] | None,
+    rows: list[dict[str, object]] | None = None,
+) -> str:
+    rows = rows if rows is not None else _operator_physics_campaign_days(diagnosis)
+    day_values = [str(row.get("day")) for row in rows if row.get("day")]
+    if day_values:
+        return sorted(day_values)[-1]
+    days = _campaign_days()
+    return days[0] if days else ""
+
+
+def _operator_physics_cards(diagnosis: dict[str, object] | None) -> list[str]:
+    if not isinstance(diagnosis, dict):
+        return [_card("operator physics", "missing")]
+    rows = _operator_physics_campaign_days(diagnosis)
+    latest_day = _operator_physics_latest_day(diagnosis, rows)
+    latest = _operator_physics_day(latest_day) if latest_day else None
+    hypotheses = latest.get("hypotheses") if isinstance(latest, dict) else []
+    top = hypotheses[0] if isinstance(hypotheses, list) and hypotheses else {}
+    rollup = diagnosis.get("rollup")
+    rollup = rollup if isinstance(rollup, dict) else {}
+    return [
+        _card("operator physics", diagnosis.get("status", "missing")),
+        _card("diagnosed days", rollup.get("day_count", len(rows))),
+        _card("latest diagnosis", latest_day or "missing"),
+        _card("latest status", latest.get("status", "missing") if isinstance(latest, dict) else "missing"),
+        _card("top hypothesis", top.get("id", "missing") if isinstance(top, dict) else "missing"),
+        _card("priority", top.get("priority", "missing") if isinstance(top, dict) else "missing"),
+    ]
+
+
+def _operator_physics_rollup_text(diagnosis: dict[str, object] | None) -> str:
+    if not isinstance(diagnosis, dict):
+        return "<div class='model-note'>No campaign operator-physics diagnosis has been written yet.</div>"
+    rollup = diagnosis.get("rollup")
+    if not isinstance(rollup, dict):
+        return "<div class='model-note'>Operator-physics rollup is missing counts.</div>"
+    parts = [
+        f"status: {_count_dict_text(rollup.get('status_counts'))}",
+        f"W-band: {_count_dict_text(rollup.get('wband_status_counts'))}",
+        f"LWC: {_count_dict_text(rollup.get('lwc_state_counts'))}",
+        f"IWC: {_count_dict_text(rollup.get('iwc_state_counts'))}",
+        f"SEB: {_count_dict_text(rollup.get('seb_status_counts'))}",
+        f"hypotheses: {_count_dict_text(rollup.get('top_hypothesis_counts'))}",
+    ]
+    return "<div class='model-subtitle'>" + escape("; ".join(parts)) + "</div>"
+
+
+def _operator_physics_table(
+    diagnosis: dict[str, object] | None,
+    limit: int = 14,
+) -> str:
+    rows = _operator_physics_campaign_days(diagnosis)
+    if not rows:
+        return "<div class='model-note'>No daily operator-physics diagnosis rows found.</div>"
+    body = []
+    for row in sorted(rows, key=lambda item: str(item.get("day", "")), reverse=True)[:limit]:
+        modes = _list_summary(row.get("wband_failure_modes"), limit=3)
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{_badge(row.get('status'))}</td>"
+            f"<td>{_badge(row.get('wband_status'))}</td>"
+            f"<td>{escape(str(_compact_float(row.get('wband_csi'))))}</td>"
+            f"<td>{escape(str(_compact_float(row.get('wband_bias_db'))))}</td>"
+            f"<td>{escape(modes)}</td>"
+            f"<td>{_badge(row.get('lwc_state'))}</td>"
+            f"<td>{_badge(row.get('iwc_state'))}</td>"
+            f"<td>{_badge(row.get('seb_status'))}</td>"
+            f"<td>{escape(str(row.get('top_hypothesis', '')))}</td>"
+            f"<td>{escape(str(row.get('top_priority', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Operator-Physics Diagnosis</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table operator-physics-table'>"
+        "<thead><tr><th>day</th><th>status</th><th>W-band</th><th>CSI</th>"
+        "<th>bias dB</th><th>failure modes</th><th>LWC</th><th>IWC</th>"
+        "<th>SEB</th><th>top hypothesis</th><th>priority</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operator_physics_sweep_table(daily: dict[str, object] | None) -> str:
+    if not isinstance(daily, dict):
+        return ""
+    wband = daily.get("wband")
+    wband = wband if isinstance(wband, dict) else {}
+    sweeps = wband.get("sweeps")
+    if not isinstance(sweeps, dict) or not sweeps:
+        return ""
+    body = []
+    for name, sweep in sorted(sweeps.items()):
+        item = sweep if isinstance(sweep, dict) else {}
+        best = item.get("best") if isinstance(item.get("best"), dict) else {}
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{_badge(item.get('status', 'missing'))}</td>"
+            f"<td>{escape(str(item.get('product_count', 'n/a')))}</td>"
+            f"<td>{escape(str(best.get('variant_label') or best.get('scale') or best.get('descriptor_group') or best.get('id') or 'n/a'))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-subsection-title'>Latest W-band Operator Sweeps</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table operator-sweep-table'>"
+        "<thead><tr><th>sweep</th><th>status</th><th>products</th><th>best candidate</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operator_physics_actions(daily: dict[str, object] | None) -> str:
+    if not isinstance(daily, dict):
+        return ""
+    actions = daily.get("next_actions")
+    hypotheses = daily.get("hypotheses")
+    action_html = "".join(
+        f"<li>{escape(str(action))}</li>"
+        for action in actions
+        if str(action).strip()
+    ) if isinstance(actions, list) else ""
+    hypothesis_html = ""
+    if isinstance(hypotheses, list) and hypotheses:
+        for item in hypotheses[:4]:
+            if not isinstance(item, dict):
+                continue
+            hypothesis_html += (
+                "<li>"
+                f"<strong>{escape(str(item.get('priority', '')))}</strong>: "
+                f"{escape(str(item.get('id', '')))} - "
+                f"{escape(str(item.get('evidence', '')))}"
+                "</li>"
+            )
+    if not action_html and not hypothesis_html:
+        return ""
+    return (
+        "<div class='model-two-column'>"
+        "<div>"
+        "<div class='model-subsection-title'>Latest Next Actions</div>"
+        f"<ul class='model-compact-list'>{action_html or '<li>none</li>'}</ul>"
+        "</div>"
+        "<div>"
+        "<div class='model-subsection-title'>Latest Hypotheses</div>"
+        f"<ul class='model-compact-list'>{hypothesis_html or '<li>none</li>'}</ul>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _operator_physics_panel_html(
+    diagnosis: dict[str, object] | None,
+    *,
+    include_paths: bool = False,
+) -> str:
+    rows = _operator_physics_campaign_days(diagnosis)
+    latest_day = _operator_physics_latest_day(diagnosis, rows)
+    daily = _operator_physics_day(latest_day) if latest_day else None
+    path_note = ""
+    if include_paths and isinstance(diagnosis, dict):
+        path_note = (
+            "<div class='model-subtitle'>"
+            f"campaign diagnosis: <code>{escape(str(diagnosis.get('output_json', OPERATIONAL_CAMPAIGN_ROOT / 'campaign_operator_physics_diagnosis.json')))}</code>"
+            "</div>"
+        )
+    return (
+        "<div class='model-section-title'>Operator Physics</div>"
+        f"<div class='model-grid'>{''.join(_operator_physics_cards(diagnosis))}</div>"
+        f"{_operator_physics_rollup_text(diagnosis)}"
+        f"{_operator_physics_table(diagnosis)}"
+        f"{_operator_physics_actions(daily)}"
+        f"{_operator_physics_sweep_table(daily)}"
+        f"{path_note}"
+    )
+
+
+def _operator_physics_panel(_clicks: int = 0) -> pn.Column:
+    diagnosis = _campaign_operator_physics_diagnosis()
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Operator Physics</div>"
+        "<div class='model-subtitle'>W-band, Cloudnet microphysics and SEB checks from active campaign artifacts</div>"
+        "</div>"
+        "<div class='model-pill'>CM1 fixed; operators diagnosed</div>"
+        "</div>"
+        f"{_operator_physics_panel_html(diagnosis)}"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
 def _diagnosis_comparison(
     scorecards: dict[str, object],
     scorecard_name: str,
@@ -3442,11 +3693,23 @@ def _evaluation_schematic() -> str:
 
 def _overview_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
+    operator_physics = _campaign_operator_physics_diagnosis()
     days = _campaign_days()
     latest_day = days[0] if days else ""
     latest_runtime = _bundle_runtime_summary(latest_day) if latest_day else {}
     operational_qa = _operational_qa_rollup(index)
     archive_manifest = _campaign_archive_manifest()
+    operator_rows = _operator_physics_campaign_days(operator_physics)
+    operator_latest_day = _operator_physics_latest_day(operator_physics, operator_rows)
+    operator_latest = _operator_physics_day(operator_latest_day) if operator_latest_day else None
+    operator_hypotheses = (
+        operator_latest.get("hypotheses") if isinstance(operator_latest, dict) else []
+    )
+    operator_top = (
+        operator_hypotheses[0]
+        if isinstance(operator_hypotheses, list) and operator_hypotheses
+        else {}
+    )
     rows = build_instrument_catalog([latest_day]) if latest_day else []
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
     diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
@@ -3463,6 +3726,8 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         _card("blocked products", blocked),
         _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
         _card("CM1 LES CF CSI", _index_cf_metric(index, "cloud_fraction", "cf_V")),
+        _card("operator physics", operator_physics.get("status", "missing") if isinstance(operator_physics, dict) else "missing"),
+        _card("top operator hypothesis", operator_top.get("id", "missing") if isinstance(operator_top, dict) else "missing"),
         *_archive_manifest_cards(archive_manifest),
     ]
     html = (
@@ -3479,6 +3744,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
         f"{_seven_day_replay_summary(index)}"
+        f"{_operator_physics_rollup_text(operator_physics)}"
         f"{_evaluation_schematic()}"
         "</div>"
     )
@@ -3592,6 +3858,7 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
 def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
     diagnosis = _campaign_process_diagnosis()
+    operator_physics = _campaign_operator_physics_diagnosis()
     archive_manifest = _campaign_archive_manifest()
     bundle_rows = _lasso_bundle_rows(_lasso_bundle_paths())
     operational_rows = _operational_rows(_operational_run_paths())
@@ -3609,6 +3876,7 @@ def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
         f"{_scheduler_policy_day_table(index)}"
         f"{_archive_manifest_table(archive_manifest)}"
         f"{_operator_policy_rollup_table(index)}"
+        f"{_operator_physics_panel_html(operator_physics, include_paths=True)}"
         f"{_process_diagnosis_table(diagnosis)}"
         f"{_process_skill_rollup_table(index)}"
         f"{_process_evidence_table(index)}"
@@ -4649,6 +4917,7 @@ instrument_comparison_panel = pn.bind(
     metric_family_select.param.value,
     refresh_button.param.clicks,
 )
+operator_physics_panel = pn.bind(_operator_physics_panel, refresh_button.param.clicks)
 details_provenance_panel = pn.bind(_details_provenance_panel, refresh_button.param.clicks)
 
 CSS = """
@@ -4982,6 +5251,13 @@ main_sections = [
         pn.panel(instrument_comparison_panel, sizing_mode="stretch_width"),
         share,
         title="Instrument Comparisons",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(operator_physics_panel, sizing_mode="stretch_width"),
+        title="Operator Physics",
         collapsible=True,
         collapsed=False,
         sizing_mode="stretch_width",
