@@ -36,6 +36,7 @@ OPERATIONAL_CAMPAIGN_ROOT = Path(
 SHOW_OPERATIONAL_DETAILS = (
     os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
 )
+LEEDS_REPLAY_DAYS = tuple(f"2026-05-{day:02d}" for day in range(21, 28))
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
@@ -1907,6 +1908,194 @@ def _daily_review_queue_table(index: dict[str, object] | None) -> str:
     )
 
 
+def _indexed_day_map(index: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    if not isinstance(index, dict) or not isinstance(index.get("days"), list):
+        return {}
+    return {
+        str(day.get("day")): day
+        for day in index["days"]
+        if isinstance(day, dict) and day.get("day")
+    }
+
+
+def _scorecard_state(day: str, scorecard_name: str) -> str:
+    scorecard = load_scorecard(day, scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "missing"
+    return str(
+        scorecard.get("scoring_status")
+        or scorecard.get("status")
+        or scorecard.get("readiness_state")
+        or "present"
+    )
+
+
+def _source_readiness_state(day: str, product: str) -> str:
+    path = (
+        OPERATIONAL_CAMPAIGN_ROOT
+        / "days"
+        / day
+        / "cloudnet_source_readiness"
+        / f"{product}.json"
+    )
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return "missing"
+    return str(payload.get("status", payload.get("readiness_state", "present")))
+
+
+def _day_compliance_state(day: str) -> tuple[str, str]:
+    payload = _read_json(
+        OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "compliance.json"
+    )
+    if not isinstance(payload, dict):
+        return "missing", "n/a"
+    failures = payload.get("failures", [])
+    warnings = payload.get("warnings", [])
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    warning_count = len(warnings) if isinstance(warnings, list) else 0
+    return str(payload.get("status", "unknown")), f"{failure_count}/{warning_count}"
+
+
+def _cm1_output_count(day: str) -> object:
+    run_dir = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "cm1" / "run"
+    if not run_dir.exists():
+        return "missing"
+    return len(list(run_dir.glob("cm1out_*.nc")))
+
+
+def _row_for_instrument(
+    rows: list[dict[str, object]],
+    instrument: str,
+    model: str,
+) -> dict[str, object]:
+    for row in rows:
+        if row.get("instrument") == instrument and row.get("model") == model:
+            return row
+    return {}
+
+
+def _numeric_or_none(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean_compact(values: list[object]) -> object:
+    numeric = [value for value in (_numeric_or_none(item) for item in values) if value is not None]
+    if not numeric:
+        return "n/a"
+    return _compact_float(sum(numeric) / len(numeric))
+
+
+def _replay_process_labels(day: str) -> str:
+    forcing = load_scorecard(day, "forcing_diagnostic")
+    if not isinstance(forcing, dict):
+        return "missing"
+    classification = forcing.get("process_classification")
+    if not isinstance(classification, dict):
+        return "missing"
+    labels = classification.get("labels")
+    return _list_summary(labels, limit=3)
+
+
+def _seven_day_replay_rows(index: dict[str, object] | None) -> list[dict[str, object]]:
+    indexed = _indexed_day_map(index)
+    rows = []
+    for day in LEEDS_REPLAY_DAYS:
+        if not (OPERATIONAL_CAMPAIGN_ROOT / "days" / day).exists():
+            continue
+        instrument_rows = build_instrument_catalog([day])
+        era5_cf = _row_for_instrument(instrument_rows, "Cloudnet CF", "ERA5")
+        cm1_cf = _row_for_instrument(instrument_rows, "Cloudnet CF", "CM1 full LES")
+        wband = _row_for_instrument(
+            instrument_rows,
+            "W-band radar",
+            "CM1 virtual observatory",
+        )
+        indexed_day = indexed.get(day, {})
+        compliance, compliance_detail = _day_compliance_state(day)
+        rows.append(
+            {
+                "day": day,
+                "gate": indexed_day.get("release_gate_status", "missing"),
+                "bundle": indexed_day.get("lasso_bundle_status", "missing"),
+                "qa": indexed_day.get("operational_qa_status", "missing"),
+                "compliance": compliance,
+                "compliance_detail": compliance_detail,
+                "cm1_outputs": _cm1_output_count(day),
+                "era5_cf_csi": era5_cf.get("csi", "n/a"),
+                "cm1_cf_csi": cm1_cf.get("csi", "n/a"),
+                "wband_csi": wband.get("csi", "n/a"),
+                "lwc": _source_readiness_state(day, "l3-lwc"),
+                "iwc": _source_readiness_state(day, "l3-iwc"),
+                "surface": _scorecard_state(day, "surface_met"),
+                "asfs_radiation": _scorecard_state(day, "asfs_logger_radiation_surface"),
+                "asfs_sonic": _scorecard_state(day, "asfs_sonic_turbulence"),
+                "asfs_gas": _scorecard_state(day, "asfs_gas"),
+                "process": _replay_process_labels(day),
+            }
+        )
+    return rows
+
+
+def _seven_day_replay_summary(index: dict[str, object] | None) -> str:
+    rows = _seven_day_replay_rows(index)
+    if not rows:
+        return "<div class='model-note'>No seven-day Leeds replay records found yet.</div>"
+    ready_days = sum(
+        1
+        for row in rows
+        if row.get("gate") == "full_virtual_observatory_ready"
+        and row.get("bundle") == "ready"
+        and row.get("qa") == "ready"
+        and row.get("compliance") == "pass"
+    )
+    cards = [
+        _card("Leeds replay days", len(rows)),
+        _card("ready days", ready_days),
+        _card("ERA5 CF CSI", _mean_compact([row.get("era5_cf_csi") for row in rows])),
+        _card("CM1 CF CSI", _mean_compact([row.get("cm1_cf_csi") for row in rows])),
+        _card("W-band CSI", _mean_compact([row.get("wband_csi") for row in rows])),
+    ]
+    body = []
+    for row in rows:
+        surface_text = (
+            f"met:{row.get('surface')}, rad:{row.get('asfs_radiation')}, "
+            f"sonic:{row.get('asfs_sonic')}, gas:{row.get('asfs_gas')}"
+        )
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{_badge(row.get('gate'))}</td>"
+            f"<td>{_badge(row.get('bundle'))}</td>"
+            f"<td>{_badge(row.get('qa'))}</td>"
+            f"<td>{escape(str(row.get('compliance', '')))} "
+            f"({escape(str(row.get('compliance_detail', '')))})</td>"
+            f"<td>{escape(str(row.get('cm1_outputs', '')))}</td>"
+            f"<td>{escape(str(row.get('era5_cf_csi', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('cm1_cf_csi', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('wband_csi', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('lwc', '')))} / {escape(str(row.get('iwc', '')))}</td>"
+            f"<td>{escape(surface_text)}</td>"
+            f"<td>{escape(str(row.get('process', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>7-Day Leeds Replay</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table seven-day-replay-table'>"
+        "<thead><tr><th>day</th><th>gate</th><th>bundle</th><th>QA</th>"
+        "<th>compliance f/w</th><th>CM1 outputs</th><th>ERA5 CF CSI</th>"
+        "<th>CM1 CF CSI</th><th>W-band CSI</th><th>LWC/IWC</th>"
+        "<th>surface and ASFS</th><th>process labels</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _count_dict_text(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "none"
@@ -2994,6 +3183,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_daily_review_queue_table(index)}"
+        f"{_seven_day_replay_summary(index)}"
         f"{_evaluation_schematic()}"
         "</div>"
     )
