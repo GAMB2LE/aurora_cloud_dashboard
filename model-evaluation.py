@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from base64 import b64encode
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 import json
 import os
@@ -37,6 +37,17 @@ SHOW_OPERATIONAL_DETAILS = (
     os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
 )
 LEEDS_REPLAY_DAYS = tuple(f"2026-05-{day:02d}" for day in range(21, 28))
+NEXT_DATA_REQUIRED_INPUTS = (
+    "ERA5 pressure levels",
+    "ERA5 single levels",
+    "Cloudnet categorize",
+    "radar at reference point",
+    "surface met",
+    "ASFS radiation",
+    "ASFS sonic/turbulence",
+    "ASFS gas",
+    "HATPRO/LWP audit or override",
+)
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
@@ -2096,6 +2107,87 @@ def _seven_day_replay_summary(index: dict[str, object] | None) -> str:
     )
 
 
+def _next_day_after(day: str) -> str:
+    try:
+        parsed = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError:
+        return "not staged"
+    return (parsed + timedelta(days=1)).isoformat()
+
+
+def _future_staged_days(latest_day: str) -> list[str]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not latest_day or not days_root.exists():
+        return []
+    return sorted(
+        path.name
+        for path in days_root.iterdir()
+        if path.is_dir() and path.name[:4].isdigit() and path.name > latest_day
+    )
+
+
+def _operational_wait_state(index: dict[str, object] | None) -> str:
+    days = []
+    if isinstance(index, dict) and isinstance(index.get("days"), list):
+        days = [
+            str(day.get("day"))
+            for day in index["days"]
+            if isinstance(day, dict) and day.get("day")
+        ]
+    latest_day = max(days) if days else ""
+    future_days = _future_staged_days(latest_day)
+    ready_days = 0
+    qa_rollup = index.get("operational_qa_rollup", {}) if isinstance(index, dict) else {}
+    if isinstance(qa_rollup, dict):
+        ready_days = int(qa_rollup.get("ready_day_count", 0) or 0)
+    index_status = index.get("status", "missing") if isinstance(index, dict) else "missing"
+    if latest_day and not future_days and index_status == "full_virtual_observatory_ready":
+        mode = "waiting_for_new_data"
+        detail = "runner should idle with no_ready_day until a future day is staged"
+        next_day = _next_day_after(latest_day)
+    elif future_days:
+        mode = "future_inputs_staged"
+        detail = "review staged future days before launching production CM1"
+        next_day = future_days[0]
+    else:
+        mode = "campaign_state_unknown"
+        detail = "campaign index or day records are missing"
+        next_day = "unknown"
+    cards = [
+        _card("operating mode", mode),
+        _card("regression baseline", f"{LEEDS_REPLAY_DAYS[0]} to {LEEDS_REPLAY_DAYS[-1]}"),
+        _card("latest ready day", latest_day or "missing"),
+        _card("QA ready days", ready_days),
+        _card("next expected day", next_day),
+    ]
+    checklist = "".join(
+        f"<li>{escape(item)}</li>" for item in NEXT_DATA_REQUIRED_INPUTS
+    )
+    future_text = ", ".join(future_days) if future_days else "none"
+    return (
+        "<div class='model-section-title'>Operational Wait State</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"{escape(detail)}. Future staged days: {escape(future_text)}."
+        "</div>"
+        "<div class='model-two-column'>"
+        "<div>"
+        "<div class='model-subsection-title'>Resume Inputs</div>"
+        f"<ul class='model-compact-list'>{checklist}</ul>"
+        "</div>"
+        "<div>"
+        "<div class='model-subsection-title'>Allowed Work</div>"
+        "<ul class='model-compact-list'>"
+        "<li>keep runner and dashboard healthy</li>"
+        "<li>use the seven-day replay as regression coverage</li>"
+        "<li>improve W-band, Cloudnet, SEB and ASFS interpretation</li>"
+        "<li>do not start new CM1 production runs until a day is planned-ready</li>"
+        "</ul>"
+        "</div>"
+        "</div>"
+    )
+
+
 def _count_dict_text(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "none"
@@ -3182,6 +3274,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_operational_wait_state(index)}"
         f"{_daily_review_queue_table(index)}"
         f"{_seven_day_replay_summary(index)}"
         f"{_evaluation_schematic()}"
@@ -4406,6 +4499,29 @@ body, .bk {
     font-size: 14px;
     font-weight: 650;
     color: #22313f;
+}
+.model-subsection-title {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 650;
+    color: #3b4a5a;
+}
+.model-note {
+    color: #5f6c7b;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.model-two-column {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+}
+.model-compact-list {
+    margin: 0;
+    padding-left: 18px;
+    color: #3b4a5a;
+    font-size: 12px;
+    line-height: 1.45;
 }
 .model-pill {
     display: inline-flex;
