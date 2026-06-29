@@ -1185,6 +1185,13 @@ def _iceland_preflight() -> dict[str, object] | None:
     return _read_json(paths[0]) if paths else None
 
 
+def _iceland_readiness_queue() -> dict[str, object] | None:
+    queue = _read_json(ICELAND_CAMPAIGN_ROOT / "readiness_queue.json")
+    if queue:
+        return queue
+    return None
+
+
 def _group_status_summary(groups: object) -> str:
     if not isinstance(groups, dict) or not groups:
         return "<div class='model-note'>No grouped readiness checks have been written yet.</div>"
@@ -1209,6 +1216,61 @@ def _group_status_summary(groups: object) -> str:
         + "".join(rows)
         + "</table>"
     )
+
+
+def _iceland_queue_table(queue: dict[str, object]) -> str:
+    days = queue.get("days")
+    if not isinstance(days, list) or not days:
+        return "<div class='model-note'>No Iceland readiness queue rows have been written yet.</div>"
+    rows = []
+    for row in days[:10]:
+        if not isinstance(row, dict):
+            continue
+        gates = row.get("gate_statuses")
+        gates = gates if isinstance(gates, dict) else {}
+        actions = row.get("next_actions")
+        action = actions[0] if isinstance(actions, list) and actions else ""
+        commands = row.get("next_commands")
+        command = commands[0] if isinstance(commands, list) and commands else ""
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', 'missing')))}</td>"
+            f"<td>{escape(str(row.get('preflight_status', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('site_metadata', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('era5', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('cloudnet', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('observations', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('cm1_execution', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('wband_radar', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('wband_hydrometeor_diagnostic', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('seb_radiation', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('bundle', 'unknown')))}</td>"
+            f"<td>{escape(str(action))}</td>"
+            f"<td><code>{escape(str(command))}</code></td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-subsection-title'>Iceland Daily Readiness Queue</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table iceland-readiness-table'>"
+        "<tr><th>day</th><th>preflight</th><th>metadata</th><th>ERA5</th>"
+        "<th>Cloudnet</th><th>obs</th><th>CM1</th><th>W-band</th>"
+        "<th>W-band diag</th><th>SEB</th><th>bundle</th><th>next action</th>"
+        "<th>next command</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
+
+def _iceland_queue_cards(queue: dict[str, object]) -> list[str]:
+    rollup = queue.get("rollup")
+    rollup = rollup if isinstance(rollup, dict) else {}
+    return [
+        _card("queue status", queue.get("status", "missing")),
+        _card("queue window", f"{queue.get('start_day', 'n/a')} to {queue.get('end_day', 'n/a')}"),
+        _card("ready days", rollup.get("ready_day_count", "n/a")),
+        _card("blocked days", rollup.get("blocked_day_count", "n/a")),
+    ]
 
 
 def _iceland_audit_summary(preflight: dict[str, object]) -> str:
@@ -1245,18 +1307,42 @@ def _iceland_audit_summary(preflight: dict[str, object]) -> str:
 
 
 def _iceland_readiness_panel() -> str:
+    queue = _iceland_readiness_queue()
     preflight = _iceland_preflight()
+    if isinstance(queue, dict):
+        cards = _iceland_queue_cards(queue)
+        notes = queue.get("notes", [])
+        note_html = "".join(
+            f"<li>{escape(str(note))}</li>" for note in notes if str(note).strip()
+        )
+        preflight_context = ""
+        if isinstance(preflight, dict):
+            preflight_context = (
+                f"{_iceland_audit_summary(preflight)}"
+                f"{_group_status_summary(preflight.get('groups', {}))}"
+            )
+        return (
+            "<div class='model-section-title'>Iceland Readiness</div>"
+            f"<div class='model-grid'>{''.join(cards)}</div>"
+            "<div class='model-note'>"
+            "Queue is read-only: it stages the next safe actions for Iceland and does not launch "
+            "CM1 or forward operators."
+            "</div>"
+            f"{_iceland_queue_table(queue)}"
+            f"{preflight_context}"
+            + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
+        )
     if not isinstance(preflight, dict):
         cards = [
             _card("Iceland status", "not staged"),
             _card("planned start", "2026-07-06"),
-            _card("next action", "run preflight"),
+            _card("next action", "run readiness queue"),
         ]
         return (
             "<div class='model-section-title'>Iceland Readiness</div>"
             f"<div class='model-grid'>{''.join(cards)}</div>"
             "<div class='model-note'>"
-            "No Iceland preflight record has been written yet. The Leeds replay remains the "
+            "No Iceland readiness queue has been written yet. The Leeds replay remains the "
             "regression baseline until new colocated campaign data arrive."
             "</div>"
         )
