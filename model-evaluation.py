@@ -33,6 +33,12 @@ OPERATIONAL_CAMPAIGN_ROOT = Path(
         f"/data/aurora/les/campaigns/{CASE_ID}",
     )
 )
+ICELAND_CAMPAIGN_ROOT = Path(
+    os.environ.get(
+        "AURORA_MODEL_EVALUATION_ICELAND_CAMPAIGN_ROOT",
+        "/data/aurora/les/campaigns/aurora_iceland_operational_20260706",
+    )
+)
 SHOW_OPERATIONAL_DETAILS = (
     os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
 )
@@ -1166,6 +1172,81 @@ def load_day_bundle(day: str) -> dict[str, object] | None:
 
 def load_scorecard(day: str, name: str) -> dict[str, object] | None:
     return _direct_scorecard(day, name)
+
+
+def _iceland_preflight() -> dict[str, object] | None:
+    latest = _read_json(ICELAND_CAMPAIGN_ROOT / "preflight_latest.json")
+    if latest:
+        return latest
+    days_root = ICELAND_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return None
+    paths = sorted(days_root.glob("*/preflight.json"), reverse=True)
+    return _read_json(paths[0]) if paths else None
+
+
+def _group_status_summary(groups: object) -> str:
+    if not isinstance(groups, dict) or not groups:
+        return "<div class='model-note'>No grouped readiness checks have been written yet.</div>"
+    rows = []
+    for group_id, group in sorted(groups.items()):
+        if not isinstance(group, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(group_id))}</td>"
+            f"<td>{escape(str(group.get('status', 'unknown')))}</td>"
+            f"<td>{escape(str(group.get('ready', 0)))}</td>"
+            f"<td>{escape(str(group.get('missing', 0)))}</td>"
+            f"<td>{escape(str(group.get('blocked', 0)))}</td>"
+            f"<td>{escape(str(group.get('diagnostic', 0)))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table class='model-table'>"
+        "<tr><th>group</th><th>status</th><th>ready</th><th>missing</th>"
+        "<th>blocked</th><th>diagnostic</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+
+
+def _iceland_readiness_panel() -> str:
+    preflight = _iceland_preflight()
+    if not isinstance(preflight, dict):
+        cards = [
+            _card("Iceland status", "not staged"),
+            _card("planned start", "2026-07-06"),
+            _card("next action", "run preflight"),
+        ]
+        return (
+            "<div class='model-section-title'>Iceland Readiness</div>"
+            f"<div class='model-grid'>{''.join(cards)}</div>"
+            "<div class='model-note'>"
+            "No Iceland preflight record has been written yet. The Leeds replay remains the "
+            "regression baseline until new colocated campaign data arrive."
+            "</div>"
+        )
+    groups = preflight.get("groups", {})
+    cards = [
+        _card("Iceland day", preflight.get("day", "missing")),
+        _card("preflight", preflight.get("status", "missing")),
+        _card("daily readiness", preflight.get("readiness_status", "missing")),
+        _card("blockers", len(preflight.get("blockers", []) or [])),
+    ]
+    notes = preflight.get("notes", [])
+    note_html = "".join(
+        f"<li>{escape(str(note))}</li>" for note in notes if str(note).strip()
+    )
+    return (
+        "<div class='model-section-title'>Iceland Readiness</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"{escape(str(preflight.get('resume_condition', 'Run preflight before execution.')))}"
+        "</div>"
+        f"{_group_status_summary(groups)}"
+        + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
+    )
 
 
 def _bundle_recipe(day: str) -> dict[str, object]:
@@ -3275,6 +3356,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_operational_wait_state(index)}"
+        f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
         f"{_seven_day_replay_summary(index)}"
         f"{_evaluation_schematic()}"
