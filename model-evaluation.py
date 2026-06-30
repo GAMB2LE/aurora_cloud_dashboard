@@ -2509,22 +2509,32 @@ def _join_notes(*notes: str) -> str:
     return "; ".join(note for note in notes if note)
 
 
-def _wband_descriptor_note(day: str, scorecard_name: str) -> str:
+def _wband_descriptor_note(
+    day: str,
+    scorecard_name: str,
+    scorecard: dict[str, object] | None,
+) -> str:
     if scorecard_name != "wband_radar":
         return ""
-    attrs = _netcdf_attrs(
-        OPERATIONAL_CAMPAIGN_ROOT
-        / "days"
-        / day
-        / "virtual_observatory"
-        / "pamtra_wband_radar.nc"
-    )
-    family = str(attrs.get("pamtra_descriptor_family", "") or "")
+    metadata = {}
+    if isinstance(scorecard, dict) and isinstance(
+        scorecard.get("simulated_operator_metadata"), dict
+    ):
+        metadata = scorecard["simulated_operator_metadata"]
+    if not metadata:
+        metadata = _netcdf_attrs(
+            OPERATIONAL_CAMPAIGN_ROOT
+            / "days"
+            / day
+            / "virtual_observatory"
+            / "pamtra_wband_radar.nc"
+        )
+    family = str(metadata.get("pamtra_descriptor_family", "") or "")
     if not family:
         return ""
-    descriptor_file = Path(str(attrs.get("pamtra_descriptor_file", "") or "")).name
-    names = str(attrs.get("pamtra_descriptor_names", "") or "")
-    caveat = str(attrs.get("science_caveat", "") or "")
+    descriptor_file = Path(str(metadata.get("pamtra_descriptor_file", "") or "")).name
+    names = str(metadata.get("pamtra_descriptor_names", "") or "")
+    caveat = str(metadata.get("science_caveat", "") or "")
     parts = [f"descriptor {family}"]
     if descriptor_file:
         parts.append(descriptor_file)
@@ -2602,7 +2612,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
             note = str(payload.get("readiness_note", "diagnostic"))
         elif scorecard_name.endswith("_lwc"):
             note = _lwp_policy_summary(scorecard)
-    note = _join_notes(note, _wband_descriptor_note(day, scorecard_name))
+    note = _join_notes(note, _wband_descriptor_note(day, scorecard_name, scorecard))
     base_top = payload.get("cloud_base_top") if isinstance(payload, dict) else None
     if not isinstance(base_top, dict) and isinstance(scorecard, dict):
         base_top = scorecard.get("cloud_base_top")
