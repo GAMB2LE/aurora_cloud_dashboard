@@ -960,10 +960,10 @@ INSTRUMENT_COMPARISON_SPECS = (
         "model": "CM1 virtual observatory",
         "model_group": "synthetic",
         "scorecard": "cl61_diagnostic",
-        "basis": "diagnostic only; not colocated",
+        "basis": "CM1 synthetic lidar vs CL61 beta_att; production only when coincident",
         "occurrence": "contingency",
         "metric_family": "occurrence",
-        "caveat": "not_colocated",
+        "caveat": "ready",
     },
     {
         "instrument": "Surface met",
@@ -2371,6 +2371,7 @@ def _operational_wait_state(index: dict[str, object] | None) -> str:
     cards = [
         _card("operating mode", mode),
         _card("regression baseline", f"{LEEDS_REPLAY_DAYS[0]} to {LEEDS_REPLAY_DAYS[-1]}"),
+        _card("model strategy", "CM1 full LES only"),
         _card("latest ready day", latest_day or "missing"),
         _card("QA ready days", ready_days),
         _card("next expected day", next_day),
@@ -2504,6 +2505,46 @@ def _scorecard_caveat(scorecard: dict[str, object] | None, spec: dict[str, objec
     return "ready"
 
 
+def _join_notes(*notes: str) -> str:
+    return "; ".join(note for note in notes if note)
+
+
+def _wband_descriptor_note(day: str, scorecard_name: str) -> str:
+    if scorecard_name != "wband_radar":
+        return ""
+    attrs = _netcdf_attrs(
+        OPERATIONAL_CAMPAIGN_ROOT
+        / "days"
+        / day
+        / "virtual_observatory"
+        / "pamtra_wband_radar.nc"
+    )
+    family = str(attrs.get("pamtra_descriptor_family", "") or "")
+    if not family:
+        return ""
+    descriptor_file = Path(str(attrs.get("pamtra_descriptor_file", "") or "")).name
+    names = str(attrs.get("pamtra_descriptor_names", "") or "")
+    caveat = str(attrs.get("science_caveat", "") or "")
+    parts = [f"descriptor {family}"]
+    if descriptor_file:
+        parts.append(descriptor_file)
+    if names:
+        parts.append(f"hydrometeors {names}")
+    if caveat:
+        parts.append(caveat)
+    return "; ".join(parts)
+
+
+def _netcdf_attrs(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        with xr.open_dataset(path, decode_times=False) as dataset:
+            return dict(dataset.attrs)
+    except Exception:
+        return {}
+
+
 def _badge(value: object) -> str:
     text = str(value or "unknown")
     css = "badge-ready"
@@ -2561,6 +2602,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
             note = str(payload.get("readiness_note", "diagnostic"))
         elif scorecard_name.endswith("_lwc"):
             note = _lwp_policy_summary(scorecard)
+    note = _join_notes(note, _wband_descriptor_note(day, scorecard_name))
     base_top = payload.get("cloud_base_top") if isinstance(payload, dict) else None
     if not isinstance(base_top, dict) and isinstance(scorecard, dict):
         base_top = scorecard.get("cloud_base_top")

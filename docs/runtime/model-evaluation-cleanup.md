@@ -10,6 +10,13 @@ every historic sensitivity test.
 - Operational campaign readiness
 - Daily ERA5, CM1 LES, Cloudnet, radar, LWC/IWC, LWP, SEB, ASFS/met summary
   records through the campaign products
+- CM1 full-LES virtual-observatory products only; bridge-era products are
+  archive/provenance material, not active review products
+- W-band radar rows should expose the active PAMTRA descriptor family when the
+  product metadata are available
+- CL61 is diagnostic for the Leeds replay, but can become production-valid for
+  Iceland when the site metadata audit and scorecard both report a coincident
+  comparison policy
 - Daily review queue rows with bundle/QA status, missing inputs, diagnostic and
   blocked stream counts, runner status, QA actions, and per-day archive class
   counts
