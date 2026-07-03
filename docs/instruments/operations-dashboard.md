@@ -66,7 +66,7 @@ a stream stays green when the verified GWS archive has no missing or mismatched
 files even if the newest just-arrived source file has not yet landed in the
 next transfer batch.
 
-The **Cloud failover** section is snapshot-backed. It probes:
+The **Public endpoints** section is snapshot-backed. It probes:
 
 - `https://data.gamb2le.co.uk/app`
 - `https://data-ocean.gamb2le.co.uk/app`
@@ -74,9 +74,10 @@ The **Cloud failover** section is snapshot-backed. It probes:
 Each probe requires a successful HTTP response and the full `AURORA Data
 Viewer` document. A small Bokeh shell with title `Bokeh Application` is treated
 as unhealthy because it usually means the Python app handler crashed before
-rendering the dashboard. The standby normally renders the replicated primary
-operations snapshot, so both public dashboards show the same primary/standby
-endpoint status while the droplet remains in warm standby.
+rendering the dashboard. During the July 2026 JASMIN shutdown window,
+`data.gamb2le.co.uk` identifies the JASMIN endpoint and
+`data-ocean.gamb2le.co.uk` identifies the droplet endpoint, unless a full DNS
+failover is explicitly initiated.
 
 ## Archived products
 
