@@ -1,0 +1,19 @@
+[Unit]
+Description=Aurora Dashboard mobile API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+EnvironmentFile=/etc/aurora-dashboard.env
+Environment=AURORA_MOBILE_API_BIND=127.0.0.1
+Environment=AURORA_MOBILE_API_PORT=8010
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/uvicorn mobile_api:app --host ${AURORA_MOBILE_API_BIND} --port ${AURORA_MOBILE_API_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

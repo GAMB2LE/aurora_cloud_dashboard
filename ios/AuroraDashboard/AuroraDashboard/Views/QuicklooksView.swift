@@ -1,80 +1,112 @@
 import SwiftUI
 
 struct QuicklooksView: View {
-    let configuration: AppConfiguration
-    @State private var selection = QuicklookMode.science
+    @ObservedObject var store: DashboardStore
+    @State private var kind = "science"
+    @State private var instrumentID = "power"
+    @State private var selectedToken = "latest"
+
+    private var instruments: [InstrumentDescriptor] {
+        store.visibleInstruments.filter { instrument in
+            kind == "science" ? instrument.supportsScienceQuicklooks : instrument.supportsHousekeepingQuicklooks
+        }
+    }
+
+    private var payload: QuicklooksPayload? {
+        store.quicklooks(kind: kind, instrumentID: instrumentID)
+    }
+
+    private var selectedEntry: QuicklookEntry? {
+        payload?.entries.first { $0.token == selectedToken } ?? payload?.latest ?? payload?.entries.first
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                Picker("Quicklook type", selection: $selection) {
-                    ForEach(QuicklookMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
+                Picker("Quicklook type", selection: $kind) {
+                    Text("Science").tag("science")
+                    Text("Housekeeping").tag("housekeeping")
                 }
                 .pickerStyle(.segmented)
                 .listRowSeparator(.hidden)
 
-                Section(header: Text(selection.title), footer: Text(selection.footer)) {
-                    ForEach(selection.items, id: \.self) { item in
-                        Label(item, systemImage: selection.systemImage)
+                Section("Product") {
+                    Picker("Instrument", selection: $instrumentID) {
+                        ForEach(instruments) { instrument in
+                            Label(instrument.title, systemImage: instrument.systemImage)
+                                .tag(instrument.id)
+                        }
+                    }
+
+                    if let payload, !payload.entries.isEmpty {
+                        Picker("Date", selection: $selectedToken) {
+                            ForEach(payload.entries) { entry in
+                                Text(entry.title).tag(entry.token)
+                            }
+                        }
                     }
                 }
 
-                Section(header: Text("Starter state")) {
-                    PlaceholderPanel(
-                        title: "Image viewer placeholder",
-                        subtitle: "Daily PNG browsing and latest quicklook loading will be added after the dashboard exposes mobile-friendly endpoints.",
-                        systemImage: "photo.on.rectangle.angled"
-                    )
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    .listRowBackground(Color.clear)
+                if let entry = selectedEntry {
+                    Section(entry.title) {
+                        AuthenticatedRemoteImage(store: store, urlString: entry.imageURL)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
+
+                        if let modifiedAt = entry.modifiedAt {
+                            Label(modifiedAt, systemImage: "clock")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if payload != nil {
+                    Section {
+                        ContentUnavailableView("No quicklooks", systemImage: "photo.on.rectangle.angled", description: Text("No generated image exists for this instrument and mode."))
+                    }
+                } else {
+                    Section {
+                        LoadingContentView(title: "Loading quicklooks")
+                    }
                 }
             }
             .navigationTitle("Quicklooks")
-        }
-    }
-}
-
-private enum QuicklookMode: String, CaseIterable, Identifiable {
-    case science
-    case housekeeping
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .science:
-            return "Science"
-        case .housekeeping:
-            return "Housekeeping"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .science:
-            return "chart.line.uptrend.xyaxis"
-        case .housekeeping:
-            return "wrench.and.screwdriver"
-        }
-    }
-
-    var items: [String] {
-        switch self {
-        case .science:
-            return ["Power", "Ceilometer", "Cloud Radar", "Radiometer", "Meteorology", "Radiation", "WXcam"]
-        case .housekeeping:
-            return ["Ceilometer", "Cloud Radar", "ASFS Logger", "WXcam", "Operations"]
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task { await reload() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+            }
+            .task(id: "\(kind)-\(instrumentID)") {
+                normalizeInstrumentSelection()
+                await reload()
+            }
+            .onChange(of: kind) { _, _ in
+                normalizeInstrumentSelection()
+                selectedToken = "latest"
+            }
+            .onChange(of: instrumentID) { _, _ in
+                selectedToken = "latest"
+            }
+            .refreshable {
+                await reload()
+            }
         }
     }
 
-    var footer: String {
-        switch self {
-        case .science:
-            return "Matches the Science Quicklooks tab in the Panel dashboard."
-        case .housekeeping:
-            return "Matches the House Keeping Quicklooks tab in the Panel dashboard."
+    private func normalizeInstrumentSelection() {
+        if !instruments.contains(where: { $0.id == instrumentID }), let first = instruments.first {
+            instrumentID = first.id
+        }
+    }
+
+    private func reload() async {
+        await store.refreshQuicklooks(kind: kind, instrumentID: instrumentID)
+        if selectedToken == "latest", let latest = payload?.latest {
+            selectedToken = latest.token
         }
     }
 }

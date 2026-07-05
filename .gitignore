@@ -10,6 +10,9 @@
 !docs/**
 !mkdocs.yml
 !requirements-docs.txt
+!requirements-mobile-api.txt
+!systemd/
+!systemd/**
 !ios/
 !ios/**
 ios/**/.DS_Store

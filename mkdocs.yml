@@ -45,6 +45,7 @@ nav:
       - Deployed paths: runtime/deployed-paths.md
       - Storage layout: runtime/storage-layout.md
       - Services and timers: runtime/services-and-timers.md
+      - Mobile API: runtime/mobile-api.md
       - Performance logging: runtime/performance-logging.md
       - Running locally: runtime/running-locally.md
       - Documentation publishing: runtime/documentation-publishing.md

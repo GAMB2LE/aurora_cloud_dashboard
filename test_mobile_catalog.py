@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import mobile_catalog
+
+
+class MobileCatalogTests(unittest.TestCase):
+    def test_manifest_contains_native_sections_and_visible_instruments(self) -> None:
+        manifest = mobile_catalog.manifest()
+
+        self.assertEqual([section["id"] for section in manifest["sections"]], ["operations", "interactive", "quicklooks", "wxcam", "settings"])
+        self.assertIn("power", {instrument["id"] for instrument in manifest["instruments"]})
+        power = next(instrument for instrument in manifest["instruments"] if instrument["id"] == "power")
+        self.assertTrue(power["supportsHousekeepingQuicklooks"])
+        self.assertIn("fish_hdr", {stream["id"] for stream in manifest["wxcamStreams"]})
+
+    def test_quicklooks_find_latest_and_dated_summary_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quicklook_dir = root / "power"
+            quicklook_dir.mkdir()
+            (quicklook_dir / "power__summary__latest.png").write_bytes(b"latest")
+            (quicklook_dir / "power__summary__20260705.png").write_bytes(b"dated")
+
+            with patch.dict(os.environ, {"AURORA_QUICKLOOK_ROOT": str(root)}):
+                response = mobile_catalog.quicklooks("science", "power")
+
+        self.assertEqual(response["latest"]["token"], "latest")
+        self.assertEqual([entry["token"] for entry in response["entries"]], ["latest", "20260705"])
+
+    def test_operations_derives_stream_levels_from_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "latest.json"
+            health = root / "latest_health.json"
+            alerts = root / "state.json"
+            snapshot.write_text(
+                json.dumps(
+                    {
+                        "time_utc": "2026-07-05T07:30:00Z",
+                        "cl61_source_sync_service_healthy_state": 1,
+                        "ceilometer_append_service_healthy_state": 0,
+                        "ceilometer_quicklooks_service_healthy_state": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            health.write_text(json.dumps({"overall_level": "red"}), encoding="utf-8")
+            alerts.write_text(json.dumps({"active": {"a": {"title": "Storage high", "level": "red"}}}), encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                },
+            ):
+                response = mobile_catalog.operations()
+
+        ceilometer = next(stream for stream in response["streamStates"] if stream["id"] == "ceilometer")
+        self.assertEqual(response["overallLevel"], "red")
+        self.assertEqual(ceilometer["level"], "red")
+        self.assertEqual(response["alerts"][0]["title"], "Storage high")
+
+    def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            videos = root / "videos" / "fish_hdr"
+            thumbs = root / "thumbs" / "fish_hdr" / "20260705"
+            videos.mkdir(parents=True)
+            thumbs.mkdir(parents=True)
+            (videos / "20260705.mp4").write_bytes(b"video")
+            (thumbs / "sample.jpg").write_bytes(b"thumb")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "WXCAM_DAILY_VIDEO_DIR": str(root / "videos"),
+                    "WXCAM_HOURLY_THUMB_DIR": str(root / "thumbs"),
+                    "WXCAM_CATALOG_PATH": str(root / "missing.sqlite"),
+                },
+            ):
+                response = mobile_catalog.wxcam("fish_hdr", "2026-07-05")
+
+        self.assertTrue(response["video"]["exists"])
+        self.assertEqual(response["availableDays"], ["2026-07-05"])
+        self.assertEqual(response["thumbnails"][0]["imageURL"], "/media/wxcam/thumb/fish_hdr/20260705/sample.jpg")
+
+    def test_wxcam_media_resolvers_reject_malformed_day_tokens(self) -> None:
+        self.assertIsNone(mobile_catalog.resolve_wxcam_video_path("fish_hdr", ".."))
+        self.assertIsNone(mobile_catalog.resolve_wxcam_thumbnail_path("fish_hdr", "..", "sample.jpg"))
+        self.assertIsNone(mobile_catalog.resolve_wxcam_thumbnail_path("fish_hdr", "20260705", "../sample.jpg"))
+
+
+if __name__ == "__main__":
+    unittest.main()

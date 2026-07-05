@@ -1,8 +1,10 @@
 # Aurora Dashboard iOS
 
-Native SwiftUI starter for the Aurora Cloud Dashboard.
+Native SwiftUI app for the Aurora Cloud Dashboard.
 
-This project is a scaffold. It mirrors the current Panel dashboard navigation in native iOS tabs, but it does not embed the existing dashboard in a WebView and it does not fetch live dashboard data yet.
+The app uses the read-only Aurora mobile API. It does not embed the existing
+Panel dashboard in a WebView and it does not read Zarr, SQLite, or filesystem
+products directly from iOS.
 
 ## Open
 
@@ -21,6 +23,24 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   build
 ```
+
+## API Configuration
+
+Default API base URL:
+
+```text
+https://data-ocean.gamb2le.co.uk/mobile/v1
+```
+
+The base URL can be edited in Settings. The bearer token is stored in Keychain
+and sent as:
+
+```text
+Authorization: Bearer <token>
+```
+
+The matching backend lives in `mobile_api.py`; runtime notes are in
+`docs/runtime/mobile-api.md`.
 
 ## Install On A Physical iPhone
 
@@ -54,12 +74,18 @@ The first verified install was on `Overman` as `Aurora Dashboard` version `0.1`,
 
 ## Current Native Surface
 
-- Operations: placeholders for traffic-light health, root-cause groups, and stream health.
-- Interactive: instrument list matching the dashboard's interactive data browser.
-- Quicklooks: science and housekeeping quicklook navigation placeholders.
-- WXcam: FISH HDR and PANO HDR media browser placeholders.
-- Settings: endpoint configuration placeholder plus documentation and project links.
+- Operations: live overall health, stream status, root-cause groups, active
+  alerts, and compact trend cards.
+- Interactive: manifest-driven instrument list and mobile summaries backed by
+  generated quicklooks.
+- Quicklooks: science/housekeeping browser with instrument/date selectors and
+  authenticated image loading.
+- WXcam: FISH HDR and PANO HDR day selection, stitched MP4 playback, and hourly
+  thumbnails.
+- Settings: API base URL, Keychain token, health check, response-cache reset,
+  and documentation/project links.
 
-## Future Integration Notes
+## Integration Notes
 
-The existing Python Panel app remains unchanged. A live native app should be wired through a small mobile API or static manifest rather than scraping Panel UI state. The starter configuration keeps `dashboardBaseURL` unset until that endpoint exists.
+The existing Python Panel app remains unchanged. The native app talks to the
+mobile API contract rather than scraping Panel UI state.

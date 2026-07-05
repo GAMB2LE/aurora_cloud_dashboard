@@ -1,34 +1,37 @@
 import SwiftUI
 
 struct ContentView: View {
-    let configuration: AppConfiguration
+    @ObservedObject var store: DashboardStore
 
     var body: some View {
         TabView {
-            OperationsView(configuration: configuration)
+            OperationsView(store: store)
                 .tabItem {
                     Label(DashboardSection.operations.title, systemImage: DashboardSection.operations.systemImage)
                 }
 
-            InteractiveDataView(configuration: configuration)
+            InteractiveDataView(store: store)
                 .tabItem {
                     Label(DashboardSection.interactive.title, systemImage: DashboardSection.interactive.systemImage)
                 }
 
-            QuicklooksView(configuration: configuration)
+            QuicklooksView(store: store)
                 .tabItem {
                     Label(DashboardSection.quicklooks.title, systemImage: DashboardSection.quicklooks.systemImage)
                 }
 
-            WXcamView(configuration: configuration)
+            WXcamView(store: store)
                 .tabItem {
                     Label(DashboardSection.wxcam.title, systemImage: DashboardSection.wxcam.systemImage)
                 }
 
-            SettingsView(configuration: configuration)
+            SettingsView(store: store)
                 .tabItem {
                     Label(DashboardSection.settings.title, systemImage: DashboardSection.settings.systemImage)
                 }
+        }
+        .task {
+            await store.refreshAllIfNeeded()
         }
     }
 }
