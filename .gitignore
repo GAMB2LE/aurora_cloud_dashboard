@@ -10,9 +10,15 @@
 !docs/**
 !mkdocs.yml
 !requirements-docs.txt
+!ios/
+!ios/**
+ios/**/.DS_Store
 # Ignore generated quicklook images and last-24h output
 quicklooks/
 last24h.png
 site/
 __pycache__/
 *.pyc
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/**/DerivedData/
