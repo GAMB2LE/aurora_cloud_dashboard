@@ -16,14 +16,15 @@ Path:
 ## Time coordinate
 
 - `time` is parsed from the raw `timestamp` column
-- timestamps are localized as `Europe/London`
-- timestamps are converted to UTC before storage
+- source timestamps are treated as UTC because the source host is UTC-synchronised
+- offset-aware timestamps, if present, are converted to UTC before storage
 
 ## Useful root attributes
 
 - `instrument = "vaisalamet"`
 - `title = "Vaisala met station data"`
 - `source = "vaisala_met_level0_*.dat"`
+- `source_timezone = "UTC"`
 
 ## Variable layout
 

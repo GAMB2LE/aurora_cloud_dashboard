@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import shutil
 
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -28,6 +27,7 @@ from time_gap_breaks import insert_time_gap_breaks
 
 MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
 INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_INTERACTIVE_MAX_TIME_SAMPLES", "1600"))
+MAX_TIME_TICKS = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_TICKS", "16"))
 OVERVIEW_LABEL = "Overview"
 # Reserve a fixed right-side gutter for per-panel legends so they sit beyond the
 # secondary-axis labels in both the interactive Plotly view and saved PNGs.
@@ -1859,6 +1859,21 @@ def _time_index(ds: xr.Dataset) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(ds["time"].values) if "time" in ds else pd.DatetimeIndex([])
 
 
+def _slice_dataset_time_limits(ds: xr.Dataset, x_limits) -> xr.Dataset:
+    if x_limits is None or "time" not in ds:
+        return ds
+    start, end = (pd.Timestamp(value) for value in x_limits)
+    if start.tz is not None:
+        start = start.tz_convert("UTC").tz_localize(None)
+    if end.tz is not None:
+        end = end.tz_convert("UTC").tz_localize(None)
+    if pd.isna(start) or pd.isna(end) or end <= start:
+        return ds
+    times = _time_index(ds)
+    mask = (times >= start) & (times <= end)
+    return ds.isel(time=mask).sortby("time")
+
+
 def _trace_time_values(times: pd.DatetimeIndex, values: np.ndarray) -> tuple[pd.DatetimeIndex, np.ndarray]:
     """Drop merged-grid NaNs so each trace renders on its own real sampling cadence."""
     if len(times) == 0:
@@ -2055,12 +2070,23 @@ def plot_housekeeping_timeseries(
     output: Path,
     max_time_samples: int = MAX_TIME_SAMPLES,
     exclude_vars: set[str] | None = None,
+    x_limits=None,
+    max_time_ticks: int = MAX_TIME_TICKS,
 ) -> list[str]:
     curated_layout = CURATED_HOUSEKEEPING_LAYOUTS.get(instrument)
     if curated_layout:
-        save_summary_png(ds, curated_layout, title, output, max_time_samples=max_time_samples)
+        save_summary_png(
+            ds,
+            curated_layout,
+            title,
+            output,
+            max_time_samples=max_time_samples,
+            x_limits=x_limits,
+            max_time_ticks=max_time_ticks,
+        )
         return sorted(summary_trace_vars(curated_layout))
 
+    ds = _slice_dataset_time_limits(ds, x_limits)
     ds = downsample_time(ds, max_time_samples=max_time_samples)
     times = _time_index(ds)
     names = [name for name in numeric_time_vars(ds) if not exclude_vars or name not in exclude_vars]
@@ -2084,12 +2110,14 @@ def plot_housekeeping_timeseries(
         ax.grid(True, color=PLOT_GRID, linewidth=0.4)
         ax.tick_params(axis="y", labelsize=7)
 
-    span_hours = max((times.max() - times.min()) / np.timedelta64(1, "h"), 1.0)
-    interval = 1 if span_hours <= 12 else 2 if span_hours <= 36 else 6
-    for ax in axes:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax.tick_params(axis="x", labelrotation=90, labelsize=8)
+    apply_quicklook_time_axis(
+        axes[-1],
+        times,
+        label_rotation=90,
+        label_size=8,
+        x_limits=x_limits,
+        max_ticks=max_time_ticks,
+    )
     axes[-1].set_xlabel("Time (UTC)")
     fig.suptitle(title)
     fig.tight_layout()
@@ -2120,11 +2148,18 @@ def plot_housekeeping_last_24h(
         raise ValueError("No data in latest 24h")
     window = ds.isel(time=mask).sortby("time")
     title = _window_title(f"{housekeeping_label(instrument) or 'Housekeeping'} - Latest 24 hours", instrument)
-    return plot_housekeeping_timeseries(window, instrument=instrument, title=title, output=output, max_time_samples=max_time_samples)
+    return plot_housekeeping_timeseries(
+        window,
+        instrument=instrument,
+        title=title,
+        output=output,
+        max_time_samples=max_time_samples,
+        x_limits=(start_time, end_time),
+    )
 
 
-def _apply_time_axis_matplotlib(ax, times: pd.DatetimeIndex) -> None:
-    apply_quicklook_time_axis(ax, times, label_rotation=0, label_size=9)
+def _apply_time_axis_matplotlib(ax, times: pd.DatetimeIndex, *, x_limits=None, max_time_ticks: int = MAX_TIME_TICKS) -> None:
+    apply_quicklook_time_axis(ax, times, label_rotation=0, label_size=9, x_limits=x_limits, max_ticks=max_time_ticks)
 
 
 def save_summary_png(
@@ -2133,8 +2168,11 @@ def save_summary_png(
     title: str,
     output: Path,
     max_time_samples: int = MAX_TIME_SAMPLES,
+    x_limits=None,
+    max_time_ticks: int = MAX_TIME_TICKS,
 ) -> int:
     ds = _prepare_summary_dataset(ds, instrument)
+    ds = _slice_dataset_time_limits(ds, x_limits)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
     if len(times) == 0 or not panels:
@@ -2225,7 +2263,7 @@ def save_summary_png(
                 ncol=1,
             )
 
-    _apply_time_axis_matplotlib(axes[-1], times)
+    _apply_time_axis_matplotlib(axes[-1], times, x_limits=x_limits, max_time_ticks=max_time_ticks)
     axes[-1].set_xlabel("Time (UTC)", fontsize=12)
     fig.suptitle(title, fontsize=15)
     fig.tight_layout()
@@ -2264,7 +2302,14 @@ def plot_summary_last_24h(
         window.attrs[SUMMARY_DISPLAY_START_ATTR] = pd.Timestamp(start_time).isoformat()
         window.attrs[SUMMARY_DISPLAY_END_ATTR] = pd.Timestamp(end_time).isoformat()
     title = _window_title("Latest 24 hours", instrument)
-    return save_summary_png(window, instrument=instrument, title=title, output=output, max_time_samples=max_time_samples)
+    return save_summary_png(
+        window,
+        instrument=instrument,
+        title=title,
+        output=output,
+        max_time_samples=max_time_samples,
+        x_limits=(start_time, end_time),
+    )
 
 
 def build_summary_plotly(

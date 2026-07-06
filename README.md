@@ -507,13 +507,14 @@ This store is a single time-indexed xarray dataset with:
 - dimension: `time`
 - deployed shape checked on `2026-05-21`: `time=271690`
 - coordinate:
-  - `time` - parsed from the raw `timestamp` column, localized as `Europe/London`, then converted to UTC before storage
+  - `time` - parsed from the raw `timestamp` column and treated as UTC because the source host is UTC-synchronised; offset-aware timestamps are converted to UTC before storage
 
 Useful root attrs include:
 
 - `instrument = "vaisalamet"`
 - `title = "Vaisala met station data"`
 - `source = "vaisala_met_level0_*.dat"`
+- `source_timezone = "UTC"`
 
 Variable layout:
 

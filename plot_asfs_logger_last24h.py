@@ -26,7 +26,16 @@ def plot_timeseries(ds: xr.Dataset, title: str, output: Path) -> None:
     plot_housekeeping_timeseries(ds, instrument=INSTRUMENT, title=title, output=output)
 
 
+def _clean_timestamp(value) -> pd.Timestamp:
+    stamp = pd.Timestamp(value)
+    if stamp.tz is not None:
+        stamp = stamp.tz_convert("UTC").tz_localize(None)
+    return stamp
+
+
 def _window(ds: xr.Dataset, start: pd.Timestamp, end: pd.Timestamp) -> xr.Dataset:
+    start = _clean_timestamp(start)
+    end = _clean_timestamp(end)
     time_index = pd.DatetimeIndex(ds["time"].values)
     mask = (time_index >= start) & (time_index <= end)
     return ds.isel(time=mask).sortby("time")
@@ -51,7 +60,14 @@ def plot_last_24h_group(zarr_path: Path, fast_gas_zarr_path: Path, output: Path)
         if fast_summary.sizes.get("time", 0):
             inputs.append(fast_summary)
     hk = augment_asfs_from_fast_gas(combine_summary_datasets(INSTRUMENT, *inputs))
-    plot_housekeeping_timeseries(hk, instrument=INSTRUMENT, title="HK_ASFS - Latest 24 hours", output=output)
+    hk = _window(hk, start_time, end_time)
+    plot_housekeeping_timeseries(
+        hk,
+        instrument=INSTRUMENT,
+        title="HK_ASFS - Latest 24 hours",
+        output=output,
+        x_limits=(start_time, end_time),
+    )
 
 
 def main() -> None:

@@ -15,15 +15,30 @@ def _clean_time_index(times: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return index
 
 
-def _tick_interval_hours(times: pd.DatetimeIndex) -> int:
+def _clean_timestamp(value) -> pd.Timestamp:
+    stamp = pd.Timestamp(value)
+    if stamp.tz is not None:
+        stamp = stamp.tz_convert("UTC").tz_localize(None)
+    return stamp
+
+
+def _clean_time_limits(x_limits) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    if x_limits is None:
+        return None
+    start, end = (_clean_timestamp(value) for value in x_limits)
+    if pd.isna(start) or pd.isna(end) or end <= start:
+        return None
+    return start, end
+
+
+def _tick_interval_hours(times: pd.DatetimeIndex, *, max_ticks: int = 16) -> int:
     if len(times) == 0:
         return 1
     span_hours = max((times.max() - times.min()) / pd.Timedelta(hours=1), 1.0)
-    if span_hours <= 18:
+    max_ticks = max(int(max_ticks), 2)
+    if span_hours <= max_ticks:
         return 1
-    if span_hours <= 36:
-        return 2
-    return 6
+    return max(1, int(span_hours // max_ticks) + 1)
 
 
 def _label_time_for_window(times: pd.DatetimeIndex) -> pd.Timestamp | None:
@@ -86,14 +101,25 @@ def apply_quicklook_time_axis(
     interval_hours: int | None = None,
     label_rotation: float = 0,
     label_size: float = 9,
+    x_limits=None,
+    max_ticks: int = 16,
 ) -> None:
     """Format a Matplotlib time axis as UTC hours with one inline date label."""
     clean_times = _clean_time_index(times)
+    clean_limits = _clean_time_limits(x_limits)
+    if clean_limits is not None:
+        start, end = clean_limits
+        ax.set_xlim(start.to_pydatetime(), end.to_pydatetime())
+        clean_times = pd.DatetimeIndex([start, end])
     if interval_hours is None:
-        interval_hours = _tick_interval_hours(clean_times)
+        interval_hours = _tick_interval_hours(clean_times, max_ticks=max_ticks)
 
-    tick_hours = list(range(0, 24, max(interval_hours, 1)))
-    ax.xaxis.set_major_locator(mdates.HourLocator(byhour=tick_hours, tz=timezone.utc))
+    if interval_hours <= 24:
+        tick_hours = list(range(0, 24, max(interval_hours, 1)))
+        locator = mdates.HourLocator(byhour=tick_hours, tz=timezone.utc)
+    else:
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=max(int(max_ticks), 2), tz=timezone.utc)
+    ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(_DateOnReferenceTickFormatter(_label_time_for_window(clean_times)))
     ax.tick_params(axis="x", labelrotation=label_rotation, labelsize=label_size)
     for label in ax.get_xticklabels():

@@ -89,7 +89,13 @@ def main(force: bool = False) -> None:
     latest_fast_gas = _window(fast_gas_ds, fast_gas_time_index, start_time, end_time) if fast_gas_ds is not None else None
     if latest_day.sizes.get("time", 0) >= 2:
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
-        save_summary_png(latest_day, INSTRUMENT, "Radiation - Latest 24 hours", summary_out)
+        save_summary_png(
+            latest_day,
+            INSTRUMENT,
+            "Radiation - Latest 24 hours",
+            summary_out,
+            x_limits=(start_time, end_time),
+        )
         PREWARM_DIR.mkdir(parents=True, exist_ok=True)
         fig = build_summary_plotly(latest_day, INSTRUMENT, title="Radiation", max_time_samples=1400)
         fig.write_json(PREWARM_JSON)
@@ -97,7 +103,13 @@ def main(force: bool = False) -> None:
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
-            plot_housekeeping_timeseries(_housekeeping_dataset(latest_day, latest_fast_gas), INSTRUMENT, hk_title, hk_out)
+            plot_housekeeping_timeseries(
+                _housekeeping_dataset(latest_day, latest_fast_gas),
+                INSTRUMENT,
+                hk_title,
+                hk_out,
+                x_limits=(start_time, end_time),
+            )
             refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, latest_png=hk_out)
 
     for day in dates:
@@ -112,12 +124,18 @@ def main(force: bool = False) -> None:
         summary_out = summary_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if force or not summary_out.exists():
             title = pd.Timestamp(day).strftime("Radiation - %Y-%m-%d")
-            save_summary_png(ds_day, INSTRUMENT, title, summary_out)
+            save_summary_png(ds_day, INSTRUMENT, title, summary_out, x_limits=(start, end))
         hk_out = housekeeping_daily_png(QUICKLOOK_DIR, INSTRUMENT, day)
         if hk_out is not None and (force or not hk_out.exists()):
             fast_day = _window(fast_gas_ds, fast_gas_time_index, start, end) if fast_gas_ds is not None else None
             hk_title = pd.Timestamp(day).strftime(f"{housekeeping_label(INSTRUMENT)} - %Y-%m-%d")
-            plot_housekeeping_timeseries(_housekeeping_dataset(ds_day, fast_day), INSTRUMENT, hk_title, hk_out)
+            plot_housekeeping_timeseries(
+                _housekeeping_dataset(ds_day, fast_day),
+                INSTRUMENT,
+                hk_title,
+                hk_out,
+                x_limits=(start, end),
+            )
             refresh_legacy_aliases(QUICKLOOK_DIR, INSTRUMENT, day_png=hk_out)
 
 

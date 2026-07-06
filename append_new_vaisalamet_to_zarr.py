@@ -9,7 +9,6 @@ import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,7 @@ import zarr
 ROOT_DEFAULT = Path("/project/aurora/raw/vaisalamet")
 ZARR_DEFAULT = Path("/data/aurora/products/vaisalamet/vaisalamet.zarr")
 FILE_REGEX = re.compile(r"vaisala_met_level0_(\d{2})-(\d{2})-(\d{4})\.dat$")
-SOURCE_TIMEZONE = ZoneInfo("Europe/London")
+SOURCE_TIMEZONE = "UTC"
 
 
 def _parse_file_date(path: Path) -> date | None:
@@ -69,8 +68,8 @@ def _read_file(path: Path) -> xr.Dataset:
     frame = frame.loc[valid_time].reset_index(drop=True)
     timestamps = timestamps.loc[valid_time].reset_index(drop=True)
     if timestamps.dt.tz is None:
-        # The source files use site-local civil time (GMT/BST), not UTC.
-        timestamps = timestamps.dt.tz_localize(SOURCE_TIMEZONE, ambiguous="infer", nonexistent="NaT")
+        # The source timestamps are written by UTC-synchronised hosts.
+        timestamps = timestamps.dt.tz_localize(SOURCE_TIMEZONE)
         valid_time = timestamps.notna()
         if not valid_time.any():
             return xr.Dataset()
@@ -94,6 +93,7 @@ def _read_file(path: Path) -> xr.Dataset:
         attrs={
             "instrument": "vaisalamet",
             "source_file": str(path),
+            "source_timezone": SOURCE_TIMEZONE,
         },
     )
     return _deduplicate_time(ds.sortby("time"))
@@ -120,6 +120,7 @@ def _load_files(files: Iterable[Path], chunks: dict[str, int] | None = None) -> 
             "instrument": "vaisalamet",
             "title": "Vaisala met station data",
             "source": "vaisala_met_level0_*.dat",
+            "source_timezone": SOURCE_TIMEZONE,
         }
     )
     if chunks:
