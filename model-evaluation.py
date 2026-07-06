@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from base64 import b64encode
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 import json
 import os
@@ -27,6 +27,33 @@ APP_DIR = Path(__file__).resolve().parent
 CASE_ROOT = Path(os.environ.get("AURORA_MODEL_EVALUATION_CASE_ROOT", "/data/aurora/les/cases"))
 CASE_ID = os.environ.get("AURORA_MODEL_EVALUATION_CASE_ID", "aurora_multistream_pilot_20260520_20260602")
 OUTPUT_ROOT = CASE_ROOT / CASE_ID
+OPERATIONAL_CAMPAIGN_ROOT = Path(
+    os.environ.get(
+        "AURORA_MODEL_EVALUATION_CAMPAIGN_ROOT",
+        f"/data/aurora/les/campaigns/{CASE_ID}",
+    )
+)
+ICELAND_CAMPAIGN_ROOT = Path(
+    os.environ.get(
+        "AURORA_MODEL_EVALUATION_ICELAND_CAMPAIGN_ROOT",
+        "/data/aurora/les/campaigns/aurora_iceland_operational_20260706",
+    )
+)
+SHOW_OPERATIONAL_DETAILS = (
+    os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
+)
+LEEDS_REPLAY_DAYS = tuple(f"2026-05-{day:02d}" for day in range(21, 28))
+NEXT_DATA_REQUIRED_INPUTS = (
+    "ERA5 pressure levels",
+    "ERA5 single levels",
+    "Cloudnet categorize",
+    "radar at reference point",
+    "surface met",
+    "ASFS radiation",
+    "ASFS sonic/turbulence",
+    "ASFS gas",
+    "HATPRO/LWP audit or override",
+)
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
 OBSERVATION_AUDIT_STEM = "observation_audit_cloudnet_cf_sources_20260621"
@@ -160,11 +187,6 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                     "model",
                     "cm1_0400_thompson_tall_rh105_25_60",
                     "cloudnet_model.nc",
-                ),
-                "wband_radar": _path(
-                    "model",
-                    "cm1_0400_thompson_tall_rh105_25_60",
-                    "wband_radar_proxy_20260622.nc",
                 ),
                 "pamtra_wband_radar": _path(
                     "model",
@@ -822,38 +844,204 @@ RUNS: OrderedDict[str, dict[str, object]] = OrderedDict(
                 ),
             },
         ),
-        (
-            "ifs_hres_reference",
-            {
-                "label": "IFS/HRES reference (pending)",
-                "model": "IFS",
-                "status": "blocked: MARS entitlement",
-                "summary": "Historical 2026-05-21 IFS/HRES request is scripted and authenticates, but the ECMWF account lacks services/mars access.",
-            },
-        ),
-        (
-            "les_bridge_reference",
-            {
-                "label": "ERA5 LES bridge",
-                "model": "LES bridge",
-                "status": "diagnostic",
-                "summary": "ERA5-seeded subcolumn representativeness diagnostic",
-                "cloudnet_model": _path("model", "les_bridge_reference", "cloudnet_model.nc"),
-                "l3_cf": _path(
-                    "cloudnet_l3",
-                    "les_bridge_reference",
-                    "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf.nc",
-                ),
-                "l3_cf_candidates": [
-                    _path(
-                        "cloudnet_l3",
-                        "les_bridge_reference",
-                        "aurora_multistream_pilot_20260520_20260602_les_bridge_l3-cf_2026-05-21.nc",
-                    ),
-                ],
-                "uuid": "0ed9db33-2101-4b32-999e-b3fe61315dc5",
-            },
-        ),
+    ]
+)
+
+DEFAULT_RUN_IDS = (
+    "era5_reference",
+)
+
+INSTRUMENT_COMPARISON_SPECS = (
+    {
+        "instrument": "Cloudnet CF",
+        "model": "ERA5",
+        "model_group": "era5",
+        "scorecard": "era5_cloud_fraction",
+        "comparison": "cf_V",
+        "basis": "Cloudnet L3 CF cf_V",
+        "occurrence": "contingency",
+        "metric_family": "occurrence",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "Cloudnet CF",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cloud_fraction",
+        "comparison": "cf_V",
+        "basis": "CM1 Cloudnet L3 CF cf_V",
+        "occurrence": "contingency",
+        "metric_family": "occurrence",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "Cloudnet LWC",
+        "model": "ERA5",
+        "model_group": "era5",
+        "scorecard": "era5_lwc",
+        "comparison": "lwc",
+        "basis": "Cloudnet L3 LWC",
+        "occurrence": "liquid_occurrence",
+        "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "Cloudnet LWC",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cm1_lwc",
+        "comparison": "lwc",
+        "basis": "CM1 Cloudnet L3 LWC",
+        "occurrence": "liquid_occurrence",
+        "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "HATPRO/LWP",
+        "model": "ERA5",
+        "model_group": "era5",
+        "scorecard": "era5_lwc",
+        "comparison": "lwc",
+        "basis": "model LWP vs audit-gated HATPRO LWP",
+        "metrics": "lwp_metrics",
+        "metric_family": "column",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "HATPRO/LWP",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cm1_lwc",
+        "comparison": "lwc",
+        "basis": "CM1 LWP vs audit-gated HATPRO LWP",
+        "metrics": "lwp_metrics",
+        "metric_family": "column",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "Cloudnet IWC",
+        "model": "ERA5",
+        "model_group": "era5",
+        "scorecard": "era5_iwc",
+        "comparison": "iwc",
+        "basis": "Cloudnet L3 IWC",
+        "occurrence": "ice_occurrence",
+        "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "Cloudnet IWC",
+        "model": "CM1 full LES",
+        "model_group": "cm1",
+        "scorecard": "cm1_iwc",
+        "comparison": "iwc",
+        "basis": "CM1 Cloudnet L3 IWC",
+        "occurrence": "ice_occurrence",
+        "metrics": "point_metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "W-band radar",
+        "model": "CM1 virtual observatory",
+        "model_group": "synthetic",
+        "scorecard": "wband_radar",
+        "basis": "CM1 synthetic radar vs Cloudnet Z",
+        "occurrence": "contingency",
+        "metrics": "reflectivity_metrics",
+        "metric_family": "occurrence",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "CL61 lidar",
+        "model": "CM1 virtual observatory",
+        "model_group": "synthetic",
+        "scorecard": "cl61_diagnostic",
+        "basis": "CM1 synthetic lidar vs CL61 beta_att; production only when coincident",
+        "occurrence": "contingency",
+        "metric_family": "occurrence",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "Surface met",
+        "model": "CM1/ERA5 surface",
+        "model_group": "surface",
+        "scorecard": "surface_met",
+        "comparison": "air_temperature",
+        "basis": "met station air temperature",
+        "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "ASFS radiation",
+        "model": "CM1 + RRTMGP/SEB",
+        "model_group": "surface",
+        "scorecard": "asfs_logger_radiation_surface",
+        "comparison": "longwave_downwelling",
+        "basis": "ASFS logger longwave down",
+        "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "ASFS sonic",
+        "model": "CM1 surface diagnostics",
+        "model_group": "surface",
+        "scorecard": "asfs_sonic_turbulence",
+        "comparison": "mean_x_wind",
+        "basis": "sonic mean wind and turbulence",
+        "metrics_group": "mean_comparisons",
+        "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "ready",
+    },
+    {
+        "instrument": "ASFS gas",
+        "model": "CM1 diagnostic background",
+        "model_group": "surface",
+        "scorecard": "asfs_gas",
+        "comparison": "co2_molar_density",
+        "basis": "LI-COR CO2 diagnostic",
+        "metrics": "metrics",
+        "metric_family": "continuous",
+        "caveat": "diagnostic_only",
+    },
+)
+
+INSTRUMENT_GALLERY_SCORECARDS = {
+    "Cloudnet CF": (("Cloudnet CF: ERA5", "era5_cloud_fraction"), ("Cloudnet CF: CM1 full LES", "cloud_fraction")),
+    "Cloudnet LWC": (("Cloudnet LWC: ERA5", "era5_lwc"), ("Cloudnet LWC: CM1 full LES", "cm1_lwc")),
+    "HATPRO/LWP": (("LWP context: ERA5", "era5_lwc"), ("LWP context: CM1 full LES", "cm1_lwc")),
+    "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: CM1 full LES", "cm1_iwc")),
+    "W-band radar": (("W-band radar", "wband_radar"),),
+    "CL61 lidar": (("CL61 lidar diagnostic", "cl61_diagnostic"),),
+    "Surface met": (("Surface met", "surface_met"),),
+    "ASFS radiation": (("ASFS radiation", "asfs_logger_radiation_surface"),),
+    "ASFS sonic": (("ASFS sonic/turbulence", "asfs_sonic_turbulence"),),
+    "ASFS gas": (("ASFS gas", "asfs_gas"),),
+}
+
+MODEL_FILTERS = OrderedDict(
+    [
+        ("All model outputs", "all"),
+        ("ERA5", "era5"),
+        ("CM1 full LES", "cm1"),
+        ("Synthetic / forward operator", "synthetic"),
+        ("Surface / SEB diagnostics", "surface"),
+    ]
+)
+
+METRIC_FAMILY_FILTERS = OrderedDict(
+    [
+        ("All metric families", "all"),
+        ("Occurrence skill", "occurrence"),
+        ("Continuous values", "continuous"),
+        ("Column / base-top", "column"),
+        ("Readiness only", "readiness"),
     ]
 )
 
@@ -938,6 +1126,2876 @@ def _dataset_path(run_id: str, dataset_id: str) -> Path | None:
 
 def _scorecard_path(run_id: str, spec: dict[str, object], kind: str) -> Path | None:
     return _artifact_path(run_id, spec, "scorecard", kind)
+
+
+def _read_json(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _operational_run_paths(limit: int = 14) -> list[Path]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return []
+    paths = sorted(days_root.glob("*/operational_run.json"), reverse=True)
+    return paths[:limit]
+
+
+def _direct_scorecard(day: str, name: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{name}.json")
+
+
+def _campaign_index() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json")
+
+
+def _campaign_process_diagnosis() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_process_diagnosis.json")
+
+
+def _campaign_operator_physics_diagnosis() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_operator_physics_diagnosis.json")
+
+
+def _operator_physics_day(day: str) -> dict[str, object] | None:
+    return _read_json(
+        OPERATIONAL_CAMPAIGN_ROOT
+        / "days"
+        / day
+        / "scorecards"
+        / "operator_physics_diagnosis.json"
+    )
+
+
+def _campaign_archive_manifest() -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "archive_manifest.json")
+
+
+def load_campaign_index() -> dict[str, object] | None:
+    return _campaign_index()
+
+
+def load_day_bundle(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "bundle.json")
+
+
+def load_scorecard(day: str, name: str) -> dict[str, object] | None:
+    return _direct_scorecard(day, name)
+
+
+def _iceland_preflight() -> dict[str, object] | None:
+    latest = _read_json(ICELAND_CAMPAIGN_ROOT / "preflight_latest.json")
+    if latest:
+        return latest
+    days_root = ICELAND_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return None
+    paths = sorted(days_root.glob("*/preflight.json"), reverse=True)
+    return _read_json(paths[0]) if paths else None
+
+
+def _iceland_readiness_queue() -> dict[str, object] | None:
+    queue = _read_json(ICELAND_CAMPAIGN_ROOT / "readiness_queue.json")
+    if queue:
+        return queue
+    return None
+
+
+def _group_status_summary(groups: object) -> str:
+    if not isinstance(groups, dict) or not groups:
+        return "<div class='model-note'>No grouped readiness checks have been written yet.</div>"
+    rows = []
+    for group_id, group in sorted(groups.items()):
+        if not isinstance(group, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(group_id))}</td>"
+            f"<td>{escape(str(group.get('status', 'unknown')))}</td>"
+            f"<td>{escape(str(group.get('ready', 0)))}</td>"
+            f"<td>{escape(str(group.get('missing', 0)))}</td>"
+            f"<td>{escape(str(group.get('blocked', 0)))}</td>"
+            f"<td>{escape(str(group.get('diagnostic', 0)))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table class='model-table'>"
+        "<tr><th>group</th><th>status</th><th>ready</th><th>missing</th>"
+        "<th>blocked</th><th>diagnostic</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+
+
+def _iceland_queue_table(queue: dict[str, object]) -> str:
+    days = queue.get("days")
+    if not isinstance(days, list) or not days:
+        return "<div class='model-note'>No Iceland readiness queue rows have been written yet.</div>"
+    rows = []
+    for row in days[:10]:
+        if not isinstance(row, dict):
+            continue
+        gates = row.get("gate_statuses")
+        gates = gates if isinstance(gates, dict) else {}
+        actions = row.get("next_actions")
+        action = actions[0] if isinstance(actions, list) and actions else ""
+        commands = row.get("next_commands")
+        command = commands[0] if isinstance(commands, list) and commands else ""
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', 'missing')))}</td>"
+            f"<td>{escape(str(row.get('preflight_status', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('site_metadata', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('era5', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('cloudnet', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('observations', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('cm1_execution', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('wband_radar', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('wband_hydrometeor_diagnostic', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('seb_radiation', 'unknown')))}</td>"
+            f"<td>{escape(str(gates.get('bundle', 'unknown')))}</td>"
+            f"<td>{escape(str(action))}</td>"
+            f"<td><code>{escape(str(command))}</code></td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-subsection-title'>Iceland Daily Readiness Queue</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table iceland-readiness-table'>"
+        "<tr><th>day</th><th>preflight</th><th>metadata</th><th>ERA5</th>"
+        "<th>Cloudnet</th><th>obs</th><th>CM1</th><th>W-band</th>"
+        "<th>W-band diag</th><th>SEB</th><th>bundle</th><th>next action</th>"
+        "<th>next command</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
+
+def _iceland_queue_cards(queue: dict[str, object]) -> list[str]:
+    rollup = queue.get("rollup")
+    rollup = rollup if isinstance(rollup, dict) else {}
+    return [
+        _card("queue status", queue.get("status", "missing")),
+        _card("queue window", f"{queue.get('start_day', 'n/a')} to {queue.get('end_day', 'n/a')}"),
+        _card("ready days", rollup.get("ready_day_count", "n/a")),
+        _card("blocked days", rollup.get("blocked_day_count", "n/a")),
+    ]
+
+
+def _iceland_audit_summary(preflight: dict[str, object]) -> str:
+    audit = preflight.get("site_metadata_audit")
+    if not isinstance(audit, dict):
+        return (
+            "<div class='model-note'>"
+            "Site metadata audit has not been written yet. Run the audit before treating "
+            "Iceland inputs as production-ready."
+            "</div>"
+        )
+    blockers = audit.get("blockers", [])
+    top_blockers = blockers[:5] if isinstance(blockers, list) else []
+    blocker_html = "".join(f"<li>{escape(str(blocker))}</li>" for blocker in top_blockers)
+    cards = [
+        _card("metadata audit", audit.get("status", "unknown")),
+        _card("metadata ready", audit.get("production_ready", False)),
+        _card(
+            "colocated",
+            f"{audit.get('required_ready_count', 'n/a')}/{audit.get('required_count', 'n/a')}",
+        ),
+        _card("reference", audit.get("reference_dataset_id", "missing")),
+    ]
+    return (
+        "<div class='model-subsection-title'>Site Metadata Audit</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"coordinate source: {escape(str(audit.get('coordinate_source', 'missing')))}; "
+        f"site: {escape(str(audit.get('site_latitude', 'n/a')))}, "
+        f"{escape(str(audit.get('site_longitude', 'n/a')))}"
+        "</div>"
+        + (f"<ul class='model-compact-list'>{blocker_html}</ul>" if blocker_html else "")
+    )
+
+
+def _iceland_readiness_panel() -> str:
+    queue = _iceland_readiness_queue()
+    preflight = _iceland_preflight()
+    if isinstance(queue, dict):
+        cards = _iceland_queue_cards(queue)
+        notes = queue.get("notes", [])
+        note_html = "".join(
+            f"<li>{escape(str(note))}</li>" for note in notes if str(note).strip()
+        )
+        preflight_context = ""
+        if isinstance(preflight, dict):
+            preflight_context = (
+                f"{_iceland_audit_summary(preflight)}"
+                f"{_group_status_summary(preflight.get('groups', {}))}"
+            )
+        return (
+            "<div class='model-section-title'>Iceland Readiness</div>"
+            f"<div class='model-grid'>{''.join(cards)}</div>"
+            "<div class='model-note'>"
+            "Queue is read-only: it stages the next safe actions for Iceland and does not launch "
+            "CM1 or forward operators."
+            "</div>"
+            f"{_iceland_queue_table(queue)}"
+            f"{preflight_context}"
+            + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
+        )
+    if not isinstance(preflight, dict):
+        cards = [
+            _card("Iceland status", "not staged"),
+            _card("planned start", "2026-07-06"),
+            _card("next action", "run readiness queue"),
+        ]
+        return (
+            "<div class='model-section-title'>Iceland Readiness</div>"
+            f"<div class='model-grid'>{''.join(cards)}</div>"
+            "<div class='model-note'>"
+            "No Iceland readiness queue has been written yet. The Leeds replay remains the "
+            "regression baseline until new colocated campaign data arrive."
+            "</div>"
+        )
+    groups = preflight.get("groups", {})
+    cards = [
+        _card("Iceland day", preflight.get("day", "missing")),
+        _card("preflight", preflight.get("status", "missing")),
+        _card("daily readiness", preflight.get("readiness_status", "missing")),
+        _card("blockers", len(preflight.get("blockers", []) or [])),
+    ]
+    notes = preflight.get("notes", [])
+    note_html = "".join(
+        f"<li>{escape(str(note))}</li>" for note in notes if str(note).strip()
+    )
+    return (
+        "<div class='model-section-title'>Iceland Readiness</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"{escape(str(preflight.get('resume_condition', 'Run preflight before execution.')))}"
+        "</div>"
+        f"{_iceland_audit_summary(preflight)}"
+        f"{_group_status_summary(groups)}"
+        + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
+    )
+
+
+def _bundle_recipe(day: str) -> dict[str, object]:
+    bundle = load_day_bundle(day)
+    models = bundle.get("models") if isinstance(bundle, dict) else None
+    if not isinstance(models, dict):
+        return {}
+    recipe = models.get("standard_daily_les_recipe")
+    return recipe if isinstance(recipe, dict) else {}
+
+
+def _hours_text(value: object) -> str:
+    compact = _compact_float(value)
+    return "n/a" if compact == "n/a" else str(compact)
+
+
+def _bundle_runtime_summary(day: str) -> dict[str, object]:
+    recipe = _bundle_recipe(day)
+    return {
+        "run_hours": _hours_text(recipe.get("configured_run_time_hours")),
+        "spinup_hours": _hours_text(
+            float(recipe.get("spin_up_seconds", 0.0)) / 3600.0
+            if recipe.get("spin_up_seconds") is not None
+            else None
+        ),
+        "evaluation_hours": _hours_text(recipe.get("evaluation_window_hours")),
+        "recipe_class": recipe.get("daily_recipe_class", "unknown"),
+    }
+
+
+def _lasso_bundle_paths(limit: int = 31) -> list[Path]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return []
+    paths = sorted(days_root.glob("*/lasso_bundle/bundle.json"), reverse=True)
+    return paths[:limit]
+
+
+def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
+    rows = []
+    for path in paths:
+        payload = _read_json(path)
+        compliance_path = path.parent / "compliance.json"
+        compliance = _read_json(compliance_path)
+        compliance_status = (
+            str(compliance.get("status", "missing")) if isinstance(compliance, dict) else "missing"
+        )
+        compliance_detail = _lasso_compliance_detail(compliance)
+        if not payload:
+            runtime = _bundle_runtime_summary(path.parents[1].name)
+            rows.append(
+                {
+                    "day": path.parents[1].name,
+                    "status": "unreadable",
+                    "bundle_json": str(path),
+                    "compliance": compliance_status,
+                    "compliance_detail": compliance_detail,
+                    "compliance_json": str(compliance_path),
+                    "modf": "missing",
+                    "mmdf": "missing",
+                    "cloudnet": "missing",
+                    "scorecards": "missing",
+                    "seb": "missing",
+                    "cm1_runtime_h": runtime["run_hours"],
+                    "cm1_eval_h": runtime["evaluation_hours"],
+                    "cm1_recipe_class": runtime["recipe_class"],
+                    "operational_qa": "missing",
+                }
+            )
+            continue
+        day = str(payload.get("day", path.parents[1].name))
+        runtime = _bundle_runtime_summary(day)
+        rows.append(
+            {
+                "day": day,
+                "status": payload.get("status", "unknown"),
+                "bundle_json": payload.get("bundle_json", str(path)),
+                "bundle_markdown": payload.get("bundle_markdown"),
+                "compliance": compliance_status,
+                "compliance_detail": compliance_detail,
+                "compliance_json": str(compliance_path),
+                "modf": _product_status_summary(payload.get("modf_products")),
+                "mmdf": _product_status_summary(payload.get("mmdf_products")),
+                "cloudnet": _cloudnet_status_summary(payload.get("cloudnet")),
+                "scorecards": _scorecard_status_summary(payload.get("scorecards")),
+                "seb": _nested_status(payload, ["forward_operators", "rrtmgp_surface_energy_budget"]),
+                "cm1_runtime_h": runtime["run_hours"],
+                "cm1_eval_h": runtime["evaluation_hours"],
+                "cm1_recipe_class": runtime["recipe_class"],
+                "scheduler_policy": _nested_status(payload, ["scheduler_policy"]),
+                "scheduler_priority": _nested_value(payload, ["scheduler_policy", "priority"], "n/a"),
+                "scheduler_actions": _scheduler_action_summary(payload.get("scheduler_policy")),
+                "operational_qa": _nested_value(
+                    _operational_summary_for_day(day),
+                    ["operational_qa", "status"],
+                    "missing",
+                ),
+            }
+        )
+    return rows
+
+
+def _lasso_compliance_detail(compliance: dict[str, object] | None) -> str:
+    if not isinstance(compliance, dict):
+        return "missing"
+    failures = compliance.get("failures")
+    warnings = compliance.get("warnings")
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    warning_count = len(warnings) if isinstance(warnings, list) else 0
+    level = compliance.get("compliance_level", "unknown")
+    return f"{level}; failures:{failure_count}; warnings:{warning_count}"
+
+
+def _product_status_summary(products: object) -> str:
+    if not isinstance(products, dict) or not products:
+        return "missing"
+    counts: dict[str, int] = {}
+    for product in products.values():
+        if isinstance(product, dict):
+            status = str(product.get("status", "unknown"))
+            counts[status] = counts.get(status, 0) + 1
+    if not counts:
+        return "missing"
+    return ", ".join(f"{status}:{count}" for status, count in sorted(counts.items()))
+
+
+def _cloudnet_status_summary(cloudnet: object) -> str:
+    if not isinstance(cloudnet, dict):
+        return "missing"
+    products = cloudnet.get("products")
+    if not isinstance(products, dict):
+        return "missing"
+    categorize = _dict_status(products.get("categorize"))
+    l3_cf = _dict_status(products.get("l3_cf_era5"))
+    lwc = _dict_status(products.get("lwc_source"))
+    iwc = _dict_status(products.get("iwc_source"))
+    return f"cat:{categorize}; cf:{l3_cf}; lwc:{lwc}; iwc:{iwc}"
+
+
+def _scorecard_status_summary(scorecards: object) -> str:
+    if not isinstance(scorecards, dict):
+        return "missing"
+    written = 0
+    diagnostic = 0
+    missing = 0
+    for scorecard in scorecards.values():
+        if not isinstance(scorecard, dict):
+            continue
+        status = str(scorecard.get("status", "missing"))
+        if status == "ready":
+            written += 1
+        elif status == "diagnostic_only":
+            diagnostic += 1
+        else:
+            missing += 1
+    return f"ready:{written}; diagnostic:{diagnostic}; missing:{missing}"
+
+
+def _nested_status(payload: dict[str, object], keys: list[str]) -> str:
+    value: object = payload
+    for key in keys:
+        if not isinstance(value, dict):
+            return "missing"
+        value = value.get(key)
+    return _dict_status(value)
+
+
+def _nested_value(payload: dict[str, object], keys: list[str], default: object = "missing") -> object:
+    value: object = payload
+    for key in keys:
+        if not isinstance(value, dict):
+            return default
+        value = value.get(key, default)
+    return value
+
+
+def _scheduler_action_summary(policy: object, limit: int = 3) -> str:
+    if not isinstance(policy, dict):
+        return "-"
+    actions = policy.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return "-"
+    names = [
+        str(action.get("action", "unknown")) if isinstance(action, dict) else str(action)
+        for action in actions
+    ]
+    suffix = "" if len(names) <= limit else f" +{len(names) - limit}"
+    return ", ".join(names[:limit]) + suffix
+
+
+def _dict_status(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("status", "missing"))
+    return "missing"
+
+
+def _operational_summary_for_day(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / "operational_summary.json")
+
+
+def _latest_operational_summary(
+    index: dict[str, object] | None,
+    paths: list[Path],
+) -> tuple[str | None, dict[str, object] | None]:
+    if isinstance(index, dict):
+        days = index.get("days")
+        if isinstance(days, list) and days:
+            for item in reversed(days):
+                if not isinstance(item, dict):
+                    continue
+                day = item.get("day")
+                if day:
+                    summary = _operational_summary_for_day(str(day))
+                    if summary:
+                        return str(day), summary
+    for path in paths:
+        day = path.parent.name
+        summary = _operational_summary_for_day(day)
+        if summary:
+            return day, summary
+    return None, None
+
+
+def _summary_scorecard(summary: dict[str, object] | None, name: str) -> dict[str, object]:
+    if not summary:
+        return {}
+    scorecards = summary.get("scorecards")
+    if not isinstance(scorecards, dict):
+        return {}
+    scorecard = scorecards.get(name)
+    return scorecard if isinstance(scorecard, dict) else {}
+
+
+def _cf_csi(summary: dict[str, object] | None, name: str) -> object:
+    scorecard = _summary_scorecard(summary, name)
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return "n/a"
+    comparison = comparisons.get("cf_V") or comparisons.get("cf_A")
+    if not isinstance(comparison, dict):
+        return "n/a"
+    return _compact_float(comparison.get("critical_success_index"))
+
+
+def _cm1_cf_csi(day: str, summary: dict[str, object] | None) -> object:
+    value = _cf_csi(summary, "cloud_fraction")
+    if value != "n/a":
+        return value
+    scorecard = _direct_scorecard(day, "cloud_fraction")
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    comparison = scorecard.get("cf_V") or scorecard.get("cf_A")
+    if not isinstance(comparison, dict):
+        comparison = scorecard.get("comparisons", {}).get("cf_V") if isinstance(scorecard.get("comparisons"), dict) else {}
+    if not isinstance(comparison, dict):
+        return "n/a"
+    return _compact_float(comparison.get("critical_success_index"))
+
+
+def _index_cf_metric(
+    index: dict[str, object] | None,
+    scorecard_name: str,
+    observed_variable: str,
+    metric: str = "critical_success_index_mean",
+) -> object:
+    if not index:
+        return "n/a"
+    scorecards = index.get("scorecard_rollup")
+    if not isinstance(scorecards, dict):
+        return "n/a"
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    metrics = scorecard.get("cloud_fraction_metrics")
+    if not isinstance(metrics, dict):
+        return "n/a"
+    variable = metrics.get(observed_variable)
+    if not isinstance(variable, dict):
+        return "n/a"
+    return _compact_float(variable.get(metric))
+
+
+def _process_skill_rollup(index: dict[str, object] | None) -> dict[str, object]:
+    if not index:
+        return {}
+    rollup = index.get("process_skill_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
+def _process_skill_metric(
+    index: dict[str, object] | None,
+    label: str,
+    scorecard_name: str,
+    observed_variable: str,
+    metric: str = "critical_success_index_mean",
+) -> object:
+    rollup = _process_skill_rollup(index)
+    item = rollup.get(label)
+    if not isinstance(item, dict):
+        return "n/a"
+    scorecards = item.get("scorecards")
+    if not isinstance(scorecards, dict):
+        return "n/a"
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    metrics = scorecard.get("cloud_fraction_metrics")
+    if not isinstance(metrics, dict):
+        return "n/a"
+    variable = metrics.get(observed_variable)
+    if not isinstance(variable, dict):
+        return "n/a"
+    return _compact_float(variable.get(metric))
+
+
+def _process_day_count(index: dict[str, object] | None, label: str) -> object:
+    rollup = _process_skill_rollup(index)
+    item = rollup.get(label)
+    if not isinstance(item, dict):
+        return 0
+    return item.get("day_count", 0)
+
+
+def _process_diagnoses(diagnosis: dict[str, object] | None) -> dict[str, object]:
+    if not diagnosis:
+        return {}
+    processes = diagnosis.get("process_diagnoses")
+    return processes if isinstance(processes, dict) else {}
+
+
+def _diagnosis_metric(
+    diagnosis: dict[str, object] | None,
+    label: str,
+    metric: str,
+    scorecard_name: str = "era5_cloud_fraction",
+    observed_variable: str = "cf_V",
+) -> object:
+    process = _process_diagnoses(diagnosis).get(label)
+    if not isinstance(process, dict):
+        return "n/a"
+    scorecards = process.get("scorecards")
+    if not isinstance(scorecards, dict):
+        return "n/a"
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "n/a"
+    comparison = scorecard.get(observed_variable)
+    if not isinstance(comparison, dict):
+        return "n/a"
+    return _compact_float(comparison.get(metric))
+
+
+def _index_required_pending(index: dict[str, object] | None) -> list[str]:
+    if not index:
+        return []
+    components = index.get("component_rollup")
+    if not isinstance(components, dict):
+        return []
+    pending = []
+    for name, component in components.items():
+        if not isinstance(component, dict):
+            continue
+        if not component.get("required_for_full_virtual_observatory"):
+            continue
+        try:
+            not_ready = int(component.get("not_ready_day_count", 0))
+        except (TypeError, ValueError):
+            not_ready = 0
+        if not_ready:
+            pending.append(f"{name} ({not_ready} d)")
+    return pending
+
+
+def _operator_policy_rollup_table(index: dict[str, object] | None) -> str:
+    if not isinstance(index, dict):
+        return ""
+    rollup = index.get("operator_policy_rollup")
+    if not isinstance(rollup, dict):
+        return ""
+    body = []
+    for name in ("gas", "turbulence", "radiation"):
+        policy = rollup.get(name)
+        if not isinstance(policy, dict):
+            continue
+        blockers = policy.get("blocker_counts")
+        top_blockers = "-"
+        if isinstance(blockers, dict) and blockers:
+            ranked = sorted(
+                blockers.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )
+            top_blockers = ", ".join(f"{key} ({value})" for key, value in ranked[:4])
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(policy.get('ready_day_count', 0)))}</td>"
+            f"<td>{escape(str(policy.get('not_ready_day_count', 0)))}</td>"
+            f"<td>{escape(str(policy.get('latest_status', 'unknown')))}</td>"
+            f"<td>{escape(str(policy.get('latest_ready', False)))}</td>"
+            f"<td>{escape(top_blockers)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Campaign Operator Policy Rollup</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>operator</th><th>ready days</th><th>not-ready days</th>"
+        "<th>latest status</th><th>latest ready</th><th>top blockers</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _scheduler_policy_rollup(index: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(index, dict):
+        return {}
+    rollup = index.get("scheduler_policy_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
+def _operational_qa_rollup(index: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(index, dict):
+        return {}
+    rollup = index.get("operational_qa_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
+def _scheduler_policy_rollup_table(index: dict[str, object] | None) -> str:
+    rollup = _scheduler_policy_rollup(index)
+    if not rollup:
+        return ""
+    action_counts = rollup.get("action_counts")
+    action_days = rollup.get("action_days")
+    if not isinstance(action_counts, dict):
+        return ""
+    action_days = action_days if isinstance(action_days, dict) else {}
+    body = []
+    for action, count in sorted(
+        action_counts.items(),
+        key=lambda item: (-int(item[1]), str(item[0])),
+    ):
+        days = action_days.get(action) if isinstance(action_days, dict) else None
+        day_text = ", ".join(str(day) for day in days) if isinstance(days, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(action))}</td>"
+            f"<td>{escape(str(count))}</td>"
+            f"<td>{escape(day_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    status_counts = rollup.get("status_counts")
+    priority_counts = rollup.get("priority_counts")
+    caveat_counts = rollup.get("caveat_counts")
+    status_text = _count_dict_text(status_counts)
+    priority_text = _count_dict_text(priority_counts)
+    caveat_text = _count_dict_text(caveat_counts)
+    return (
+        "<div class='model-section-title'>Scheduler Policy Rollup</div>"
+        f"<div class='model-subtitle'>status: {escape(status_text)}; "
+        f"priority: {escape(priority_text)}; caveats: {escape(caveat_text)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table scheduler-policy-table'>"
+        "<thead><tr><th>action</th><th>days</th><th>day list</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operational_qa_rollup_table(index: dict[str, object] | None) -> str:
+    rollup = _operational_qa_rollup(index)
+    if not rollup:
+        return ""
+    missing_counts = rollup.get("missing_required_scorecard_counts")
+    missing_days = rollup.get("missing_required_scorecard_days")
+    blocked_counts = rollup.get("blocked_required_scorecard_counts")
+    status_counts = rollup.get("status_counts")
+    missing_counts = missing_counts if isinstance(missing_counts, dict) else {}
+    missing_days = missing_days if isinstance(missing_days, dict) else {}
+    blocked_counts = blocked_counts if isinstance(blocked_counts, dict) else {}
+    body = []
+    for scorecard, count in sorted(
+        missing_counts.items(),
+        key=lambda item: (-int(item[1]), str(item[0])),
+    ):
+        days = missing_days.get(scorecard)
+        day_text = ", ".join(str(day) for day in days) if isinstance(days, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(scorecard))}</td>"
+            f"<td>{escape(str(count))}</td>"
+            f"<td>{escape(day_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        body.append("<tr><td>-</td><td>0</td><td>-</td></tr>")
+    blocked_text = _count_dict_text(blocked_counts)
+    return (
+        "<div class='model-section-title'>Operational QA Rollup</div>"
+        f"<div class='model-subtitle'>status: {escape(_count_dict_text(status_counts))}; "
+        f"QA-ready days: {escape(str(rollup.get('ready_day_count', 0)))}; "
+        f"QA-incomplete days: {escape(str(rollup.get('qa_incomplete_day_count', 0)))}; "
+        f"blocked required scorecards: {escape(blocked_text)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table scheduler-policy-table'>"
+        "<thead><tr><th>missing required scorecard</th><th>days</th><th>day list</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _archive_manifest_cards(manifest: dict[str, object] | None) -> list[str]:
+    if not isinstance(manifest, dict):
+        return [_card("archive manifest", "missing")]
+    counts = manifest.get("class_counts")
+    counts = counts if isinstance(counts, dict) else {}
+    items = manifest.get("items")
+    item_count = len(items) if isinstance(items, list) else "n/a"
+    return [
+        _card("archive manifest", manifest.get("status", "unknown")),
+        _card("manifest items", item_count),
+        _card("active", counts.get("active_campaign", 0)),
+        _card("reference", counts.get("reference", 0)),
+        _card("archived", counts.get("archived_experiment", 0)),
+        _card("retired", counts.get("retired_dead_end", 0)),
+    ]
+
+
+def _archive_manifest_table(manifest: dict[str, object] | None) -> str:
+    if not isinstance(manifest, dict):
+        return "<div class='model-note'>archive manifest missing</div>"
+    counts = manifest.get("class_counts")
+    if not isinstance(counts, dict):
+        return "<div class='model-note'>archive manifest has no class counts</div>"
+    descriptions = manifest.get("archive_classes")
+    descriptions = descriptions if isinstance(descriptions, dict) else {}
+    rows = []
+    for name, count in sorted(counts.items()):
+        rows.append(
+            "<tr>"
+            f"<td><code>{escape(str(name))}</code></td>"
+            f"<td>{escape(str(count))}</td>"
+            f"<td>{escape(str(descriptions.get(name, '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Archive Manifest</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table archive-table'>"
+        "<thead><tr><th>class</th><th>count</th><th>policy</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _day_archive_class_summary(day: str, manifest: dict[str, object] | None) -> str:
+    if not isinstance(manifest, dict):
+        return "missing"
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        return "missing"
+    marker = f"/days/{day}/"
+    counts: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", ""))
+        if marker not in path:
+            continue
+        archive_class = str(item.get("archive_class", "unknown"))
+        counts[archive_class] = counts.get(archive_class, 0) + 1
+    return _count_dict_text(counts)
+
+
+def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
+    if not isinstance(index, dict):
+        return ""
+    days = index.get("days")
+    if not isinstance(days, list):
+        return ""
+    body = []
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        actions = day.get("scheduler_policy_actions")
+        action_text = ", ".join(str(item) for item in actions) if isinstance(actions, list) else "-"
+        missing_qa = day.get("operational_qa_missing_required_scorecards")
+        missing_qa_text = (
+            ", ".join(str(item) for item in missing_qa)
+            if isinstance(missing_qa, list)
+            else "-"
+        )
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(day.get('day', '')))}</td>"
+            f"<td>{escape(str(day.get('scheduler_policy_status', 'unknown')))}</td>"
+            f"<td>{escape(str(day.get('scheduler_policy_priority', 'normal')))}</td>"
+            f"<td>{escape(str(day.get('operational_qa_status', 'unknown')))}</td>"
+            f"<td>{escape(str(day.get('operational_qa_ready', 'unknown')))}</td>"
+            f"<td>{escape(missing_qa_text)}</td>"
+            f"<td>{escape(action_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Daily Scheduler Policy</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table scheduler-policy-table'>"
+        "<thead><tr><th>day</th><th>policy</th><th>priority</th>"
+        "<th>QA</th><th>QA ready</th><th>missing QA scorecards</th><th>actions</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _day_status(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "status.json")
+
+
+def _day_command_state(day: str) -> dict[str, object] | None:
+    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "command_state.json")
+
+
+def _missing_required_inputs(status: dict[str, object] | None) -> list[str]:
+    if not isinstance(status, dict):
+        return []
+    checks = status.get("checks")
+    if not isinstance(checks, list):
+        return []
+    missing = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        if check.get("required") and check.get("status") != "ready":
+            missing.append(str(check.get("id", "unknown")))
+    return missing
+
+
+def _command_state_summary(command_state: dict[str, object] | None) -> tuple[str, str]:
+    if not isinstance(command_state, dict):
+        return "not_started", "-"
+    status = str(command_state.get("status", "unknown"))
+    failed = command_state.get("failed_command_id")
+    if failed:
+        return status, str(failed)
+    resume = command_state.get("resume_command_id")
+    if resume:
+        return status, f"resume: {resume}"
+    completed = command_state.get("completed_command_count")
+    total = command_state.get("total_command_count")
+    if completed is not None and total is not None:
+        return status, f"{completed}/{total}"
+    return status, "-"
+
+
+def _daily_review_queue_rows(index: dict[str, object] | None, limit: int = 10) -> list[dict[str, object]]:
+    archive_manifest = _campaign_archive_manifest()
+    indexed_days = []
+    if isinstance(index, dict) and isinstance(index.get("days"), list):
+        indexed_days = [str(day.get("day")) for day in index["days"] if isinstance(day, dict)]
+    status_days = []
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if days_root.exists():
+        status_days = [
+            path.parent.name
+            for path in days_root.glob("*/status.json")
+            if path.parent.name[:4].isdigit()
+        ]
+    days = sorted({*indexed_days, *status_days}, reverse=True)[:limit]
+    indexed = {}
+    if isinstance(index, dict) and isinstance(index.get("days"), list):
+        indexed = {
+            str(day.get("day")): day
+            for day in index["days"]
+            if isinstance(day, dict) and day.get("day")
+        }
+    rows = []
+    for day in days:
+        indexed_day = indexed.get(day, {})
+        status = _day_status(day)
+        command_state = _day_command_state(day)
+        command_status, command_detail = _command_state_summary(command_state)
+        instrument_rows = build_instrument_catalog([day])
+        diagnostic = sum(
+            1
+            for row in instrument_rows
+            if row.get("caveat") in {"diagnostic_only", "not_colocated"}
+        )
+        blocked = sum(
+            1
+            for row in instrument_rows
+            if str(row.get("caveat", "")).startswith("blocked")
+        )
+        rows.append(
+            {
+                "day": day,
+                "bundle": indexed_day.get("lasso_bundle_status", "missing"),
+                "qa": indexed_day.get("operational_qa_status", status.get("status") if status else "missing"),
+                "missing_inputs": _missing_required_inputs(status),
+                "diagnostic_streams": diagnostic,
+                "blocked_streams": blocked,
+                "failed_operator": command_detail if "fail" in command_status.lower() else "-",
+                "command_status": command_status,
+                "command_detail": command_detail,
+                "archive_classes": _day_archive_class_summary(day, archive_manifest),
+                "actions": indexed_day.get("scheduler_policy_actions", []),
+            }
+        )
+    return rows
+
+
+def _daily_review_queue_table(index: dict[str, object] | None) -> str:
+    rows = _daily_review_queue_rows(index)
+    if not rows:
+        return "<div class='model-note'>No daily review records found yet.</div>"
+    body = []
+    for row in rows:
+        actions = row.get("actions")
+        action_text = _list_summary(actions, limit=2)
+        missing_text = _list_summary(row.get("missing_inputs"), limit=4)
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{_badge(row.get('bundle'))}</td>"
+            f"<td>{_badge(row.get('qa'))}</td>"
+            f"<td>{escape(missing_text)}</td>"
+            f"<td>{escape(str(row.get('diagnostic_streams', 0)))}</td>"
+            f"<td>{escape(str(row.get('blocked_streams', 0)))}</td>"
+            f"<td>{escape(str(row.get('failed_operator', '-')))}</td>"
+            f"<td>{escape(str(row.get('command_status', 'unknown')))}</td>"
+            f"<td>{escape(str(row.get('command_detail', '-')))}</td>"
+            f"<td>{escape(str(row.get('archive_classes', 'missing')))}</td>"
+            f"<td>{escape(action_text)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Daily Review Queue</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table daily-review-table'>"
+        "<thead><tr><th>day</th><th>bundle</th><th>QA</th><th>missing inputs</th>"
+        "<th>diagnostic</th><th>blocked</th><th>failed operator</th>"
+        "<th>runner</th><th>runner detail</th><th>archive classes</th><th>QA actions</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _indexed_day_map(index: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    if not isinstance(index, dict) or not isinstance(index.get("days"), list):
+        return {}
+    return {
+        str(day.get("day")): day
+        for day in index["days"]
+        if isinstance(day, dict) and day.get("day")
+    }
+
+
+def _scorecard_state(day: str, scorecard_name: str) -> str:
+    scorecard = load_scorecard(day, scorecard_name)
+    if not isinstance(scorecard, dict):
+        return "missing"
+    return str(
+        scorecard.get("scoring_status")
+        or scorecard.get("status")
+        or scorecard.get("readiness_state")
+        or "present"
+    )
+
+
+def _source_readiness_state(day: str, product: str) -> str:
+    path = (
+        OPERATIONAL_CAMPAIGN_ROOT
+        / "days"
+        / day
+        / "cloudnet_source_readiness"
+        / f"{product}.json"
+    )
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return "missing"
+    return str(payload.get("status", payload.get("readiness_state", "present")))
+
+
+def _day_compliance_state(day: str) -> tuple[str, str]:
+    payload = _read_json(
+        OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "compliance.json"
+    )
+    if not isinstance(payload, dict):
+        return "missing", "n/a"
+    failures = payload.get("failures", [])
+    warnings = payload.get("warnings", [])
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    warning_count = len(warnings) if isinstance(warnings, list) else 0
+    return str(payload.get("status", "unknown")), f"{failure_count}/{warning_count}"
+
+
+def _cm1_output_count(day: str) -> object:
+    run_dir = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "cm1" / "run"
+    if not run_dir.exists():
+        return "missing"
+    return len(list(run_dir.glob("cm1out_*.nc")))
+
+
+def _row_for_instrument(
+    rows: list[dict[str, object]],
+    instrument: str,
+    model: str,
+) -> dict[str, object]:
+    for row in rows:
+        if row.get("instrument") == instrument and row.get("model") == model:
+            return row
+    return {}
+
+
+def _numeric_or_none(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean_compact(values: list[object]) -> object:
+    numeric = [value for value in (_numeric_or_none(item) for item in values) if value is not None]
+    if not numeric:
+        return "n/a"
+    return _compact_float(sum(numeric) / len(numeric))
+
+
+def _replay_process_labels(day: str) -> str:
+    forcing = load_scorecard(day, "forcing_diagnostic")
+    if not isinstance(forcing, dict):
+        return "missing"
+    classification = forcing.get("process_classification")
+    if not isinstance(classification, dict):
+        return "missing"
+    labels = classification.get("labels")
+    return _list_summary(labels, limit=3)
+
+
+def _seven_day_replay_rows(index: dict[str, object] | None) -> list[dict[str, object]]:
+    indexed = _indexed_day_map(index)
+    rows = []
+    for day in LEEDS_REPLAY_DAYS:
+        if not (OPERATIONAL_CAMPAIGN_ROOT / "days" / day).exists():
+            continue
+        instrument_rows = build_instrument_catalog([day])
+        era5_cf = _row_for_instrument(instrument_rows, "Cloudnet CF", "ERA5")
+        cm1_cf = _row_for_instrument(instrument_rows, "Cloudnet CF", "CM1 full LES")
+        wband = _row_for_instrument(
+            instrument_rows,
+            "W-band radar",
+            "CM1 virtual observatory",
+        )
+        indexed_day = indexed.get(day, {})
+        compliance, compliance_detail = _day_compliance_state(day)
+        rows.append(
+            {
+                "day": day,
+                "gate": indexed_day.get("release_gate_status", "missing"),
+                "bundle": indexed_day.get("lasso_bundle_status", "missing"),
+                "qa": indexed_day.get("operational_qa_status", "missing"),
+                "compliance": compliance,
+                "compliance_detail": compliance_detail,
+                "cm1_outputs": _cm1_output_count(day),
+                "era5_cf_csi": era5_cf.get("csi", "n/a"),
+                "cm1_cf_csi": cm1_cf.get("csi", "n/a"),
+                "wband_csi": wband.get("csi", "n/a"),
+                "lwc": _source_readiness_state(day, "l3-lwc"),
+                "iwc": _source_readiness_state(day, "l3-iwc"),
+                "surface": _scorecard_state(day, "surface_met"),
+                "asfs_radiation": _scorecard_state(day, "asfs_logger_radiation_surface"),
+                "asfs_sonic": _scorecard_state(day, "asfs_sonic_turbulence"),
+                "asfs_gas": _scorecard_state(day, "asfs_gas"),
+                "process": _replay_process_labels(day),
+            }
+        )
+    return rows
+
+
+def _seven_day_replay_summary(index: dict[str, object] | None) -> str:
+    rows = _seven_day_replay_rows(index)
+    if not rows:
+        return "<div class='model-note'>No seven-day Leeds replay records found yet.</div>"
+    ready_days = sum(
+        1
+        for row in rows
+        if row.get("gate") == "full_virtual_observatory_ready"
+        and row.get("bundle") == "ready"
+        and row.get("qa") == "ready"
+        and row.get("compliance") == "pass"
+    )
+    cards = [
+        _card("Leeds replay days", len(rows)),
+        _card("ready days", ready_days),
+        _card("ERA5 CF CSI", _mean_compact([row.get("era5_cf_csi") for row in rows])),
+        _card("CM1 CF CSI", _mean_compact([row.get("cm1_cf_csi") for row in rows])),
+        _card("W-band CSI", _mean_compact([row.get("wband_csi") for row in rows])),
+    ]
+    body = []
+    for row in rows:
+        surface_text = (
+            f"met:{row.get('surface')}, rad:{row.get('asfs_radiation')}, "
+            f"sonic:{row.get('asfs_sonic')}, gas:{row.get('asfs_gas')}"
+        )
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{_badge(row.get('gate'))}</td>"
+            f"<td>{_badge(row.get('bundle'))}</td>"
+            f"<td>{_badge(row.get('qa'))}</td>"
+            f"<td>{escape(str(row.get('compliance', '')))} "
+            f"({escape(str(row.get('compliance_detail', '')))})</td>"
+            f"<td>{escape(str(row.get('cm1_outputs', '')))}</td>"
+            f"<td>{escape(str(row.get('era5_cf_csi', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('cm1_cf_csi', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('wband_csi', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('lwc', '')))} / {escape(str(row.get('iwc', '')))}</td>"
+            f"<td>{escape(surface_text)}</td>"
+            f"<td>{escape(str(row.get('process', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>7-Day Leeds Replay</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table seven-day-replay-table'>"
+        "<thead><tr><th>day</th><th>gate</th><th>bundle</th><th>QA</th>"
+        "<th>compliance f/w</th><th>CM1 outputs</th><th>ERA5 CF CSI</th>"
+        "<th>CM1 CF CSI</th><th>W-band CSI</th><th>LWC/IWC</th>"
+        "<th>surface and ASFS</th><th>process labels</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _next_day_after(day: str) -> str:
+    try:
+        parsed = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError:
+        return "not staged"
+    return (parsed + timedelta(days=1)).isoformat()
+
+
+def _future_staged_days(latest_day: str) -> list[str]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not latest_day or not days_root.exists():
+        return []
+    return sorted(
+        path.name
+        for path in days_root.iterdir()
+        if path.is_dir() and path.name[:4].isdigit() and path.name > latest_day
+    )
+
+
+def _operational_wait_state(index: dict[str, object] | None) -> str:
+    days = []
+    if isinstance(index, dict) and isinstance(index.get("days"), list):
+        days = [
+            str(day.get("day"))
+            for day in index["days"]
+            if isinstance(day, dict) and day.get("day")
+        ]
+    latest_day = max(days) if days else ""
+    future_days = _future_staged_days(latest_day)
+    ready_days = 0
+    qa_rollup = index.get("operational_qa_rollup", {}) if isinstance(index, dict) else {}
+    if isinstance(qa_rollup, dict):
+        ready_days = int(qa_rollup.get("ready_day_count", 0) or 0)
+    index_status = index.get("status", "missing") if isinstance(index, dict) else "missing"
+    if latest_day and not future_days and index_status == "full_virtual_observatory_ready":
+        mode = "waiting_for_new_data"
+        detail = "runner should idle with no_ready_day until a future day is staged"
+        next_day = _next_day_after(latest_day)
+    elif future_days:
+        mode = "future_inputs_staged"
+        detail = "review staged future days before launching production CM1"
+        next_day = future_days[0]
+    else:
+        mode = "campaign_state_unknown"
+        detail = "campaign index or day records are missing"
+        next_day = "unknown"
+    cards = [
+        _card("operating mode", mode),
+        _card("regression baseline", f"{LEEDS_REPLAY_DAYS[0]} to {LEEDS_REPLAY_DAYS[-1]}"),
+        _card("model strategy", "CM1 full LES only"),
+        _card("latest ready day", latest_day or "missing"),
+        _card("QA ready days", ready_days),
+        _card("next expected day", next_day),
+    ]
+    checklist = "".join(
+        f"<li>{escape(item)}</li>" for item in NEXT_DATA_REQUIRED_INPUTS
+    )
+    future_text = ", ".join(future_days) if future_days else "none"
+    return (
+        "<div class='model-section-title'>Operational Wait State</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"{escape(detail)}. Future staged days: {escape(future_text)}."
+        "</div>"
+        "<div class='model-two-column'>"
+        "<div>"
+        "<div class='model-subsection-title'>Resume Inputs</div>"
+        f"<ul class='model-compact-list'>{checklist}</ul>"
+        "</div>"
+        "<div>"
+        "<div class='model-subsection-title'>Allowed Work</div>"
+        "<ul class='model-compact-list'>"
+        "<li>keep runner and dashboard healthy</li>"
+        "<li>use the seven-day replay as regression coverage</li>"
+        "<li>improve W-band, Cloudnet, SEB and ASFS interpretation</li>"
+        "<li>do not start new CM1 production runs until a day is planned-ready</li>"
+        "</ul>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _count_dict_text(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    return ", ".join(f"{key}:{count}" for key, count in sorted(value.items()))
+
+
+def _list_summary(value: object, limit: int = 3) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    items = [str(item) for item in value[:limit]]
+    if len(value) > limit:
+        items.append(f"+{len(value) - limit} more")
+    return ", ".join(items)
+
+
+def _generic_contingency(scorecard: dict[str, object] | None, variable: str, key: str) -> dict[str, object]:
+    if not scorecard:
+        return {}
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return {}
+    comparison = comparisons.get(variable)
+    if not isinstance(comparison, dict):
+        comparison = next((item for item in comparisons.values() if isinstance(item, dict)), {})
+    occurrence = comparison.get(key) if isinstance(comparison, dict) else {}
+    return occurrence if isinstance(occurrence, dict) else {}
+
+
+def _lwp_policy_summary(scorecard: dict[str, object] | None) -> str:
+    if not isinstance(scorecard, dict):
+        return "missing"
+    context = scorecard.get("lwp_context")
+    if not isinstance(context, dict):
+        return "missing"
+    readiness = str(context.get("readiness_state", "unknown"))
+    source_policy = str(context.get("source_policy", "unknown"))
+    if source_policy and source_policy != "unknown":
+        return f"{readiness}: {source_policy}"
+    return readiness
+
+
+def _campaign_days(limit: int = 7) -> list[str]:
+    days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
+    if not days_root.exists():
+        return []
+    days = sorted(
+        path.name for path in days_root.iterdir() if path.is_dir() and path.name[:4].isdigit()
+    )
+    return list(reversed(days))[:limit]
+
+
+def _comparison_payload(
+    scorecard: dict[str, object] | None,
+    spec: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(scorecard, dict):
+        return {}
+    comparison_name = spec.get("comparison")
+    metrics_group = spec.get("metrics_group")
+    if isinstance(metrics_group, str):
+        group = scorecard.get(metrics_group)
+        if isinstance(group, dict) and comparison_name in group:
+            value = group.get(comparison_name)
+            return value if isinstance(value, dict) else {}
+        return {}
+    comparisons = scorecard.get("comparisons")
+    if isinstance(comparisons, dict) and isinstance(comparison_name, str):
+        value = comparisons.get(comparison_name)
+        return value if isinstance(value, dict) else {}
+    return scorecard
+
+
+def _metric_from(metric_block: object, names: tuple[str, ...]) -> object:
+    if not isinstance(metric_block, dict):
+        return "n/a"
+    for name in names:
+        value = metric_block.get(name)
+        if value is not None:
+            return _compact_float(value)
+    return "n/a"
+
+
+def _scorecard_caveat(scorecard: dict[str, object] | None, spec: dict[str, object]) -> str:
+    if not isinstance(scorecard, dict):
+        return "blocked_missing_input"
+    if scorecard.get("excluded_from_scoring"):
+        status = str(scorecard.get("scoring_status", "")).lower()
+        if "non_colocated" in status or "not colocated" in status:
+            return "not_colocated"
+        return "diagnostic_only"
+    payload_caveat = str(spec.get("caveat", "ready"))
+    if payload_caveat != "ready":
+        return payload_caveat
+    context = scorecard.get("lwp_context")
+    if isinstance(context, dict):
+        readiness = str(context.get("readiness_state", "ready"))
+        if readiness.startswith("blocked"):
+            return readiness
+    return "ready"
+
+
+def _join_notes(*notes: str) -> str:
+    return "; ".join(note for note in notes if note)
+
+
+def _wband_descriptor_note(
+    day: str,
+    scorecard_name: str,
+    scorecard: dict[str, object] | None,
+) -> str:
+    if scorecard_name != "wband_radar":
+        return ""
+    metadata = {}
+    if isinstance(scorecard, dict) and isinstance(
+        scorecard.get("simulated_operator_metadata"), dict
+    ):
+        metadata = scorecard["simulated_operator_metadata"]
+    if not metadata:
+        metadata = _netcdf_attrs(
+            OPERATIONAL_CAMPAIGN_ROOT
+            / "days"
+            / day
+            / "virtual_observatory"
+            / "pamtra_wband_radar.nc"
+        )
+    family = str(metadata.get("pamtra_descriptor_family", "") or "")
+    if not family:
+        return ""
+    descriptor_file = Path(str(metadata.get("pamtra_descriptor_file", "") or "")).name
+    names = str(metadata.get("pamtra_descriptor_names", "") or "")
+    caveat = str(metadata.get("science_caveat", "") or "")
+    parts = [f"descriptor {family}"]
+    if descriptor_file:
+        parts.append(descriptor_file)
+    if names:
+        parts.append(f"hydrometeors {names}")
+    if caveat:
+        parts.append(caveat)
+    return "; ".join(parts)
+
+
+def _netcdf_attrs(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        with xr.open_dataset(path, decode_times=False) as dataset:
+            return dict(dataset.attrs)
+    except Exception:
+        return {}
+
+
+def _badge(value: object) -> str:
+    text = str(value or "unknown")
+    css = "badge-ready"
+    lower = text.lower()
+    if "diagnostic" in lower or "excluded" in lower:
+        css = "badge-diagnostic"
+    elif "blocked" in lower or "missing" in lower:
+        css = "badge-blocked"
+    elif "colocated" in lower:
+        css = "badge-warning"
+    return f"<span class='status-badge {css}'>{escape(text)}</span>"
+
+
+def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, object]:
+    scorecard_name = str(spec["scorecard"])
+    scorecard = load_scorecard(day, scorecard_name)
+    payload = _comparison_payload(scorecard, spec)
+    occurrence_key = spec.get("occurrence")
+    occurrence = {}
+    if isinstance(occurrence_key, str):
+        if occurrence_key == "contingency" and isinstance(scorecard, dict):
+            occurrence = scorecard.get("contingency", {})
+        if not isinstance(occurrence, dict) or not occurrence:
+            occurrence = payload.get(occurrence_key, {}) if isinstance(payload, dict) else {}
+        if occurrence_key == "contingency" and isinstance(payload, dict) and not occurrence:
+            occurrence = payload.get("contingency", {})
+    occurrence = occurrence if isinstance(occurrence, dict) else {}
+
+    metrics_key = spec.get("metrics")
+    metrics = {}
+    if isinstance(metrics_key, str):
+        metrics = payload.get(metrics_key, {}) if isinstance(payload, dict) else {}
+        if not isinstance(metrics, dict) and isinstance(scorecard, dict):
+            metrics = scorecard.get(metrics_key, {})
+    metrics = metrics if isinstance(metrics, dict) else {}
+
+    status = "missing"
+    if isinstance(scorecard, dict):
+        status = str(
+            scorecard.get("scoring_status")
+            or scorecard.get("status")
+            or payload.get("status", "available")
+        )
+        if scorecard.get("excluded_from_scoring"):
+            status = str(scorecard.get("scoring_status", "diagnostic_only"))
+    valid = occurrence.get("valid_points")
+    if valid is None:
+        valid = metrics.get("valid_points", metrics.get("valid_times", "n/a"))
+
+    note = ""
+    if isinstance(scorecard, dict):
+        if scorecard.get("excluded_from_scoring"):
+            note = "excluded from ranking"
+        elif payload.get("production_ready") is False:
+            note = str(payload.get("readiness_note", "diagnostic"))
+        elif scorecard_name.endswith("_lwc"):
+            note = _lwp_policy_summary(scorecard)
+    note = _join_notes(note, _wband_descriptor_note(day, scorecard_name, scorecard))
+    base_top = payload.get("cloud_base_top") if isinstance(payload, dict) else None
+    if not isinstance(base_top, dict) and isinstance(scorecard, dict):
+        base_top = scorecard.get("cloud_base_top")
+    base_top = base_top if isinstance(base_top, dict) else {}
+    runtime = _bundle_runtime_summary(day)
+
+    return {
+        "day": day,
+        "instrument": spec.get("instrument", ""),
+        "model": spec.get("model", ""),
+        "model_group": spec.get("model_group", "all"),
+        "metric_family": spec.get("metric_family", "readiness"),
+        "basis": spec.get("basis", ""),
+        "scorecard": scorecard_name,
+        "cm1_runtime_h": runtime["run_hours"],
+        "cm1_eval_h": runtime["evaluation_hours"],
+        "cm1_recipe_class": runtime["recipe_class"],
+        "status": status,
+        "caveat": _scorecard_caveat(scorecard, spec),
+        "valid": valid,
+        "pod": _metric_from(occurrence, ("probability_of_detection",)),
+        "far": _metric_from(occurrence, ("false_alarm_ratio",)),
+        "csi": _metric_from(occurrence, ("critical_success_index",)),
+        "bias": _metric_from(
+            metrics,
+            (
+                "bias_mean",
+                "mean_bias_db",
+                "lwp_bias_mean_kg_m2",
+                "iwp_bias_mean_kg_m2",
+            ),
+        ),
+        "rmse": _metric_from(
+            metrics,
+            (
+                "root_mean_square_error",
+                "root_mean_square_error_db",
+                "lwp_root_mean_square_error_kg_m2",
+                "iwp_root_mean_square_error_kg_m2",
+            ),
+        ),
+        "correlation": _metric_from(
+            metrics,
+            ("pearson_correlation", "lwp_pearson_correlation", "iwp_pearson_correlation"),
+        ),
+        "base_bias_m": _metric_from(base_top, ("cloud_base_bias_mean_m", "model_cloud_base_bias_mean_m")),
+        "top_bias_m": _metric_from(base_top, ("cloud_top_bias_mean_m", "model_cloud_top_bias_mean_m")),
+        "note": note,
+    }
+
+
+def _instrument_comparison_rows(days: list[str]) -> list[dict[str, object]]:
+    return [
+        _instrument_comparison_row(day, spec)
+        for day in days
+        for spec in INSTRUMENT_COMPARISON_SPECS
+    ]
+
+
+def build_instrument_catalog(days: list[str] | None = None) -> list[dict[str, object]]:
+    selected_days = days if days is not None else _campaign_days()
+    return _instrument_comparison_rows(selected_days)
+
+
+def _filter_instrument_rows(
+    rows: list[dict[str, object]],
+    instrument: str = "all",
+    model_group: str = "all",
+    metric_family: str = "all",
+) -> list[dict[str, object]]:
+    filtered = []
+    for row in rows:
+        if instrument != "all" and row.get("instrument") != instrument:
+            continue
+        if model_group != "all" and row.get("model_group") != model_group:
+            continue
+        if metric_family != "all" and row.get("metric_family") != metric_family:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def build_instrument_detail(
+    day: str,
+    instrument: str = "all",
+    model: str = "all",
+    metric_family: str = "all",
+) -> dict[str, object]:
+    rows = _filter_instrument_rows(
+        build_instrument_catalog([day]),
+        instrument=instrument,
+        model_group=model,
+        metric_family=metric_family,
+    )
+    caveat_counts: dict[str, int] = {}
+    for row in rows:
+        caveat = str(row.get("caveat", "unknown"))
+        caveat_counts[caveat] = caveat_counts.get(caveat, 0) + 1
+    return {
+        "day": day,
+        "instrument": instrument,
+        "model": model,
+        "metric_family": metric_family,
+        "rows": rows,
+        "caveat_counts": caveat_counts,
+    }
+
+
+def _instrument_options() -> OrderedDict[str, str]:
+    instruments = sorted({str(spec["instrument"]) for spec in INSTRUMENT_COMPARISON_SPECS})
+    return OrderedDict([("All instruments", "all"), *[(name, name) for name in instruments]])
+
+
+def _day_options() -> OrderedDict[str, str]:
+    days = _campaign_days(limit=60)
+    if not days:
+        return OrderedDict([("No campaign days found", "")])
+    return OrderedDict((day, day) for day in days)
+
+
+def _instrument_metric_cards(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        cards = [_card("selected products", 0), _card("status", "missing")]
+        return f"<div class='model-grid'>{''.join(cards)}</div>"
+    ready = sum(1 for row in rows if row.get("caveat") == "ready")
+    diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
+    blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
+    csi_values = [
+        float(row["csi"])
+        for row in rows
+        if isinstance(row.get("csi"), str) and _is_float_string(str(row.get("csi")))
+    ]
+    csi_mean = sum(csi_values) / len(csi_values) if csi_values else None
+    cards = [
+        _card("selected products", len(rows)),
+        _card("ready", ready),
+        _card("diagnostic", diagnostic),
+        _card("blocked", blocked),
+        _card("mean CSI", _compact_float(csi_mean) if csi_mean is not None else "n/a"),
+    ]
+    return f"<div class='model-grid'>{''.join(cards)}</div>"
+
+
+def _is_float_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "<p>No instrument comparison records found yet.</p>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row['day']))}</td>"
+            f"<td>{escape(str(row['instrument']))}</td>"
+            f"<td>{escape(str(row['model']))}</td>"
+            f"<td>{_badge(row['caveat'])}</td>"
+            f"<td>{escape(str(row['cm1_runtime_h']))}</td>"
+            f"<td>{escape(str(row['cm1_eval_h']))}</td>"
+            f"<td>{escape(str(row['cm1_recipe_class']))}</td>"
+            f"<td>{escape(str(row['status']))}</td>"
+            f"<td>{escape(str(row['basis']))}</td>"
+            f"<td>{escape(str(row['valid']))}</td>"
+            f"<td>{escape(str(row['pod']))}</td>"
+            f"<td>{escape(str(row['far']))}</td>"
+            f"<td>{escape(str(row['csi']))}</td>"
+            f"<td>{escape(str(row['bias']))}</td>"
+            f"<td>{escape(str(row['rmse']))}</td>"
+            f"<td>{escape(str(row['correlation']))}</td>"
+            f"<td>{escape(str(row['base_bias_m']))}</td>"
+            f"<td>{escape(str(row['top_bias_m']))}</td>"
+            f"<td><code>{escape(str(row['scorecard']))}</code></td>"
+            f"<td>{escape(str(row['note']))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table instrument-comparison-table'>"
+        "<thead><tr><th>day</th><th>instrument</th><th>model/output</th>"
+        "<th>caveat</th><th>CM1 h</th><th>eval h</th><th>recipe</th>"
+        "<th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
+        "<th>CSI</th><th>bias</th><th>RMSE</th><th>corr</th><th>base bias m</th>"
+        "<th>top bias m</th><th>scorecard</th><th>note</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
+    scorecard = load_scorecard(day, scorecard_name)
+    if not isinstance(scorecard, dict):
+        return None
+    value = scorecard.get("output_png")
+    if isinstance(value, str) and value:
+        path = Path(value)
+        if path.exists():
+            return path
+    fallback = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{scorecard_name}.png"
+    return fallback if fallback.exists() else None
+
+
+def render_scorecard_gallery(day: str | None, instrument: str = "all") -> str:
+    if not day:
+        return ""
+    cards = []
+    if instrument == "all":
+        gallery_items = [
+            item
+            for items in INSTRUMENT_GALLERY_SCORECARDS.values()
+            for item in items
+        ]
+    else:
+        gallery_items = list(INSTRUMENT_GALLERY_SCORECARDS.get(instrument, ()))
+    for title, scorecard_name in gallery_items:
+        png_path = _scorecard_png_path(day, scorecard_name)
+        if png_path is None:
+            continue
+        data_uri = _asset_data_uri(png_path)
+        if not data_uri:
+            continue
+        cards.append(
+            "<div class='instrument-plot-card'>"
+            f"<div class='instrument-plot-title'>{escape(title)}</div>"
+            f"<img class='instrument-plot-image' src='{data_uri}' alt='{escape(title)}'>"
+            "</div>"
+        )
+    if not cards:
+        return "<p>No scorecard plots found for the latest day.</p>"
+    return "<div class='instrument-plot-grid'>" + "".join(cards) + "</div>"
+
+
+def _instrument_comparison_panel(
+    day: str,
+    instrument: str,
+    model_group: str,
+    metric_family: str,
+    _clicks: int = 0,
+) -> pn.Column:
+    detail = build_instrument_detail(day, instrument, model_group, metric_family)
+    rows = detail["rows"] if isinstance(detail.get("rows"), list) else []
+    caveats = detail.get("caveat_counts")
+    caveat_text = _count_dict_text(caveats)
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Instrument Comparisons</div>"
+        "<div class='model-subtitle'>Model and synthetic outputs compared with active observation products</div>"
+        "</div>"
+        f"<div class='model-pill'>{escape(day or 'no day selected')}</div>"
+        "</div>"
+        f"{_instrument_metric_cards(rows)}"
+        f"<div class='model-subtitle'>caveats: {escape(caveat_text)}</div>"
+        f"{render_scorecard_gallery(day, instrument)}"
+        f"{_instrument_comparison_table(rows)}"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for path in paths:
+        payload = _read_json(path)
+        if not payload:
+            continue
+        day = str(payload.get("day") or path.parent.name)
+        summary = payload.get("summary")
+        summary = summary if isinstance(summary, dict) else None
+        gate = summary.get("release_gate") if isinstance(summary, dict) else {}
+        gate = gate if isinstance(gate, dict) else {}
+        wband = _summary_scorecard(summary, "wband_radar")
+        wband_contingency = wband.get("contingency") if isinstance(wband, dict) else {}
+        wband_contingency = wband_contingency if isinstance(wband_contingency, dict) else {}
+        era5_iwc = _generic_contingency(_direct_scorecard(day, "era5_iwc"), "iwc", "ice_occurrence")
+        era5_lwc_scorecard = _direct_scorecard(day, "era5_lwc")
+        era5_lwc = _generic_contingency(era5_lwc_scorecard, "lwc", "liquid_occurrence")
+        process_labels = summary.get("process_labels") if isinstance(summary, dict) else []
+        if not isinstance(process_labels, list):
+            process_labels = []
+        scheduler_policy = summary.get("scheduler_policy") if isinstance(summary, dict) else {}
+        scheduler_policy = scheduler_policy if isinstance(scheduler_policy, dict) else {}
+        operational_qa = summary.get("operational_qa") if isinstance(summary, dict) else {}
+        operational_qa = operational_qa if isinstance(operational_qa, dict) else {}
+        rows.append(
+            {
+                "day": day,
+                "run_status": payload.get("status", "n/a"),
+                "summary_status": summary.get("status", "missing") if summary else "missing",
+                "gate": gate.get("status", "n/a"),
+                "scheduler": scheduler_policy.get("status", "missing"),
+                "scheduler_priority": scheduler_policy.get("priority", "n/a"),
+                "scheduler_actions": _scheduler_action_summary(scheduler_policy),
+                "operational_qa": operational_qa.get("status", "missing"),
+                "operational_qa_ready": operational_qa.get("status") in {
+                    "ready",
+                    "no_targeted_scheduler_actions",
+                },
+                "operational_qa_missing": _list_summary(
+                    operational_qa.get("missing_required_scorecards")
+                ),
+                "era5_cf_csi": _cf_csi(summary, "era5_cloud_fraction"),
+                "cm1_cf_csi": _cm1_cf_csi(day, summary),
+                "wband_csi": _compact_float(wband_contingency.get("critical_success_index")),
+                "iwc_points": era5_iwc.get("valid_points", "n/a"),
+                "iwc_csi": _compact_float(era5_iwc.get("critical_success_index")),
+                "lwc_points": era5_lwc.get("valid_points", "n/a"),
+                "lwp_policy": _lwp_policy_summary(era5_lwc_scorecard),
+                "labels": ", ".join(str(item) for item in process_labels[:4]),
+            }
+        )
+    return rows
+
+
+def _operational_table(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row['day']))}</td>"
+            f"<td>{escape(str(row['run_status']))}</td>"
+            f"<td>{escape(str(row['summary_status']))}</td>"
+            f"<td>{escape(str(row['gate']))}</td>"
+            f"<td>{escape(str(row['scheduler']))}</td>"
+            f"<td>{escape(str(row['scheduler_priority']))}</td>"
+            f"<td>{escape(str(row['operational_qa']))}</td>"
+            f"<td>{escape(str(row['operational_qa_missing']))}</td>"
+            f"<td>{escape(str(row['era5_cf_csi']))}</td>"
+            f"<td>{escape(str(row['cm1_cf_csi']))}</td>"
+            f"<td>{escape(str(row['wband_csi']))}</td>"
+            f"<td>{escape(str(row['iwc_points']))}</td>"
+            f"<td>{escape(str(row['iwc_csi']))}</td>"
+            f"<td>{escape(str(row['lwc_points']))}</td>"
+            f"<td>{escape(str(row['lwp_policy']))}</td>"
+            f"<td>{escape(str(row['scheduler_actions']))}</td>"
+            f"<td>{escape(str(row['labels']))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr>"
+        "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
+        "<th>scheduler</th><th>priority</th><th>QA</th><th>missing QA</th>"
+        "<th>ERA5 CF CSI</th><th>CM1 LES CF CSI</th><th>W-band CSI</th>"
+        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>LWP policy</th>"
+        "<th>actions</th><th>labels</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _scorecard_metric(comparison: dict[str, object], name: str) -> object:
+    metrics = comparison.get("metrics")
+    if not isinstance(metrics, dict):
+        return "n/a"
+    return _compact_float(metrics.get(name, "n/a"))
+
+
+def _operator_policy_table(summary: dict[str, object] | None) -> str:
+    if not isinstance(summary, dict):
+        return ""
+    policies = summary.get("operator_policies")
+    if not isinstance(policies, dict):
+        return ""
+    body = []
+    for name in ("gas", "turbulence", "radiation"):
+        policy = policies.get(name)
+        if not isinstance(policy, dict):
+            continue
+        blockers = policy.get("blockers")
+        blocker_text = (
+            ", ".join(str(item) for item in blockers)
+            if isinstance(blockers, list) and blockers
+            else "-"
+        )
+        detail = []
+        if "observation_processing_ready" in policy:
+            detail.append(
+                "obs processing: "
+                + str(policy.get("observation_processing_ready", "n/a"))
+            )
+        if "turbulence_observation_processing_ready" in policy:
+            detail.append(
+                "turb obs: "
+                + str(policy.get("turbulence_observation_processing_ready", "n/a"))
+            )
+        if "full_operator_ready" in policy:
+            detail.append("full operator: " + str(policy.get("full_operator_ready", "n/a")))
+        if "comparison_count" in policy:
+            detail.append("comparisons: " + str(policy.get("comparison_count", "n/a")))
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(policy.get('status', 'unknown')))}</td>"
+            f"<td>{escape(str(policy.get('ready', False)))}</td>"
+            f"<td>{escape(str(policy.get('policy', '')))}</td>"
+            f"<td>{escape('; '.join(detail) or '-')}</td>"
+            f"<td>{escape(blocker_text)}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Operator Policy Gate</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>operator</th><th>status</th><th>ready</th><th>policy</th>"
+        "<th>detail</th><th>blockers</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _asfs_gas_table(summary: dict[str, object] | None) -> str:
+    scorecard = _summary_scorecard(summary, "asfs_gas")
+    if not scorecard:
+        return ""
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, dict):
+        return ""
+    blockers = scorecard.get("gas_operator_blockers")
+    blocker_text = ", ".join(str(item) for item in blockers) if isinstance(blockers, list) else "n/a"
+    body = []
+    for name in ("h2o_mole_fraction", "co2_molar_density", "licor_cell_pressure", "licor_cell_temperature"):
+        comparison = comparisons.get(name)
+        if not isinstance(comparison, dict):
+            continue
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(comparison.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('production_ready', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('model_science_policy', '')))}</td>"
+            f"<td>{escape(str(comparison.get('model_variable', 'missing')))}</td>"
+            f"<td>{escape(str(comparison.get('observed_variable', 'n/a')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'valid_times')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'model_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'observed_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'bias_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'root_mean_square_error')))}</td>"
+            f"<td>{escape(str(comparison.get('target_units', '')))}</td>"
+            f"<td>{escape(str(comparison.get('reason', '')))}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>ASFS Gas Readiness</div>"
+        "<div class='model-subtitle'>"
+        f"gas operator ready: {escape(str(scorecard.get('gas_operator_ready', 'n/a')))}; "
+        f"status: {escape(str(scorecard.get('scoring_status', 'n/a')))}"
+        "</div>"
+        "<div class='model-subtitle'>"
+        f"blockers: {escape(blocker_text)}"
+        "</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>comparison</th><th>status</th><th>production</th><th>policy</th><th>model var</th><th>obs var</th>"
+        "<th>valid</th><th>model mean</th><th>obs mean</th><th>bias</th><th>RMSE</th>"
+        "<th>units</th><th>reason</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _asfs_sonic_summary(summary: dict[str, object] | None) -> str:
+    scorecard = _summary_scorecard(summary, "asfs_sonic_turbulence")
+    if not scorecard:
+        return ""
+    availability = scorecard.get("input_variable_availability")
+    availability = availability if isinstance(availability, dict) else {}
+    blockers = scorecard.get("readiness_blockers")
+    blocker_text = ", ".join(str(item) for item in blockers) if isinstance(blockers, list) else "n/a"
+    availability_rows = []
+    for key in (
+        "raw_sonic_wind_available",
+        "raw_sonic_wind_variables",
+        "earth_aligned_wind_available",
+        "earth_aligned_wind_variables",
+        "quality_flag_variables",
+        "inclinometer_variables",
+    ):
+        value = availability.get(key, "n/a")
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value) if value else "none"
+        availability_rows.append(
+            "<tr>"
+            f"<th>{escape(key)}</th>"
+            f"<td>{escape(str(value))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>ASFS Sonic Readiness</div>"
+        "<div class='model-subtitle'>"
+        f"turbulence ready: {escape(str(scorecard.get('turbulence_operator_ready', 'n/a')))}; "
+        f"observation processing ready: {escape(str(scorecard.get('observation_processing_ready', 'n/a')))}; "
+        f"rotation: {escape(str(scorecard.get('rotation_policy', 'n/a')))}"
+        "</div>"
+        "<div class='model-subtitle'>"
+        f"blockers: {escape(blocker_text)}"
+        "</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        f"<tbody>{''.join(availability_rows)}</tbody>"
+        "</table></div>"
+        f"{_asfs_sonic_mean_table(scorecard)}"
+        f"{_asfs_sonic_turbulence_table(scorecard)}"
+    )
+
+
+def _asfs_sonic_mean_table(scorecard: dict[str, object]) -> str:
+    comparisons = scorecard.get("mean_comparisons")
+    if not isinstance(comparisons, dict):
+        return ""
+    body = []
+    for name, comparison in comparisons.items():
+        if not isinstance(comparison, dict):
+            continue
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{escape(str(comparison.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(comparison.get('model_variable', 'missing')))}</td>"
+            f"<td>{escape(str(comparison.get('observed_variable', 'n/a')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'valid_times')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'bias_mean')))}</td>"
+            f"<td>{escape(str(_scorecard_metric(comparison, 'root_mean_square_error')))}</td>"
+            f"<td>{escape(str(comparison.get('target_units', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>sonic mean</th><th>status</th><th>model var</th><th>obs var</th>"
+        "<th>valid</th><th>bias</th><th>RMSE</th><th>units</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _asfs_sonic_turbulence_table(scorecard: dict[str, object]) -> str:
+    turbulence = scorecard.get("turbulence_summary")
+    if not isinstance(turbulence, dict):
+        return ""
+    names = (
+        "observed_tke_proxy",
+        "model_surface_tke",
+        "model_surface_wind_variance",
+        "model_surface_temperature_variance",
+        "tke_proxy_comparison",
+    )
+    body = []
+    for name in names:
+        item = turbulence.get(name)
+        if not isinstance(item, dict):
+            continue
+        mean = (
+            item.get("window_tke_proxy_mean")
+            if "window_tke_proxy_mean" in item
+            else item.get("value_mean")
+        )
+        if mean is None and isinstance(item.get("metrics"), dict):
+            mean = item["metrics"].get("model_mean")
+        body.append(
+            "<tr>"
+            f"<td>{escape(name)}</td>"
+            f"<td>{escape(str(item.get('status', 'n/a')))}</td>"
+            f"<td>{escape(str(item.get('science_policy', '')))}</td>"
+            f"<td>{escape(str(item.get('model_variable', item.get('observed_variable', 'n/a'))))}</td>"
+            f"<td>{escape(str(_compact_float(item.get('valid_times', item.get('valid_windows', 'n/a')))))}</td>"
+            f"<td>{escape(str(_compact_float(mean)))}</td>"
+            f"<td>{escape(str(item.get('target_units', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table asfs-detail-table'>"
+        "<thead><tr>"
+        "<th>turbulence item</th><th>status</th><th>policy</th><th>variable</th>"
+        "<th>valid</th><th>mean</th><th>units</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _campaign_index_table(index: dict[str, object] | None) -> str:
+    if not index:
+        return ""
+    days = index.get("days")
+    if not isinstance(days, list) or not days:
+        return ""
+    body = []
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        missing = day.get("missing_required_components")
+        if isinstance(missing, list) and missing:
+            missing_text = ", ".join(str(item) for item in missing[:5])
+        else:
+            missing_text = "none"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(day.get('day', '')))}</td>"
+            f"<td>{escape(str(day.get('summary_status', '')))}</td>"
+            f"<td>{escape(str(day.get('release_gate_status', '')))}</td>"
+            f"<td>{escape(str(_compact_float(day.get('common_overlap_hours'))))}</td>"
+            f"<td>{escape(missing_text)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr>"
+        "<th>day</th><th>summary</th><th>release gate</th><th>overlap h</th><th>missing required</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16) -> str:
+    rollup = _process_skill_rollup(index)
+    if not rollup:
+        return ""
+    rows = []
+    for label, item in sorted(
+        rollup.items(),
+        key=lambda pair: (
+            -int(pair[1].get("day_count", 0)) if isinstance(pair[1], dict) else 0,
+            str(pair[0]),
+        ),
+    )[:limit]:
+        if not isinstance(item, dict):
+            continue
+        scorecards = item.get("scorecards")
+        scorecards = scorecards if isinstance(scorecards, dict) else {}
+        era5 = _metric_block(scorecards, "era5_cloud_fraction", "cf_V")
+        cm1 = _metric_block(scorecards, "cloud_fraction", "cf_V")
+        cloudnet = _metric_block(scorecards, "cloudnet_cloud_fraction", "cf_V")
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(label))}</td>"
+            f"<td>{escape(str(item.get('day_count', 0)))}</td>"
+            f"<td>{escape(str(item.get('full_virtual_observatory_ready_day_count', 0)))}</td>"
+            f"<td>{escape(str(era5.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(era5.get('pod', 'n/a')))}</td>"
+            f"<td>{escape(str(era5.get('far', 'n/a')))}</td>"
+            f"<td>{escape(str(cm1.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(cloudnet.get('csi', 'n/a')))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table process-skill-table'>"
+        "<thead><tr>"
+        "<th>process label</th><th>days</th><th>full VO days</th>"
+        "<th>ERA5 CSI</th><th>ERA5 POD</th><th>ERA5 FAR</th>"
+        "<th>CM1 LES CSI</th><th>Cloudnet CSI</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _process_evidence_table(
+    index: dict[str, object] | None,
+    label_limit: int = 10,
+    day_limit_per_label: int = 6,
+) -> str:
+    rollup = _process_skill_rollup(index)
+    if not rollup:
+        return ""
+    day_rows = _index_day_rows(index)
+    body = []
+    for label, item in sorted(
+        rollup.items(),
+        key=lambda pair: (
+            -int(pair[1].get("day_count", 0)) if isinstance(pair[1], dict) else 0,
+            str(pair[0]),
+        ),
+    )[:label_limit]:
+        if not isinstance(item, dict):
+            continue
+        days = item.get("days")
+        if not isinstance(days, list):
+            continue
+        for day in days[:day_limit_per_label]:
+            day_text = str(day)
+            row = day_rows.get(day_text, {})
+            summary = _operational_summary_for_day(day_text)
+            body.append(
+                "<tr>"
+                f"<td>{escape(str(label))}</td>"
+                f"<td>{escape(day_text)}</td>"
+                f"<td>{escape(str(row.get('release_gate_status', 'n/a')))}</td>"
+                f"<td>{escape(str(_cf_csi(summary, 'era5_cloud_fraction')))}</td>"
+                f"<td>{escape(str(_cm1_cf_csi(day_text, summary)))}</td>"
+                f"<td><code>{escape(_evidence_bundle_path(row, day_text))}</code></td>"
+                f"<td><code>{escape(_evidence_summary_path(row, day_text))}</code></td>"
+                f"<td><code>{escape(_evidence_scorecards_path(day_text))}</code></td>"
+                "</tr>"
+            )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Process-Regime Evidence Drill-Down</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table process-evidence-table'>"
+        "<thead><tr>"
+        "<th>process label</th><th>day</th><th>gate</th><th>ERA5 CSI</th><th>CM1 LES CSI</th>"
+        "<th>bundle</th><th>summary</th><th>scorecards</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _process_diagnosis_table(diagnosis: dict[str, object] | None, limit: int = 16) -> str:
+    processes = _process_diagnoses(diagnosis)
+    if not processes:
+        return ""
+    body = []
+    for label, process in sorted(
+        processes.items(),
+        key=lambda pair: (
+            -int(pair[1].get("day_count", 0)) if isinstance(pair[1], dict) else 0,
+            str(pair[0]),
+        ),
+    )[:limit]:
+        if not isinstance(process, dict):
+            continue
+        scorecards = process.get("scorecards")
+        scorecards = scorecards if isinstance(scorecards, dict) else {}
+        era5 = _diagnosis_comparison(scorecards, "era5_cloud_fraction", "cf_V")
+        labels = era5.get("diagnosis_labels", [])
+        label_text = ", ".join(str(item) for item in labels) if isinstance(labels, list) else "-"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(label))}</td>"
+            f"<td>{escape(str(process.get('day_count', 0)))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('critical_success_index_mean'))))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('false_alarm_ratio_mean'))))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('cloud_base_bias_mean_m'))))}</td>"
+            f"<td>{escape(str(_compact_float(era5.get('cloud_top_bias_mean_m'))))}</td>"
+            f"<td>{escape(label_text)}</td>"
+            f"<td>{escape(str(era5.get('interpretation', 'n/a')))}</td>"
+            "</tr>"
+        )
+    if not body:
+        return ""
+    return (
+        "<div class='model-section-title'>Process Diagnosis</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table process-diagnosis-table'>"
+        "<thead><tr>"
+        "<th>process label</th><th>days</th><th>ERA5 CSI</th><th>ERA5 FAR</th>"
+        "<th>base bias m</th><th>top bias m</th><th>dominant labels</th><th>interpretation</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operator_physics_campaign_days(
+    diagnosis: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    if isinstance(diagnosis, dict) and isinstance(diagnosis.get("days"), list):
+        return [row for row in diagnosis["days"] if isinstance(row, dict)]
+    rows: list[dict[str, object]] = []
+    for day in reversed(_campaign_days()):
+        daily = _operator_physics_day(day)
+        if not isinstance(daily, dict):
+            continue
+        rows.append(_operator_physics_day_row(daily))
+    return rows
+
+
+def _operator_physics_day_row(payload: dict[str, object]) -> dict[str, object]:
+    wband = payload.get("wband")
+    wband = wband if isinstance(wband, dict) else {}
+    cloudnet = payload.get("cloudnet_microphysics")
+    cloudnet = cloudnet if isinstance(cloudnet, dict) else {}
+    seb = payload.get("seb")
+    seb = seb if isinstance(seb, dict) else {}
+    hypotheses = payload.get("hypotheses")
+    top = hypotheses[0] if isinstance(hypotheses, list) and hypotheses else {}
+    metrics = wband.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    return {
+        "day": payload.get("day"),
+        "status": payload.get("status", "missing"),
+        "wband_status": wband.get("status", "missing"),
+        "wband_failure_modes": wband.get("failure_modes", []),
+        "wband_csi": metrics.get("critical_success_index"),
+        "wband_bias_db": metrics.get("mean_bias_db"),
+        "lwc_state": _nested_value(cloudnet, ["lwc", "state"], "missing"),
+        "iwc_state": _nested_value(cloudnet, ["iwc", "state"], "missing"),
+        "seb_status": seb.get("status", "missing"),
+        "top_hypothesis": top.get("id", "missing") if isinstance(top, dict) else "missing",
+        "top_priority": top.get("priority", "missing") if isinstance(top, dict) else "missing",
+    }
+
+
+def _operator_physics_latest_day(
+    diagnosis: dict[str, object] | None,
+    rows: list[dict[str, object]] | None = None,
+) -> str:
+    rows = rows if rows is not None else _operator_physics_campaign_days(diagnosis)
+    day_values = [str(row.get("day")) for row in rows if row.get("day")]
+    if day_values:
+        return sorted(day_values)[-1]
+    days = _campaign_days()
+    return days[0] if days else ""
+
+
+def _operator_physics_cards(diagnosis: dict[str, object] | None) -> list[str]:
+    if not isinstance(diagnosis, dict):
+        return [_card("operator physics", "missing")]
+    rows = _operator_physics_campaign_days(diagnosis)
+    latest_day = _operator_physics_latest_day(diagnosis, rows)
+    latest = _operator_physics_day(latest_day) if latest_day else None
+    hypotheses = latest.get("hypotheses") if isinstance(latest, dict) else []
+    top = hypotheses[0] if isinstance(hypotheses, list) and hypotheses else {}
+    rollup = diagnosis.get("rollup")
+    rollup = rollup if isinstance(rollup, dict) else {}
+    return [
+        _card("operator physics", diagnosis.get("status", "missing")),
+        _card("diagnosed days", rollup.get("day_count", len(rows))),
+        _card("latest diagnosis", latest_day or "missing"),
+        _card("latest status", latest.get("status", "missing") if isinstance(latest, dict) else "missing"),
+        _card("top hypothesis", top.get("id", "missing") if isinstance(top, dict) else "missing"),
+        _card("priority", top.get("priority", "missing") if isinstance(top, dict) else "missing"),
+    ]
+
+
+def _operator_physics_rollup_text(diagnosis: dict[str, object] | None) -> str:
+    if not isinstance(diagnosis, dict):
+        return "<div class='model-note'>No campaign operator-physics diagnosis has been written yet.</div>"
+    rollup = diagnosis.get("rollup")
+    if not isinstance(rollup, dict):
+        return "<div class='model-note'>Operator-physics rollup is missing counts.</div>"
+    parts = [
+        f"status: {_count_dict_text(rollup.get('status_counts'))}",
+        f"W-band: {_count_dict_text(rollup.get('wband_status_counts'))}",
+        f"LWC: {_count_dict_text(rollup.get('lwc_state_counts'))}",
+        f"IWC: {_count_dict_text(rollup.get('iwc_state_counts'))}",
+        f"SEB: {_count_dict_text(rollup.get('seb_status_counts'))}",
+        f"hypotheses: {_count_dict_text(rollup.get('top_hypothesis_counts'))}",
+    ]
+    return "<div class='model-subtitle'>" + escape("; ".join(parts)) + "</div>"
+
+
+def _operator_physics_table(
+    diagnosis: dict[str, object] | None,
+    limit: int = 14,
+) -> str:
+    rows = _operator_physics_campaign_days(diagnosis)
+    if not rows:
+        return "<div class='model-note'>No daily operator-physics diagnosis rows found.</div>"
+    body = []
+    for row in sorted(rows, key=lambda item: str(item.get("day", "")), reverse=True)[:limit]:
+        modes = _list_summary(row.get("wband_failure_modes"), limit=3)
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{_badge(row.get('status'))}</td>"
+            f"<td>{_badge(row.get('wband_status'))}</td>"
+            f"<td>{escape(str(_compact_float(row.get('wband_csi'))))}</td>"
+            f"<td>{escape(str(_compact_float(row.get('wband_bias_db'))))}</td>"
+            f"<td>{escape(modes)}</td>"
+            f"<td>{_badge(row.get('lwc_state'))}</td>"
+            f"<td>{_badge(row.get('iwc_state'))}</td>"
+            f"<td>{_badge(row.get('seb_status'))}</td>"
+            f"<td>{escape(str(row.get('top_hypothesis', '')))}</td>"
+            f"<td>{escape(str(row.get('top_priority', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Operator-Physics Diagnosis</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table operator-physics-table'>"
+        "<thead><tr><th>day</th><th>status</th><th>W-band</th><th>CSI</th>"
+        "<th>bias dB</th><th>failure modes</th><th>LWC</th><th>IWC</th>"
+        "<th>SEB</th><th>top hypothesis</th><th>priority</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operator_physics_sweep_table(daily: dict[str, object] | None) -> str:
+    if not isinstance(daily, dict):
+        return ""
+    wband = daily.get("wband")
+    wband = wband if isinstance(wband, dict) else {}
+    sweeps = wband.get("sweeps")
+    if not isinstance(sweeps, dict) or not sweeps:
+        return ""
+    body = []
+    for name, sweep in sorted(sweeps.items()):
+        item = sweep if isinstance(sweep, dict) else {}
+        best = item.get("best") if isinstance(item.get("best"), dict) else {}
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{_badge(item.get('status', 'missing'))}</td>"
+            f"<td>{escape(str(item.get('product_count', 'n/a')))}</td>"
+            f"<td>{escape(str(best.get('variant_label') or best.get('scale') or best.get('descriptor_group') or best.get('id') or 'n/a'))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-subsection-title'>Latest W-band Operator Sweeps</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table operator-sweep-table'>"
+        "<thead><tr><th>sweep</th><th>status</th><th>products</th><th>best candidate</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _operator_physics_actions(daily: dict[str, object] | None) -> str:
+    if not isinstance(daily, dict):
+        return ""
+    actions = daily.get("next_actions")
+    hypotheses = daily.get("hypotheses")
+    action_html = "".join(
+        f"<li>{escape(str(action))}</li>"
+        for action in actions
+        if str(action).strip()
+    ) if isinstance(actions, list) else ""
+    hypothesis_html = ""
+    if isinstance(hypotheses, list) and hypotheses:
+        for item in hypotheses[:4]:
+            if not isinstance(item, dict):
+                continue
+            hypothesis_html += (
+                "<li>"
+                f"<strong>{escape(str(item.get('priority', '')))}</strong>: "
+                f"{escape(str(item.get('id', '')))} - "
+                f"{escape(str(item.get('evidence', '')))}"
+                "</li>"
+            )
+    if not action_html and not hypothesis_html:
+        return ""
+    return (
+        "<div class='model-two-column'>"
+        "<div>"
+        "<div class='model-subsection-title'>Latest Next Actions</div>"
+        f"<ul class='model-compact-list'>{action_html or '<li>none</li>'}</ul>"
+        "</div>"
+        "<div>"
+        "<div class='model-subsection-title'>Latest Hypotheses</div>"
+        f"<ul class='model-compact-list'>{hypothesis_html or '<li>none</li>'}</ul>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _operator_physics_panel_html(
+    diagnosis: dict[str, object] | None,
+    *,
+    include_paths: bool = False,
+) -> str:
+    rows = _operator_physics_campaign_days(diagnosis)
+    latest_day = _operator_physics_latest_day(diagnosis, rows)
+    daily = _operator_physics_day(latest_day) if latest_day else None
+    path_note = ""
+    if include_paths and isinstance(diagnosis, dict):
+        path_note = (
+            "<div class='model-subtitle'>"
+            f"campaign diagnosis: <code>{escape(str(diagnosis.get('output_json', OPERATIONAL_CAMPAIGN_ROOT / 'campaign_operator_physics_diagnosis.json')))}</code>"
+            "</div>"
+        )
+    return (
+        "<div class='model-section-title'>Operator Physics</div>"
+        f"<div class='model-grid'>{''.join(_operator_physics_cards(diagnosis))}</div>"
+        f"{_operator_physics_rollup_text(diagnosis)}"
+        f"{_operator_physics_table(diagnosis)}"
+        f"{_operator_physics_actions(daily)}"
+        f"{_operator_physics_sweep_table(daily)}"
+        f"{path_note}"
+    )
+
+
+def _operator_physics_panel(_clicks: int = 0) -> pn.Column:
+    diagnosis = _campaign_operator_physics_diagnosis()
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Operator Physics</div>"
+        "<div class='model-subtitle'>W-band, Cloudnet microphysics and SEB checks from active campaign artifacts</div>"
+        "</div>"
+        "<div class='model-pill'>CM1 fixed; operators diagnosed</div>"
+        "</div>"
+        f"{_operator_physics_panel_html(diagnosis)}"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _diagnosis_comparison(
+    scorecards: dict[str, object],
+    scorecard_name: str,
+    observed_variable: str,
+) -> dict[str, object]:
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return {}
+    comparison = scorecard.get(observed_variable)
+    return comparison if isinstance(comparison, dict) else {}
+
+
+def _index_day_rows(index: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    if not isinstance(index, dict):
+        return {}
+    days = index.get("days")
+    if not isinstance(days, list):
+        return {}
+    rows: dict[str, dict[str, object]] = {}
+    for row in days:
+        if not isinstance(row, dict):
+            continue
+        day = row.get("day")
+        if day is not None:
+            rows[str(day)] = row
+    return rows
+
+
+def _evidence_bundle_path(row: dict[str, object], day: str) -> str:
+    value = row.get("lasso_bundle_json")
+    if value:
+        return str(value)
+    return str(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "bundle.json")
+
+
+def _evidence_summary_path(row: dict[str, object], day: str) -> str:
+    value = row.get("output_json")
+    if value:
+        return str(value)
+    return str(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / "operational_summary.json")
+
+
+def _evidence_scorecards_path(day: str) -> str:
+    scorecard_root = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards"
+    key_files = (
+        scorecard_root / "forcing_diagnostic.json",
+        scorecard_root / "era5_cloud_fraction.json",
+        scorecard_root / "cloud_fraction.json",
+    )
+    return " | ".join(str(path) for path in key_files)
+
+
+def _metric_block(
+    scorecards: dict[str, object],
+    scorecard_name: str,
+    observed_variable: str,
+) -> dict[str, object]:
+    scorecard = scorecards.get(scorecard_name)
+    if not isinstance(scorecard, dict):
+        return {}
+    metrics = scorecard.get("cloud_fraction_metrics")
+    if not isinstance(metrics, dict):
+        return {}
+    variable = metrics.get(observed_variable)
+    if not isinstance(variable, dict):
+        return {}
+    return {
+        "csi": _compact_float(variable.get("critical_success_index_mean")),
+        "pod": _compact_float(variable.get("probability_of_detection_mean")),
+        "far": _compact_float(variable.get("false_alarm_ratio_mean")),
+    }
+
+
+def _evaluation_schematic() -> str:
+    return """
+    <div class="schematic">
+      <div class="schematic-col">
+        <div class="schematic-title">Observations</div>
+        <div class="schematic-box">Cloud radar / W-band</div>
+        <div class="schematic-box">CL61 lidar</div>
+        <div class="schematic-box">HATPRO LWP</div>
+        <div class="schematic-box">ASFS met, radiation, sonic, gas</div>
+        <div class="schematic-box">Cloudnet source products</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-col">
+        <div class="schematic-title">Model Inputs</div>
+        <div class="schematic-box">ERA5</div>
+        <div class="schematic-box">CM1 / full LES daily recipe</div>
+        <div class="schematic-box">CM1 virtual-observatory products</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-col">
+        <div class="schematic-title">Forward Operators</div>
+        <div class="schematic-box">Cloudnet CF / LWC / IWC</div>
+        <div class="schematic-box">PAMTRA / W-band radar</div>
+        <div class="schematic-box">CL61 diagnostic lidar</div>
+        <div class="schematic-box">RRTMGP / SEB</div>
+        <div class="schematic-box">ASFS surface diagnostics</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-col">
+        <div class="schematic-title">Review Outputs</div>
+        <div class="schematic-box">Scorecards</div>
+        <div class="schematic-box">AURORA-LASSO bundle</div>
+        <div class="schematic-box">Dashboard</div>
+      </div>
+    </div>
+    """
+
+
+def _overview_panel(_clicks: int = 0) -> pn.Column:
+    index = load_campaign_index()
+    operator_physics = _campaign_operator_physics_diagnosis()
+    days = _campaign_days()
+    latest_day = days[0] if days else ""
+    latest_runtime = _bundle_runtime_summary(latest_day) if latest_day else {}
+    operational_qa = _operational_qa_rollup(index)
+    archive_manifest = _campaign_archive_manifest()
+    operator_rows = _operator_physics_campaign_days(operator_physics)
+    operator_latest_day = _operator_physics_latest_day(operator_physics, operator_rows)
+    operator_latest = _operator_physics_day(operator_latest_day) if operator_latest_day else None
+    operator_hypotheses = (
+        operator_latest.get("hypotheses") if isinstance(operator_latest, dict) else []
+    )
+    operator_top = (
+        operator_hypotheses[0]
+        if isinstance(operator_hypotheses, list) and operator_hypotheses
+        else {}
+    )
+    rows = build_instrument_catalog([latest_day]) if latest_day else []
+    ready = sum(1 for row in rows if row.get("caveat") == "ready")
+    diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
+    blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
+    cards = [
+        _card("latest day", latest_day or "missing"),
+        _card("campaign", index.get("status", "missing") if isinstance(index, dict) else "missing"),
+        _card("QA ready days", operational_qa.get("ready_day_count", "n/a")),
+        _card("QA incomplete", operational_qa.get("qa_incomplete_day_count", "n/a")),
+        _card("CM1 run h", latest_runtime.get("run_hours", "n/a")),
+        _card("CM1 eval h", latest_runtime.get("evaluation_hours", "n/a")),
+        _card("ready products", ready),
+        _card("diagnostic products", diagnostic),
+        _card("blocked products", blocked),
+        _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
+        _card("CM1 LES CF CSI", _index_cf_metric(index, "cloud_fraction", "cf_V")),
+        _card("operator physics", operator_physics.get("status", "missing") if isinstance(operator_physics, dict) else "missing"),
+        _card("top operator hypothesis", operator_top.get("id", "missing") if isinstance(operator_top, dict) else "missing"),
+        *_archive_manifest_cards(archive_manifest),
+    ]
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>AURORA-LASSO Evaluation Overview</div>"
+        "<div class='model-subtitle'>External science-review view of active campaign products</div>"
+        "</div>"
+        "<div class='model-pill'>active campaign only</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_operational_wait_state(index)}"
+        f"{_iceland_readiness_panel()}"
+        f"{_daily_review_queue_table(index)}"
+        f"{_seven_day_replay_summary(index)}"
+        f"{_operator_physics_rollup_text(operator_physics)}"
+        f"{_evaluation_schematic()}"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = False) -> str:
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        path_cells = ""
+        if include_paths:
+            path_cells = (
+                f"<td><code>{escape(str(row.get('bundle_json', '')))}</code></td>"
+                f"<td><code>{escape(str(row.get('compliance_json', '')))}</code></td>"
+            )
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('day', '')))}</td>"
+            f"<td>{escape(str(row.get('status', '')))}</td>"
+            f"<td>{escape(str(row.get('compliance', '')))}</td>"
+            f"<td>{escape(str(row.get('compliance_detail', '')))}</td>"
+            f"<td>{escape(str(row.get('modf', '')))}</td>"
+            f"<td>{escape(str(row.get('mmdf', '')))}</td>"
+            f"<td>{escape(str(row.get('cloudnet', '')))}</td>"
+            f"<td>{escape(str(row.get('seb', '')))}</td>"
+            f"<td>{escape(str(row.get('cm1_runtime_h', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('cm1_eval_h', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('cm1_recipe_class', 'unknown')))}</td>"
+            f"<td>{escape(str(row.get('scheduler_policy', '')))}</td>"
+            f"<td>{escape(str(row.get('scheduler_priority', '')))}</td>"
+            f"<td>{escape(str(row.get('operational_qa', '')))}</td>"
+            f"<td>{escape(str(row.get('scheduler_actions', '')))}</td>"
+            f"<td>{escape(str(row.get('scorecards', '')))}</td>"
+            f"{path_cells}"
+            "</tr>"
+        )
+    path_headers = "<th>bundle path</th><th>compliance path</th>" if include_paths else ""
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table lasso-table'>"
+        "<thead><tr>"
+        "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
+        "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th>"
+        "<th>CM1 h</th><th>eval h</th><th>recipe</th>"
+        "<th>scheduler</th><th>priority</th><th>QA</th><th>actions</th><th>scorecards</th>"
+        f"{path_headers}"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
+    index = _campaign_index()
+    diagnosis = _campaign_process_diagnosis()
+    archive_manifest = _campaign_archive_manifest()
+    paths = _lasso_bundle_paths()
+    rows = _lasso_bundle_rows(paths)
+    process_rollup = _process_skill_rollup(index)
+    process_diagnoses = _process_diagnoses(diagnosis)
+    scheduler_rollup = _scheduler_policy_rollup(index)
+    operational_qa_rollup = _operational_qa_rollup(index)
+    ready_count = sum(1 for row in rows if row.get("status") == "ready")
+    compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
+    latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "lasso_bundle" / "bundle.json"
+    cards = [
+        _card("bundles", len(rows)),
+        _card("ready", ready_count),
+        _card("compliance pass", compliance_pass_count),
+        _card("latest day", rows[0].get("day", "missing") if rows else "missing"),
+        _card("latest status", rows[0].get("status", "missing") if rows else "missing"),
+        _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
+        _card("latest CM1 h", rows[0].get("cm1_runtime_h", "n/a") if rows else "n/a"),
+        _card("latest eval h", rows[0].get("cm1_eval_h", "n/a") if rows else "n/a"),
+        _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
+        _card("latest updated", _format_mtime(latest_path)),
+        *_archive_manifest_cards(archive_manifest),
+    ]
+    detail_html = ""
+    if SHOW_OPERATIONAL_DETAILS:
+        detail_html = (
+            f"{_scheduler_policy_rollup_table(index)}"
+            f"{_operational_qa_rollup_table(index)}"
+            f"{_scheduler_policy_day_table(index)}"
+            f"{_process_diagnosis_table(diagnosis)}"
+            f"{_process_skill_rollup_table(index)}"
+            f"{_process_evidence_table(index)}"
+            f"{_archive_manifest_table(archive_manifest)}"
+        )
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>AURORA-LASSO Case Library</div>"
+        "<div class='model-subtitle'>Daily Cloudnet-centred MODF/MMDF virtual-observatory bundles</div>"
+        "</div>"
+        "<div class='model-pill'>standalone development view</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{detail_html}"
+        f"{_lasso_bundle_table(rows, include_paths=False)}"
+        "</div>"
+    )
+    if not rows:
+        html += "<p>No AURORA-LASSO bundles found yet.</p>"
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
+    index = load_campaign_index()
+    diagnosis = _campaign_process_diagnosis()
+    operator_physics = _campaign_operator_physics_diagnosis()
+    archive_manifest = _campaign_archive_manifest()
+    bundle_rows = _lasso_bundle_rows(_lasso_bundle_paths())
+    operational_rows = _operational_rows(_operational_run_paths())
+    html = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Details / Provenance</div>"
+        "<div class='model-subtitle'>Technical evidence for scheduler policy, process labels, paths and generated records</div>"
+        "</div>"
+        "<div class='model-pill'>collapsible evidence</div>"
+        "</div>"
+        f"{_scheduler_policy_rollup_table(index)}"
+        f"{_operational_qa_rollup_table(index)}"
+        f"{_scheduler_policy_day_table(index)}"
+        f"{_archive_manifest_table(archive_manifest)}"
+        f"{_operator_policy_rollup_table(index)}"
+        f"{_operator_physics_panel_html(operator_physics, include_paths=True)}"
+        f"{_process_diagnosis_table(diagnosis)}"
+        f"{_process_skill_rollup_table(index)}"
+        f"{_process_evidence_table(index)}"
+        f"{_operational_table(operational_rows)}"
+        f"{_lasso_bundle_table(bundle_rows, include_paths=True)}"
+        f"<div class='model-subtitle'>campaign root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+def _operational_panel(_clicks: int = 0) -> pn.Column:
+    index = _campaign_index()
+    paths = _operational_run_paths()
+    rows = _operational_rows(paths)
+    latest = rows[0] if rows else {}
+    latest_summary_day, latest_summary = _latest_operational_summary(index, paths)
+    latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "operational_run.json"
+    index_pending = _index_required_pending(index)
+    index_days = index.get("days", []) if isinstance(index, dict) else []
+    scheduler_rollup = _scheduler_policy_rollup(index)
+    operational_qa_rollup = _operational_qa_rollup(index)
+    cards = [
+        _card("campaign index", index.get("status", "missing") if index else "missing"),
+        _card("indexed days", len(index_days) if isinstance(index_days, list) else 0),
+        _card("QA ready", operational_qa_rollup.get("ready_day_count", "n/a")),
+        _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
+        _card("ERA5 CF CSI mean", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
+        _card("CM1 LES CF CSI mean", _index_cf_metric(index, "cloud_fraction", "cf_V")),
+        _card("latest day", latest.get("day", "missing")),
+        _card("gate", latest.get("gate", "missing")),
+        _card("W-band CSI", latest.get("wband_csi", "n/a")),
+        _card("LWP policy", latest.get("lwp_policy", "n/a")),
+        _card("records", len(rows)),
+    ]
+    detail_html = ""
+    if SHOW_OPERATIONAL_DETAILS:
+        detail_html = (
+            f"{_scheduler_policy_rollup_table(index)}"
+            f"{_operational_qa_rollup_table(index)}"
+            f"{_scheduler_policy_day_table(index)}"
+            f"{_operator_policy_rollup_table(index)}"
+            f"<div class='model-subtitle'>latest ASFS detail day: {escape(str(latest_summary_day or 'missing'))}</div>"
+            f"{_operator_policy_table(latest_summary)}"
+            f"{_asfs_sonic_summary(latest_summary)}"
+            f"{_asfs_gas_table(latest_summary)}"
+        )
+    summary = (
+        "<div class='model-shell operational-shell'>"
+        "<div class='model-headline'>"
+        "<div>"
+        "<div class='model-title'>Operational Campaign</div>"
+        "<div class='model-subtitle'>Daily ERA5/LES virtual-observatory evaluation records</div>"
+        "</div>"
+        f"<div class='model-pill'>{escape(str(_format_mtime(latest_path)))}</div>"
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_campaign_index_table(index)}"
+        f"{_operational_table(rows)}"
+        f"{detail_html}"
+        f"<div class='model-subtitle'>pending required: {escape(', '.join(index_pending) if index_pending else 'none')}</div>"
+        f"<div class='model-subtitle'>root: <code>{escape(str(OPERATIONAL_CAMPAIGN_ROOT))}</code></div>"
+        "</div>"
+    )
+    if not rows:
+        summary += "<p>No operational run records found yet.</p>"
+    return pn.Column(pn.pane.HTML(summary, sizing_mode="stretch_width"), sizing_mode="stretch_width")
 
 
 def _artifact_path(
@@ -1088,7 +4146,8 @@ def _variable_options(run_id: str, dataset_id: str) -> OrderedDict[str, str]:
 
 
 def _run_options() -> OrderedDict[str, str]:
-    return OrderedDict((str(spec["label"]), run_id) for run_id, spec in RUNS.items())
+    run_ids = tuple(run_id for run_id in DEFAULT_RUN_IDS if run_id in RUNS)
+    return OrderedDict((str(RUNS[run_id]["label"]), run_id) for run_id in run_ids)
 
 
 def _card(label: str, value: object) -> str:
@@ -1742,11 +4801,31 @@ def _artifact_panel(run_id: str, dataset_id: str, _clicks: int = 0) -> pn.Column
 
 run_select = pn.widgets.Select(
     name="Run",
-    value="cm1_forced_moist_thompson",
+    value=next(iter(_run_options().values()), None),
     options=_run_options(),
 )
 dataset_select = pn.widgets.Select(name="Dataset", value="l3_cf", options=DATASETS)
 variable_select = pn.widgets.Select(name="Variable", options=OrderedDict())
+day_select = pn.widgets.Select(
+    name="Day",
+    value=next(iter(_day_options().values()), ""),
+    options=_day_options(),
+)
+instrument_select = pn.widgets.Select(
+    name="Instrument",
+    value="all",
+    options=_instrument_options(),
+)
+model_filter_select = pn.widgets.Select(
+    name="Model / output",
+    value="all",
+    options=MODEL_FILTERS,
+)
+metric_family_select = pn.widgets.Select(
+    name="Metric family",
+    value="all",
+    options=METRIC_FAMILY_FILTERS,
+)
 refresh_button = pn.widgets.Button(name="Refresh", button_type="primary", width=100)
 share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 copy_button = pn.widgets.Button(name="Copy link", button_type="default", width=110)
@@ -1799,6 +4878,10 @@ def _share_link() -> str:
     host = _request_header("Host") or "127.0.0.1:5006"
     query = urlencode(
         {
+            "day": day_select.value or "",
+            "instrument": instrument_select.value or "",
+            "model": model_filter_select.value or "",
+            "metric_family": metric_family_select.value or "",
             "run": run_select.value or "",
             "dataset": dataset_select.value or "",
             "variable": variable_select.value or "",
@@ -1813,7 +4896,15 @@ def _refresh_share(*_events) -> None:
 
 def _apply_query_state() -> None:
     args = _request_args()
-    if args.get("run") in RUNS:
+    if args.get("day") in set(day_select.options.values()):
+        day_select.value = args["day"]
+    if args.get("instrument") in set(instrument_select.options.values()):
+        instrument_select.value = args["instrument"]
+    if args.get("model") in set(model_filter_select.options.values()):
+        model_filter_select.value = args["model"]
+    if args.get("metric_family") in set(metric_family_select.options.values()):
+        metric_family_select.value = args["metric_family"]
+    if args.get("run") in set(run_select.options.values()):
         run_select.value = args["run"]
     if args.get("dataset") in set(DATASETS.values()):
         dataset_select.value = args["dataset"]
@@ -1830,6 +4921,8 @@ run_select.param.watch(_sync_variable_options, "value")
 dataset_select.param.watch(_sync_variable_options, "value")
 refresh_button.on_click(_sync_variable_options)
 for widget in (run_select, dataset_select, variable_select):
+    widget.param.watch(_refresh_share, "value")
+for widget in (day_select, instrument_select, model_filter_select, metric_family_select):
     widget.param.watch(_refresh_share, "value")
 
 copy_button.js_on_click(
@@ -1865,6 +4958,19 @@ plot_panel = pn.bind(
     variable_select.param.value,
     refresh_button.param.clicks,
 )
+operational_panel = pn.bind(_operational_panel, refresh_button.param.clicks)
+lasso_bundle_panel = pn.bind(_lasso_bundle_panel, refresh_button.param.clicks)
+overview_panel = pn.bind(_overview_panel, refresh_button.param.clicks)
+instrument_comparison_panel = pn.bind(
+    _instrument_comparison_panel,
+    day_select.param.value,
+    instrument_select.param.value,
+    model_filter_select.param.value,
+    metric_family_select.param.value,
+    refresh_button.param.clicks,
+)
+operator_physics_panel = pn.bind(_operator_physics_panel, refresh_button.param.clicks)
+details_provenance_panel = pn.bind(_details_provenance_panel, refresh_button.param.clicks)
 
 CSS = """
 body, .bk {
@@ -1911,6 +5017,35 @@ body, .bk {
     font-size: 12px;
     color: #5f6c7b;
 }
+.model-section-title {
+    margin-top: 8px;
+    font-size: 14px;
+    font-weight: 650;
+    color: #22313f;
+}
+.model-subsection-title {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 650;
+    color: #3b4a5a;
+}
+.model-note {
+    color: #5f6c7b;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.model-two-column {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+}
+.model-compact-list {
+    margin: 0;
+    padding-left: 18px;
+    color: #3b4a5a;
+    font-size: 12px;
+    line-height: 1.45;
+}
 .model-pill {
     display: inline-flex;
     align-items: center;
@@ -1920,6 +5055,36 @@ body, .bk {
     background: #f1fbf8;
     color: #0b6b5d;
     font-size: 12px;
+}
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid #d8e1e8;
+    font-size: 11px;
+    font-weight: 650;
+}
+.badge-ready {
+    border-color: #b7e4dc;
+    background: #f1fbf8;
+    color: #0b6b5d;
+}
+.badge-diagnostic {
+    border-color: #f0d58c;
+    background: #fff8df;
+    color: #7a5b00;
+}
+.badge-warning {
+    border-color: #f1b7a8;
+    background: #fff3ef;
+    color: #8a3c24;
+}
+.badge-blocked {
+    border-color: #d1d8e0;
+    background: #f5f7fa;
+    color: #4b5563;
 }
 .model-grid {
     display: grid;
@@ -1971,6 +5136,77 @@ body, .bk {
     word-break: break-all;
     color: #243b53;
 }
+.leaderboard-table {
+    min-width: 860px;
+}
+.operational-table {
+    min-width: 980px;
+}
+.asfs-detail-table {
+    min-width: 920px;
+}
+.instrument-comparison-table {
+    min-width: 1180px;
+}
+.instrument-plot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+    margin: 12px 0 16px;
+}
+.instrument-plot-card {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px;
+}
+.instrument-plot-title {
+    font-size: 13px;
+    font-weight: 650;
+    color: #22313f;
+    margin-bottom: 8px;
+}
+.instrument-plot-image {
+    display: block;
+    width: 100%;
+    max-height: 430px;
+    object-fit: contain;
+}
+.schematic {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) auto minmax(180px, 1fr) auto minmax(180px, 1fr);
+    gap: 10px;
+    align-items: stretch;
+    margin-top: 12px;
+}
+.schematic-col {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px;
+}
+.schematic-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #22313f;
+    margin-bottom: 8px;
+}
+.schematic-box {
+    border: 1px solid #e1e7ee;
+    border-radius: 6px;
+    background: #fbfcfd;
+    padding: 7px 8px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #3b4a5a;
+}
+.schematic-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0b7285;
+    font-weight: 700;
+}
 .scorecard-image {
     display: block;
     width: 100%;
@@ -1998,6 +5234,13 @@ body, .bk {
     .model-table {
         min-width: 620px;
     }
+    .schematic {
+        grid-template-columns: 1fr;
+    }
+    .schematic-arrow {
+        transform: rotate(90deg);
+        min-height: 20px;
+    }
 }
 """
 
@@ -2017,6 +5260,20 @@ controls = pn.Card(
         run_select,
         dataset_select,
         variable_select,
+        sizing_mode="stretch_width",
+        css_classes=["model-controls"],
+    ),
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+)
+
+review_controls = pn.Card(
+    pn.Row(
+        day_select,
+        instrument_select,
+        model_filter_select,
+        metric_family_select,
         refresh_button,
         sizing_mode="stretch_width",
         css_classes=["model-controls"],
@@ -2033,12 +5290,49 @@ share = pn.Card(
     sizing_mode="stretch_width",
 )
 
+main_sections = [
+    pn.Card(
+        pn.panel(overview_panel, sizing_mode="stretch_width"),
+        title="Overview",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        review_controls,
+        pn.panel(instrument_comparison_panel, sizing_mode="stretch_width"),
+        share,
+        title="Instrument Comparisons",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(operator_physics_panel, sizing_mode="stretch_width"),
+        title="Operator Physics",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(lasso_bundle_panel, sizing_mode="stretch_width"),
+        title="Case Library",
+        collapsible=True,
+        collapsed=False,
+        sizing_mode="stretch_width",
+    ),
+    pn.Card(
+        pn.panel(details_provenance_panel, sizing_mode="stretch_width"),
+        title="Details / Provenance",
+        collapsible=True,
+        collapsed=True,
+        sizing_mode="stretch_width",
+    ),
+]
+
 template.main[:] = [
     pn.Column(
-        controls,
-        pn.panel(summary_panel, sizing_mode="stretch_width"),
-        pn.panel(plot_panel, sizing_mode="stretch_width"),
-        share,
+        *main_sections,
         sizing_mode="stretch_width",
         margin=0,
     )

@@ -2118,8 +2118,8 @@ def _ops_operations_markup() -> str:
         ]
         failover_level = _ops_worst_level(failover_endpoint_levels)
         failover_cards = [
-            _ops_failover_endpoint_card(snapshot, "primary", "Primary public app", "Expected main site"),
-            _ops_failover_endpoint_card(snapshot, "standby", "Standby public app", "Expected warm standby"),
+            _ops_failover_endpoint_card(snapshot, "primary", "JASMIN data endpoint", "data.gamb2le.co.uk"),
+            _ops_failover_endpoint_card(snapshot, "standby", "Droplet data-ocean endpoint", "data-ocean.gamb2le.co.uk"),
         ]
 
         summary_cards = [
@@ -2467,9 +2467,9 @@ def _ops_operations_markup() -> str:
             f"<div class='ops-grid ops-grid--trends'>{trend_cards}</div>"
             "</div>"
             "<div class='ops-section'>"
-            "<div class='ops-section-title'>Cloud failover</div>"
+            "<div class='ops-section-title'>Public endpoints</div>"
             f"<div class='ops-grid ops-grid--summary'>{''.join(failover_cards)}</div>"
-            "<div class='ops-footnote'>These probes check the public app URLs and require the full AURORA document, so a small blank Bokeh shell does not count as healthy.</div>"
+            "<div class='ops-footnote'>These probes check both public app URLs and require the full AURORA document, so a small blank Bokeh shell does not count as healthy.</div>"
             "</div>"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Storage</div>"

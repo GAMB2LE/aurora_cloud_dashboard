@@ -166,6 +166,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_images_type_day ON images (image_type, day_utc);
         CREATE INDEX IF NOT EXISTS idx_images_type_media_time ON images (image_type, media_kind, time_epoch_ns);
         CREATE INDEX IF NOT EXISTS idx_images_type_media_day ON images (image_type, media_kind, day_utc);
+
+        CREATE TABLE IF NOT EXISTS unreadable_media (
+            raw_path TEXT PRIMARY KEY,
+            size_bytes INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            error TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -311,6 +319,40 @@ def existing_file_state(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
         row["raw_path"]: (int(row["size_bytes"]), int(row["mtime_ns"]))
         for row in conn.execute("SELECT raw_path, size_bytes, mtime_ns FROM images")
     }
+
+
+def existing_unreadable_file_state(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    return {
+        row["raw_path"]: (int(row["size_bytes"]), int(row["mtime_ns"]))
+        for row in conn.execute("SELECT raw_path, size_bytes, mtime_ns FROM unreadable_media")
+    }
+
+
+def mark_unreadable_file(
+    conn: sqlite3.Connection,
+    *,
+    raw_path: str,
+    size_bytes: int,
+    mtime_ns: int,
+    error: str,
+) -> None:
+    indexed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    conn.execute(
+        """
+        INSERT INTO unreadable_media (raw_path, size_bytes, mtime_ns, error, indexed_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(raw_path) DO UPDATE SET
+            size_bytes=excluded.size_bytes,
+            mtime_ns=excluded.mtime_ns,
+            error=excluded.error,
+            indexed_at=excluded.indexed_at
+        """,
+        (raw_path, int(size_bytes), int(mtime_ns), str(error), indexed_at),
+    )
+
+
+def clear_unreadable_file(conn: sqlite3.Connection, raw_path: str) -> None:
+    conn.execute("DELETE FROM unreadable_media WHERE raw_path = ?", (raw_path,))
 
 
 def catalog_time_bounds(path: Path) -> tuple[datetime | None, datetime | None]:

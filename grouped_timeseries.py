@@ -711,12 +711,20 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         PanelSpec(
             "output_power",
             "Output Power",
-            "Output Power [W]",
-            "ASS 48 V DC Power [W]",
+            "AC Output Power [W]",
+            "DC Inverter Power [W]",
             (
                 TraceSpec("ACOutputWatts", "AC Output Power", COLOR["red"], valid_min=0.0, valid_max=10000.0),
-                TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"], valid_min=0.0, valid_max=10000.0),
-                TraceSpec("watts_on_48vdc_Avg", "ASS 48 V DC Power", COLOR["purple"], axis="right"),
+                TraceSpec("DCInverterWatts", "DC Inverter Power", COLOR["teal"], axis="right", valid_min=0.0, valid_max=10000.0),
+            ),
+        ),
+        PanelSpec(
+            "ass_dc_power",
+            "ASS 48 V DC Power",
+            "ASS 48 V DC Power [W]",
+            None,
+            (
+                TraceSpec("watts_on_48vdc_Avg", "ASS 48 V DC Power", COLOR["purple"]),
             ),
         ),
         PanelSpec(
