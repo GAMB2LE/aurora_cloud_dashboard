@@ -1,8 +1,8 @@
 # Aurora Power Supply
 
 Aurora Power Supply is the curated 1D electrical and thermal summary view built
-from the power Zarr, with the ASS 48 V DC power overlaid from the ASFS
-logger Zarr for station-load context.
+from the power Zarr, with optional ASS 48 V DC power from the ASFS logger Zarr
+for station-load context.
 
 ## Interactive summary layout
 
@@ -16,9 +16,10 @@ Typical panels include:
   - `Charging Current In`
   - `Charging Power In`
 - **Output Power**
-  - AC output power
-  - DC inverter power
-  - ASS 48 V DC power from `watts_on_48vdc_Avg` on the right axis
+  - AC output power on the left axis
+  - DC inverter power on the right axis
+- **ASS 48 V DC Power**
+  - ASS 48 V DC power from `watts_on_48vdc_Avg`, when available
 - **Cumulative Power & State of Charge**
   - `State of Charge`, from `BatterySOC`, on the left axis in percent
   - `East Solar Generated`
@@ -62,17 +63,21 @@ mean to `BatteryAmps` and `BatteryWatts`. This keeps isolated charging
 transients from dominating the visual scale while leaving the stored Power Zarr
 unchanged.
 
-Per-trace downsampling is important for the **ASS 48 V DC Power** overlay: that
-line comes from the ASFS logger at about one-minute cadence, while the APS
-power data are much denser. Downsampling after each trace has dropped merged
-NaN timestamps preserves the ASFS cadence instead of thinning it on the dense
-APS time grid.
+Per-trace downsampling is important for **ASS 48 V DC Power**: that line comes
+from the ASFS logger at about one-minute cadence, while the APS power data are
+much denser. Downsampling after each trace has dropped merged NaN timestamps
+preserves the ASFS cadence instead of thinning it on the dense APS time grid.
 
-The **ASS 48 V DC Power** overlay depends on the ASFS slow `sci` table field
+The **ASS 48 V DC Power** panel depends on the ASFS slow `sci` table field
 `watts_on_48vdc_Avg`. It can therefore go stale independently of the APS power
 system. The APS AC/DC output, battery, solar, SOC, and thermal traces come from
 the Power Zarr and can remain current even when the ASFS `sci` stream is not
 producing new files.
+
+`DCInverterWatts` is plotted on its own right axis because its raw value is
+often much smaller than AC output power. The source CSV reports it consistently
+with `DCInverterVolts * DCInverterAmps`, so a 53.75 V, 0.17 A sample appears as
+about 9 W.
 
 The cumulative panel is normalized in the display products. The
 `SolarYield_*` counters are converted into positive UTC-day increments, so
@@ -107,8 +112,7 @@ Derived display product:
 Presentation-layer overlay:
 
 - `/data/aurora/products/asfs_logger/asfs_logger.zarr`
-  - `watts_on_48vdc_Avg` supplies the **ASS 48 V DC Power** trace on the right
-    axis of the **Output Power** panel
+  - `watts_on_48vdc_Avg` supplies the optional **ASS 48 V DC Power** panel
 
 Detailed schema:
 
