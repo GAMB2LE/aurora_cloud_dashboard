@@ -2,9 +2,8 @@
 
 Panel dashboard and data-product scripts for the Aurora observing stack.
 
-The default landing view is now the `Aurora Power Supply` instrument on the
-`Interactive Data Browser`, because power health is the quickest first check
-for whether the observing stack is behaving.
+The default landing view is the `Ceilometer` instrument on the
+`Interactive Data Browser`, so the CL61 lidar view is the first operator check.
 
 ## Instruments
 
@@ -14,7 +13,7 @@ for whether the observing stack is behaving.
 - `Scanning Microwave Radiometer` - HATPRO radiometer Zarr with LWP/IWV, infrared surface temperature, temperature-profile plots, and Science Quicklooks.
 - `Meteorology` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_Met` products on `House Keeping Quicklooks`. The summary view combines the Meteorology Zarr with selected ASFS logger met traces at display time only, including ASFS Vaisala temperature, relative humidity, and pressure when present.
 - `Radiation` - fixed multi-panel 1D summary view on `Interactive Data Browser`, science quicklooks on `Science Quicklooks`, and `HK_ASFS` products on `House Keeping Quicklooks`. The science layout uses the current ASFS logger schema, including SR30 shortwave, IR20 longwave, flux plates, KT15 surface temperature, and SR50 distance.
-- Radiation science variables and the APS page's **ASS 48 V DC Power** overlay
+- Radiation science variables and the APS page's **ASS 48 V DC Power** panel
   both come from the ASFS slow `sci` table. The ASFS fast-sonic and fast-gas
   streams can keep Metek and LI-COR housekeeping current, but they do not
   contain radiation or ASS 48 V power fields.

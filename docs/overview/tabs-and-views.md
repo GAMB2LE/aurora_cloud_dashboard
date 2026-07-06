@@ -6,7 +6,7 @@ This page describes what each top-level dashboard tab is responsible for.
 
 This is the primary live-browsing surface.
 
-- The default instrument is **Aurora Power Supply**.
+- The default instrument is **Ceilometer**.
 - **Ceilometer** and **Cloud Radar** show recent height-time plots.
 - **Meteorology**, **Radiation**, and **Aurora Power Supply** show fixed
   summary layouts rather than a freeform variable picker.

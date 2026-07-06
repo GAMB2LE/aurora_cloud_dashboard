@@ -109,7 +109,7 @@ Derived display product:
 - `/data/aurora/products/power/power_display_summary.zarr`
 - `/data/aurora/products/power/power_display_energy.zarr`
 
-Presentation-layer overlay:
+Presentation-layer context:
 
 - `/data/aurora/products/asfs_logger/asfs_logger.zarr`
   - `watts_on_48vdc_Avg` supplies the optional **ASS 48 V DC Power** panel

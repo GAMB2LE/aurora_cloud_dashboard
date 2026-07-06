@@ -82,7 +82,7 @@ Examples include:
 This Zarr underpins:
 
 - the **Radiation** instrument directly
-- the **ASS 48 V DC Power** overlay on the Aurora Power Supply page through
+- the **ASS 48 V DC Power** panel on the Aurora Power Supply page through
   `watts_on_48vdc_Avg`
 - parts of the **Meteorology** presentation layer, including ASFS Vaisala
   temperature, relative humidity, pressure, Metek wind vectors, and
