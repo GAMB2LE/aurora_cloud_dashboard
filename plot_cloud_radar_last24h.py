@@ -20,6 +20,7 @@ from extra_housekeeping import (
     plot_cloud_radar_housekeeping,
 )
 from quicklook_time_axis import apply_quicklook_time_axis
+from radar_colormaps import radar_matplotlib_colormap, register_pyart_radar_colormaps
 from time_gap_breaks import insert_time_gap_breaks
 
 ZARR_DEFAULT = Path("/data/aurora/products/rpgfmcw94/cloud_radar.zarr")
@@ -38,15 +39,17 @@ KURT_VMIN, KURT_VMAX = 0.0, 8.0
 RANGE_MAX = 9000
 
 RADAR_PANELS = (
-    ("ZE_dBZ", "ZE", ZE_VMIN, ZE_VMAX, "ZE (dBZ)", "cividis"),
-    ("MeanVel", "Mean Velocity", VEL_VMIN, VEL_VMAX, "Mean Velocity (m/s)", "RdBu_r"),
-    ("SpecWidth", "Spectrum Width", SPEC_VMIN, SPEC_VMAX, "Spectrum Width (m/s)", "plasma"),
-    ("SLDR", "SLDR", SLDR_VMIN, SLDR_VMAX, "SLDR (dB)", "RdBu_r"),
-    ("RHV", "RHV", RHV_VMIN, RHV_VMAX, "RHV", "viridis"),
-    ("SRCX", "SRCX", SRCX_VMIN, SRCX_VMAX, "SRCX", "viridis"),
-    ("Skew", "Skew", SKEW_VMIN, SKEW_VMAX, "Skew", "RdBu_r"),
-    ("Kurt", "Kurtosis", KURT_VMIN, KURT_VMAX, "Kurtosis", "magma"),
+    ("ZE_dBZ", "ZE", ZE_VMIN, ZE_VMAX, "ZE (dBZ)", radar_matplotlib_colormap("ZE_dBZ")),
+    ("MeanVel", "Mean Velocity", VEL_VMIN, VEL_VMAX, "Mean Velocity (m/s)", radar_matplotlib_colormap("MeanVel")),
+    ("SpecWidth", "Spectrum Width", SPEC_VMIN, SPEC_VMAX, "Spectrum Width (m/s)", radar_matplotlib_colormap("SpecWidth")),
+    ("SLDR", "SLDR", SLDR_VMIN, SLDR_VMAX, "SLDR (dB)", radar_matplotlib_colormap("SLDR")),
+    ("RHV", "RHV", RHV_VMIN, RHV_VMAX, "RHV", radar_matplotlib_colormap("RHV")),
+    ("SRCX", "SRCX", SRCX_VMIN, SRCX_VMAX, "SRCX", radar_matplotlib_colormap("SRCX")),
+    ("Skew", "Skew", SKEW_VMIN, SKEW_VMAX, "Skew", radar_matplotlib_colormap("Skew")),
+    ("Kurt", "Kurtosis", KURT_VMIN, KURT_VMAX, "Kurtosis", radar_matplotlib_colormap("Kurt")),
 )
+
+register_pyart_radar_colormaps()
 
 
 def required_radar_vars() -> tuple[str, ...]:

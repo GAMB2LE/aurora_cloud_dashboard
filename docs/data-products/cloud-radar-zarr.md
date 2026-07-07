@@ -42,6 +42,32 @@ Radar housekeeping fields such as `Status`, `DDVolt`, `PowIF`, `TTemp`,
 this science Zarr. The `HK_Radar` quicklook reads those support variables from
 the mirrored raw RPG LV1 files under `/project/aurora/raw/rpgfmcw94`.
 
+## Display colormaps
+
+Cloud Radar display colors follow Py-ART's variable-specific radar colormap
+convention. The dashboard keeps the palette definitions local in
+`radar_colormaps.py` so the deployed app and quicklook generators do not require
+Py-ART at runtime.
+
+| Dashboard variable | Py-ART-style colormap |
+| --- | --- |
+| `ZE_dBZ` | `HomeyerRainbow` |
+| `ZE45_dBZ` | `HomeyerRainbow` |
+| `MeanVel` | `BuDRd18` |
+| `SpecWidth` | `NWS_SPW` |
+| `ZDR` | `RefDiff` |
+| `RHV` | `RefDiff` |
+| `DiffAtt` | `RefDiff` |
+| `SLDR` | `SCook18` |
+| `PhiDP` | `Wild25` |
+| `KDP` | `Theodore16` |
+| `SRCX` | `Carbone17` |
+| `Kurt` | `Carbone17` |
+| `Skew` | `BuDRd18` |
+
+The existing dashboard value limits remain tuned for the deployed W-band cloud
+radar product; only the color tables are Py-ART-style.
+
 ## Conversion notes
 
 - reflectivity-style fields are converted to dBZ during ingest
