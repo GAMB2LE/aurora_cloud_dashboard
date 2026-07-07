@@ -58,7 +58,7 @@ generators do not require Py-ART or `cmweather` at runtime.
 | `ZDR` | `RefDiff` |
 | `RHV` | `RefDiff` |
 | `DiffAtt` | `RefDiff` |
-| `SLDR` | `CM_depol` |
+| `SLDR` | `SCook18` |
 | `PhiDP` | `Wild25` |
 | `KDP` | `Theodore16` |
 | `SRCX` | `Carbone17` |
@@ -67,8 +67,8 @@ generators do not require Py-ART or `cmweather` at runtime.
 
 The existing dashboard value limits remain tuned for the deployed W-band cloud
 radar product. Velocity uses the balanced diverging palette, spectrum width uses
-the extended spectral palette, and SLDR uses the `CM_depol` depolarization
-palette for better colorblind accessibility.
+the extended spectral palette, and SLDR uses the original `SCook18` radar
+palette.
 
 ## Conversion notes
 

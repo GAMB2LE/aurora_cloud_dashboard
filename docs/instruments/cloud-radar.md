@@ -12,8 +12,7 @@ shown as a height-time product in the interactive dashboard.
 - availability bars make true data gaps visible across the selected time range
 - radar moments use Py-ART/cmweather-style variable-specific colormaps:
   reflectivity uses `HomeyerRainbow`, velocity uses `balance`, spectrum width
-  uses `SpectralExtended`, and SLDR uses the colorblind-friendly `CM_depol`
-  depolarization palette
+  uses `SpectralExtended`, and SLDR uses the original `SCook18` radar palette
 
 ## Quicklooks
 
