@@ -39,7 +39,7 @@ PLOTLY_SUMMARY_RIGHT_MARGIN = 110
 PLOTLY_SUMMARY_PANEL_HEIGHT = 225
 PLOTLY_SUMMARY_POWER_PANEL_HEIGHT = 250
 PLOTLY_SUMMARY_MAX_HEIGHT = 1650
-PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 2100
+PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 2350
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -49,6 +49,9 @@ POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "
 POWER_DISPLAY_SUMMARY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_SUMMARY_FREQ", POWER_DISPLAY_ENERGY_FREQ)
 POWER_DISPLAY_ENERGY_ATTR = "power_display_energy_product"
 POWER_DISPLAY_SUMMARY_ATTR = "power_display_summary_product"
+POWER_SOC_PROJECTION_HOURS = float(os.environ.get("AURORA_POWER_SOC_PROJECTION_HOURS", "24"))
+POWER_SOC_PROJECTION_STEP_MINUTES = float(os.environ.get("AURORA_POWER_SOC_PROJECTION_STEP_MINUTES", "5"))
+POWER_SOC_PROJECTION_POLY_DEGREE = int(os.environ.get("AURORA_POWER_SOC_PROJECTION_POLY_DEGREE", "1"))
 PDU_OUTLET_COUNT = 8
 PDU_DISPLAY_SUMMARY_FIELDS = tuple(
     f"PDUOutlet{outlet}{metric}"
@@ -122,6 +125,9 @@ class TraceSpec:
     skip_if_all_zero: bool = False
     smooth_minutes: float | None = None
     break_on_day_change: bool = False
+    projection_lookback_minutes: float | None = None
+    projection_horizon_hours: float = POWER_SOC_PROJECTION_HOURS
+    projection_degree: int = POWER_SOC_PROJECTION_POLY_DEGREE
 
 
 @dataclass(frozen=True)
@@ -811,6 +817,33 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor4", "Temperature Sensor 4", COLOR["olive"], axis="right", valid_min=-40.0, valid_max=100.0),
+            ),
+        ),
+        PanelSpec(
+            "soc_projection",
+            "SOC 24 h Projection",
+            "SOC [%]",
+            None,
+            (
+                TraceSpec("BatterySOC", "State of Charge", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec(
+                    "BatterySOC",
+                    "30 min fit +24 h",
+                    COLOR["blue"],
+                    dash="dash",
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    projection_lookback_minutes=30.0,
+                ),
+                TraceSpec(
+                    "BatterySOC",
+                    "2 h fit +24 h",
+                    COLOR["purple"],
+                    dash="dot",
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    projection_lookback_minutes=120.0,
+                ),
             ),
         ),
     ),
@@ -2016,12 +2049,57 @@ def _insert_line_gap_breaks(times: pd.DatetimeIndex, values: np.ndarray) -> tupl
     return pd.DatetimeIndex(expanded_times), expanded_values[0]
 
 
+def _projection_trace_values(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    trace: TraceSpec,
+    max_time_samples: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Fit recent SOC with a low-degree polynomial and extrapolate display-only values."""
+    if trace.projection_lookback_minutes is None or trace.projection_lookback_minutes <= 0:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+    trace_times, trace_values = _trace_time_values(times, values)
+    if len(trace_times) < 2:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+
+    end_time = trace_times.max()
+    lookback_start = end_time - pd.Timedelta(minutes=float(trace.projection_lookback_minutes))
+    fit_mask = trace_times >= lookback_start
+    fit_times = trace_times[fit_mask]
+    fit_values = trace_values[fit_mask]
+    finite = np.isfinite(fit_values)
+    fit_times = fit_times[finite]
+    fit_values = fit_values[finite]
+    if len(fit_times) < 2:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+
+    degree = max(1, min(int(trace.projection_degree), len(fit_times) - 1))
+    fit_x = ((fit_times - end_time) / pd.Timedelta(minutes=1)).to_numpy(dtype=np.float64)
+    try:
+        coeffs = np.polyfit(fit_x, fit_values.astype(np.float64), degree)
+    except Exception:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=np.float64)
+
+    horizon = pd.Timedelta(hours=float(trace.projection_horizon_hours))
+    step_minutes = max(float(POWER_SOC_PROJECTION_STEP_MINUTES), 1.0)
+    projection_end = end_time + horizon
+    projection_times = pd.date_range(start=fit_times.min(), end=projection_end, freq=f"{step_minutes:g}min")
+    if len(projection_times) == 0 or projection_times[-1] < projection_end:
+        projection_times = projection_times.append(pd.DatetimeIndex([projection_end]))
+    projection_x = ((projection_times - end_time) / pd.Timedelta(minutes=1)).to_numpy(dtype=np.float64)
+    projection_values = np.polyval(coeffs, projection_x)
+    projection_values = np.clip(projection_values, 0.0, 100.0)
+    return _downsample_trace(pd.DatetimeIndex(projection_times), projection_values, max_time_samples)
+
+
 def _trace_plot_values(
     times: pd.DatetimeIndex,
     values: np.ndarray,
     max_time_samples: int,
     trace: TraceSpec,
 ) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    if trace.projection_lookback_minutes is not None:
+        return _projection_trace_values(times, values, trace, max_time_samples)
     trace_times, trace_values = _trace_time_values(times, values)
     trace_values = _smooth_trace_values(trace_times, trace_values, trace)
     trace_times, trace_values = _downsample_trace(trace_times, trace_values, max_time_samples)
@@ -2411,6 +2489,8 @@ def build_summary_plotly(
 
     panel_height = (1.0 - vertical_spacing * (len(panels) - 1)) / len(panels)
     legend_layouts: dict[str, dict[str, object]] = {}
+    plot_time_start = times.min() if len(times) else None
+    plot_time_end = times.max() if len(times) else None
     for row_index, (panel, rows) in enumerate(panels, start=1):
         legend_name = "legend" if row_index == 1 else f"legend{row_index}"
         panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
@@ -2439,6 +2519,12 @@ def build_summary_plotly(
             trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
+            trace_start = trace_times.min()
+            trace_end = trace_times.max()
+            if plot_time_start is None or trace_start < plot_time_start:
+                plot_time_start = trace_start
+            if plot_time_end is None or trace_end > plot_time_end:
+                plot_time_end = trace_end
             if secondary:
                 right_axis_values.append(trace_values)
             else:
@@ -2510,9 +2596,9 @@ def build_summary_plotly(
 
     tickvals = []
     ticktext = []
-    if len(times):
-        start = times.min()
-        end = times.max()
+    if plot_time_start is not None and plot_time_end is not None:
+        start = plot_time_start
+        end = plot_time_end
         duration = end - start
         freq = "1h" if duration <= pd.Timedelta(hours=18) else "2h" if duration <= pd.Timedelta(hours=36) else "6h"
         for stamp in pd.date_range(start=start.floor("h"), end=end.ceil("h"), freq=freq):
@@ -2527,6 +2613,7 @@ def build_summary_plotly(
         gridcolor=PLOT_GRID,
         linecolor=PLOT_LINE,
         tickfont=dict(color=PLOT_TEXT, size=11),
+        range=[plot_time_start, plot_time_end] if plot_time_start is not None and plot_time_end is not None else None,
     )
     fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(

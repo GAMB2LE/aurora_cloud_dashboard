@@ -133,6 +133,11 @@ Important variables include:
 - `PowerDisplayCumulativePowerGeneratedTotal`
 - `PowerDisplayCumulativePowerUtilised`
 
+The APS interactive summary also renders a display-only **SOC 24 h Projection**
+panel from `BatterySOC`. It fits the latest 30 minutes and latest 2 hours of SOC
+with a low-degree polynomial and extrapolates both fits 24 hours forward. These
+forecast traces are not stored in any Zarr product.
+
 Root attributes include:
 
 - `power_display_summary_product = "true"`

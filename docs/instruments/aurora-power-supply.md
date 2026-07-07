@@ -36,6 +36,12 @@ Typical panels include:
   - heatsink temperature
   - temperature sensors 1-4
   - left and right y-axes both use the same `Temperature [C]` range
+- **SOC 24 h Projection**
+  - `State of Charge`
+  - `30 min fit +24 h`, a display-only polynomial fit to the latest 30 minutes
+    of `BatterySOC`
+  - `2 h fit +24 h`, a display-only polynomial fit to the latest 2 hours of
+    `BatterySOC`
 Legends are placed in a consistent right-side gutter rather than collected into
 one global legend block.
 
@@ -100,6 +106,13 @@ axis in kWh, so the panel shows generation, use, and battery state without
 deriving a separate deficit estimate.
 The daily generated and utilised traces are visually broken at UTC midnight so
 their resets do not render as false vertical jumps.
+
+The **SOC 24 h Projection** panel is a presentation-layer forecast only. It
+fits recent `BatterySOC` samples from the latest 30 minutes and latest 2 hours,
+then extrapolates those fits 24 hours ahead. The default polynomial degree is
+`1` for stability and can be changed with
+`AURORA_POWER_SOC_PROJECTION_POLY_DEGREE`; forecast values are clipped to the
+physical `0-100 %` SOC range.
 
 These are display-time optimizations only; ingest, retention, and the stored
 Zarr schema are unchanged.
