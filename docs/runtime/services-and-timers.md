@@ -75,6 +75,19 @@ quicklooks for LI-COR continuity. It does not contain radiation variables.
 - `aurora-power-append.timer`
 - `aurora-power-quicklooks.timer`
 
+`aurora-power-quicklooks.service` regenerates the compact APS display summary
+and prewarmed Plotly JSON after the APS append cycle.
+
+## ASS PDU
+
+- `aurora-pdu-source-sync.timer`
+- `aurora-pdu-append.timer`
+
+The source sync pulls ASS Linux `/home/aurora/data/pdu/pdu_DDMMYYYY.csv` files
+into `/project/aurora/raw/pdu`. The appender writes
+`/data/aurora/products/power/pdu.zarr`, which is folded into the APS display
+summary by the Power quicklook pipeline when available.
+
 ## WXcam
 
 - `aurora-wxcam-source-sync.timer`

@@ -41,6 +41,7 @@ STREAM_PREFIXES = {
     "Radiation": "asfs_logger",
     "ASFS Fast Sonic": "asfs_fast_sonic",
     "Aurora Power Supply": "power",
+    "ASS PDU": "pdu",
     "WXcam": "wxcam",
 }
 
@@ -56,6 +57,7 @@ STREAM_SERVICE_KEYS = {
         "asfs_fast_sonic_quicklooks_service_healthy_state",
     ),
     "Aurora Power Supply": ("power_source_sync_service_healthy_state", "power_append_service_healthy_state", "power_quicklooks_service_healthy_state"),
+    "ASS PDU": ("pdu_source_sync_service_healthy_state", "pdu_append_service_healthy_state"),
     "WXcam": (
         "wxcam_source_sync_service_healthy_state",
         "wxcam_catalog_service_healthy_state",

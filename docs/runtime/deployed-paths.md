@@ -24,6 +24,8 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - ASFS Fast Gas Zarr:
   `/data/aurora/products/asfs_fast_gas/asfs_fast_gas.zarr`
 - Power Zarr: `/data/aurora/products/power/power.zarr`
+- ASS PDU raw mirror: `/project/aurora/raw/pdu`
+- ASS PDU Zarr: `/data/aurora/products/power/pdu.zarr`
 - WXcam Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`

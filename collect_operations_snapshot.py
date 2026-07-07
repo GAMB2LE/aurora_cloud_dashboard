@@ -97,6 +97,7 @@ STREAM_PREFIXES = {
     "asfs_fast_sonic": "asfs_fast_sonic",
     "asfs_fast_gas": "asfs_fast_gas",
     "power": "power",
+    "pdu": "pdu",
     "wxcam": "wxcam",
 }
 
@@ -119,6 +120,8 @@ SOURCE_SYNC_UNITS = (
     "aurora-asfs-fast-gas-source-sync.service",
     "aurora-power-source-sync.timer",
     "aurora-power-source-sync.service",
+    "aurora-pdu-source-sync.timer",
+    "aurora-pdu-source-sync.service",
     "aurora-wxcam-source-sync.timer",
     "aurora-wxcam-source-sync.service",
 )
@@ -152,6 +155,8 @@ PROCESSING_UNITS = (
     "aurora-asfs-fast-gas-append.service",
     "aurora-power-append.timer",
     "aurora-power-append.service",
+    "aurora-pdu-append.timer",
+    "aurora-pdu-append.service",
     "aurora-power-quicklooks.timer",
     "aurora-power-quicklooks.service",
     "aurora-wxcam-catalog.timer",

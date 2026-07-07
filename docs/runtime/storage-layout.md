@@ -14,6 +14,7 @@ separate trees.
   - `/project/aurora/raw/vaisalamet`
   - `/project/aurora/raw/asfs/crd`
   - `/project/aurora/raw/power/level1`
+  - `/project/aurora/raw/pdu`
   - `/project/aurora/raw/wxcam`
 - **Storage type:** shared Ceph network filesystem
 - **Current filesystem size on `2026-05-21`:** `4.0T`
@@ -34,6 +35,7 @@ So `/project/aurora` is the raw landing and mirror area.
 - **Examples:**
   - `/data/aurora/products/cl61/...zarr`
   - `/data/aurora/products/rpgfmcw94/cloud_radar.zarr`
+  - `/data/aurora/products/power/pdu.zarr`
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
 - **Storage type:** local disk on `/dev/vdb`

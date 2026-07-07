@@ -39,7 +39,7 @@ PLOTLY_SUMMARY_RIGHT_MARGIN = 110
 PLOTLY_SUMMARY_PANEL_HEIGHT = 225
 PLOTLY_SUMMARY_POWER_PANEL_HEIGHT = 250
 PLOTLY_SUMMARY_MAX_HEIGHT = 1650
-PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 1850
+PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 2100
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -49,6 +49,13 @@ POWER_DISPLAY_ENERGY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_ENERGY_FREQ", "
 POWER_DISPLAY_SUMMARY_FREQ = os.environ.get("AURORA_POWER_DISPLAY_SUMMARY_FREQ", POWER_DISPLAY_ENERGY_FREQ)
 POWER_DISPLAY_ENERGY_ATTR = "power_display_energy_product"
 POWER_DISPLAY_SUMMARY_ATTR = "power_display_summary_product"
+PDU_OUTLET_COUNT = 8
+PDU_DISPLAY_SUMMARY_FIELDS = tuple(
+    f"PDUOutlet{outlet}{metric}"
+    for outlet in range(1, PDU_OUTLET_COUNT + 1)
+    for metric in ("Watts", "Amps", "State")
+)
+PDU_WATT_FIELDS = tuple(f"PDUOutlet{outlet}Watts" for outlet in range(1, PDU_OUTLET_COUNT + 1))
 POWER_DISPLAY_ENERGY_MAP = {
     "SolarYield_East": "PowerDisplaySolarYield_East",
     "SolarYield_South": "PowerDisplaySolarYield_South",
@@ -134,6 +141,16 @@ COLOR = {
     "slate": "#718195",
     "black": "#22313f",
 }
+PDU_OUTLET_COLORS = (
+    COLOR["teal"],
+    COLOR["light_blue"],
+    COLOR["blue"],
+    COLOR["purple"],
+    COLOR["brown"],
+    COLOR["olive"],
+    COLOR["red"],
+    COLOR["magenta"],
+)
 
 PLOT_TEXT = "#22313f"
 PLOT_LINE = "#c5d0da"
@@ -315,6 +332,10 @@ HUMAN_LABELS = {
     "InternalTempAlarm": "Internal Alarm",
     "time_discrepancy": "Clock Discrepancy",
 }
+for _outlet in range(1, PDU_OUTLET_COUNT + 1):
+    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}Watts", f"PDU Outlet {_outlet} Power")
+    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}Amps", f"PDU Outlet {_outlet} Current")
+    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}State", f"PDU Outlet {_outlet} State")
 
 HUMAN_UNITS = {
     "baro_hPa": "hPa",
@@ -444,6 +465,10 @@ HUMAN_UNITS = {
     "time_discrepancy": "s",
     "scantime": "s",
 }
+for _outlet in range(1, PDU_OUTLET_COUNT + 1):
+    HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}Watts", "W")
+    HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}Amps", "A")
+    HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}State", "state")
 
 DISPLAY_SCALE = {}
 
@@ -728,6 +753,23 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
+            "pdu_outlet_power",
+            "ASS PDU Outlet Power",
+            "PDU Outlet Power [W]",
+            None,
+            tuple(
+                TraceSpec(
+                    field_name,
+                    f"Outlet {outlet}",
+                    PDU_OUTLET_COLORS[(outlet - 1) % len(PDU_OUTLET_COLORS)],
+                    valid_min=0.0,
+                    valid_max=5000.0,
+                    skip_if_all_zero=True,
+                )
+                for outlet, field_name in enumerate(PDU_WATT_FIELDS, start=1)
+            ),
+        ),
+        PanelSpec(
             "cumulative_power",
             "Cumulative Power & State of Charge",
             "SOC [%]",
@@ -817,6 +859,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_local_coverage_pct", "Radiation", COLOR["purple"]),
                 TraceSpec("asfs_fast_sonic_local_coverage_pct", "ASFS Fast Sonic", COLOR["magenta"]),
                 TraceSpec("power_local_coverage_pct", "Aurora Power Supply", COLOR["brown"]),
+                TraceSpec("pdu_local_coverage_pct", "ASS PDU", COLOR["red"]),
                 TraceSpec("wxcam_local_coverage_pct", "WXcam", COLOR["olive"]),
             ),
         ),
@@ -833,6 +876,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_local_lag_min", "Radiation", COLOR["purple"]),
                 TraceSpec("asfs_fast_sonic_local_lag_min", "ASFS Fast Sonic", COLOR["magenta"]),
                 TraceSpec("power_local_lag_min", "Aurora Power Supply", COLOR["brown"]),
+                TraceSpec("pdu_local_lag_min", "ASS PDU", COLOR["red"]),
                 TraceSpec("wxcam_local_lag_min", "WXcam", COLOR["olive"]),
             ),
         ),
@@ -849,6 +893,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_gws_coverage_pct", "Radiation", COLOR["purple"]),
                 TraceSpec("asfs_fast_sonic_gws_coverage_pct", "ASFS Fast Sonic", COLOR["magenta"]),
                 TraceSpec("power_gws_coverage_pct", "Aurora Power Supply", COLOR["brown"]),
+                TraceSpec("pdu_gws_coverage_pct", "ASS PDU", COLOR["red"]),
                 TraceSpec("wxcam_gws_coverage_pct", "WXcam", COLOR["olive"]),
             ),
         ),
@@ -912,6 +957,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_local_issue_count", "Radiation Local", COLOR["purple"], step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_fast_sonic_local_issue_count", "ASFS Fast Sonic Local", COLOR["magenta"], step=True, skip_if_all_zero=True),
                 TraceSpec("power_local_issue_count", "APS Local", COLOR["brown"], step=True, skip_if_all_zero=True),
+                TraceSpec("pdu_local_issue_count", "PDU Local", COLOR["red"], step=True, skip_if_all_zero=True),
                 TraceSpec("cl61_gws_issue_count", "CL61 GWS", COLOR["teal"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("radar_gws_issue_count", "Radar GWS", COLOR["blue"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("hatpro_gws_issue_count", "HATPRO GWS", COLOR["black"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
@@ -919,6 +965,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_gws_issue_count", "Radiation GWS", COLOR["purple"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_fast_sonic_gws_issue_count", "ASFS Fast Sonic GWS", COLOR["magenta"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
                 TraceSpec("power_gws_issue_count", "APS GWS", COLOR["brown"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
+                TraceSpec("pdu_gws_issue_count", "PDU GWS", COLOR["red"], axis="right", dash="dot", step=True, skip_if_all_zero=True),
             ),
         ),
         PanelSpec(
@@ -934,6 +981,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_local_lag_min", "Radiation Local", COLOR["purple"], valid_min=2.0),
                 TraceSpec("asfs_fast_sonic_local_lag_min", "ASFS Fast Sonic Local", COLOR["magenta"], valid_min=2.0),
                 TraceSpec("power_local_lag_min", "APS Local", COLOR["brown"], valid_min=2.0),
+                TraceSpec("pdu_local_lag_min", "PDU Local", COLOR["red"], valid_min=2.0),
                 TraceSpec("wxcam_local_lag_min", "WXcam Local", COLOR["olive"], valid_min=2.0),
                 TraceSpec("cl61_gws_lag_min", "CL61 GWS", COLOR["teal"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("radar_gws_lag_min", "Radar GWS", COLOR["blue"], axis="right", dash="dot", valid_min=10.0),
@@ -942,6 +990,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_gws_lag_min", "Radiation GWS", COLOR["purple"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("asfs_fast_sonic_gws_lag_min", "ASFS Fast Sonic GWS", COLOR["magenta"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("power_gws_lag_min", "APS GWS", COLOR["brown"], axis="right", dash="dot", valid_min=10.0),
+                TraceSpec("pdu_gws_lag_min", "PDU GWS", COLOR["red"], axis="right", dash="dot", valid_min=10.0),
                 TraceSpec("wxcam_gws_lag_min", "WXcam GWS", COLOR["olive"], axis="right", dash="dot", valid_min=10.0),
             ),
         ),
@@ -983,6 +1032,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("asfs_logger_source_recent_state", "Radiation Recent", COLOR["purple"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("asfs_fast_sonic_source_recent_state", "ASFS Fast Sonic Recent", COLOR["magenta"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("power_source_recent_state", "APS Recent", COLOR["brown"], axis="right", step=True, skip_if_all_zero=True),
+                TraceSpec("pdu_source_recent_state", "PDU Recent", COLOR["red"], axis="right", step=True, skip_if_all_zero=True),
                 TraceSpec("wxcam_source_recent_state", "WXcam Recent", COLOR["olive"], axis="right", step=True, skip_if_all_zero=True),
             ),
         ),
@@ -1578,11 +1628,12 @@ def _resample_display_frame(frame: pd.DataFrame, freq: str) -> pd.DataFrame:
 def build_power_display_summary_dataset(
     power_ds: xr.Dataset,
     ass_power_ds: xr.Dataset | None = None,
+    pdu_ds: xr.Dataset | None = None,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> xr.Dataset:
     """Build one-minute APS traces for fast dashboard plotting.
 
-    The raw APS and ASFS logger Zarrs remain authoritative. This derived store
+    The raw APS, ASFS logger, and ASS PDU Zarrs remain authoritative. This derived store
     keeps only the fields used by the curated Power summary panels, resampled
     to the dashboard display cadence, plus the cumulative-energy variables
     already produced for the APS cumulative panel.
@@ -1613,6 +1664,14 @@ def build_power_display_summary_dataset(
         if not ass_frame.empty:
             frames.append(ass_frame)
 
+    if pdu_ds is not None:
+        pdu_frame = _time_frame_from_dataset(pdu_ds.sortby("time"), PDU_DISPLAY_SUMMARY_FIELDS)
+        if not pdu_frame.empty:
+            pdu_frame = pdu_frame[(pdu_frame.index >= power_start) & (pdu_frame.index <= power_end)]
+        pdu_frame = _resample_display_frame(pdu_frame, freq)
+        if not pdu_frame.empty:
+            frames.append(pdu_frame)
+
     if not frames:
         return xr.Dataset()
 
@@ -1629,7 +1688,7 @@ def build_power_display_summary_dataset(
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
         attrs={
             POWER_DISPLAY_SUMMARY_ATTR: "true",
-            "source": "derived from power.zarr and optional asfs_logger.zarr ASS 48 V power",
+            "source": "derived from power.zarr plus optional asfs_logger.zarr ASS 48 V power and pdu.zarr outlet power",
             "frequency": freq,
             "time_coverage_start": start,
             "time_coverage_end": end,

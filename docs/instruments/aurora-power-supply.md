@@ -2,7 +2,7 @@
 
 Aurora Power Supply is the curated 1D electrical and thermal summary view built
 from the power Zarr, with optional ASS 48 V DC power from the ASFS logger Zarr
-for station-load context.
+and ASS PDU outlet power for station-load context.
 
 ## Interactive summary layout
 
@@ -20,6 +20,8 @@ Typical panels include:
   - DC inverter power on the right axis
 - **ASS 48 V DC Power**
   - ASS 48 V DC power from `watts_on_48vdc_Avg`, when available
+- **ASS PDU Outlet Power**
+  - outlet watt traces from `PDUOutlet1Watts` through `PDUOutlet8Watts`, when available
 - **Cumulative Power & State of Charge**
   - `State of Charge`, from `BatterySOC`, on the left axis in percent
   - `East Solar Generated`
@@ -49,6 +51,11 @@ summary is missing, the app falls back to the raw Power Zarr and the smaller
 `/data/aurora/products/power/power_display_energy.zarr` cumulative-energy
 product.
 
+When `/data/aurora/products/power/pdu.zarr` is available, the display summary
+also includes ASS PDU outlet watt traces. Those PDU samples are synced from ASS
+Linux `/home/aurora/data/pdu/pdu_DDMMYYYY.csv` into `/project/aurora/raw/pdu`
+and appended by `append_new_pdu_to_zarr.py`.
+
 The app opens the Power store with larger read chunks and uses per-trace time
 downsampling. Display-only sanity limits remove impossible APS values, such as
 single-sample charging-current/current-power outliers, before plotting. The
@@ -73,6 +80,10 @@ The **ASS 48 V DC Power** panel depends on the ASFS slow `sci` table field
 system. The APS AC/DC output, battery, solar, SOC, and thermal traces come from
 the Power Zarr and can remain current even when the ASFS `sci` stream is not
 producing new files.
+
+The **ASS PDU Outlet Power** panel depends on the ASS PDU CSV logger. It can go
+stale independently of both APS and ASFS; operations monitoring tracks its
+source sync and append timers separately.
 
 `DCInverterWatts` is plotted on its own right axis because its raw value is
 often much smaller than AC output power. The source CSV reports it consistently
@@ -108,6 +119,7 @@ Derived display product:
 
 - `/data/aurora/products/power/power_display_summary.zarr`
 - `/data/aurora/products/power/power_display_energy.zarr`
+- `/data/aurora/products/power/pdu.zarr`
 
 Presentation-layer overlay:
 

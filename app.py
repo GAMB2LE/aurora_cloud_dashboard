@@ -996,6 +996,23 @@ def _remember_time_bounds(inst: str, lower: datetime | None, upper: datetime | N
     return lower, upper
 
 
+def _time_bounds_from_dataset(ds: xr.Dataset | None) -> tuple[datetime | None, datetime | None, int, int]:
+    if ds is None or "time" not in ds:
+        return None, None, 0, 0
+    times = np.asarray(ds["time"].values)
+    raw_count = int(times.size)
+    if times.size == 0:
+        return None, None, raw_count, 0
+    valid = _valid_time_mask(times)
+    times = times[valid]
+    valid_count = int(times.size)
+    if times.size == 0:
+        return None, None, raw_count, valid_count
+    lower = pd.Timestamp(times.min()).to_pydatetime(warn=False)
+    upper = pd.Timestamp(times.max()).to_pydatetime(warn=False)
+    return lower, upper, raw_count, valid_count
+
+
 def _valid_time_mask(times: np.ndarray) -> np.ndarray:
     """Mask out NaT and clearly bogus future timestamps while preserving original indices."""
     if times.size == 0:
@@ -1034,20 +1051,32 @@ def _dataset_time_bounds(inst: str | None = None):
             perf["time_start"] = lower
             perf["time_end"] = upper
             return _remember_time_bounds(inst, lower, upper)
+        if inst == "power":
+            for source_name, getter in (
+                ("power_display_summary", _get_power_display_summary_dataset),
+                ("power_display_energy", _get_power_display_energy_dataset),
+            ):
+                lower, upper, raw_count, valid_count = _time_bounds_from_dataset(getter())
+                perf[f"{source_name}_time_count"] = raw_count
+                perf[f"{source_name}_valid_time_count"] = valid_count
+                if lower is not None and upper is not None:
+                    perf["source"] = source_name
+                    perf["time_start"] = lower
+                    perf["time_end"] = upper
+                    return _remember_time_bounds(inst, lower, upper)
         ds = _get_base_dataset(inst)
         if ds is None or "time" not in ds:
             perf["status"] = "no_dataset"
             return _remember_time_bounds(inst, None, None)
-        times = np.asarray(ds["time"].values)
-        perf["raw_time_count"] = int(times.size)
-        if times.size == 0:
+        lower, upper, raw_count, valid_count = _time_bounds_from_dataset(ds)
+        perf["raw_time_count"] = raw_count
+        if raw_count == 0:
             perf["status"] = "empty"
             return _remember_time_bounds(inst, None, None)
-        valid = _valid_time_mask(times)
-        times = times[valid]
-        perf["valid_time_count"] = int(times.size)
-        lower = pd.Timestamp(times.min()).to_pydatetime(warn=False)
-        upper = pd.Timestamp(times.max()).to_pydatetime(warn=False)
+        perf["valid_time_count"] = valid_count
+        if lower is None or upper is None:
+            perf["status"] = "empty"
+            return _remember_time_bounds(inst, None, None)
         perf["time_start"] = lower
         perf["time_end"] = upper
         return _remember_time_bounds(inst, lower, upper)
@@ -2707,6 +2736,7 @@ hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, o
 
 _live_guard = False
 _instrument_guard = False
+_instrument_change_origin = "interactive"
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
 _base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=True)
@@ -2738,7 +2768,7 @@ def _capture_current_instrument_state(inst: str | None = None) -> None:
     }
 
 
-def _apply_instrument_defaults(inst: str, reset_time: bool = True):
+def _apply_instrument_defaults(inst: str, reset_time: bool = True, sync_quicklooks: bool = False):
     """Switch instrument: refresh dataset cache, reset controls, and relabel color widgets."""
     global CURRENT_INSTRUMENT, _instrument_guard
     _instrument_guard = True
@@ -2785,8 +2815,9 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
         bottom_range_m.value = 0
         top_range_m.value = cfg["top_range_default"]
 
-        science_instrument.value = inst
-        hk_instrument.value = inst
+        if sync_quicklooks:
+            science_instrument.value = inst
+            hk_instrument.value = inst
 
         if reset_time:
             saved_live = bool(saved_state.get("live_toggle")) if (saved_state and not is_wxcam) else False
@@ -2879,11 +2910,12 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True):
             iwv_ymin.visible = iwv_ymax.visible = False
             irr_ymin.visible = irr_ymax.visible = False
 
-        _refresh_ql_options(preserve_current=False)
-        _refresh_hk_options(preserve_current=False)
-        # Force quicklook panes to refresh even if the selection string did not change.
-        ql_date.param.trigger("value")
-        hk_date.param.trigger("value")
+        if sync_quicklooks:
+            _refresh_ql_options(preserve_current=False)
+            _refresh_hk_options(preserve_current=False)
+            # Force quicklook panes to refresh even if the selection string did not change.
+            ql_date.param.trigger("value")
+            hk_date.param.trigger("value")
     _instrument_guard = False
     # Run a single consolidated refresh after batching widget changes
     _update_view(
@@ -2953,7 +2985,8 @@ def _on_instrument_change(event):
         return
     if event.old:
         _capture_current_instrument_state(event.old)
-    _apply_instrument_defaults(event.new, reset_time=True)
+    sync_quicklooks = _instrument_change_origin != "interactive"
+    _apply_instrument_defaults(event.new, reset_time=True, sync_quicklooks=sync_quicklooks)
 
 
 instrument_select.param.watch(_on_instrument_change, "value")
@@ -2963,7 +2996,12 @@ def _on_science_instrument_change(event):
     """Sync science quicklook instrument dropdown back to the main instrument selector."""
     if _instrument_guard:
         return
-    instrument_select.value = event.new
+    global _instrument_change_origin
+    _instrument_change_origin = "science"
+    try:
+        instrument_select.value = event.new
+    finally:
+        _instrument_change_origin = "interactive"
 
 
 science_instrument.param.watch(_on_science_instrument_change, "value")
@@ -2973,7 +3011,12 @@ def _on_hk_instrument_change(event):
     """Sync housekeeping quicklook instrument dropdown back to the main selector."""
     if _instrument_guard:
         return
-    instrument_select.value = event.new
+    global _instrument_change_origin
+    _instrument_change_origin = "housekeeping"
+    try:
+        instrument_select.value = event.new
+    finally:
+        _instrument_change_origin = "interactive"
 
 
 hk_instrument.param.watch(_on_hk_instrument_change, "value")
@@ -5247,7 +5290,7 @@ _hk_timer = _safe_periodic_callback(_refresh_hk_latest_if_needed, period=300_000
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
 _refresh_hk_options(preserve_current=True)
-_apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True)
+_apply_instrument_defaults(CURRENT_INSTRUMENT, reset_time=True, sync_quicklooks=True)
 
 
 def _safe_widget_value(widget_name: str):

@@ -36,6 +36,7 @@ OPS_STREAMS = (
     "asfs_logger",
     "asfs_fast_sonic",
     "power",
+    "pdu",
     "wxcam",
 )
 
