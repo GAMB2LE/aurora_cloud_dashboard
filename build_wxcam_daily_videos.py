@@ -208,12 +208,15 @@ def build_daily_videos(
     today_token = datetime.now(timezone.utc).strftime("%Y%m%d")
     today_iso = f"{today_token[:4]}-{today_token[4:6]}-{today_token[6:8]}"
     if catalog_path.exists():
-        latest_hk = extra_housekeeping_latest_png(quicklook_root, "wxcam")
-        if latest_hk is not None:
-            plot_wxcam_housekeeping_latest(catalog_path, "HK_WXcam - Latest 24 hours", latest_hk)
-        today_hk = extra_housekeeping_daily_png(quicklook_root, "wxcam", today_token)
-        if today_hk is not None:
-            plot_wxcam_housekeeping_day(catalog_path, today_iso, f"HK_WXcam - {today_iso}", today_hk)
+        try:
+            latest_hk = extra_housekeeping_latest_png(quicklook_root, "wxcam")
+            if latest_hk is not None:
+                plot_wxcam_housekeeping_latest(catalog_path, "HK_WXcam - Latest 24 hours", latest_hk)
+            today_hk = extra_housekeeping_daily_png(quicklook_root, "wxcam", today_token)
+            if today_hk is not None:
+                plot_wxcam_housekeeping_day(catalog_path, today_iso, f"HK_WXcam - {today_iso}", today_hk)
+        except ValueError as exc:
+            print(f"Skipping wxcam housekeeping quicklooks: {exc}")
     for image_type, spec in WXCAM_IMAGE_TYPES.items():
         stream_root = raw_root / spec["stream"]
         image_glob = spec["image_glob"]
