@@ -44,21 +44,21 @@ the mirrored raw RPG LV1 files under `/project/aurora/raw/rpgfmcw94`.
 
 ## Display colormaps
 
-Cloud Radar display colors follow Py-ART's variable-specific radar colormap
-convention. The dashboard keeps the palette definitions local in
-`radar_colormaps.py` so the deployed app and quicklook generators do not require
-Py-ART at runtime.
+Cloud Radar display colors follow Py-ART radar conventions with selected
+colorblind-friendly `cmweather` overrides. The dashboard keeps the palette
+definitions local in `radar_colormaps.py` so the deployed app and quicklook
+generators do not require Py-ART or `cmweather` at runtime.
 
-| Dashboard variable | Py-ART-style colormap |
+| Dashboard variable | Radar colormap |
 | --- | --- |
 | `ZE_dBZ` | `HomeyerRainbow` |
 | `ZE45_dBZ` | `HomeyerRainbow` |
-| `MeanVel` | `BuDRd18` |
-| `SpecWidth` | `NWS_SPW` |
+| `MeanVel` | `balance` |
+| `SpecWidth` | `SpectralExtended` |
 | `ZDR` | `RefDiff` |
 | `RHV` | `RefDiff` |
 | `DiffAtt` | `RefDiff` |
-| `SLDR` | `SCook18` |
+| `SLDR` | `CM_depol` |
 | `PhiDP` | `Wild25` |
 | `KDP` | `Theodore16` |
 | `SRCX` | `Carbone17` |
@@ -66,7 +66,9 @@ Py-ART at runtime.
 | `Skew` | `BuDRd18` |
 
 The existing dashboard value limits remain tuned for the deployed W-band cloud
-radar product; only the color tables are Py-ART-style.
+radar product. Velocity uses the balanced diverging palette, spectrum width uses
+the extended spectral palette, and SLDR uses the `CM_depol` depolarization
+palette for better colorblind accessibility.
 
 ## Conversion notes
 

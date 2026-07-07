@@ -10,8 +10,10 @@ shown as a height-time product in the interactive dashboard.
   the Zarr; the app keeps a defensive future-time mask for recent windows and
   plot bounds
 - availability bars make true data gaps visible across the selected time range
-- radar moments use Py-ART-style variable-specific colormaps; reflectivity
-  fields use `HomeyerRainbow`
+- radar moments use Py-ART/cmweather-style variable-specific colormaps:
+  reflectivity uses `HomeyerRainbow`, velocity uses `balance`, spectrum width
+  uses `SpectralExtended`, and SLDR uses the colorblind-friendly `CM_depol`
+  depolarization palette
 
 ## Quicklooks
 
@@ -19,8 +21,8 @@ shown as a height-time product in the interactive dashboard.
 - latest and daily science quicklooks share the same compact eight-panel layout,
   with boxed panel labels, a common UTC x-axis, and fixed colorbar gutters so the
   saved PNGs do not carry large blank margins
-- science quicklook panels use the same Py-ART-style radar colormaps as the
-  interactive browser
+- science quicklook panels use the same radar colormaps as the interactive
+  browser
 - housekeeping quicklooks include `HK_Radar`, which is generated from the raw
   RPG LV1 support variables rather than the radar science Zarr
 
