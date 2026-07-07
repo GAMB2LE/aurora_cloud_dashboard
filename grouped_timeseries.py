@@ -56,6 +56,11 @@ PDU_DISPLAY_SUMMARY_FIELDS = tuple(
     for metric in ("Watts", "Amps", "State")
 )
 PDU_WATT_FIELDS = tuple(f"PDUOutlet{outlet}Watts" for outlet in range(1, PDU_OUTLET_COUNT + 1))
+PDU_OUTLET_LABELS = {
+    5: "CL61",
+    6: "Radar",
+    8: "HATPRO",
+}
 POWER_DISPLAY_ENERGY_MAP = {
     "SolarYield_East": "PowerDisplaySolarYield_East",
     "SolarYield_South": "PowerDisplaySolarYield_South",
@@ -333,9 +338,10 @@ HUMAN_LABELS = {
     "time_discrepancy": "Clock Discrepancy",
 }
 for _outlet in range(1, PDU_OUTLET_COUNT + 1):
-    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}Watts", f"PDU Outlet {_outlet} Power")
-    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}Amps", f"PDU Outlet {_outlet} Current")
-    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}State", f"PDU Outlet {_outlet} State")
+    _outlet_label = PDU_OUTLET_LABELS.get(_outlet, f"PDU Outlet {_outlet}")
+    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}Watts", f"{_outlet_label} Power")
+    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}Amps", f"{_outlet_label} Current")
+    HUMAN_LABELS.setdefault(f"PDUOutlet{_outlet}State", f"{_outlet_label} State")
 
 HUMAN_UNITS = {
     "baro_hPa": "hPa",
@@ -760,7 +766,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             tuple(
                 TraceSpec(
                     field_name,
-                    f"Outlet {outlet}",
+                    PDU_OUTLET_LABELS.get(outlet, f"Outlet {outlet}"),
                     PDU_OUTLET_COLORS[(outlet - 1) % len(PDU_OUTLET_COLORS)],
                     valid_min=0.0,
                     valid_max=5000.0,
