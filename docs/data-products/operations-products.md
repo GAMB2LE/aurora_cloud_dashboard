@@ -29,6 +29,9 @@ These snapshots capture:
 - Aurora Power Supply battery state of charge from the latest `BatterySOC`
   sample in the power Zarr, scored green at or above `50 %`, amber from
   `25-50 %`, and red below `25 %`
+- Aurora Power Supply depletion estimate from `BatterySOC`, `BatteryWatts`, and
+  a `26 kWh` battery capacity. Negative `BatteryWatts` is treated as discharge;
+  positive `BatteryWatts` is treated as charging rather than a countdown.
 - Aurora Power Supply internal temperature from the latest
   `InternalTemperature` sample in the power Zarr, scored green below `40 C`,
   amber from `40-45 C`, and red at `45 C` or above

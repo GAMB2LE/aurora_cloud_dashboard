@@ -272,6 +272,8 @@ SESSION_HEARTBEAT_MS = int(os.environ.get("AURORA_DASHBOARD_SESSION_HEARTBEAT_MS
 _SESSION_BOOT_TS = datetime.now(timezone.utc)
 OPS_TREND_CACHE_TTL = timedelta(minutes=int(os.environ.get("AURORA_OPS_TREND_CACHE_TTL_MINUTES", "5")))
 OPS_TREND_WINDOW = timedelta(days=int(os.environ.get("AURORA_OPS_TREND_DAYS", "7")))
+OPS_BATTERY_CAPACITY_KWH = float(os.environ.get("APS_BATTERY_CAPACITY_KWH", "26"))
+OPS_BATTERY_DEPLETION_DEADBAND_W = float(os.environ.get("APS_BATTERY_DEPLETION_DEADBAND_W", "50"))
 
 
 def _session_id() -> str | None:
@@ -1499,6 +1501,29 @@ def _ops_level_from_battery_soc(value) -> str:
     return "red"
 
 
+def _ops_level_from_battery_depletion(snapshot: dict) -> str:
+    power_w = _ops_float(snapshot.get("aps_battery_power_w"))
+    soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
+    if power_w is None or soc is None:
+        return "gray"
+    deadband_w = _ops_float(snapshot.get("aps_battery_depletion_deadband_w")) or OPS_BATTERY_DEPLETION_DEADBAND_W
+    if power_w >= -deadband_w:
+        return "green"
+    hours = _ops_float(snapshot.get("aps_battery_depletion_hours"))
+    if hours is None:
+        capacity_kwh = _ops_float(snapshot.get("aps_battery_capacity_kwh")) or OPS_BATTERY_CAPACITY_KWH
+        remaining_kwh = max(soc, 0.0) / 100.0 * capacity_kwh
+        discharge_kw = abs(power_w) / 1000.0
+        hours = remaining_kwh / discharge_kw if discharge_kw > 0 else None
+    if hours is None:
+        return "gray"
+    if hours >= 24.0:
+        return "green"
+    if hours >= 12.0:
+        return "amber"
+    return "red"
+
+
 def _ops_level_from_internal_temp(value) -> str:
     temperature = _ops_float(value)
     if temperature is None:
@@ -1557,6 +1582,34 @@ def _ops_battery_soc_text(snapshot: dict) -> tuple[str, str]:
         return value, "Aurora Power Supply battery state of charge"
     age_text = _format_duration(timedelta(minutes=age_min))
     return value, f"Aurora Power Supply battery state of charge, {age_text} old"
+
+
+def _ops_battery_depletion_text(snapshot: dict) -> tuple[str, str]:
+    soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
+    power_w = _ops_float(snapshot.get("aps_battery_power_w"))
+    if soc is None or power_w is None:
+        return "No data", "Needs BatterySOC and BatteryWatts from the Aurora Power Supply"
+
+    capacity_kwh = _ops_float(snapshot.get("aps_battery_capacity_kwh")) or OPS_BATTERY_CAPACITY_KWH
+    deadband_w = _ops_float(snapshot.get("aps_battery_depletion_deadband_w")) or OPS_BATTERY_DEPLETION_DEADBAND_W
+    remaining_kwh = _ops_float(snapshot.get("aps_battery_remaining_kwh"))
+    if remaining_kwh is None:
+        remaining_kwh = max(soc, 0.0) / 100.0 * capacity_kwh
+
+    age_min = _ops_float(snapshot.get("aps_battery_power_age_min"))
+    age_text = "" if age_min is None else f", power sample {_format_duration(timedelta(minutes=age_min))} old"
+    energy_text = f"{remaining_kwh:.1f} kWh remaining from {capacity_kwh:.0f} kWh"
+
+    if power_w < -deadband_w:
+        hours = _ops_float(snapshot.get("aps_battery_depletion_hours"))
+        if hours is None:
+            discharge_kw = abs(power_w) / 1000.0
+            hours = remaining_kwh / discharge_kw if discharge_kw > 0 else None
+        value = "No data" if hours is None else _format_duration(timedelta(hours=hours))
+        return value, f"{energy_text}; discharging at {abs(power_w):.0f} W{age_text}"
+    if power_w > deadband_w:
+        return "Charging", f"{energy_text}; charging at {power_w:.0f} W{age_text}"
+    return "Flat", f"{energy_text}; battery power {power_w:.0f} W within +/-{deadband_w:.0f} W deadband{age_text}"
 
 
 def _ops_internal_temp_text(snapshot: dict) -> tuple[str, str]:
@@ -2084,6 +2137,7 @@ def _ops_operations_markup() -> str:
         source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
+        battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         internal_temp_level = _ops_level_from_internal_temp(snapshot.get("aps_internal_temp_c"))
         perf_log_level = _ops_level_from_perf_log(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
@@ -2108,7 +2162,18 @@ def _ops_operations_markup() -> str:
         # Render/performance telemetry is diagnostic: it should stay visible,
         # but it should not turn the overall operations state into "Action
         # needed" when the data/transfer/power systems are otherwise healthy.
-        overall_level = _ops_worst_level([snapshot_level, source_level, source_freshness_level, battery_level, battery_soc_level, internal_temp_level, processing_level, transfer_level, mirror_level])
+        overall_level = _ops_worst_level([
+            snapshot_level,
+            source_level,
+            source_freshness_level,
+            battery_level,
+            battery_soc_level,
+            battery_depletion_level,
+            internal_temp_level,
+            processing_level,
+            transfer_level,
+            mirror_level,
+        ])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -2122,6 +2187,7 @@ def _ops_operations_markup() -> str:
         age_label = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
         battery_value, battery_meta = _ops_battery_text(snapshot)
         battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
+        battery_depletion_value, battery_depletion_meta = _ops_battery_depletion_text(snapshot)
         internal_temp_value, internal_temp_meta = _ops_internal_temp_text(snapshot)
         perf_log_value, perf_log_meta = _ops_perf_log_text(snapshot)
         perf_summary = _ops_perf_summary(Path(snapshot.get("dashboard_perf_log_path") or PERF_LOG_PATH))
@@ -2192,6 +2258,12 @@ def _ops_operations_markup() -> str:
                 battery_soc_level,
                 battery_soc_value,
                 f"{battery_soc_meta}; green >=50 %, amber 25-50 %, red <25 %",
+            ),
+            _ops_card_markup(
+                "Battery depletion",
+                battery_depletion_level,
+                battery_depletion_value,
+                f"{battery_depletion_meta}; green >=24 h or not depleting, amber 12-24 h, red <12 h",
             ),
             _ops_card_markup(
                 "APS internal temp",

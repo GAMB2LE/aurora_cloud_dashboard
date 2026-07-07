@@ -11,6 +11,10 @@ stack.
   above `52 V`, amber from `50-52 V`, and red below `50 V`
 - Aurora Power Supply battery state of charge from `BatterySOC`, scored green
   at or above `50 %`, amber from `25-50 %`, and red below `25 %`
+- Aurora Power Supply estimated time until depleted, calculated from
+  `BatterySOC`, a `26 kWh` battery capacity, and `BatteryWatts`; negative
+  `BatteryWatts` is treated as discharge, while positive power is reported as
+  charging
 - Aurora Power Supply internal temperature from `InternalTemperature`,
   scored green below `40 C`, amber from `40-45 C`, and red at `45 C` or above
 - source sync and processing health

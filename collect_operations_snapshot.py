@@ -26,6 +26,8 @@ HEALTH_OUTPUT_ROOT_DEFAULT = Path("/data/aurora/products/ops_monitor/health")
 MANIFEST_ROOT_DEFAULT = Path("/data/aurora/internal/mirror_manifests")
 GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
+APS_BATTERY_CAPACITY_KWH = float(os.environ.get("APS_BATTERY_CAPACITY_KWH", "26"))
+APS_BATTERY_DEPLETION_DEADBAND_W = float(os.environ.get("APS_BATTERY_DEPLETION_DEADBAND_W", "50"))
 DASHBOARD_PERF_LOG_DEFAULT = Path("/data/aurora/products/dashboard/dashboard_perf.jsonl")
 DASHBOARD_HTTP_URL_DEFAULT = "http://127.0.0.1:5006/app"
 PRIMARY_DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app"
@@ -780,6 +782,34 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     if battery_soc_time is not None:
         record["aps_battery_soc_time_utc"] = battery_soc_time.isoformat()
         record["aps_battery_soc_age_min"] = max((now - battery_soc_time).total_seconds(), 0.0) / 60.0
+    battery_power, battery_power_time = _latest_finite_zarr_value(
+        _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
+        "BatteryWatts",
+    )
+    record["aps_battery_power_w"] = battery_power
+    record["aps_battery_capacity_kwh"] = APS_BATTERY_CAPACITY_KWH
+    record["aps_battery_depletion_deadband_w"] = APS_BATTERY_DEPLETION_DEADBAND_W
+    if battery_power_time is not None:
+        record["aps_battery_power_time_utc"] = battery_power_time.isoformat()
+        record["aps_battery_power_age_min"] = max((now - battery_power_time).total_seconds(), 0.0) / 60.0
+    if battery_soc is not None:
+        remaining_kwh = max(float(battery_soc), 0.0) / 100.0 * APS_BATTERY_CAPACITY_KWH
+        record["aps_battery_remaining_kwh"] = remaining_kwh
+        if battery_power is not None:
+            if battery_power < -APS_BATTERY_DEPLETION_DEADBAND_W:
+                discharge_kw = abs(float(battery_power)) / 1000.0
+                record["aps_battery_depleting_state"] = 1
+                record["aps_battery_charging_state"] = 0
+                record["aps_battery_discharge_power_w"] = abs(float(battery_power))
+                record["aps_battery_depletion_hours"] = remaining_kwh / discharge_kw if discharge_kw > 0 else None
+            elif battery_power > APS_BATTERY_DEPLETION_DEADBAND_W:
+                record["aps_battery_depleting_state"] = 0
+                record["aps_battery_charging_state"] = 1
+                record["aps_battery_discharge_power_w"] = 0.0
+            else:
+                record["aps_battery_depleting_state"] = 0
+                record["aps_battery_charging_state"] = 0
+                record["aps_battery_discharge_power_w"] = 0.0
     internal_temp, internal_temp_time = _latest_finite_zarr_value(
         _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
         "InternalTemperature",
@@ -975,6 +1005,29 @@ def _level_from_battery_soc(value: float | None) -> str:
     return "red"
 
 
+def _level_from_battery_depletion(snapshot: dict[str, Any]) -> str:
+    power_w = _value(snapshot, "aps_battery_power_w")
+    soc = _value(snapshot, "aps_battery_soc_pct")
+    if power_w is None or soc is None:
+        return "gray"
+    deadband_w = _value(snapshot, "aps_battery_depletion_deadband_w") or APS_BATTERY_DEPLETION_DEADBAND_W
+    if power_w >= -deadband_w:
+        return "green"
+    hours = _value(snapshot, "aps_battery_depletion_hours")
+    if hours is None:
+        capacity_kwh = _value(snapshot, "aps_battery_capacity_kwh") or APS_BATTERY_CAPACITY_KWH
+        remaining_kwh = max(soc, 0.0) / 100.0 * capacity_kwh
+        discharge_kw = abs(power_w) / 1000.0
+        hours = remaining_kwh / discharge_kw if discharge_kw > 0 else None
+    if hours is None:
+        return "gray"
+    if hours >= 24.0:
+        return "green"
+    if hours >= 12.0:
+        return "amber"
+    return "red"
+
+
 def _level_from_internal_temp(value: float | None) -> str:
     if value is None:
         return "gray"
@@ -1083,6 +1136,19 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         "power",
         "APS battery state of charge",
         details=f"SOC={_fmt(_value(snapshot, 'aps_battery_soc_pct'), '%', 0)}, age={_fmt(_value(snapshot, 'aps_battery_soc_age_min'), ' min')}",
+    )
+    depletion_level = _level_from_battery_depletion(snapshot)
+    _health_check(
+        checks,
+        depletion_level,
+        "power",
+        "APS estimated time until depleted",
+        details=(
+            f"time={_fmt(_value(snapshot, 'aps_battery_depletion_hours'), ' h')}, "
+            f"remaining={_fmt(_value(snapshot, 'aps_battery_remaining_kwh'), ' kWh')}, "
+            f"battery_power={_fmt(_value(snapshot, 'aps_battery_power_w'), ' W', 0)}, "
+            f"capacity={_fmt(_value(snapshot, 'aps_battery_capacity_kwh'), ' kWh', 0)}"
+        ),
     )
     temp_level = _level_from_internal_temp(_value(snapshot, "aps_internal_temp_c"))
     _health_check(
