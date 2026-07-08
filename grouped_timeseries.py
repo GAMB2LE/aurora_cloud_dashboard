@@ -2479,6 +2479,7 @@ def build_summary_plotly(
     instrument: str,
     title: str | None = None,
     max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
+    x_limits=None,
 ) -> go.Figure:
     ds = _prepare_summary_dataset(ds, instrument)
     times = _time_index(ds)
@@ -2499,6 +2500,18 @@ def build_summary_plotly(
     separate_projection_axis = instrument == "power" and any(panel.key == "soc_projection" for panel, _rows in panels)
     base_time_start = times.min()
     base_time_end = times.max()
+    if x_limits is not None:
+        try:
+            requested_start, requested_end = (pd.Timestamp(value) for value in x_limits)
+            if requested_start.tz is not None:
+                requested_start = requested_start.tz_convert("UTC").tz_localize(None)
+            if requested_end.tz is not None:
+                requested_end = requested_end.tz_convert("UTC").tz_localize(None)
+            if pd.notna(requested_start) and pd.notna(requested_end) and requested_end > requested_start:
+                base_time_start = requested_start
+                base_time_end = requested_end
+        except Exception:
+            pass
 
     fig = make_subplots(
         rows=len(panels),

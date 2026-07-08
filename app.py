@@ -2826,6 +2826,7 @@ irr_ymax = pn.widgets.FloatInput(name="IRR / SURF_T max (°C)", value=10.0, step
 prev_btn = pn.widgets.Button(name="Previous Day", button_type="default")
 next_btn = pn.widgets.Button(name="Next Day/Current Day", button_type="default")
 live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="primary", value=True)
+reset_view_btn = pn.widgets.Button(name="Reset View Defaults", button_type="default")
 instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 science_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
@@ -2837,6 +2838,58 @@ _instrument_change_origin = "interactive"
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
 _base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=True)
+
+
+def _last_24h_utc_window() -> tuple[datetime, datetime]:
+    end = datetime.utcnow()
+    return end - DEFAULT_WINDOW, end
+
+
+def _set_float_input_default(inp, value: float, peer_value: float) -> None:
+    inp.value = value
+    span = abs(peer_value - value) or 1.0
+    inp.step = span / 100.0
+    inp.format = "0.000000e+00" if max(abs(value), abs(peer_value)) < 1e-3 else None
+
+
+def _apply_plot_control_defaults(inst: str | None = None, reset_variables: bool = True) -> None:
+    """Reset visible plot controls for the current instrument without changing data."""
+    inst = inst or CURRENT_INSTRUMENT
+    cfg = _cfg(inst)
+    vars_cfg = cfg["vars"]
+    is_hatpro = inst == "Scanning Microwave Radiometer"
+    is_stacked_timeseries = _is_stacked_timeseries_instrument(inst)
+    is_wxcam = _is_wxcam_instrument(inst)
+
+    if reset_variables and not is_wxcam:
+        var1_select.value = cfg["default_top"]
+        var2_select.value = cfg["default_bottom"]
+
+    bottom_range_m.value = 0
+    top_range_m.value = cfg["top_range_default"]
+
+    var1 = vars_cfg.get(var1_select.value) or vars_cfg.get(cfg["default_top"])
+    var2 = vars_cfg.get(var2_select.value) or vars_cfg.get(cfg["default_bottom"])
+    if var1:
+        beta_vmin.name = f"{var1['label']} min"
+        beta_vmax.name = f"{var1['label']} max"
+        _set_float_input_default(beta_vmin, var1["clim"][0], var1["clim"][1])
+        _set_float_input_default(beta_vmax, var1["clim"][1], var1["clim"][0])
+    if var2 and not (is_hatpro or is_stacked_timeseries or is_wxcam):
+        ldr_vmin.name = f"{var2['label']} min"
+        ldr_vmax.name = f"{var2['label']} max"
+        _set_float_input_default(ldr_vmin, var2["clim"][0], var2["clim"][1])
+        _set_float_input_default(ldr_vmax, var2["clim"][1], var2["clim"][0])
+
+    if is_hatpro:
+        beta_vmin.name = "T_PROF min (K)"
+        beta_vmax.name = "T_PROF max (K)"
+        if var1:
+            _set_float_input_default(beta_vmin, var1["clim"][0], var1["clim"][1])
+            _set_float_input_default(beta_vmax, var1["clim"][1], var1["clim"][0])
+        lwp_ymin.value, lwp_ymax.value = 0.0, 400.0
+        iwv_ymin.value, iwv_ymax.value = 0.0, 60.0
+        irr_ymin.value, irr_ymax.value = -20.0, 60.0
 
 
 def _capture_current_instrument_state(inst: str | None = None) -> None:
@@ -2929,13 +2982,11 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True, sync_quickloo
                 range_start.value = saved_start
                 range_end.value = saved_end
             elif _APP_BOOTSTRAPPING:
-                end = _ensure_utc(range_end.value) or datetime.utcnow()
-                range_start.value = end - DEFAULT_WINDOW
+                start, end = _last_24h_utc_window()
+                range_start.value = start
                 range_end.value = end
             else:
-                tmin, tmax = _dataset_time_bounds(inst)
-                end = tmax or datetime.utcnow()
-                start = end - DEFAULT_WINDOW
+                start, end = _last_24h_utc_window()
                 range_start.value = start
                 range_end.value = end
             # WXcam is a manual browser: refresh when switching back into it,
@@ -2956,6 +3007,7 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True, sync_quickloo
         beta_vmax.visible = not (is_stacked_timeseries or is_wxcam)
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
+        reset_view_btn.visible = not is_wxcam
         science_image_type.visible = is_wxcam
         if is_wxcam:
             science_image_type.name = "Image type"
@@ -3036,30 +3088,31 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True, sync_quickloo
     )
 
 
-def _refresh_to_latest(_event=None):
+def _refresh_to_latest(_event=None, reset_controls: bool = False):
     """Jump the interactive time controls to the latest 24 h window."""
     global _live_guard
+    previous_guard = _live_guard
     _live_guard = True
     if not _is_wxcam_instrument(CURRENT_INSTRUMENT) and _dataset_cache_age(CURRENT_INSTRUMENT) >= timedelta(milliseconds=DATA_REFRESH_MS):
         _refresh_base_dataset(CURRENT_INSTRUMENT)
-    tmin, tmax = _dataset_time_bounds()
-    end = tmax or datetime.utcnow()
-    start = end - DEFAULT_WINDOW
-    range_start.value = start
-    range_end.value = end
-    bottom_range_m.value = 0
-    top_range_m.value = _cfg()["top_range_default"]
-    _live_guard = False
+    start, end = _last_24h_utc_window()
+    with hold():
+        range_start.value = start
+        range_end.value = end
+        if reset_controls:
+            _apply_plot_control_defaults(CURRENT_INSTRUMENT, reset_variables=True)
+    _live_guard = previous_guard
 
 
 def _set_live(state: bool):
     """Set live toggle state without re-triggering handlers."""
     global _live_guard
+    previous_guard = _live_guard
     _live_guard = True
     live_toggle.value = state
     live_toggle.name = "Live Update (Last 24h)" if state else "Live Off"
     live_toggle.button_type = "primary" if state else "default"
-    _live_guard = False
+    _live_guard = previous_guard
 
 
 def _on_live_toggle(event):
@@ -3074,6 +3127,17 @@ def _on_live_toggle(event):
 
 
 live_toggle.param.watch(_on_live_toggle, "value")
+
+
+def _reset_view_defaults(_event=None):
+    """Reset time, height/range, and scale controls to the live default view."""
+    if _is_wxcam_instrument(CURRENT_INSTRUMENT):
+        return
+    _set_live(True)
+    _refresh_to_latest(reset_controls=True)
+
+
+reset_view_btn.on_click(_reset_view_defaults)
 
 
 def _on_instrument_change(event):
@@ -3208,8 +3272,7 @@ def _shift_next(_event=None):
     next_end = next_start + timedelta(days=1) - timedelta(minutes=1)
     if tmax and next_end > tmax:
         # Not enough data ahead; show latest 24h
-        latest_end = tmax
-        latest_start = tmax - DEFAULT_WINDOW
+        latest_start, latest_end = _last_24h_utc_window()
         if tmin:
             latest_start = max(latest_start, tmin)
         range_start.value = latest_start
@@ -4733,6 +4796,7 @@ def _update_hatpro_view(
                 tickmode="array",
                 tickvals=tickvals,
                 ticktext=ticktext,
+                range=[start_ts.to_pydatetime(), end_ts.to_pydatetime()] if start and end else None,
                 tickangle=-45,
                 showgrid=True,
                 gridcolor=THEME_GRID,
@@ -4861,7 +4925,13 @@ def _update_stacked_timeseries_view(
             perf["max_time_samples"] = max_time_samples
             perf["plot_density_mode"] = "per_trace_display_downsampled"
             fig_started = perf_counter()
-            fig = build_summary_plotly(ds, instrument, title=display_name(instrument), max_time_samples=max_time_samples)
+            fig = build_summary_plotly(
+                ds,
+                instrument,
+                title=display_name(instrument),
+                max_time_samples=max_time_samples,
+                x_limits=(start, end),
+            )
             perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
             perf.update(_figure_metrics(fig))
         except ValueError as exc:
@@ -5112,6 +5182,7 @@ def _render_interactive_view(
                     tickmode="array",
                     tickvals=tickvals,
                     ticktext=ticktext,
+                    range=[start_ts.to_pydatetime(), end_ts.to_pydatetime()] if start and end else None,
                     tickangle=-45,
                     showgrid=True,
                     gridcolor=grid,
@@ -5125,6 +5196,7 @@ def _render_interactive_view(
                     tickmode="array",
                     tickvals=tickvals,
                     ticktext=ticktext,
+                    range=[start_ts.to_pydatetime(), end_ts.to_pydatetime()] if start and end else None,
                     tickangle=-45,
                     showgrid=True,
                     gridcolor=grid,
@@ -7675,7 +7747,7 @@ body, .bk {
 # Controls card: group all widgets in a tidy stack.
 controls = pn.Card(
     pn.Column(
-        pn.Row(instrument_select, range_start, range_end, live_toggle, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(instrument_select, range_start, range_end, live_toggle, reset_view_btn, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(var1_select, var2_select, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(bottom_range_m, top_range_m, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
         pn.Row(beta_vmin, beta_vmax, ldr_vmin, ldr_vmax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
