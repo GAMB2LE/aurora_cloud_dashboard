@@ -2107,6 +2107,17 @@ def _trace_plot_values(
     return _insert_day_breaks(trace_times, trace_values, trace)
 
 
+def _plotly_time_ticks(start: pd.Timestamp, end: pd.Timestamp) -> tuple[list[object], list[str]]:
+    tickvals: list[object] = []
+    ticktext: list[str] = []
+    duration = end - start
+    freq = "1h" if duration <= pd.Timedelta(hours=18) else "2h" if duration <= pd.Timedelta(hours=36) else "6h"
+    for stamp in pd.date_range(start=start.floor("h"), end=end.ceil("h"), freq=freq):
+        tickvals.append(stamp.to_pydatetime())
+        ticktext.append(stamp.strftime("%H:%M"))
+    return tickvals, ticktext
+
+
 def _include_zero_in_limits(limits: tuple[float, float] | None) -> tuple[float, float] | None:
     """Expand an axis range just enough to keep the zero reference visible."""
     if limits is None:
@@ -2477,11 +2488,14 @@ def build_summary_plotly(
     else:
         per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
         max_height = PLOTLY_SUMMARY_MAX_HEIGHT
+    separate_projection_axis = instrument == "power" and any(panel.key == "soc_projection" for panel, _rows in panels)
+    base_time_start = times.min()
+    base_time_end = times.max()
 
     fig = make_subplots(
         rows=len(panels),
         cols=1,
-        shared_xaxes=True,
+        shared_xaxes=not separate_projection_axis,
         vertical_spacing=vertical_spacing,
         specs=[[{"secondary_y": panel.right_axis_label is not None}] for panel, _rows in panels],
         subplot_titles=[panel.label for panel, _rows in panels],
@@ -2489,8 +2503,13 @@ def build_summary_plotly(
 
     panel_height = (1.0 - vertical_spacing * (len(panels) - 1)) / len(panels)
     legend_layouts: dict[str, dict[str, object]] = {}
-    plot_time_start = times.min() if len(times) else None
-    plot_time_end = times.max() if len(times) else None
+    plot_time_start = base_time_start
+    plot_time_end = base_time_end
+    panel_x_ranges: dict[int, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    last_base_axis_row = max(
+        (idx for idx, (panel, _rows) in enumerate(panels, start=1) if panel.key != "soc_projection"),
+        default=len(panels),
+    )
     for row_index, (panel, rows) in enumerate(panels, start=1):
         legend_name = "legend" if row_index == 1 else f"legend{row_index}"
         panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
@@ -2510,6 +2529,8 @@ def build_summary_plotly(
         right_color = None
         left_axis_values: list[np.ndarray] = []
         right_axis_values: list[np.ndarray] = []
+        projection_time_start: pd.Timestamp | None = None
+        projection_time_end: pd.Timestamp | None = None
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
             if secondary and right_color is None:
@@ -2521,10 +2542,16 @@ def build_summary_plotly(
                 continue
             trace_start = trace_times.min()
             trace_end = trace_times.max()
-            if plot_time_start is None or trace_start < plot_time_start:
-                plot_time_start = trace_start
-            if plot_time_end is None or trace_end > plot_time_end:
-                plot_time_end = trace_end
+            if separate_projection_axis and panel.key == "soc_projection" and trace.projection_lookback_minutes is not None:
+                if projection_time_start is None or trace_start < projection_time_start:
+                    projection_time_start = trace_start
+                if projection_time_end is None or trace_end > projection_time_end:
+                    projection_time_end = trace_end
+            elif not separate_projection_axis:
+                if trace_start < plot_time_start:
+                    plot_time_start = trace_start
+                if trace_end > plot_time_end:
+                    plot_time_end = trace_end
             if secondary:
                 right_axis_values.append(trace_values)
             else:
@@ -2593,29 +2620,52 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=True,
             )
+        if separate_projection_axis and panel.key == "soc_projection" and projection_time_start is not None and projection_time_end is not None:
+            panel_x_ranges[row_index] = (projection_time_start, projection_time_end)
+        else:
+            panel_x_ranges[row_index] = (base_time_start, base_time_end)
 
-    tickvals = []
-    ticktext = []
-    if plot_time_start is not None and plot_time_end is not None:
-        start = plot_time_start
-        end = plot_time_end
-        duration = end - start
-        freq = "1h" if duration <= pd.Timedelta(hours=18) else "2h" if duration <= pd.Timedelta(hours=36) else "6h"
-        for stamp in pd.date_range(start=start.floor("h"), end=end.ceil("h"), freq=freq):
-            tickvals.append(stamp.to_pydatetime())
-            ticktext.append(stamp.strftime("%H:%M"))
-    fig.update_xaxes(
-        domain=[0.0, panel_domain_end],
-        tickmode="array",
-        tickvals=tickvals,
-        ticktext=ticktext,
-        showgrid=True,
-        gridcolor=PLOT_GRID,
-        linecolor=PLOT_LINE,
-        tickfont=dict(color=PLOT_TEXT, size=11),
-        range=[plot_time_start, plot_time_end] if plot_time_start is not None and plot_time_end is not None else None,
-    )
-    fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
+    if separate_projection_axis:
+        projection_rows = []
+        for row_index, (panel, _rows) in enumerate(panels, start=1):
+            start, end = panel_x_ranges[row_index]
+            tickvals, ticktext = _plotly_time_ticks(start, end)
+            is_projection_row = panel.key == "soc_projection"
+            if is_projection_row:
+                projection_rows.append(row_index)
+            fig.update_xaxes(
+                domain=[0.0, panel_domain_end],
+                tickmode="array",
+                tickvals=tickvals,
+                ticktext=ticktext,
+                showgrid=True,
+                gridcolor=PLOT_GRID,
+                linecolor=PLOT_LINE,
+                tickfont=dict(color=PLOT_TEXT, size=11),
+                range=[start, end],
+                showticklabels=is_projection_row or row_index == last_base_axis_row,
+                row=row_index,
+                col=1,
+            )
+            if not is_projection_row and row_index != 1:
+                fig.update_xaxes(matches="x", row=row_index, col=1)
+        fig.update_xaxes(title_text="Time (UTC)", row=last_base_axis_row, col=1)
+        if projection_rows:
+            fig.update_xaxes(title_text="Projection Time (UTC)", row=projection_rows[-1], col=1)
+    else:
+        tickvals, ticktext = _plotly_time_ticks(plot_time_start, plot_time_end)
+        fig.update_xaxes(
+            domain=[0.0, panel_domain_end],
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            showgrid=True,
+            gridcolor=PLOT_GRID,
+            linecolor=PLOT_LINE,
+            tickfont=dict(color=PLOT_TEXT, size=11),
+            range=[plot_time_start, plot_time_end],
+        )
+        fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
         showlegend=True,
         height=max(520, min(max_height, per_panel_height * len(panels) + 90)),
