@@ -78,6 +78,7 @@ from wxcam_catalog import (
     latest_record,
     representative_hourly_records,
 )
+from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
@@ -708,6 +709,14 @@ SUMMARY_INTERACTIVE_MAX_TIME_SAMPLES = {
     "ops-monitor": int(os.environ.get("AURORA_OPS_INTERACTIVE_MAX_TIME_SAMPLES", "1000")),
 }
 SUMMARY_INTERACTIVE_COARSE_TIME_SAMPLES = int(os.environ.get("AURORA_SUMMARY_COARSE_TIME_SAMPLES", "700"))
+UAS_MQTT_LOG_PATH = Path(os.environ.get("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log"))
+UAS_STALE_AFTER = timedelta(minutes=int(os.environ.get("UAS_STALE_AFTER_MINUTES", "5")))
+UAS_WINDOW_OPTIONS = {
+    "Last 1 h": timedelta(hours=1),
+    "Last 6 h": timedelta(hours=6),
+    "Last 24 h": timedelta(hours=24),
+    "Last 7 d": timedelta(days=7),
+}
 # A small future tolerance keeps normal clock skew harmless while protecting
 # the dashboard from bogus outlier timestamps that can blank the latest window.
 FUTURE_TIME_TOLERANCE = timedelta(days=2)
@@ -2831,6 +2840,8 @@ instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMEN
 science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 science_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
 hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=HK_INSTRUMENT_OPTIONS)
+uas_window = pn.widgets.Select(name="Window", value="Last 24 h", options=list(UAS_WINDOW_OPTIONS.keys()))
+uas_refresh = pn.widgets.Button(name="Refresh", button_type="primary", width=110)
 
 _live_guard = False
 _instrument_guard = False
@@ -6426,6 +6437,171 @@ def _current_hk_availability_markup() -> str:
     )
 
 
+def _uas_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _uas_window_bounds(window_label: str | None = None) -> tuple[datetime, datetime]:
+    end = _uas_now()
+    delta = UAS_WINDOW_OPTIONS.get(window_label or uas_window.value, UAS_WINDOW_OPTIONS["Last 24 h"])
+    return end - delta, end
+
+
+def _uas_load_result() -> UASMqttParseResult:
+    return load_uas_mqtt_log(UAS_MQTT_LOG_PATH)
+
+
+def _uas_window_records(result: UASMqttParseResult, window_label: str | None = None) -> tuple[UASMqttRecord, ...]:
+    start, end = _uas_window_bounds(window_label)
+    return tuple(record for record in result.records if start <= record.timestamp <= end)
+
+
+def _uas_latest_record(result: UASMqttParseResult) -> UASMqttRecord | None:
+    return result.records[-1] if result.records else None
+
+
+def _uas_level_for_age(age: timedelta | None) -> str:
+    if age is None:
+        return "warn"
+    return "warn" if age > UAS_STALE_AFTER else "ok"
+
+
+def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord, ...]) -> str:
+    latest = _uas_latest_record(result)
+    now = _uas_now()
+    age = now - latest.timestamp if latest else None
+    parse_level = "warn" if result.missing or result.error or result.malformed_lines else "ok"
+    parse_label = "Missing log" if result.missing else "Read error" if result.error else "Parse warnings" if result.malformed_lines else "OK"
+    current_level = _uas_level_for_age(age)
+
+    cards = [
+        ("Current effective tier", str(latest.effective_tier) if latest else "--", current_level),
+        ("Reported tier", str(latest.reported_tier) if latest else "--", current_level),
+        ("Last update", _format_status_time(latest.timestamp if latest else None), current_level),
+        ("Log age", _format_duration(age), current_level),
+        ("Records in window", str(len(records)), "info"),
+        ("Parse status", parse_label, parse_level),
+    ]
+    card_markup = "".join(
+        (
+            f"<div class='uas-card uas-card--{level}'>"
+            f"<div class='uas-card__label'>{escape(label)}</div>"
+            f"<div class='uas-card__value'>{escape(value)}</div>"
+            "</div>"
+        )
+        for label, value, level in cards
+    )
+    detail = result.error or (result.malformed_lines[0] if result.malformed_lines else "")
+    if result.missing:
+        detail = f"Waiting for mirrored log at {result.path}"
+    diagnostic_items = [
+        ("Source", str(result.path), "info"),
+        ("Window", uas_window.value, "info"),
+        ("Malformed lines", str(len(result.malformed_lines)), "warn" if result.malformed_lines else "ok"),
+    ]
+    if detail:
+        diagnostic_items.append(("Detail", detail[:160], "warn"))
+    return f"<div class='uas-grid'>{card_markup}</div>{_status_strip_markup(diagnostic_items)}"
+
+
+def _uas_history_figure(records: tuple[UASMqttRecord, ...], result: UASMqttParseResult) -> go.Figure:
+    start, end = _uas_window_bounds()
+    fig = go.Figure()
+    if records:
+        times = [record.timestamp for record in records]
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=[record.effective_tier for record in records],
+                mode="lines+markers",
+                line=dict(color=THEME_ACCENT, width=3, shape="hv"),
+                marker=dict(size=6),
+                name="Effective tier",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=[record.reported_tier for record in records],
+                mode="lines",
+                line=dict(color="#8aa0b4", width=2, dash="dot", shape="hv"),
+                name="Reported tier",
+            )
+        )
+        change_records = [record for record in records if record.event_type == "tier_change"]
+        if change_records:
+            fig.add_trace(
+                go.Scatter(
+                    x=[record.timestamp for record in change_records],
+                    y=[record.effective_tier for record in change_records],
+                    mode="markers",
+                    marker=dict(color="#e0b15c", size=12, symbol="diamond"),
+                    name="Tier change",
+                )
+            )
+    else:
+        reason = "No UAS records in the selected window."
+        if result.missing:
+            reason = "UAS MQTT log has not been mirrored yet."
+        elif result.error:
+            reason = f"Could not read UAS MQTT log: {result.error}"
+        fig.add_annotation(text=escape(reason), x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False, font=dict(color=THEME_MUTED, size=14))
+    fig.update_layout(
+        title=dict(text="UAS Tier History", x=0.01, xanchor="left", font=dict(size=17, color=THEME_TEXT)),
+        height=360,
+        margin=dict(l=70, r=30, t=60, b=70),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=THEME_TEXT, size=12),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1.0),
+    )
+    fig.update_xaxes(title_text="Time (UTC)", range=[start, end], showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE)
+    fig.update_yaxes(title_text="Tier", dtick=1, showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE)
+    return fig
+
+
+def _uas_log_table_markup(result: UASMqttParseResult) -> str:
+    rows = []
+    for record in reversed(result.records[-30:]):
+        event_label = "Tier change" if record.event_type == "tier_change" else "Sample"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(record.timestamp.strftime('%Y-%m-%d %H:%M:%S'))}</td>"
+            f"<td>{escape(event_label)}</td>"
+            f"<td>{record.reported_tier}</td>"
+            f"<td>{record.effective_tier}</td>"
+            f"<td>{escape(record.raw)}</td>"
+            "</tr>"
+        )
+    body = "".join(rows) if rows else "<tr><td colspan='5'>No parsed UAS log records are available.</td></tr>"
+    return (
+        "<div class='uas-table-wrap'>"
+        "<div class='uas-section-title'>Latest Log Lines</div>"
+        "<table class='uas-table'>"
+        "<thead><tr><th>Timestamp UTC</th><th>Event</th><th>Reported</th><th>Effective</th><th>Raw line</th></tr></thead>"
+        f"<tbody>{body}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
+uas_status_pane = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
+uas_plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width", margin=0)
+uas_table_pane = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
+
+
+def _refresh_uas_dashboard(_event=None) -> None:
+    result = _uas_load_result()
+    records = _uas_window_records(result)
+    uas_status_pane.object = _uas_summary_markup(result, records)
+    uas_plot_pane.object = _uas_history_figure(records, result)
+    uas_table_pane.object = _uas_log_table_markup(result)
+
+
+uas_refresh.on_click(_refresh_uas_dashboard)
+uas_window.param.watch(lambda _event: _refresh_uas_dashboard(), "value")
+
+
 interactive_status = pn.bind(
     lambda *_deps: _current_interactive_status_markup(),
     instrument_select.param.value,
@@ -6482,10 +6658,12 @@ interactive_share_url = pn.widgets.TextInput(name="Share link", value="", sizing
 science_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 hk_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 auroracam_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
+uas_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 interactive_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 science_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 hk_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 auroracam_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
+uas_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 interactive_download = pn.widgets.Button(name="Download PNG", button_type="default", width=130)
 science_download = pn.widgets.FileDownload(name="", label="Download PNG", button_type="default", auto=False, embed=False, width=130)
 hk_download = pn.widgets.FileDownload(name="", label="Download PNG", button_type="default", auto=False, embed=False, width=130)
@@ -6496,6 +6674,7 @@ for button, widget in (
     (science_copy, science_share_url),
     (hk_copy, hk_share_url),
     (auroracam_copy, auroracam_share_url),
+    (uas_copy, uas_share_url),
 ):
     button.js_on_click(
         args={"share": widget},
@@ -6578,6 +6757,8 @@ def _view_query_params(tab_slug: str) -> dict[str, str]:
         params["auroracam_camera"] = auroracam_camera.value or ""
         params["auroracam_date"] = auroracam_date.value or ""
         params["auroracam_time"] = auroracam_time.value or ""
+    elif tab_slug == "uas":
+        params["uas_window"] = uas_window.value or ""
     return {k: v for k, v in params.items() if v not in ("", None)}
 
 
@@ -6589,7 +6770,14 @@ def _build_share_url(tab_slug: str) -> str:
 def _active_tab_slug() -> str:
     if "tabs" not in globals():
         return "interactive"
-    return {0: "interactive", 1: "science", 2: "housekeeping", 3: "auroracam", 4: "operations"}.get(getattr(tabs, "active", 0), "interactive")
+    return {
+        0: "interactive",
+        1: "science",
+        2: "housekeeping",
+        3: "auroracam",
+        4: "uas",
+        5: "operations",
+    }.get(getattr(tabs, "active", 0), "interactive")
 
 
 def _update_browser_location() -> None:
@@ -6610,6 +6798,7 @@ def _refresh_share_and_download_state(*_events) -> None:
     science_share_url.value = _build_share_url("science")
     hk_share_url.value = _build_share_url("housekeeping")
     auroracam_share_url.value = _build_share_url("auroracam")
+    uas_share_url.value = _build_share_url("uas")
     _update_browser_location()
 
     interactive_download.visible = not _is_wxcam_instrument(instrument_select.value)
@@ -6681,6 +6870,8 @@ def _apply_query_state() -> None:
         auroracam_date.value = args["auroracam_date"]
     if args.get("auroracam_time") in list(auroracam_time.options):
         auroracam_time.value = args["auroracam_time"]
+    if args.get("uas_window") in list(uas_window.options):
+        uas_window.value = args["uas_window"]
 
 
 for widget, parameter in (
@@ -6702,6 +6893,7 @@ for widget, parameter in (
     (auroracam_camera, "value"),
     (auroracam_date, "value"),
     (auroracam_time, "value"),
+    (uas_window, "value"),
 ):
     widget.param.watch(_refresh_share_and_download_state, parameter)
 
@@ -7178,6 +7370,79 @@ body, .bk {
 .ops-callout ul {
     margin: 0;
     padding-left: 18px;
+}
+.uas-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.uas-toolbar .bk-card-body {
+    padding: 10px 12px;
+}
+.uas-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.uas-card {
+    border: 1px solid #d8dee4;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px 12px;
+}
+.uas-card--ok {
+    border-color: #b7e4dc;
+    background: #f1fbf8;
+}
+.uas-card--warn {
+    border-color: #f1d4b5;
+    background: #fff8ef;
+}
+.uas-card__label {
+    font-size: 11px;
+    color: #5f6c7b;
+    line-height: 1.25;
+}
+.uas-card__value {
+    margin-top: 5px;
+    font-size: 20px;
+    font-weight: 650;
+    color: #22313f;
+}
+.uas-section-title {
+    font-size: 13px;
+    font-weight: 650;
+    color: #22313f;
+    margin: 0 0 8px;
+}
+.uas-table-wrap {
+    border: 1px solid #d8dee4;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow-x: auto;
+}
+.uas-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 760px;
+}
+.uas-table th,
+.uas-table td {
+    border-bottom: 1px solid #e6ebf1;
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+    font-size: 12px;
+}
+.uas-table thead th {
+    background: #f8fafb;
+    color: #3b4a5a;
+    font-weight: 650;
+}
+.uas-table td:last-child {
+    color: #5f6c7b;
+    overflow-wrap: anywhere;
 }
 .auroracam-browser {
     gap: 12px;
@@ -7860,6 +8125,19 @@ auroracam_footer = pn.Card(
     css_classes=["small-card"],
 )
 
+uas_footer = pn.Card(
+    pn.Row(
+        uas_copy,
+        uas_share_url,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-stack", "action-row"],
+    ),
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+    css_classes=["small-card"],
+)
+
 operations_dashboard = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
 
 
@@ -7867,6 +8145,7 @@ def _refresh_operations_dashboard() -> None:
     operations_dashboard.object = _ops_operations_markup()
 
 
+_uas_timer = _safe_periodic_callback(_refresh_uas_dashboard, period=30_000, start=False)
 _operations_timer = _safe_periodic_callback(_refresh_operations_dashboard, period=60_000, start=False)
 
 
@@ -7880,6 +8159,7 @@ def _lazy_tab_placeholder(label: str) -> pn.pane.HTML:
 
 science_quicklook_container = pn.Column(_lazy_tab_placeholder("Science quicklooks"), sizing_mode="stretch_width")
 housekeeping_quicklook_container = pn.Column(_lazy_tab_placeholder("House keeping quicklooks"), sizing_mode="stretch_width")
+uas_container = pn.Column(_lazy_tab_placeholder("UAS status"), sizing_mode="stretch_width")
 operations_container = pn.Column(_lazy_tab_placeholder("Operations dashboard"), sizing_mode="stretch_width")
 _LOADED_TABS: set[str] = set()
 
@@ -7923,12 +8203,25 @@ auroracam_tab = pn.Column(
     auroracam_footer,
     sizing_mode="stretch_width",
 )
+uas_tab = pn.Column(
+    pn.Card(
+        pn.Row(uas_window, uas_refresh, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        title="",
+        collapsible=False,
+        sizing_mode="stretch_width",
+        css_classes=["small-card", "uas-toolbar"],
+    ),
+    uas_container,
+    uas_footer,
+    sizing_mode="stretch_width",
+)
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
 tabs = pn.Tabs(
     ("Interactive Data Browser", interactive_tab),
     ("Science Quicklooks", science_quicklooks_tab),
     ("House Keeping Quicklooks", housekeeping_quicklooks_tab),
     ("AURORACam", auroracam_tab),
+    ("UAS", uas_tab),
     ("Operations Dashboard", operations_tab),
     sizing_mode="stretch_both",
 )
@@ -7946,7 +8239,15 @@ def _ensure_active_tab_loaded() -> None:
         hk_status_container[:] = [hk_status]
         hk_availability_container[:] = [hk_availability]
         _LOADED_TABS.add("housekeeping")
-    elif active == 4 and "operations" not in _LOADED_TABS:
+    elif active == 4 and "uas" not in _LOADED_TABS:
+        uas_container[:] = [pn.Column(uas_status_pane, uas_plot_pane, uas_table_pane, sizing_mode="stretch_width", css_classes=["uas-shell"])]
+        _refresh_uas_dashboard()
+        _LOADED_TABS.add("uas")
+        try:
+            _uas_timer.start()
+        except RuntimeError:
+            pass
+    elif active == 5 and "operations" not in _LOADED_TABS:
         operations_container[:] = [operations_dashboard]
         _refresh_operations_dashboard()
         _LOADED_TABS.add("operations")
@@ -7988,11 +8289,12 @@ interactive_tab.append(_site_footer_pane())
 science_quicklooks_tab.append(_site_footer_pane())
 housekeeping_quicklooks_tab.append(_site_footer_pane())
 auroracam_tab.append(_site_footer_pane())
+uas_tab.append(_site_footer_pane())
 operations_tab.append(_site_footer_pane())
 
 main_layout = pn.Column(tabs, sizing_mode="stretch_width", margin=0)
 
-_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "auroracam": 3, "operations": 4}
+_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "auroracam": 3, "uas": 4, "operations": 5}
 
 _apply_query_state()
 requested_tab = _request_query_args().get("tab")

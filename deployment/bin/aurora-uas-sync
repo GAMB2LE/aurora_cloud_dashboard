@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_user="${UAS_SOURCE_USER:-aurora}"
+source_host="${UAS_SOURCE_HOST:-100.124.55.22}"
+source_path="${UAS_SOURCE_PATH:-/home/aurora/data/menapia/menapia_mqtt.log}"
+destination="${UAS_MQTT_LOG_PATH:-/project/aurora/raw/menapia/menapia_mqtt.log}"
+known_hosts="${AURORA_KNOWN_HOSTS:-/home/aurora/.ssh/known_hosts}"
+
+mkdir -p "$(dirname "$destination")" "$(dirname "$known_hosts")"
+
+export RSYNC_RSH="ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$known_hosts"
+rsync -a --partial "${source_user}@${source_host}:${source_path}" "$destination"
+echo "Synced UAS MQTT log to $destination"

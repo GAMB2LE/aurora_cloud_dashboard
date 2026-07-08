@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule Aurora UAS Menapia MQTT log sync
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+Persistent=true
+RandomizedDelaySec=10
+Unit=aurora-uas-source-sync.service
+
+[Install]
+WantedBy=timers.target

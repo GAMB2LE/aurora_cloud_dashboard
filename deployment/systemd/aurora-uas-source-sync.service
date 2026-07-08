@@ -1,0 +1,16 @@
+[Unit]
+Description=Aurora pull UAS Menapia MQTT log over Tailscale SSH
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+Environment=UAS_SOURCE_HOST=100.124.55.22
+Environment=UAS_SOURCE_PATH=/home/aurora/data/menapia/menapia_mqtt.log
+Environment=UAS_MQTT_LOG_PATH=/project/aurora/raw/menapia/menapia_mqtt.log
+ExecStart=/usr/local/bin/aurora-uas-sync
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
