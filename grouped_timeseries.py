@@ -60,6 +60,7 @@ PDU_DISPLAY_SUMMARY_FIELDS = tuple(
 )
 PDU_WATT_FIELDS = tuple(f"PDUOutlet{outlet}Watts" for outlet in range(1, PDU_OUTLET_COUNT + 1))
 PDU_OUTLET_LABELS = {
+    4: "UAS",
     5: "CL61",
     6: "Radar",
     8: "HATPRO",

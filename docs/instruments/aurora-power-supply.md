@@ -22,6 +22,8 @@ Typical panels include:
   - ASS 48 V DC power from `watts_on_48vdc_Avg`, when available
 - **ASS PDU Outlet Power**
   - outlet watt traces from `PDUOutlet1Watts` through `PDUOutlet8Watts`, when available
+  - known assignments are `PDUOutlet4Watts` = UAS, `PDUOutlet5Watts` = CL61,
+    `PDUOutlet6Watts` = Radar, and `PDUOutlet8Watts` = HATPRO
 - **Cumulative Power & State of Charge**
   - `State of Charge`, from `BatterySOC`, on the left axis in percent
   - `East Solar Generated`
