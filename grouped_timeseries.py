@@ -730,19 +730,19 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("SolarWatts_East", "Solar East Power", COLOR["brown"]),
                 TraceSpec("SolarWatts_South", "Solar South Power", COLOR["purple"]),
                 TraceSpec("SolarWatts_West", "Solar West Power", COLOR["magenta"]),
-                TraceSpec("SolarVolts_East", "Solar East Voltage", COLOR["olive"], axis="right", valid_min=0.0, valid_max=200.0),
-                TraceSpec("SolarVolts_South", "Solar South Voltage", COLOR["green"], axis="right", valid_min=0.0, valid_max=200.0),
-                TraceSpec("SolarVolts_West", "Solar West Voltage", COLOR["blue"], axis="right", valid_min=0.0, valid_max=200.0),
+                TraceSpec("SolarVolts_East", "Solar East Voltage", COLOR["brown"], axis="right", dash="dash", valid_min=0.0, valid_max=200.0),
+                TraceSpec("SolarVolts_South", "Solar South Voltage", COLOR["purple"], axis="right", dash="dash", valid_min=0.0, valid_max=200.0),
+                TraceSpec("SolarVolts_West", "Solar West Voltage", COLOR["magenta"], axis="right", dash="dash", valid_min=0.0, valid_max=200.0),
             ),
         ),
         PanelSpec(
             "battery_charging",
             "Battery Charging",
-            "Charging Current In [A]",
-            "Charging Power In [W]",
+            "Current In/Out [A]",
+            "Power In/Out [W]",
             (
-                TraceSpec("BatteryAmps", "Charging Current In", COLOR["teal"], valid_min=-250.0, valid_max=250.0, smooth_minutes=30.0),
-                TraceSpec("BatteryWatts", "Charging Power In", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0, smooth_minutes=30.0),
+                TraceSpec("BatteryAmps", "Current In/Out", COLOR["teal"], valid_min=-250.0, valid_max=250.0, smooth_minutes=30.0),
+                TraceSpec("BatteryWatts", "Power In/Out", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0, smooth_minutes=30.0),
             ),
         ),
         PanelSpec(
@@ -2107,6 +2107,12 @@ def _trace_plot_values(
     return _insert_day_breaks(trace_times, trace_values, trace)
 
 
+def _matplotlib_linestyle(dash: str | None) -> str:
+    if dash in {"dash", "dashdot", "dot"}:
+        return {"dash": "--", "dashdot": "-.", "dot": ":"}[dash]
+    return "-"
+
+
 def _plotly_time_ticks(start: pd.Timestamp, end: pd.Timestamp) -> tuple[list[object], list[str]]:
     tickvals: list[object] = []
     ticktext: list[str] = []
@@ -2351,6 +2357,7 @@ def save_summary_png(
                 trace_values,
                 color=trace.color,
                 linewidth=1.25,
+                linestyle=_matplotlib_linestyle(trace.dash),
                 drawstyle=drawstyle,
                 label=trace.label,
             )
