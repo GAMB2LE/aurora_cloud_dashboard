@@ -54,7 +54,7 @@ The read-only helper first tries SQLite `mode=ro`, then falls back to
 `sqlite3.OperationalError: attempt to write a readonly database` while reading.
 That failure mode caused a blank `data-ocean.gamb2le.co.uk/app` page on
 `2026-06-22`, because WXcam panes are constructed at app startup even when the
-default visible instrument is `Ceilometer`.
+default visible instrument is `Aurora Power Supply`.
 
 ## Daily videos and hourly thumbnails
 

@@ -65,6 +65,12 @@ from extra_housekeeping import (
 )
 from time_gap_breaks import insert_time_gap_breaks
 from radar_colormaps import radar_plotly_colorscale
+from auroracam_catalog import (
+    AURORACAM_CAMERAS,
+    available_days as auroracam_available_days,
+    day_records as auroracam_day_records,
+    latest_record as auroracam_latest_record,
+)
 from wxcam_catalog import (
     WXCAM_IMAGE_TYPES,
     available_days,
@@ -798,6 +804,25 @@ def _wxcam_media_url(path: Path) -> str:
     resolved = path.resolve()
     rel = resolved.relative_to(root)
     prefix = os.environ.get("WXCAM_MEDIA_URL_PREFIX", "/wxcam-media").strip() or "/wxcam-media"
+    prefix = "/" + prefix.strip("/")
+    version = path.stat().st_mtime_ns
+    return f"{prefix}/{quote(rel.as_posix())}?{urlencode({'v': version})}"
+
+
+def _auroracam_raw_root() -> Path:
+    return Path(os.environ.get("AURORACAM_RAW_ROOT", os.environ.get("AURORACAM_ROOT", "/project/aurora/raw/auroracam")))
+
+
+def _auroracam_zarr_path() -> Path:
+    return Path(os.environ.get("AURORACAM_ZARR_PATH", "/data/aurora/products/auroracam/auroracam.zarr"))
+
+
+def _auroracam_media_url(path: Path) -> str:
+    """Return a browser URL for AURORACam JPEGs served by Panel's static route."""
+    root = _auroracam_raw_root().resolve()
+    resolved = path.resolve()
+    rel = resolved.relative_to(root)
+    prefix = os.environ.get("AURORACAM_MEDIA_URL_PREFIX", "/auroracam-media").strip() or "/auroracam-media"
     prefix = "/" + prefix.strip("/")
     version = path.stat().st_mtime_ns
     return f"{prefix}/{quote(rel.as_posix())}?{urlencode({'v': version})}"
@@ -4148,6 +4173,367 @@ wxcam_interactive_browser = pn.Column(
 wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
 
 
+class AuroracamCameraCard(pn.reactive.ReactiveHTML):
+    camera_id = param.String(default="")
+    title = param.String(default="")
+    ip = param.String(default="")
+    image_url = param.String(default="")
+    image_class = param.String(default="auroracam-card__hidden")
+    placeholder = param.String(default="No image")
+    placeholder_class = param.String(default="")
+    meta = param.String(default="")
+    filename = param.String(default="")
+    selected_class = param.String(default="")
+    empty_class = param.String(default="auroracam-card--empty")
+    clicked = param.Event()
+
+    _template = """
+    <button id="card" type="button" class="auroracam-card auroracam-card--button {{ selected_class }} {{ empty_class }}" onclick="${script('select')}">
+      <div class="auroracam-card__head">
+        <div class="auroracam-card__title">{{ title }}</div>
+        <div class="auroracam-card__ip">{{ ip }}</div>
+      </div>
+      <img class="auroracam-card__img {{ image_class }}" src="{{ image_url }}" alt="{{ title }} selected image"></img>
+      <div class="auroracam-card__placeholder {{ placeholder_class }}">{{ placeholder }}</div>
+      <div class="auroracam-card__meta">{{ meta }}</div>
+      <div class="auroracam-card__file">{{ filename }}</div>
+    </button>
+    """
+
+    _scripts = {
+        "select": "data.clicked = true",
+    }
+
+
+def _auroracam_today_token() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _auroracam_day_options() -> list[str]:
+    with _timed_perf("auroracam_day_options", instrument="auroracam", root=_auroracam_raw_root()) as perf:
+        days = auroracam_available_days(_auroracam_raw_root())
+        if not days:
+            perf["status"] = "empty"
+            return ["No images available"]
+        today = _auroracam_today_token()
+        options = [day for day in days if day != today]
+        if today in days:
+            options.append("Today (latest)")
+        perf["day_count"] = len(days)
+        perf["option_count"] = len(options)
+        perf["status"] = "ok"
+        return options or ["No images available"]
+
+
+def _auroracam_selected_day(selected_day: str | None) -> str | None:
+    if selected_day == "Today (latest)":
+        return _auroracam_today_token()
+    if selected_day and len(selected_day) == 10 and selected_day[4] == "-" and selected_day[7] == "-":
+        return selected_day
+    return None
+
+
+def _auroracam_record_time(record) -> datetime | None:
+    if record is None:
+        return None
+    try:
+        return datetime.fromisoformat(record.time_utc).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _auroracam_record_url(record) -> str:
+    return _auroracam_media_url(Path(record.raw_path))
+
+
+def _auroracam_time_token(value: str | None) -> str | None:
+    if not value or value == "Latest":
+        return None
+    token = str(value).replace(" UTC", "").strip()
+    if len(token) == 5 and token[2] == ":":
+        return token
+    return None
+
+
+def _auroracam_time_options(selected_day: str | None) -> list[str]:
+    day = _auroracam_selected_day(selected_day)
+    if not day:
+        return ["Latest"]
+    times: set[str] = set()
+    root = _auroracam_raw_root()
+    for camera_id in AURORACAM_CAMERAS:
+        for record in auroracam_day_records(root, camera_id, day):
+            moment = _auroracam_record_time(record)
+            if moment is not None:
+                times.add(moment.strftime("%H:%M UTC"))
+    options = sorted(times)
+    options.append("Latest")
+    return options or ["Latest"]
+
+
+def _auroracam_record_for_time(camera_id: str, selected_day: str | None, selected_time: str | None):
+    day = _auroracam_selected_day(selected_day)
+    if camera_id not in AURORACAM_CAMERAS:
+        return None
+    token = _auroracam_time_token(selected_time)
+    if day is None or token is None:
+        return auroracam_latest_record(_auroracam_raw_root(), camera_id, day)
+    records = auroracam_day_records(_auroracam_raw_root(), camera_id, day)
+    if not records:
+        return None
+    target = datetime.strptime(f"{day} {token}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    return min(
+        records,
+        key=lambda record: (
+            abs((_auroracam_record_time(record) or target) - target),
+            -int(record.time_epoch_ns),
+        ),
+    )
+
+
+def _auroracam_card_params(camera_id: str, record, selected_camera_id: str | None) -> dict[str, str]:
+    spec = AURORACAM_CAMERAS[camera_id]
+    values = {
+        "camera_id": camera_id,
+        "title": spec["label"],
+        "ip": spec["ip"],
+        "image_url": "",
+        "image_class": "auroracam-card__hidden",
+        "placeholder": "No image",
+        "placeholder_class": "",
+        "meta": "",
+        "filename": "",
+        "selected_class": "auroracam-card--selected" if camera_id == selected_camera_id else "",
+        "empty_class": "auroracam-card--empty",
+    }
+    if record is None:
+        return values
+    moment = _auroracam_record_time(record)
+    time_label = moment.strftime("%Y-%m-%d %H:%M UTC") if moment else record.time_utc
+    age = _humanize_age(moment)
+    try:
+        image_url = _auroracam_record_url(record)
+    except Exception:
+        image_url = ""
+    values.update(
+        {
+            "image_url": image_url,
+            "image_class": "" if image_url else "auroracam-card__hidden",
+            "placeholder": "" if image_url else "Image unavailable",
+            "placeholder_class": "auroracam-card__hidden" if image_url else "",
+            "meta": f"{time_label} | {age}",
+            "filename": record.filename,
+            "empty_class": "",
+        }
+    )
+    return values
+
+
+def _auroracam_grid(selected_day: str | None, selected_time: str | None, selected_camera_id: str | None) -> pn.Column:
+    day = _auroracam_selected_day(selected_day)
+    label = day or "Latest available"
+    time_label = selected_time or "Latest"
+    for camera_id, card in auroracam_cards.items():
+        record = _auroracam_record_for_time(camera_id, selected_day, selected_time)
+        card.param.update(**_auroracam_card_params(camera_id, record, selected_camera_id))
+    return pn.Column(
+        pn.pane.HTML(
+            "<div class='auroracam-section__head'>"
+            "<div class='auroracam-section__title'>AURORACam frames</div>"
+            f"<div class='auroracam-section__meta'>{escape(label)} | {escape(time_label)}</div>"
+            "</div>",
+            sizing_mode="stretch_width",
+            margin=0,
+        ),
+        pn.GridBox(*auroracam_cards.values(), ncols=4, sizing_mode="stretch_width", css_classes=["auroracam-grid"]),
+        sizing_mode="stretch_width",
+        css_classes=["auroracam-section"],
+    )
+
+
+def _auroracam_viewer_markup(camera_id: str | None, selected_day: str | None, selected_time: str | None) -> str:
+    day = _auroracam_selected_day(selected_day)
+    if camera_id not in AURORACAM_CAMERAS:
+        return "<div class='auroracam-viewer auroracam-viewer--empty'>No camera selected.</div>"
+    record = _auroracam_record_for_time(str(camera_id), selected_day, selected_time)
+    spec = AURORACAM_CAMERAS[str(camera_id)]
+    title = escape(spec["label"])
+    if record is None:
+        day_label = escape(day or "selected day")
+        return (
+            "<div class='auroracam-viewer auroracam-viewer--empty'>"
+            f"<div class='auroracam-viewer__title'>{title}</div>"
+            f"<div class='auroracam-viewer__placeholder'>No image for {day_label}</div>"
+            "</div>"
+        )
+    moment = _auroracam_record_time(record)
+    time_label = moment.strftime("%Y-%m-%d %H:%M UTC") if moment else record.time_utc
+    image_url = _auroracam_record_url(record)
+    return (
+        "<div class='auroracam-viewer'>"
+        "<div class='auroracam-viewer__meta'>"
+        f"<div class='auroracam-viewer__title'>{title}</div>"
+        f"<div class='auroracam-viewer__subtitle'>{escape(time_label)} | {escape(record.filename)}</div>"
+        "</div>"
+        f"<div class='auroracam-viewer__frame'><img class='auroracam-viewer__img' src='{image_url}' alt='{title} selected image'></div>"
+        "</div>"
+    )
+
+
+auroracam_camera = pn.widgets.Select(
+    name="Camera",
+    options={spec["label"]: camera_id for camera_id, spec in AURORACAM_CAMERAS.items()},
+    value=next(iter(AURORACAM_CAMERAS)),
+)
+_auroracam_date_options = _auroracam_day_options()
+auroracam_date = pn.widgets.Select(name="Date", options=_auroracam_date_options)
+if _auroracam_date_options:
+    auroracam_date.value = _auroracam_date_options[-1]
+_auroracam_initial_time_options = _auroracam_time_options(auroracam_date.value)
+auroracam_time = pn.widgets.Select(name="Time (UTC)", options=_auroracam_initial_time_options)
+if _auroracam_initial_time_options:
+    auroracam_time.value = _auroracam_initial_time_options[-1]
+auroracam_latest = pn.widgets.Button(name="Latest", button_type="primary")
+auroracam_prev = pn.widgets.Button(name="Previous Day", button_type="default")
+auroracam_next = pn.widgets.Button(name="Next Day", button_type="default")
+auroracam_prev_time = pn.widgets.Button(name="Previous Frame", button_type="default")
+auroracam_next_time = pn.widgets.Button(name="Next Frame", button_type="default")
+auroracam_cards = {
+    camera_id: AuroracamCameraCard(
+        camera_id=camera_id,
+        title=spec["label"],
+        ip=spec["ip"],
+        sizing_mode="stretch_width",
+    )
+    for camera_id, spec in AURORACAM_CAMERAS.items()
+}
+
+
+def _select_auroracam_camera(camera_id: str) -> None:
+    if camera_id not in AURORACAM_CAMERAS:
+        return
+    if auroracam_camera.value == camera_id:
+        auroracam_camera.param.trigger("value")
+    else:
+        auroracam_camera.value = camera_id
+
+
+for _auroracam_card_id, _auroracam_card in auroracam_cards.items():
+    _auroracam_card.param.watch(
+        lambda _event, camera_id=_auroracam_card_id: _select_auroracam_camera(camera_id),
+        "clicked",
+    )
+
+
+def _refresh_auroracam_time_options(preserve_current: bool = True) -> None:
+    current = auroracam_time.value if preserve_current else None
+    opts = _auroracam_time_options(auroracam_date.value)
+    auroracam_time.options = opts
+    if not opts:
+        auroracam_time.value = None
+    elif preserve_current and current in opts:
+        auroracam_time.value = current
+    else:
+        auroracam_time.value = opts[-1]
+
+
+def _refresh_auroracam_options(preserve_current: bool = True):
+    current = auroracam_date.value if preserve_current else None
+    opts = _auroracam_day_options()
+    auroracam_date.options = opts
+    if not opts:
+        auroracam_date.value = None
+    elif preserve_current and current in opts:
+        auroracam_date.value = current
+    else:
+        auroracam_date.value = opts[-1]
+    _refresh_auroracam_time_options(preserve_current=preserve_current)
+
+
+def _shift_auroracam_day(delta: int):
+    _refresh_auroracam_options(preserve_current=True)
+    opts = list(auroracam_date.options)
+    if not opts or auroracam_date.value not in opts:
+        return
+    idx = opts.index(auroracam_date.value)
+    new_idx = max(0, min(len(opts) - 1, idx + delta))
+    if new_idx != idx:
+        auroracam_date.value = opts[new_idx]
+    else:
+        auroracam_date.param.trigger("value")
+
+
+def _shift_auroracam_time(delta: int):
+    _refresh_auroracam_time_options(preserve_current=True)
+    opts = list(auroracam_time.options)
+    if not opts or auroracam_time.value not in opts:
+        return
+    idx = opts.index(auroracam_time.value)
+    new_idx = max(0, min(len(opts) - 1, idx + delta))
+    if new_idx != idx:
+        auroracam_time.value = opts[new_idx]
+    else:
+        auroracam_time.param.trigger("value")
+
+
+def _go_auroracam_latest(_event=None):
+    _refresh_auroracam_options(preserve_current=True)
+    opts = list(auroracam_date.options)
+    target = "Today (latest)" if "Today (latest)" in opts else (opts[-1] if opts else None)
+    if target is None:
+        return
+    if auroracam_date.value == target:
+        auroracam_date.param.trigger("value")
+    else:
+        auroracam_date.value = target
+    if "Latest" in list(auroracam_time.options):
+        if auroracam_time.value == "Latest":
+            auroracam_time.param.trigger("value")
+        else:
+            auroracam_time.value = "Latest"
+
+
+auroracam_latest.on_click(_go_auroracam_latest)
+auroracam_prev.on_click(lambda _e: _shift_auroracam_day(-1))
+auroracam_next.on_click(lambda _e: _shift_auroracam_day(1))
+auroracam_prev_time.on_click(lambda _e: _shift_auroracam_time(-1))
+auroracam_next_time.on_click(lambda _e: _shift_auroracam_time(1))
+
+
+def _on_auroracam_date_change(_event) -> None:
+    _refresh_auroracam_time_options(preserve_current=False)
+
+
+auroracam_date.param.watch(_on_auroracam_date_change, "value")
+
+
+@pn.depends(auroracam_date.param.value, auroracam_time.param.value, auroracam_camera.param.value)
+def _auroracam_browser(selected_day, selected_time, camera_id):
+    with _timed_perf(
+        "auroracam_render",
+        instrument="auroracam",
+        selected_day=selected_day,
+        selected_time=selected_time,
+        camera_id=camera_id,
+    ) as perf:
+        root = _auroracam_raw_root()
+        perf["root"] = root
+        if not root.exists():
+            perf["status"] = "missing_root"
+            return pn.pane.HTML(
+                "<div class='auroracam-empty'>AURORACam image root is not available.</div>",
+                sizing_mode="stretch_width",
+                margin=0,
+            )
+        perf["status"] = "ok"
+        return pn.Column(
+            _auroracam_grid(selected_day, selected_time, camera_id),
+            pn.pane.HTML(_auroracam_viewer_markup(camera_id, selected_day, selected_time), sizing_mode="stretch_width", margin=0),
+            sizing_mode="stretch_width",
+            css_classes=["auroracam-browser"],
+        )
+
+
 def _update_wxcam_view(start, end, top_name: str, bottom_name: str, request_id: int | None = None) -> bool:
     return _publish_panel_if_current(wxcam_interactive_browser, request_id)
 
@@ -6023,9 +6409,11 @@ hk_availability = pn.bind(
 interactive_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 science_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 hk_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
+auroracam_share_url = pn.widgets.TextInput(name="Share link", value="", sizing_mode="stretch_width")
 interactive_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 science_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 hk_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
+auroracam_copy = pn.widgets.Button(name="Copy link", button_type="default", width=110)
 interactive_download = pn.widgets.Button(name="Download PNG", button_type="default", width=130)
 science_download = pn.widgets.FileDownload(name="", label="Download PNG", button_type="default", auto=False, embed=False, width=130)
 hk_download = pn.widgets.FileDownload(name="", label="Download PNG", button_type="default", auto=False, embed=False, width=130)
@@ -6035,6 +6423,7 @@ for button, widget in (
     (interactive_copy, interactive_share_url),
     (science_copy, science_share_url),
     (hk_copy, hk_share_url),
+    (auroracam_copy, auroracam_share_url),
 ):
     button.js_on_click(
         args={"share": widget},
@@ -6113,6 +6502,10 @@ def _view_query_params(tab_slug: str) -> dict[str, str]:
     elif tab_slug == "housekeeping":
         params["hk_instrument"] = hk_instrument.value
         params["hk_date"] = hk_date.value or ""
+    elif tab_slug == "auroracam":
+        params["auroracam_camera"] = auroracam_camera.value or ""
+        params["auroracam_date"] = auroracam_date.value or ""
+        params["auroracam_time"] = auroracam_time.value or ""
     return {k: v for k, v in params.items() if v not in ("", None)}
 
 
@@ -6124,7 +6517,7 @@ def _build_share_url(tab_slug: str) -> str:
 def _active_tab_slug() -> str:
     if "tabs" not in globals():
         return "interactive"
-    return {0: "interactive", 1: "science", 2: "housekeeping", 3: "operations"}.get(getattr(tabs, "active", 0), "interactive")
+    return {0: "interactive", 1: "science", 2: "housekeeping", 3: "auroracam", 4: "operations"}.get(getattr(tabs, "active", 0), "interactive")
 
 
 def _update_browser_location() -> None:
@@ -6144,6 +6537,7 @@ def _refresh_share_and_download_state(*_events) -> None:
     interactive_share_url.value = _build_share_url("interactive")
     science_share_url.value = _build_share_url("science")
     hk_share_url.value = _build_share_url("housekeeping")
+    auroracam_share_url.value = _build_share_url("auroracam")
     _update_browser_location()
 
     interactive_download.visible = not _is_wxcam_instrument(instrument_select.value)
@@ -6209,6 +6603,12 @@ def _apply_query_state() -> None:
         hk_instrument.value = args["hk_instrument"]
     if args.get("hk_date") in list(hk_date.options):
         hk_date.value = args["hk_date"]
+    if args.get("auroracam_camera") in list(AURORACAM_CAMERAS):
+        auroracam_camera.value = args["auroracam_camera"]
+    if args.get("auroracam_date") in list(auroracam_date.options):
+        auroracam_date.value = args["auroracam_date"]
+    if args.get("auroracam_time") in list(auroracam_time.options):
+        auroracam_time.value = args["auroracam_time"]
 
 
 for widget, parameter in (
@@ -6227,6 +6627,9 @@ for widget, parameter in (
     (science_image_type, "value"),
     (hk_instrument, "value"),
     (hk_date, "value"),
+    (auroracam_camera, "value"),
+    (auroracam_date, "value"),
+    (auroracam_time, "value"),
 ):
     widget.param.watch(_refresh_share_and_download_state, parameter)
 
@@ -6704,6 +7107,232 @@ body, .bk {
     margin: 0;
     padding-left: 18px;
 }
+.auroracam-browser {
+    gap: 12px;
+}
+.auroracam-toolbar .bk-card-body {
+    padding: 10px 12px;
+}
+.auroracam-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.auroracam-section__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+.auroracam-section__title {
+    font-size: 15px;
+    font-weight: 650;
+    color: #22313f;
+}
+.auroracam-section__meta {
+    font-size: 12px;
+    font-weight: 650;
+    color: #0b7285;
+}
+.auroracam-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+}
+.auroracam-card {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+.auroracam-card--button {
+    width: 100%;
+    appearance: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.auroracam-card--button:hover {
+    border-color: #0b7285;
+    box-shadow: 0 0 0 1px rgba(11, 114, 133, 0.18);
+}
+.auroracam-card--button:focus-visible {
+    outline: 2px solid #0b7285;
+    outline-offset: 2px;
+}
+.auroracam-card--selected {
+    border-color: #0b7285;
+    box-shadow: 0 0 0 2px rgba(11, 114, 133, 0.22);
+}
+.auroracam-card__hidden {
+    display: none !important;
+}
+.auroracam-card__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: baseline;
+}
+.auroracam-card__title {
+    font-size: 13px;
+    font-weight: 650;
+    color: #22313f;
+}
+.auroracam-card__ip,
+.auroracam-card__meta,
+.auroracam-card__file {
+    font-size: 11px;
+    color: #5f6c7b;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+.auroracam-card__img,
+.auroracam-card__placeholder {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 6px;
+    background: #edf2f7;
+}
+.auroracam-card__img {
+    display: block;
+    object-fit: cover;
+}
+.auroracam-card__placeholder,
+.auroracam-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #647283;
+    font-size: 12px;
+    border: 1px dashed #c5d0da;
+}
+.auroracam-empty {
+    min-height: 180px;
+    border-radius: 8px;
+    background: #fbfcfd;
+}
+.auroracam-hour-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: #fbfcfd;
+}
+.auroracam-hour-strip__header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px 14px;
+    align-items: baseline;
+}
+.auroracam-hour-strip__title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #22313f;
+}
+.auroracam-hour-strip__hint,
+.auroracam-hour-strip__hour {
+    font-size: 11px;
+    color: #5f6c7b;
+}
+.auroracam-hour-strip__scroller {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(74px, 74px);
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+}
+.auroracam-hour-strip__tile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+    padding: 4px;
+    border: 1px solid #d8e1e8;
+    border-radius: 7px;
+    background: #ffffff;
+    min-height: 78px;
+}
+.auroracam-hour-strip__tile--empty {
+    background: #f6f8fb;
+    border-style: dashed;
+}
+.auroracam-hour-strip__thumb,
+.auroracam-hour-strip__placeholder {
+    width: 100%;
+    height: 54px;
+    border-radius: 5px;
+    background: #edf2f7;
+}
+.auroracam-hour-strip__thumb {
+    display: block;
+    object-fit: cover;
+}
+.auroracam-hour-strip__placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #7b8794;
+    font-size: 11px;
+}
+.auroracam-viewer {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+.auroracam-viewer__meta {
+    text-align: center;
+}
+.auroracam-viewer__title {
+    font-size: 16px;
+    font-weight: 650;
+    color: #22313f;
+}
+.auroracam-viewer__subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #5f6c7b;
+    overflow-wrap: anywhere;
+}
+.auroracam-viewer__frame {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #edf2f7;
+    border-radius: 8px;
+    overflow: hidden;
+    padding: 10px;
+    border: 1px solid #d8e1e8;
+}
+.auroracam-viewer__img {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: min(72vh, 980px);
+    object-fit: contain;
+}
+.auroracam-viewer__placeholder {
+    min-height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed #c5d0da;
+    border-radius: 8px;
+    color: #647283;
+    background: #fbfcfd;
+}
 .wxcam-player {
     display: flex;
     flex-direction: column;
@@ -7146,6 +7775,19 @@ hk_footer = pn.Card(
     css_classes=["small-card"],
 )
 
+auroracam_footer = pn.Card(
+    pn.Row(
+        auroracam_copy,
+        auroracam_share_url,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-stack", "action-row"],
+    ),
+    title="",
+    collapsible=False,
+    sizing_mode="stretch_width",
+    css_classes=["small-card"],
+)
+
 operations_dashboard = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
 
 
@@ -7196,11 +7838,25 @@ housekeeping_quicklooks_tab = pn.Column(
     hk_footer,
     sizing_mode="stretch_width",
 )
+auroracam_tab = pn.Column(
+    pn.Card(
+        pn.Row(auroracam_latest, auroracam_prev, auroracam_date, auroracam_next, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(auroracam_prev_time, auroracam_time, auroracam_next_time, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        title="",
+        collapsible=False,
+        sizing_mode="stretch_width",
+        css_classes=["small-card", "auroracam-toolbar"],
+    ),
+    _auroracam_browser,
+    auroracam_footer,
+    sizing_mode="stretch_width",
+)
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
 tabs = pn.Tabs(
     ("Interactive Data Browser", interactive_tab),
     ("Science Quicklooks", science_quicklooks_tab),
     ("House Keeping Quicklooks", housekeeping_quicklooks_tab),
+    ("AURORACam", auroracam_tab),
     ("Operations Dashboard", operations_tab),
     sizing_mode="stretch_both",
 )
@@ -7218,7 +7874,7 @@ def _ensure_active_tab_loaded() -> None:
         hk_status_container[:] = [hk_status]
         hk_availability_container[:] = [hk_availability]
         _LOADED_TABS.add("housekeeping")
-    elif active == 3 and "operations" not in _LOADED_TABS:
+    elif active == 4 and "operations" not in _LOADED_TABS:
         operations_container[:] = [operations_dashboard]
         _refresh_operations_dashboard()
         _LOADED_TABS.add("operations")
@@ -7259,11 +7915,12 @@ def _site_footer_pane() -> pn.pane.HTML:
 interactive_tab.append(_site_footer_pane())
 science_quicklooks_tab.append(_site_footer_pane())
 housekeeping_quicklooks_tab.append(_site_footer_pane())
+auroracam_tab.append(_site_footer_pane())
 operations_tab.append(_site_footer_pane())
 
 main_layout = pn.Column(tabs, sizing_mode="stretch_width", margin=0)
 
-_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "operations": 3}
+_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "auroracam": 3, "operations": 4}
 
 _apply_query_state()
 requested_tab = _request_query_args().get("tab")

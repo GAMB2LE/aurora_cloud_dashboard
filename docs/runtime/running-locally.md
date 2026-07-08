@@ -8,6 +8,17 @@ source venv/bin/activate
 panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<host>
 ```
 
+For local AURORACam image display, add a matching static route when you have a
+local raw mirror:
+
+```bash
+panel serve app.py \
+  --address 127.0.0.1 \
+  --port 5006 \
+  --allow-websocket-origin=<host> \
+  --static-dirs=auroracam-media=/project/aurora/raw/auroracam
+```
+
 ## What you need locally
 
 - the Python environment from `venv`

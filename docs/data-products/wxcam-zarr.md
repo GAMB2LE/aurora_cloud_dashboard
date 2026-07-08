@@ -2,12 +2,19 @@
 
 Path:
 
-- `/data/aurora/products/wxcam/wxcam.zarr`
+- `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr`
+
+The canonical WXcam pixel Zarr is GWS-only. The active processing host writes
+it through the GWS SSHFS mount and does not retain a local copy under
+`/data/aurora/products/wxcam`.
 
 ## Store purpose
 
 The WXcam Zarr contains HDR JPG image data only. MP4 products are stored
 separately.
+
+The active store starts at `2026-07-04T00:00:00Z`; earlier WXcam media are
+left in raw/catalog products and are not decoded into this Zarr.
 
 ## Root attributes
 

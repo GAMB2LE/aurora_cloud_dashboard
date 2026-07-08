@@ -25,7 +25,9 @@ stored time-series variables.
 ## Camera and operations views
 
 - [WXcam](wxcam.md)
+- [AURORACam](auroracam.md)
 - [Operations Dashboard](operations-dashboard.md)
 
-WXcam is a hybrid media product stack, while Operations Dashboard is the live
-status layer for the whole deployed system.
+WXcam is a hybrid media product stack. AURORACam is the four-MOBOTIX still
+image browser for the MX4 FTP ingest. Operations Dashboard is the live status
+layer for the whole deployed system.

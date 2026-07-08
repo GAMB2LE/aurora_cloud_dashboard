@@ -3,6 +3,10 @@
 The native iOS app uses a small read-only API instead of scraping the Panel
 dashboard or reading Zarr/SQLite files directly from the phone.
 
+The server-side API remains on the dashboard `main` branch. The native Swift
+client is maintained separately on the `codex/ios-app` branch so dashboard
+runtime changes and app UI changes can be reviewed independently.
+
 ## Service
 
 Install the Python dependencies into the dashboard virtual environment:

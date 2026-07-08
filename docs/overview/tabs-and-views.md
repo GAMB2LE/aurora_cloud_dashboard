@@ -78,6 +78,19 @@ from the raw mirror.
 The housekeeping image pane, freshness strip, and availability bar are also
 lazy-loaded on first use.
 
+## AURORACam
+
+This tab shows the four MOBOTIX M24 cameras from the MX4 FTP ingest.
+
+- latest frame cards show all four cameras for the selected day
+- the camera selector controls the large still-image viewer
+- the selected camera includes a UTC hourly still strip
+- images are served under `/auroracam-media/...`
+
+The backing metadata product is `/data/aurora/products/auroracam/auroracam.zarr`,
+but the full-resolution JPEGs remain in the raw mirror under
+`/project/aurora/raw/auroracam`.
+
 ## Operations Dashboard
 
 This tab is a live status dashboard rather than a static quicklook browser.

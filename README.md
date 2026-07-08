@@ -133,10 +133,12 @@ Important products:
 - ASFS fast-sonic Zarr: `/data/aurora/products/asfs_fast_sonic/asfs_fast_sonic.zarr`
 - ASFS fast-gas Zarr: `/data/aurora/products/asfs_fast_gas/asfs_fast_gas.zarr`
 - Power Zarr: `/data/aurora/products/power/power.zarr`
-- WXcam Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
+- WXcam Zarr: `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr`
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - WXcam daily videos: `/data/aurora/products/wxcam/daily_videos`
 - WXcam hourly thumbnails: `/data/aurora/products/wxcam/hourly_thumbnails`
+- AURORACam raw mirror: `/project/aurora/raw/auroracam`
+- AURORACam Zarr: `/data/aurora/products/auroracam/auroracam.zarr`
 - Operations raw snapshots: `/project/aurora/raw/ops_monitor`
 - Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`
 - Operations quicklooks: `/data/aurora/products/quicklooks/ops_monitor`
@@ -346,9 +348,11 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - `Meteorology`, `Radiation`, and `Aurora Power Supply` now use fixed presentation-layer summary layouts. Their ingest, local retention, and Zarr schemas stay unchanged; the dashboard just presents curated subsets of the same 1D variables on the `Interactive Data Browser` tab. The Aurora Power Supply **Output Power** panel plots `ACOutputWatts` on the left axis and `DCInverterWatts` on the right axis so the small DC inverter load is readable independently of AC output. When available, `watts_on_48vdc_Avg` from the ASFS logger Zarr is shown as a separate **ASS 48 V DC Power** panel. The `Cumulative Power & State of Charge` panel plots `BatterySOC` on the left axis, while the right axis normalizes `SolarYield_*` counters into positive UTC-day increments and computes AC+DC utilisation. Daily generated and utilised traces are visually broken at UTC midnight so their resets do not draw as false vertical jumps.
 - `Meteorology` summary plots merge selected ASFS logger met variables into the Meteorology presentation layer without changing either underlying Zarr store. With the current ASFS CRD schema this includes ASFS Vaisala temperature, relative humidity, and pressure alongside the existing Metek wind and temperature context.
 - `Radiation` summary plots use the current ASFS CRD fields for SR30 shortwave radiation and support data, IR20 longwave radiation and support data, flux plates, KT15 surface temperature, and SR50 distance.
-- The dashboard UI now uses four top-level tabs: `Interactive Data Browser`, `Science Quicklooks`, `House Keeping Quicklooks`, and `Operations Dashboard`.
-- The dashboard starts on `Ceilometer` by default, showing the CL61 lidar view
-  on the `Interactive Data Browser` tab.
+- The dashboard UI now uses five top-level tabs: `Interactive Data Browser`,
+  `Science Quicklooks`, `House Keeping Quicklooks`, `AURORACam`, and
+  `Operations Dashboard`.
+- The dashboard starts on `Aurora Power Supply` by default so operators see
+  site power health first.
 - Availability bars, freshness/status chips, and share/download controls are shown beneath the rendered content in each tab so the data view stays visually primary.
 - Static PNG quicklooks are displayed through a derived trim cache plus a
   responsive HTML image wrapper. The original PNGs remain unchanged for
@@ -367,6 +371,9 @@ panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=<hos
 - WXcam MP4s are served from `/wxcam-media/...` with a file mtime cache key.
   This keeps large videos out of the Bokeh websocket and lets browsers request
   byte ranges for normal video seeking.
+- AURORACam JPEGs are served from `/auroracam-media/...` with a file mtime
+  cache key. The `AURORACam` tab shows the four MX4 cameras plus a selected
+  camera hourly strip.
 - The WXcam `Science Quicklooks` tab is image-driven. For each UTC hour it selects the HDR JPG closest to `:30 UTC` and shows a tile only when an image exists for that hour; the quicklook header, selected still title, and availability bar all label the times as UTC.
 - `Operations` snapshots are collected every 5 minutes from source-host SSH probes, local filesystem probes, mirror-manifest summaries, systemd unit state, dashboard HTTP checks, dashboard/infra git state, and the latest Aurora Power Supply `DCInverterVolts`, `BatterySOC`, and `InternalTemperature` samples from the power Zarr. They stamp each snapshot with both `time_utc` and `snapshot_time_utc`, mark each stream red when the source has not produced data in the last 1.5 hours, score battery voltage as green above `52 V`, amber from `50-52 V`, and red below `50 V`, score battery SOC as green at or above `50 %`, amber from `25-50 %`, and red below `25 %`, and score APS internal temperature as green below `40 C`, amber from `40-45 C`, and red at `45 C` or above. The top-level `Operations Dashboard` tab reads the latest snapshot directly, while the Phase 1 observe-only sentinel also writes `latest_health.json` and Markdown health reports under `/data/aurora/products/ops_monitor/health`. A fresh deployment can therefore show a live Operations tab and health report before the archived monitoring quicklook directory fills in.
 - `Operations` email alerts are evaluated by `send_ops_alerts.py` from the latest operations snapshot. Alerts go to `gamb2le@ncas.ac.uk` for storage usage at `80 %`, battery SOC at or below `20 %`, APS internal temperature at or above `45 C`, battery voltage below `50 V`, and stream-health problems that persist for `3 h`. Alert state and event logs live under `/data/aurora/products/ops_monitor/alerts`.
@@ -761,7 +768,7 @@ Daily videos are stitched from the 24 hourly MP4 clips for that UTC day. `latest
 
 ### WXcam Zarr structure
 
-The WXcam Zarr at `/data/aurora/products/wxcam/wxcam.zarr` contains HDR JPG image data only. MP4 products are stored separately.
+The WXcam Zarr at `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr` contains HDR JPG image data only. MP4 products are stored separately.
 
 Root attrs:
 

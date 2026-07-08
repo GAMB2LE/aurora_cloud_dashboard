@@ -1,8 +1,8 @@
 # Aurora Cloud Dashboard
 
 The Aurora Cloud Dashboard repo contains the live Panel application, derived
-data-product builders, WXcam media tooling, and operations monitoring for the
-Aurora observing stack.
+data-product builders, WXcam and AURORACam media tooling, and operations
+monitoring for the Aurora observing stack.
 
 This documentation is now organized into real sections instead of a single long
 landing page:
@@ -11,7 +11,7 @@ landing page:
 - **Instruments** describes how each instrument is presented in the UI.
 - **Runtime and storage** covers deployed paths, services, storage, logging,
   and local development.
-- **Data products** documents the Zarr stores, WXcam media products, and
+- **Data products** documents the Zarr stores, camera media products, and
   operations-monitor products in detail.
 
 If you are orienting yourself quickly, start with:

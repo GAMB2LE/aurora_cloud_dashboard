@@ -40,6 +40,7 @@ nav:
       - Radiation: instruments/radiation.md
       - Aurora Power Supply: instruments/aurora-power-supply.md
       - WXcam: instruments/wxcam.md
+      - AURORACam: instruments/auroracam.md
       - Operations Dashboard: instruments/operations-dashboard.md
   - Runtime and storage:
       - Deployed paths: runtime/deployed-paths.md
@@ -48,6 +49,7 @@ nav:
       - Mobile API: runtime/mobile-api.md
       - Performance logging: runtime/performance-logging.md
       - Running locally: runtime/running-locally.md
+      - Model evaluation cleanup: runtime/model-evaluation-cleanup.md
       - Documentation publishing: runtime/documentation-publishing.md
       - Notes: runtime/notes.md
   - Data products:
@@ -62,4 +64,5 @@ nav:
       - Power Zarr: data-products/power-zarr.md
       - WXcam products: data-products/wxcam-products.md
       - WXcam Zarr: data-products/wxcam-zarr.md
+      - AURORACam Zarr: data-products/auroracam-zarr.md
       - Operations products: data-products/operations-products.md

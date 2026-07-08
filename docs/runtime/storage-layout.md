@@ -16,6 +16,7 @@ separate trees.
   - `/project/aurora/raw/power/level1`
   - `/project/aurora/raw/pdu`
   - `/project/aurora/raw/wxcam`
+  - `/project/aurora/raw/auroracam`
 - **Storage type:** shared Ceph network filesystem
 - **Current filesystem size on `2026-05-21`:** `4.0T`
 - **Current used on `2026-05-21`:** `57G`
@@ -31,6 +32,7 @@ So `/project/aurora` is the raw landing and mirror area.
   - quicklook PNGs
   - WXcam catalog SQLite
   - WXcam daily videos and thumbnails
+  - AURORACam metadata Zarr
   - performance logs and other dashboard products
 - **Examples:**
   - `/data/aurora/products/cl61/...zarr`
@@ -38,6 +40,7 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/power/pdu.zarr`
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
+  - `/data/aurora/products/auroracam/auroracam.zarr`
 - **Storage type:** local disk on `/dev/vdb`
 - **Current filesystem size on `2026-05-21`:** `983G`
 - **Current used on `2026-05-21`:** `262G`

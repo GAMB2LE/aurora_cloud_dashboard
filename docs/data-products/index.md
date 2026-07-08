@@ -1,6 +1,6 @@
 # Zarr And Product Overview
 
-The dashboard depends on a mix of numeric Zarr stores, WXcam media products,
+The dashboard depends on a mix of numeric Zarr stores, camera media products,
 and operations-monitor products.
 
 ## Numeric instrument Zarrs
@@ -19,6 +19,10 @@ and operations-monitor products.
 - [WXcam products](wxcam-products.md)
 - [WXcam Zarr](wxcam-zarr.md)
 
+## AURORACam products
+
+- [AURORACam Zarr](auroracam-zarr.md)
+
 ## Operations products
 
 - [Operations products](operations-products.md)
@@ -33,9 +37,10 @@ The general rule is:
 For most numeric instruments, that means a fixed-schema Zarr plus generated PNG
 quicklooks. The fixed-summary 1D instruments can also write prewarmed latest
 interactive Plotly JSON under `/data/aurora/products/dashboard/prewarm/`.
-WXcam adds media/catalog products on top of that pattern, while Operations
-Dashboard adds raw JSONL snapshots, a monitoring Zarr, archived PNG quicklooks,
-live trend cards, and observe-only health reports.
+WXcam adds media/catalog products on top of that pattern. AURORACam adds a raw
+JPEG browser plus a small metadata Zarr. Operations Dashboard adds raw JSONL
+snapshots, a monitoring Zarr, archived PNG quicklooks, live trend cards, and
+observe-only health reports.
 
 Numeric appenders use a common safe-append policy: incoming files are sorted,
 deduplicated, filtered to genuinely new timestamps, and materialized before the

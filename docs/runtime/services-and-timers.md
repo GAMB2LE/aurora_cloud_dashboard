@@ -19,9 +19,14 @@ tab, but it gives short backgrounding events a better chance of reconnecting.
 The app also mirrors view state into the URL so a killed tab can reload into
 the same tab, instrument, and key controls.
 
-The service also exposes `/data/aurora/products/wxcam` as the static route
-`/wxcam-media`. WXcam MP4 playback uses that route so videos are fetched by the
-browser over normal HTTP instead of being serialized into the Panel websocket.
+The service also exposes camera media as static routes:
+
+- `/wxcam-media` maps to `/data/aurora/products/wxcam`
+- `/auroracam-media` maps to `/project/aurora/raw/auroracam`
+
+WXcam MP4 playback and AURORACam JPEG display use those routes so media are
+fetched by the browser over normal HTTP instead of being serialized into the
+Panel websocket.
 
 ## CL61
 
@@ -94,6 +99,11 @@ summary by the Power quicklook pipeline when available.
 - `aurora-wxcam-catalog.timer`
 - `aurora-wxcam-daily-videos.timer`
 - `aurora-wxcam-append.timer`
+
+## AURORACam
+
+- `aurora-auroracam-source-sync.timer`
+- `aurora-auroracam-index.timer`
 
 ## Operations
 

@@ -51,7 +51,8 @@ grid.
 - daily videos: `/data/aurora/products/wxcam/daily_videos`
 - hourly thumbnails:
   `/data/aurora/products/wxcam/hourly_thumbnails`
-- image Zarr: `/data/aurora/products/wxcam/wxcam.zarr`
+- image Zarr:
+  `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr`
 
 The deployed mirror retains HDR JPG and MP4 files for both `FISH` and `PANO`.
 AUTO/LONG/SHORT files remain on the camera host and are not cataloged,

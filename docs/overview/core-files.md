@@ -17,7 +17,9 @@ operations tooling. The most important files are grouped below by role.
 - `append_new_vaisalamet_to_zarr.py`
 - `append_new_asfs_logger_to_zarr.py`
 - `append_new_asfs_fast_sonic_to_zarr.py`
+- `append_new_asfs_fast_gas_to_zarr.py`
 - `append_new_power_to_zarr.py`
+- `append_new_pdu_to_zarr.py`
 - `append_new_netcdf_to_zarr.py`
 
 These scripts ingest raw mirrored files and append them into the deployed Zarr
@@ -58,6 +60,19 @@ but is not the live dashboard product tree.
 - `build_wxcam_daily_videos.py` - builds daily MP4s, `latest.mp4`, and hourly
   thumbnails
 - `append_new_wxcam_to_zarr.py` - appends HDR JPG image data to the WXcam Zarr
+
+## AURORACam tooling
+
+- `auroracam_catalog.py` - shared camera labels, path parsing, and catalog
+  helpers for the MX4 JPEG mirror
+- `index_auroracam_zarr.py` - rebuilds the metadata-only AURORACam Zarr from
+  raw JPEG paths
+
+## Mobile API
+
+- `mobile_api.py` - read-only FastAPI surface for the native app
+- `mobile_catalog.py` - product catalog and response shaping for the mobile API
+- `systemd/aurora-mobile-api.service` - deployed service unit template
 
 ## Operations monitoring
 

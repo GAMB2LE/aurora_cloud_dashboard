@@ -2,16 +2,17 @@
 
 The Aurora Cloud Dashboard is the public-facing data browser and product viewer
 for the Aurora observing stack. It combines vertically resolved remote-sensing
-instruments, curated 1D station summaries, WXcam imagery and video products,
-and an operational status view into one Panel app.
+instruments, curated 1D station summaries, WXcam imagery/video products,
+AURORACam still images, and an operational status view into one Panel app.
 
 ## Main dashboard views
 
-The deployed interface is organized into four top-level tabs:
+The deployed interface is organized into five top-level tabs:
 
 - **Interactive Data Browser** for live browsing and recent windows
 - **Science Quicklooks** for archived science products and WXcam day views
 - **House Keeping Quicklooks** for archived diagnostics and housekeeping plots
+- **AURORACam** for four-camera MX4 still-image browsing
 - **Operations Dashboard** for source-host status, storage, transfers, mirror
   verification, and prune-readiness checks
 
@@ -28,6 +29,8 @@ so the dashboard opens on the most direct power-health summary.
 - **WXcam** combines a SQLite catalog, stitched MP4 products, hourly
   representative thumbnails, and an HDR image Zarr. The deployed product
   streams are currently FISH HDR and PANO HDR.
+- **AURORACam** reads the four MOBOTIX M24 JPEG folders from the MX4 raw mirror
+  and uses a small metadata Zarr for the rebuilt file index.
 - **Operations Dashboard** is driven by the `ops_monitor` raw snapshots and
   monitoring Zarr, plus the observe-only health JSON/Markdown reports written
   by the Phase 1 sentinel.
