@@ -1,0 +1,13 @@
+[Unit]
+Description=Aurora cloud radar daily archive quicklooks
+After=aurora-radar-append.service
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+EnvironmentFile=/etc/aurora-dashboard.env
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python generate_cloud_radar_quicklooks.py
+TimeoutStartSec=45min
+Nice=10

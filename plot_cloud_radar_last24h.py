@@ -37,6 +37,8 @@ SRCX_VMIN, SRCX_VMAX = 0.8, 1.0
 SKEW_VMIN, SKEW_VMAX = -2.0, 2.0
 KURT_VMIN, KURT_VMAX = 0.0, 8.0
 RANGE_MAX = 9000
+RADAR_QUICKLOOK_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_RADAR_QUICKLOOK_MAX_TIME_SAMPLES", "720"))
+RADAR_QUICKLOOK_MAX_RANGE_SAMPLES = int(os.environ.get("AURORA_RADAR_QUICKLOOK_MAX_RANGE_SAMPLES", "360"))
 
 RADAR_PANELS = (
     ("ZE_dBZ", "ZE", ZE_VMIN, ZE_VMAX, "ZE (dBZ)", radar_matplotlib_colormap("ZE_dBZ")),
@@ -54,6 +56,27 @@ register_pyart_radar_colormaps()
 
 def required_radar_vars() -> tuple[str, ...]:
     return tuple(panel[0] for panel in RADAR_PANELS)
+
+
+def _stride_for_count(count: int, target: int) -> int:
+    target = max(int(target), 1)
+    if count <= target:
+        return 1
+    return max(1, int((count + target - 1) // target))
+
+
+def _thin_radar_window(window: xr.Dataset) -> xr.Dataset:
+    """Reduce display density for static PNG rendering without changing source data."""
+    indexers = {}
+    time_stride = _stride_for_count(window.sizes.get("time", 0), RADAR_QUICKLOOK_MAX_TIME_SAMPLES)
+    range_stride = _stride_for_count(window.sizes.get("range", 0), RADAR_QUICKLOOK_MAX_RANGE_SAMPLES)
+    if time_stride > 1:
+        indexers["time"] = slice(None, None, time_stride)
+    if range_stride > 1:
+        indexers["range"] = slice(None, None, range_stride)
+    if not indexers:
+        return window
+    return window.isel(indexers)
 
 
 def _validate_radar_vars(ds: xr.Dataset) -> None:
@@ -77,6 +100,7 @@ def plot_radar_quicklook(
     """Render the shared compact science quicklook layout for radar windows."""
     _validate_radar_vars(window)
     window = window.sortby("time").sel({"range": slice(0, RANGE_MAX)})
+    window = _thin_radar_window(window)
     window_times = pd.DatetimeIndex(window["time"].values)
     if len(window_times) < 2:
         raise ValueError("At least two radar time samples are required for a science quicklook.")

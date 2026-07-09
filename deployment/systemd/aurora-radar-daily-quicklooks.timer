@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aurora cloud radar daily archive quicklooks
+
+[Timer]
+OnCalendar=*-*-* 00:17:00
+Persistent=true
+RandomizedDelaySec=20min
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

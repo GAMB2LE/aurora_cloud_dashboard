@@ -146,4 +146,11 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3:
         OUTPUT_PNG = sys.argv[2]
 
-    plot_last_24h(ZARR_PATH, OUTPUT_PNG)
+    try:
+        plot_last_24h(ZARR_PATH, OUTPUT_PNG)
+    except ValueError as exc:
+        message = str(exc)
+        if message == "No data found in the last 24 hours.":
+            print(f"Skipping latest ceilometer quicklook: {message}")
+            sys.exit(0)
+        raise

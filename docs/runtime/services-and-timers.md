@@ -28,6 +28,45 @@ WXcam MP4 playback and AURORACam JPEG display use those routes so media are
 fetched by the browser over normal HTTP instead of being serialized into the
 Panel websocket.
 
+## Resource Tuning
+
+The deployed host uses systemd drop-ins to keep the interactive dashboard
+responsive when appenders, quicklook generators, mirror verification, and GWS
+syncs overlap.
+
+- `aurora-dashboard.service` gets higher CPU and IO weights plus a modest
+  scheduling priority increase.
+- Background processing services run in `aurora-batch.slice`, which caps the
+  batch pool at two CPU cores on the current four-vCPU droplet and gives it
+  lower CPU/IO weights. The slice also has a soft `MemoryHigh=6G` pressure
+  limit so large products do not squeeze the dashboard as aggressively on the
+  current 8 GB droplet.
+- Heavier jobs such as appenders, quicklook generation, WXcam daily video
+  builds, mirror verification, and GWS rsync get lower priority inside that
+  batch slice.
+- Append, quicklook, mirror, and rsync timers have randomized delays so they
+  are less likely to start in one burst.
+
+Install or refresh these drop-ins from the deployed checkout with:
+
+```bash
+sudo /opt/aurora-cloud-dashboard/deployment/bin/aurora-install-resource-tuning
+sudo systemctl restart aurora-dashboard.service
+```
+
+Useful verification commands:
+
+```bash
+systemctl show aurora-dashboard.service -p Slice -p Nice -p CPUWeight -p IOWeight
+systemctl show aurora-batch.slice -p CPUQuotaPerSecUSec -p CPUWeight -p IOWeight
+systemctl show aurora-power-quicklooks.service -p Slice -p Nice -p CPUWeight -p IOWeight
+systemctl list-timers --all 'aurora-*'
+```
+
+The dashboard restart applies its service priority immediately. Existing
+background services inherit the batch slice only after their current run exits
+and the timer starts them again.
+
 ## CL61
 
 - `aurora-cl61-source-sync.timer`
@@ -40,6 +79,18 @@ Panel websocket.
 - `aurora-radar-source-sync.timer`
 - `aurora-radar-append.timer`
 - `aurora-radar-quicklooks.timer`
+- `aurora-radar-daily-quicklooks.timer`
+
+`aurora-radar-quicklooks.service` is overridden on the deployed host to update
+only the rolling latest 24 h radar PNG. The heavier daily archive generator
+runs from `aurora-radar-daily-quicklooks.timer` instead, so a frequent
+quicklook refresh cannot spend several minutes backfilling daily radar products
+while operators are using the interactive dashboard.
+
+Radar PNG rendering also uses display-only thinning controlled by
+`AURORA_RADAR_QUICKLOOK_MAX_TIME_SAMPLES` and
+`AURORA_RADAR_QUICKLOOK_MAX_RANGE_SAMPLES`. This reduces memory use for static
+quicklooks without changing the underlying radar Zarr.
 
 ## Scanning Microwave Radiometer
 

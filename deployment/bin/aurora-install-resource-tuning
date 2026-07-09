@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${AURORA_DASHBOARD_REPO:-/opt/aurora-cloud-dashboard}"
+systemd_root="${AURORA_SYSTEMD_ROOT:-/etc/systemd/system}"
+tuning_root="${repo_root%/}/deployment/systemd"
+
+install -o root -g root -m 0644 "$tuning_root/aurora-batch.slice" "$systemd_root/aurora-batch.slice"
+
+install_unit_if_present() {
+  local unit="$1"
+  local source="$tuning_root/$unit"
+  if [[ -f "$source" ]]; then
+    install -o root -g root -m 0644 "$source" "$systemd_root/$unit"
+  fi
+}
+
+install_dropin() {
+  local unit="$1"
+  local source="$2"
+  local name="$3"
+  local dir="$systemd_root/$unit.d"
+  mkdir -p "$dir"
+  install -o root -g root -m 0644 "$source" "$dir/$name"
+}
+
+unit_exists() {
+  local unit="$1"
+  systemctl list-unit-files "$unit" --no-legend --no-pager | grep -q . \
+    || systemctl status "$unit" >/dev/null 2>&1
+}
+
+install_unit_if_present aurora-radar-daily-quicklooks.service
+install_unit_if_present aurora-radar-daily-quicklooks.timer
+systemctl daemon-reload
+
+dashboard_units=(
+  aurora-dashboard.service
+)
+
+batch_units=(
+  aurora-asfs-fast-gas-append.service
+  aurora-asfs-fast-gas-source-sync.service
+  aurora-asfs-fast-sonic-append.service
+  aurora-asfs-fast-sonic-quicklooks.service
+  aurora-asfs-fast-sonic-source-sync.service
+  aurora-asfs-logger-append.service
+  aurora-asfs-logger-quicklooks.service
+  aurora-asfs-logger-source-sync.service
+  aurora-auroracam-index.service
+  aurora-auroracam-source-sync.service
+  aurora-ceilometer-append.service
+  aurora-ceilometer-last24h.service
+  aurora-ceilometer-quicklooks.service
+  aurora-cl61-source-sync.service
+  aurora-gws-rsync-manifests.service
+  aurora-gws-rsync-products-wxcam.service
+  aurora-gws-rsync-products.service
+  aurora-gws-rsync-raw.service
+  aurora-hatpro-append.service
+  aurora-hatpro-quicklooks.service
+  aurora-hatpro-source-sync.service
+  aurora-les-operational-run.service
+  aurora-mirror-verify.service
+  aurora-ops-monitor-alerts.service
+  aurora-ops-monitor-append.service
+  aurora-ops-monitor-collect.service
+  aurora-ops-monitor-quicklooks.service
+  aurora-pdu-append.service
+  aurora-pdu-source-sync.service
+  aurora-power-append.service
+  aurora-power-quicklooks.service
+  aurora-power-source-sync.service
+  aurora-radar-append.service
+  aurora-radar-daily-quicklooks.service
+  aurora-radar-quicklooks.service
+  aurora-radar-source-sync.service
+  aurora-standby-pull.service
+  aurora-uas-source-sync.service
+  aurora-vaisalamet-append.service
+  aurora-vaisalamet-quicklooks.service
+  aurora-vaisalamet-source-sync.service
+  aurora-wxcam-append.service
+  aurora-wxcam-catalog.service
+  aurora-wxcam-daily-videos.service
+  aurora-wxcam-source-sync.service
+)
+
+heavy_units=(
+  aurora-asfs-fast-gas-append.service
+  aurora-asfs-fast-sonic-append.service
+  aurora-asfs-fast-sonic-quicklooks.service
+  aurora-asfs-logger-append.service
+  aurora-asfs-logger-quicklooks.service
+  aurora-ceilometer-append.service
+  aurora-ceilometer-last24h.service
+  aurora-ceilometer-quicklooks.service
+  aurora-gws-rsync-products-wxcam.service
+  aurora-gws-rsync-products.service
+  aurora-gws-rsync-raw.service
+  aurora-hatpro-append.service
+  aurora-hatpro-quicklooks.service
+  aurora-les-operational-run.service
+  aurora-mirror-verify.service
+  aurora-ops-monitor-append.service
+  aurora-ops-monitor-quicklooks.service
+  aurora-power-append.service
+  aurora-power-quicklooks.service
+  aurora-radar-append.service
+  aurora-radar-daily-quicklooks.service
+  aurora-radar-quicklooks.service
+  aurora-standby-pull.service
+  aurora-vaisalamet-append.service
+  aurora-vaisalamet-quicklooks.service
+  aurora-wxcam-append.service
+  aurora-wxcam-daily-videos.service
+)
+
+append_timers=(
+  aurora-asfs-fast-gas-append.timer
+  aurora-asfs-fast-sonic-append.timer
+  aurora-asfs-logger-append.timer
+  aurora-ceilometer-append.timer
+  aurora-hatpro-append.timer
+  aurora-ops-monitor-append.timer
+  aurora-pdu-append.timer
+  aurora-power-append.timer
+  aurora-radar-append.timer
+  aurora-vaisalamet-append.timer
+  aurora-wxcam-append.timer
+)
+
+quicklook_timers=(
+  aurora-asfs-fast-sonic-quicklooks.timer
+  aurora-asfs-logger-quicklooks.timer
+  aurora-ceilometer-last24h.timer
+  aurora-ceilometer-quicklooks.timer
+  aurora-hatpro-quicklooks.timer
+  aurora-ops-monitor-quicklooks.timer
+  aurora-power-quicklooks.timer
+  aurora-radar-daily-quicklooks.timer
+  aurora-radar-quicklooks.timer
+  aurora-vaisalamet-quicklooks.timer
+  aurora-wxcam-daily-videos.timer
+)
+
+rsync_timers=(
+  aurora-gws-rsync-manifests.timer
+  aurora-gws-rsync-products-wxcam.timer
+  aurora-gws-rsync-products.timer
+  aurora-gws-rsync-raw.timer
+  aurora-mirror-verify.timer
+)
+
+for unit in "${dashboard_units[@]}"; do
+  unit_exists "$unit" || continue
+  install_dropin "$unit" "$tuning_root/drop-ins/dashboard-priority.conf" "10-resource-priority.conf"
+done
+
+if unit_exists aurora-radar-quicklooks.service; then
+  install_dropin \
+    aurora-radar-quicklooks.service \
+    "$tuning_root/drop-ins/radar-latest-service.conf" \
+    "10-latest-only.conf"
+fi
+
+for unit in "${batch_units[@]}"; do
+  unit_exists "$unit" || continue
+  install_dropin "$unit" "$tuning_root/drop-ins/batch-service.conf" "20-batch-slice.conf"
+done
+
+for unit in "${heavy_units[@]}"; do
+  unit_exists "$unit" || continue
+  install_dropin "$unit" "$tuning_root/drop-ins/heavy-batch-service.conf" "30-heavy-background.conf"
+done
+
+for timer in "${append_timers[@]}"; do
+  unit_exists "$timer" || continue
+  install_dropin "$timer" "$tuning_root/drop-ins/append-timer-stagger.conf" "20-stagger.conf"
+done
+
+for timer in "${quicklook_timers[@]}"; do
+  unit_exists "$timer" || continue
+  install_dropin "$timer" "$tuning_root/drop-ins/heavy-timer-stagger.conf" "20-stagger.conf"
+done
+
+for timer in "${rsync_timers[@]}"; do
+  unit_exists "$timer" || continue
+  install_dropin "$timer" "$tuning_root/drop-ins/rsync-timer-stagger.conf" "20-stagger.conf"
+done
+
+systemctl daemon-reload
+if unit_exists aurora-radar-daily-quicklooks.timer; then
+  systemctl enable --now aurora-radar-daily-quicklooks.timer >/dev/null
+fi
+echo "Installed Aurora dashboard resource tuning drop-ins."

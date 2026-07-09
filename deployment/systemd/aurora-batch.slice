@@ -1,0 +1,11 @@
+[Unit]
+Description=Aurora background processing slice
+
+[Slice]
+CPUAccounting=true
+CPUWeight=50
+CPUQuota=200%
+IOAccounting=true
+IOWeight=50
+MemoryAccounting=true
+MemoryHigh=6G
