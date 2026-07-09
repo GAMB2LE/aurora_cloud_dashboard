@@ -6,6 +6,9 @@ systemd_root="${AURORA_SYSTEMD_ROOT:-/etc/systemd/system}"
 tuning_root="${repo_root%/}/deployment/systemd"
 
 install -o root -g root -m 0644 "$tuning_root/aurora-batch.slice" "$systemd_root/aurora-batch.slice"
+install -o root -g root -m 0755 "${repo_root%/}/deployment/bin/aurora-run-guarded" /usr/local/bin/aurora-run-guarded
+install -o root -g root -m 0644 "$tuning_root/aurora-resource-tuning-tmpfiles.conf" /etc/tmpfiles.d/aurora-resource-tuning.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/aurora-resource-tuning.conf
 
 install_unit_if_present() {
   local unit="$1"
@@ -22,6 +25,54 @@ install_dropin() {
   local dir="$systemd_root/$unit.d"
   mkdir -p "$dir"
   install -o root -g root -m 0644 "$source" "$dir/$name"
+}
+
+install_guarded_exec_dropin() {
+  local unit="$1"
+  local class="$2"
+  local slots="$3"
+  local name="$4"
+  local unit_file="$systemd_root/$unit"
+  local dir="$systemd_root/$unit.d"
+  local exec_start=""
+  if [[ ! -f "$unit_file" ]]; then
+    echo "Skipping guard for $unit: $unit_file is missing" >&2
+    return 0
+  fi
+  local config_files=("$unit_file")
+  if [[ -d "$dir" ]]; then
+    while IFS= read -r conf; do
+      config_files+=("$conf")
+    done < <(find "$dir" -maxdepth 1 -type f -name '*.conf' ! -name "$name" | sort)
+  fi
+  local config_file line value
+  for config_file in "${config_files[@]}"; do
+    while IFS= read -r line; do
+      case "$line" in
+        ExecStart=*)
+          value="${line#ExecStart=}"
+          exec_start="$value"
+          ;;
+      esac
+    done < "$config_file"
+  done
+  if [[ -z "$exec_start" ]]; then
+    echo "Skipping guard for $unit: no effective ExecStart found before guard" >&2
+    return 0
+  fi
+  exec_start="${exec_start//%/%%}"
+  mkdir -p "$dir"
+  {
+    echo "[Service]"
+    echo "Environment=OMP_NUM_THREADS=1"
+    echo "Environment=OPENBLAS_NUM_THREADS=1"
+    echo "Environment=MKL_NUM_THREADS=1"
+    echo "Environment=NUMEXPR_NUM_THREADS=1"
+    echo "ExecStart="
+    printf 'ExecStart=/usr/local/bin/aurora-run-guarded run %s %%n %s 0 -- %s\n' "$class" "$slots" "$exec_start"
+  } > "$dir/$name"
+  chown root:root "$dir/$name"
+  chmod 0644 "$dir/$name"
 }
 
 unit_exists() {
@@ -152,6 +203,29 @@ rsync_timers=(
   aurora-mirror-verify.timer
 )
 
+quicklook_guard_units=(
+  aurora-power-quicklooks.service
+  aurora-radar-daily-quicklooks.service
+  aurora-radar-quicklooks.service
+  aurora-ops-monitor-quicklooks.service
+)
+
+video_guard_units=(
+  aurora-wxcam-daily-videos.service
+)
+
+append_guard_units=(
+  aurora-asfs-fast-gas-append.service
+  aurora-asfs-fast-sonic-append.service
+  aurora-power-append.service
+  aurora-radar-append.service
+  aurora-wxcam-append.service
+  aurora-gws-rsync-products-wxcam.service
+  aurora-gws-rsync-products.service
+  aurora-gws-rsync-raw.service
+  aurora-mirror-verify.service
+)
+
 for unit in "${dashboard_units[@]}"; do
   unit_exists "$unit" || continue
   install_dropin "$unit" "$tuning_root/drop-ins/dashboard-priority.conf" "10-resource-priority.conf"
@@ -163,6 +237,21 @@ if unit_exists aurora-radar-quicklooks.service; then
     "$tuning_root/drop-ins/radar-latest-service.conf" \
     "10-latest-only.conf"
 fi
+
+for unit in "${quicklook_guard_units[@]}"; do
+  unit_exists "$unit" || continue
+  install_guarded_exec_dropin "$unit" quicklook-heavy 1 "40-guarded-exec.conf"
+done
+
+for unit in "${video_guard_units[@]}"; do
+  unit_exists "$unit" || continue
+  install_guarded_exec_dropin "$unit" video-heavy 1 "40-guarded-exec.conf"
+done
+
+for unit in "${append_guard_units[@]}"; do
+  unit_exists "$unit" || continue
+  install_guarded_exec_dropin "$unit" append-io 2 "40-guarded-exec.conf"
+done
 
 for unit in "${batch_units[@]}"; do
   unit_exists "$unit" || continue

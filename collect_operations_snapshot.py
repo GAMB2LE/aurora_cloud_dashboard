@@ -37,6 +37,24 @@ LOCAL_COMMAND_TIMEOUT_SECONDS = 30.0
 INFRA_REPO_DEFAULT = Path("/tmp/aurora-cloud-infra-codex")
 ENV_FILE_DEFAULT = Path("/etc/aurora-dashboard.env")
 KNOWN_HOSTS = Path("/home/aurora/.ssh/known_hosts")
+AURORA_GUARD_STATUS_ROOT_DEFAULT = Path(os.environ.get("AURORA_GUARD_STATUS_ROOT", "/run/aurora/guarded"))
+BATCH_SLICE_UNIT = "aurora-batch.slice"
+GUARDED_HEAVY_UNITS = (
+    "aurora-power-quicklooks.service",
+    "aurora-radar-daily-quicklooks.service",
+    "aurora-radar-quicklooks.service",
+    "aurora-ops-monitor-quicklooks.service",
+    "aurora-wxcam-daily-videos.service",
+    "aurora-asfs-fast-gas-append.service",
+    "aurora-asfs-fast-sonic-append.service",
+    "aurora-power-append.service",
+    "aurora-radar-append.service",
+    "aurora-wxcam-append.service",
+    "aurora-gws-rsync-products-wxcam.service",
+    "aurora-gws-rsync-products.service",
+    "aurora-gws-rsync-raw.service",
+    "aurora-mirror-verify.service",
+)
 
 SOURCE_HOSTS = {
     "host_celine_source": {
@@ -137,6 +155,8 @@ PROCESSING_UNITS = (
     "aurora-radar-append.service",
     "aurora-radar-quicklooks.timer",
     "aurora-radar-quicklooks.service",
+    "aurora-radar-daily-quicklooks.timer",
+    "aurora-radar-daily-quicklooks.service",
     "aurora-hatpro-append.timer",
     "aurora-hatpro-append.service",
     "aurora-hatpro-quicklooks.timer",
@@ -594,10 +614,19 @@ def _unit_slug(unit: str) -> str:
     return unit.replace("aurora-", "").replace(".", "_").replace("-", "_")
 
 
-def _systemd_show(unit: str) -> dict[str, str]:
-    props = ("ActiveState", "UnitFileState", "Result", "ExecMainExitTimestamp", "LastTriggerUSec", "NextElapseUSecRealtime")
+def _systemd_show(unit: str, props: tuple[str, ...] | None = None) -> dict[str, str]:
+    if props is None:
+        props = (
+            "ActiveState",
+            "UnitFileState",
+            "Result",
+            "ExecMainExitTimestamp",
+            "LastTriggerUSec",
+            "NextElapseUSecRealtime",
+        )
+    prop_args = [arg for prop in props for arg in ("-p", prop)]
     proc = _run(
-        ["systemctl", "show", unit, *sum((["-p", prop] for prop in props), [])],
+        ["systemctl", "show", unit, *prop_args],
         check=False,
         timeout=LOCAL_COMMAND_TIMEOUT_SECONDS,
     )
@@ -618,7 +647,7 @@ def _service_healthy(info: dict[str, str]) -> int:
     result = info.get("Result", "")
     if active == "failed":
         return 0
-    if result in {"success", "", "done"}:
+    if result in {"success", "", "done", "exec-condition", "condition"}:
         return 1
     return 0
 
@@ -633,6 +662,193 @@ def _unit_enabled(info: dict[str, str]) -> int:
     if info.get("_exists") != "1":
         return 0
     return 1 if info.get("UnitFileState") == "enabled" else 0
+
+
+def _parse_systemd_bytes(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"infinity", "[not set]", "n/a", "none"}:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?)", text.lower())
+        if not match:
+            return None
+        number = float(match.group(1))
+        multiplier = {"": 1.0, "k": 1024.0, "m": 1024.0 ** 2, "g": 1024.0 ** 3, "t": 1024.0 ** 4}[match.group(2)]
+        number *= multiplier
+    if number >= 2**63:
+        return None
+    return number
+
+
+def _parse_systemd_duration_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"infinity", "[not set]", "n/a", "none"}:
+        return None
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(us|ms|s|min|h)?", text.lower())
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2)
+    if unit == "us":
+        return number / 1_000_000.0
+    if unit == "ms":
+        return number / 1000.0
+    if unit == "min":
+        return number * 60.0
+    if unit == "h":
+        return number * 3600.0
+    if unit == "s":
+        return number
+    return number / 1_000_000.0 if number > 10000 else number
+
+
+def _parse_event_time_utc(value: Any) -> float | None:
+    if not value:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    else:
+        timestamp = timestamp.astimezone(timezone.utc)
+    return timestamp.timestamp()
+
+
+def _pid_alive(pid_value: Any) -> bool:
+    try:
+        pid = int(pid_value)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _collect_guard_events(status_root: Path, now_epoch: float) -> dict[str, int]:
+    counts = {
+        "event_count_24h": 0,
+        "skip_count_24h": 0,
+        "acquired_count_24h": 0,
+        "released_count_24h": 0,
+        "quicklook_skip_count_24h": 0,
+        "video_skip_count_24h": 0,
+        "append_skip_count_24h": 0,
+    }
+    event_path = status_root / "events.jsonl"
+    if not event_path.exists():
+        return counts
+    cutoff_epoch = now_epoch - 24.0 * 3600.0
+    try:
+        lines = event_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return counts
+    for line in lines[-2000:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_epoch = _parse_event_time_utc(event.get("time_utc"))
+        if event_epoch is None or event_epoch < cutoff_epoch or event_epoch > now_epoch + 300.0:
+            continue
+        counts["event_count_24h"] += 1
+        event_name = str(event.get("event", ""))
+        guard_class = str(event.get("class", ""))
+        if event_name == "skipped":
+            counts["skip_count_24h"] += 1
+            if guard_class == "quicklook-heavy":
+                counts["quicklook_skip_count_24h"] += 1
+            elif guard_class == "video-heavy":
+                counts["video_skip_count_24h"] += 1
+            elif guard_class == "append-io":
+                counts["append_skip_count_24h"] += 1
+        elif event_name == "acquired":
+            counts["acquired_count_24h"] += 1
+        elif event_name == "released":
+            counts["released_count_24h"] += 1
+    return counts
+
+
+def _collect_batch_resource_metrics(record: dict[str, Any], now_epoch: float) -> None:
+    info = _systemd_show(
+        BATCH_SLICE_UNIT,
+        (
+            "ActiveState",
+            "CPUQuotaPerSecUSec",
+            "CPUWeight",
+            "IOWeight",
+            "MemoryCurrent",
+            "MemoryHigh",
+        ),
+    )
+    record["aurora_batch_active_state"] = 1 if info.get("ActiveState") == "active" else 0
+    cpu_quota_seconds = _parse_systemd_duration_seconds(info.get("CPUQuotaPerSecUSec"))
+    if cpu_quota_seconds is not None:
+        record["aurora_batch_cpu_quota_cores"] = cpu_quota_seconds
+    for key, prop in (
+        ("aurora_batch_cpu_weight", "CPUWeight"),
+        ("aurora_batch_io_weight", "IOWeight"),
+    ):
+        try:
+            record[key] = float(info[prop])
+        except Exception:
+            pass
+    memory_current = _parse_systemd_bytes(info.get("MemoryCurrent"))
+    memory_high = _parse_systemd_bytes(info.get("MemoryHigh"))
+    if memory_current is not None:
+        record["aurora_batch_memory_current_mb"] = memory_current / (1024.0 ** 2)
+    if memory_high is not None:
+        record["aurora_batch_memory_high_mb"] = memory_high / (1024.0 ** 2)
+    if memory_current is not None and memory_high and memory_high > 0:
+        record["aurora_batch_memory_pressure_pct"] = memory_current / memory_high * 100.0
+
+    active_units: list[str] = []
+    for unit in GUARDED_HEAVY_UNITS:
+        unit_info = _systemd_show(unit, ("ActiveState", "SubState", "MainPID"))
+        active = unit_info.get("ActiveState") in {"active", "activating"} and unit_info.get("_exists") == "1"
+        main_pid = unit_info.get("MainPID")
+        if main_pid and main_pid != "0":
+            active = active or _pid_alive(main_pid)
+        if active:
+            active_units.append(unit)
+    record["aurora_batch_active_heavy_job_count"] = len(active_units)
+    record["aurora_batch_active_heavy_jobs"] = ", ".join(active_units[:12])
+
+    current_root = AURORA_GUARD_STATUS_ROOT_DEFAULT / "current"
+    lock_units: list[str] = []
+    stale_locks = 0
+    if current_root.exists():
+        for path in sorted(current_root.glob("*.json")):
+            try:
+                current = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if _pid_alive(current.get("holder_pid")):
+                lock_units.append(str(current.get("unit") or path.stem))
+            else:
+                stale_locks += 1
+    record["aurora_guard_lock_active_count"] = len(lock_units)
+    record["aurora_guard_lock_active_units"] = ", ".join(lock_units[:12])
+    record["aurora_guard_stale_lock_count"] = stale_locks
+
+    for key, value in _collect_guard_events(AURORA_GUARD_STATUS_ROOT_DEFAULT, now_epoch).items():
+        record[f"aurora_guard_{key}"] = value
 
 
 def _collect_unit_metrics(units: tuple[str, ...], record: dict[str, Any]) -> tuple[int, int]:
@@ -912,6 +1128,7 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     failed_source_sync, source_sync_timer_enabled = _collect_unit_metrics(SOURCE_SYNC_UNITS, record)
     failed_processing, processing_timer_enabled = _collect_unit_metrics(PROCESSING_UNITS, record)
     failed_transfer, transfer_timer_enabled = _collect_unit_metrics(TRANSFER_UNITS, record)
+    _collect_batch_resource_metrics(record, now_epoch)
     record["failed_source_sync_unit_count"] = failed_source_sync
     record["failed_processing_unit_count"] = failed_processing
     record["failed_transfer_unit_count"] = failed_transfer
@@ -1088,6 +1305,36 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         "dashboard",
         "Dashboard performance log freshness",
         details=f"age={_fmt(_value(snapshot, 'dashboard_perf_log_age_min'), ' min')}",
+        affects_overall=False,
+    )
+
+    batch_level = _level_from_used_pct(_value(snapshot, "aurora_batch_memory_pressure_pct"))
+    _health_check(
+        checks,
+        batch_level,
+        "dashboard",
+        "Batch resource pressure",
+        details=(
+            f"memory={_fmt(_value(snapshot, 'aurora_batch_memory_pressure_pct'), '%', 0)}, "
+            f"current={_fmt(_value(snapshot, 'aurora_batch_memory_current_mb'), ' MB', 0)}, "
+            f"limit={_fmt(_value(snapshot, 'aurora_batch_memory_high_mb'), ' MB', 0)}, "
+            f"active_jobs={_fmt(_value(snapshot, 'aurora_batch_active_heavy_job_count'), '', 0)}"
+        ),
+        affects_overall=False,
+    )
+
+    guard_level = _level_from_count(_value(snapshot, "aurora_guard_skip_count_24h"), amber_at=5.0)
+    _health_check(
+        checks,
+        guard_level,
+        "systemd",
+        "Guarded job skips",
+        details=(
+            f"skips_24h={_fmt(_value(snapshot, 'aurora_guard_skip_count_24h'), '', 0)}, "
+            f"active_locks={_fmt(_value(snapshot, 'aurora_guard_lock_active_count'), '', 0)}, "
+            f"quicklook_skips={_fmt(_value(snapshot, 'aurora_guard_quicklook_skip_count_24h'), '', 0)}, "
+            f"append_skips={_fmt(_value(snapshot, 'aurora_guard_append_skip_count_24h'), '', 0)}"
+        ),
         affects_overall=False,
     )
 
@@ -1301,6 +1548,9 @@ def render_daily_report(snapshot: dict[str, Any], health: dict[str, Any], raw_sn
             f"- Max source sync failures: `{_fmt(_max_metric(rows, 'failed_source_sync_unit_count'), '', 0)}`",
             f"- Max processing failures: `{_fmt(_max_metric(rows, 'failed_processing_unit_count'), '', 0)}`",
             f"- Max transfer failures: `{_fmt(_max_metric(rows, 'failed_transfer_unit_count'), '', 0)}`",
+            f"- Max batch memory pressure: `{_fmt(_max_metric(rows, 'aurora_batch_memory_pressure_pct'), '%', 0)}`",
+            f"- Max active guarded jobs: `{_fmt(_max_metric(rows, 'aurora_batch_active_heavy_job_count'), '', 0)}`",
+            f"- Guarded job skips in latest 24 h: `{_fmt(_value(snapshot, 'aurora_guard_skip_count_24h'), '', 0)}`",
             f"- Max stale source streams: `{_fmt(_max_metric(rows, 'streams_source_stale_count'), '', 0)}`",
             f"- Max local mirror issue streams: `{_fmt(_max_metric(rows, 'streams_local_issue_count'), '', 0)}`",
             f"- Max GWS mirror issue streams: `{_fmt(_max_metric(rows, 'streams_gws_issue_count'), '', 0)}`",

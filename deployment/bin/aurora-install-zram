@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${AURORA_DASHBOARD_REPO:-/opt/aurora-cloud-dashboard}"
+systemd_root="${AURORA_SYSTEMD_ROOT:-/etc/systemd/system}"
+
+install -o root -g root -m 0755 "${repo_root%/}/deployment/bin/aurora-zram-swap" /usr/local/bin/aurora-zram-swap
+install -o root -g root -m 0644 "${repo_root%/}/deployment/systemd/aurora-zram-swap.service" "$systemd_root/aurora-zram-swap.service"
+systemctl daemon-reload
+systemctl enable --now aurora-zram-swap.service
+swapon --show

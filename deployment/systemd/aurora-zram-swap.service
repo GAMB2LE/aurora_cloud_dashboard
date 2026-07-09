@@ -1,0 +1,14 @@
+[Unit]
+Description=Aurora zram swap
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=swap.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/aurora-zram-swap start
+ExecStop=/usr/local/bin/aurora-zram-swap stop
+
+[Install]
+WantedBy=swap.target

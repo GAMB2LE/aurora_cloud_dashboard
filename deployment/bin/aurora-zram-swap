@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEVICE="${AURORA_ZRAM_DEVICE:-/dev/zram0}"
+SIZE="${AURORA_ZRAM_SIZE:-4G}"
+PRIORITY="${AURORA_ZRAM_PRIORITY:-100}"
+ALGORITHM="${AURORA_ZRAM_ALGORITHM:-zstd}"
+
+start() {
+  if swapon --noheadings --raw --show=NAME | grep -qx "$DEVICE"; then
+    echo "Aurora zram swap already active on $DEVICE"
+    return 0
+  fi
+  modprobe zram num_devices=1
+  if [[ ! -b "$DEVICE" ]]; then
+    DEVICE="$(zramctl -f)"
+  fi
+  if ! zramctl "$DEVICE" --algorithm "$ALGORITHM" --size "$SIZE"; then
+    zramctl "$DEVICE" --size "$SIZE"
+  fi
+  mkswap "$DEVICE"
+  swapon --priority "$PRIORITY" "$DEVICE"
+  echo "Aurora zram swap active on $DEVICE size=$SIZE priority=$PRIORITY"
+}
+
+stop() {
+  if swapon --noheadings --raw --show=NAME | grep -qx "$DEVICE"; then
+    swapoff "$DEVICE"
+  fi
+  if [[ -b "$DEVICE" ]]; then
+    zramctl --reset "$DEVICE" || true
+  fi
+}
+
+case "${1:-start}" in
+  start) start ;;
+  stop) stop ;;
+  restart)
+    stop
+    start
+    ;;
+  *)
+    echo "Usage: $0 [start|stop|restart]" >&2
+    exit 2
+    ;;
+esac

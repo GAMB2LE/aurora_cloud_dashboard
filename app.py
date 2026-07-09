@@ -1339,6 +1339,7 @@ OPS_STREAM_SPECS = (
         "processing_keys": (
             "radar_append_service_healthy_state",
             "radar_quicklooks_service_healthy_state",
+            "radar_daily_quicklooks_service_healthy_state",
         ),
     },
     {
@@ -1670,6 +1671,37 @@ def _ops_perf_log_text(snapshot: dict) -> tuple[str, str]:
         return "Unknown", f"{path}{size_text}"
     age_text = _format_duration(timedelta(minutes=age_min))
     return f"{age_text} old", f"{path}{size_text}"
+
+
+def _ops_batch_resource_level(snapshot: dict) -> str:
+    return _ops_worst_level(
+        [
+            _ops_level_from_used_pct(snapshot.get("aurora_batch_memory_pressure_pct")),
+            _ops_level_from_count(snapshot.get("aurora_guard_skip_count_24h"), amber_at=5.0),
+            _ops_level_from_count(snapshot.get("aurora_guard_stale_lock_count"), amber_at=0.0),
+        ]
+    )
+
+
+def _ops_batch_resource_text(snapshot: dict) -> tuple[str, str]:
+    active_jobs = int(_ops_float(snapshot.get("aurora_batch_active_heavy_job_count")) or 0)
+    active_locks = int(_ops_float(snapshot.get("aurora_guard_lock_active_count")) or 0)
+    guard_skips = int(_ops_float(snapshot.get("aurora_guard_skip_count_24h")) or 0)
+    memory_pct = _ops_float(snapshot.get("aurora_batch_memory_pressure_pct"))
+    memory_current = _ops_float(snapshot.get("aurora_batch_memory_current_mb"))
+    memory_high = _ops_float(snapshot.get("aurora_batch_memory_high_mb"))
+    active_names = str(snapshot.get("aurora_batch_active_heavy_jobs") or snapshot.get("aurora_guard_lock_active_units") or "").strip()
+    value = f"{active_jobs} active jobs" if active_jobs else "No active jobs"
+    if memory_pct is None:
+        memory_text = "memory pressure unknown"
+    elif memory_current is not None and memory_high is not None:
+        memory_text = f"memory {memory_current:.0f}/{memory_high:.0f} MB ({memory_pct:.0f} %)"
+    else:
+        memory_text = f"memory {memory_pct:.0f} %"
+    lock_text = f"{active_locks} active locks, {guard_skips} skips in 24 h"
+    if active_names:
+        lock_text = f"{lock_text}; {active_names}"
+    return value, f"{memory_text}; {lock_text}"
 
 
 def _ops_failover_endpoint_card(snapshot: dict, endpoint: str, title: str, expected_role: str) -> str:
@@ -2098,6 +2130,7 @@ def _ops_root_cause_cards_markup(
     transfer_failures = int(_ops_float(snapshot.get("failed_transfer_unit_count")) or 0)
     gws_issues = int(_ops_float(snapshot.get("streams_gws_issue_count")) or 0)
     local_issues = int(_ops_float(snapshot.get("streams_local_issue_count")) or 0)
+    batch_value, batch_meta = _ops_batch_resource_text(snapshot)
 
     cards = [
         _ops_card_markup(
@@ -2129,6 +2162,12 @@ def _ops_root_cause_cards_markup(
             _ops_worst_level([perf_log_level, str(perf_summary.get("level", "gray"))]),
             str(perf_summary.get("value", "No samples")),
             "Diagnostic only; this does not drive Overall action state",
+        ),
+        _ops_card_markup(
+            "Background load",
+            _ops_batch_resource_level(snapshot),
+            batch_value,
+            f"{batch_meta}; diagnostic only, not part of Overall",
         ),
     ]
     if not manifest_ready:
@@ -2224,6 +2263,8 @@ def _ops_operations_markup() -> str:
         battery_depletion_value, battery_depletion_meta = _ops_battery_depletion_text(snapshot)
         internal_temp_value, internal_temp_meta = _ops_internal_temp_text(snapshot)
         perf_log_value, perf_log_meta = _ops_perf_log_text(snapshot)
+        batch_resource_value, batch_resource_meta = _ops_batch_resource_text(snapshot)
+        batch_resource_level = _ops_batch_resource_level(snapshot)
         perf_summary = _ops_perf_summary(Path(snapshot.get("dashboard_perf_log_path") or PERF_LOG_PATH))
         root_cause_cards = _ops_root_cause_cards_markup(
             snapshot,
@@ -2316,6 +2357,12 @@ def _ops_operations_markup() -> str:
                 perf_summary["level"],
                 perf_summary["value"],
                 f"{perf_summary['meta']}; diagnostic only, not part of Overall",
+            ),
+            _ops_card_markup(
+                "Batch resources",
+                batch_resource_level,
+                batch_resource_value,
+                f"{batch_resource_meta}; diagnostic only, not part of Overall",
             ),
             _ops_card_markup(
                 "Failover endpoints",

@@ -46,6 +46,16 @@ syncs overlap.
   batch slice.
 - Append, quicklook, mirror, and rsync timers have randomized delays so they
   are less likely to start in one burst.
+- The guarded runner `/usr/local/bin/aurora-run-guarded` adds lightweight
+  mutexes for the heaviest job classes. Quicklook-heavy and video-heavy jobs
+  run one at a time; append/rsync IO jobs allow two concurrent jobs. If a slot
+  is already busy the generated `ExecStart` wrapper records a clean skip
+  instead of letting heavy jobs pile up.
+- Guard events are written to `/run/aurora/guarded/events.jsonl` and mirrored
+  to `/data/aurora/products/ops_monitor/health/guarded_jobs.jsonl` when that
+  directory is writable. The Operations Dashboard shows active guarded jobs,
+  lock skips in the last 24 h, and batch slice memory pressure as diagnostic
+  resource telemetry.
 
 Install or refresh these drop-ins from the deployed checkout with:
 
@@ -60,12 +70,27 @@ Useful verification commands:
 systemctl show aurora-dashboard.service -p Slice -p Nice -p CPUWeight -p IOWeight
 systemctl show aurora-batch.slice -p CPUQuotaPerSecUSec -p CPUWeight -p IOWeight
 systemctl show aurora-power-quicklooks.service -p Slice -p Nice -p CPUWeight -p IOWeight
+systemctl cat aurora-power-quicklooks.service aurora-wxcam-daily-videos.service
 systemctl list-timers --all 'aurora-*'
+tail -n 20 /data/aurora/products/ops_monitor/health/guarded_jobs.jsonl
 ```
 
 The dashboard restart applies its service priority immediately. Existing
 background services inherit the batch slice only after their current run exits
 and the timer starts them again.
+
+Optional compressed swap can be installed separately on small droplets:
+
+```bash
+sudo /opt/aurora-cloud-dashboard/deployment/bin/aurora-install-zram
+systemctl status aurora-zram-swap.service
+swapon --show
+```
+
+The default zram size is `4G` with `zstd` compression and priority `100`.
+Override `AURORA_ZRAM_SIZE`, `AURORA_ZRAM_ALGORITHM`, or
+`AURORA_ZRAM_PRIORITY` in the service environment before starting it if the VM
+size changes.
 
 ## CL61
 

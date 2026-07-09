@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOCK_ROOT="${AURORA_GUARD_LOCK_ROOT:-/run/aurora/locks}"
+STATUS_ROOT="${AURORA_GUARD_STATUS_ROOT:-/run/aurora/guarded}"
+EVENT_LOG="${AURORA_GUARD_EVENT_LOG:-/data/aurora/products/ops_monitor/health/guarded_jobs.jsonl}"
+
+sanitize() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_.@:-' '_'
+}
+
+default_slots() {
+  case "$1" in
+    append-io) printf '2' ;;
+    *) printf '1' ;;
+  esac
+}
+
+json_number_or_null() {
+  if [[ -n "${1:-}" ]]; then
+    printf '%s' "$1"
+  else
+    printf 'null'
+  fi
+}
+
+require_flock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "Aurora guard requires flock from util-linux" >&2
+    exit 255
+  fi
+}
+
+log_event() {
+  local event="$1"
+  local class="$2"
+  local unit="$3"
+  local slot="${4:-}"
+  local holder_pid="${5:-}"
+  local now
+  now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  mkdir -p "$STATUS_ROOT"
+  local line
+  line=$(printf '{"time_utc":"%s","event":"%s","class":"%s","unit":"%s","slot":%s,"holder_pid":%s}' \
+    "$now" "$event" "$(sanitize "$class")" "$(sanitize "$unit")" "$(json_number_or_null "$slot")" "$(json_number_or_null "$holder_pid")")
+  printf '%s\n' "$line" >> "$STATUS_ROOT/events.jsonl"
+  if mkdir -p "$(dirname "$EVENT_LOG")" 2>/dev/null; then
+    printf '%s\n' "$line" >> "$EVENT_LOG" 2>/dev/null || true
+  fi
+}
+
+state_path() {
+  printf '%s/%s.state' "$STATUS_ROOT" "$(sanitize "$1")"
+}
+
+current_path() {
+  printf '%s/current/%s.json' "$STATUS_ROOT" "$(sanitize "$1")"
+}
+
+acquire() {
+  require_flock
+  local class="$1"
+  local unit="$2"
+  local slots="${3:-$(default_slots "$class")}"
+  local timeout_seconds="${4:-0}"
+  local safe_class
+  safe_class="$(sanitize "$class")"
+  mkdir -p "$LOCK_ROOT" "$STATUS_ROOT/current"
+
+  local start_epoch now_epoch
+  start_epoch="$(date +%s)"
+  while true; do
+    local slot
+    for slot in $(seq 1 "$slots"); do
+      local lock_file="$LOCK_ROOT/${safe_class}.${slot}.lock"
+      (
+        flock -n 9 || exit 75
+        trap 'exit 0' TERM INT
+        while true; do
+          sleep 3600 &
+          wait "$!" || true
+        done
+      ) 9>"$lock_file" &
+      local holder_pid=$!
+      sleep 0.05
+      if kill -0 "$holder_pid" 2>/dev/null; then
+        local state current now
+        state="$(state_path "$unit")"
+        current="$(current_path "$unit")"
+        now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        {
+          printf 'class=%q\n' "$class"
+          printf 'unit=%q\n' "$unit"
+          printf 'slot=%q\n' "$slot"
+          printf 'holder_pid=%q\n' "$holder_pid"
+          printf 'lock_file=%q\n' "$lock_file"
+          printf 'current=%q\n' "$current"
+        } > "$state"
+        printf '{"time_utc":"%s","class":"%s","unit":"%s","slot":%s,"holder_pid":%s}\n' \
+          "$now" "$safe_class" "$(sanitize "$unit")" "$slot" "$holder_pid" > "$current"
+        log_event acquired "$class" "$unit" "$slot" "$holder_pid"
+        exit 0
+      fi
+      wait "$holder_pid" 2>/dev/null || true
+    done
+
+    now_epoch="$(date +%s)"
+    if (( timeout_seconds <= 0 || now_epoch - start_epoch >= timeout_seconds )); then
+      log_event skipped "$class" "$unit" "" ""
+      echo "Aurora guard skipped ${unit}: ${class} capacity is busy" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+release() {
+  local class="$1"
+  local unit="$2"
+  local state
+  state="$(state_path "$unit")"
+  if [[ ! -f "$state" ]]; then
+    log_event release_miss "$class" "$unit" "" ""
+    exit 0
+  fi
+  # shellcheck disable=SC1090
+  source "$state"
+  if [[ -n "${holder_pid:-}" ]] && kill -0 "$holder_pid" 2>/dev/null; then
+    kill "$holder_pid" 2>/dev/null || true
+  fi
+  rm -f "$state" "${current:-}"
+  log_event released "${class:-$1}" "$unit" "${slot:-}" "${holder_pid:-}"
+}
+
+cleanup_run_state() {
+  local class="$1"
+  local unit="$2"
+  local slot="$3"
+  local holder_pid="$4"
+  local state="$5"
+  local current="$6"
+  rm -f "$state" "$current"
+  log_event released "$class" "$unit" "$slot" "$holder_pid"
+}
+
+run_guarded() {
+  require_flock
+  local class="$1"
+  local unit="$2"
+  local slots="${3:-$(default_slots "$class")}"
+  local timeout_seconds="${4:-0}"
+  shift 4
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  if [[ $# -lt 1 ]]; then
+    echo "Aurora guard run mode needs a command" >&2
+    exit 255
+  fi
+
+  local safe_class
+  safe_class="$(sanitize "$class")"
+  mkdir -p "$LOCK_ROOT" "$STATUS_ROOT/current"
+
+  local start_epoch now_epoch
+  start_epoch="$(date +%s)"
+  while true; do
+    local slot
+    for slot in $(seq 1 "$slots"); do
+      local lock_file="$LOCK_ROOT/${safe_class}.${slot}.lock"
+      exec 9>"$lock_file"
+      if flock -n 9; then
+        local state current now status
+        state="$(state_path "$unit")"
+        current="$(current_path "$unit")"
+        now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        {
+          printf 'class=%q\n' "$class"
+          printf 'unit=%q\n' "$unit"
+          printf 'slot=%q\n' "$slot"
+          printf 'holder_pid=%q\n' "$$"
+          printf 'lock_file=%q\n' "$lock_file"
+          printf 'current=%q\n' "$current"
+        } > "$state"
+        printf '{"time_utc":"%s","class":"%s","unit":"%s","slot":%s,"holder_pid":%s}\n' \
+          "$now" "$safe_class" "$(sanitize "$unit")" "$slot" "$$" > "$current"
+        log_event acquired "$class" "$unit" "$slot" "$$"
+
+        trap 'status=$?; cleanup_run_state "$class" "$unit" "$slot" "$$" "$state" "$current"; exit "$status"' EXIT TERM INT
+        set +e
+        "$@"
+        status=$?
+        set -e
+        trap - EXIT TERM INT
+        cleanup_run_state "$class" "$unit" "$slot" "$$" "$state" "$current"
+        exit "$status"
+      fi
+    done
+
+    now_epoch="$(date +%s)"
+    if (( timeout_seconds <= 0 || now_epoch - start_epoch >= timeout_seconds )); then
+      log_event skipped "$class" "$unit" "" ""
+      echo "Aurora guard skipped ${unit}: ${class} capacity is busy" >&2
+      exit 0
+    fi
+    sleep 1
+  done
+}
+
+usage() {
+  echo "Usage: $0 acquire CLASS UNIT [SLOTS] [TIMEOUT_SECONDS] | release CLASS UNIT | run CLASS UNIT [SLOTS] [TIMEOUT_SECONDS] -- COMMAND..." >&2
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  acquire)
+    [[ $# -ge 3 ]] || { usage; exit 255; }
+    acquire "$2" "$3" "${4:-$(default_slots "$2")}" "${5:-0}"
+    ;;
+  release)
+    [[ $# -ge 3 ]] || { usage; exit 255; }
+    release "$2" "$3"
+    ;;
+  run)
+    [[ $# -ge 6 ]] || { usage; exit 255; }
+    run_guarded "$2" "$3" "${4:-$(default_slots "$2")}" "${5:-0}" "${@:6}"
+    ;;
+  *)
+    usage
+    exit 255
+    ;;
+esac
