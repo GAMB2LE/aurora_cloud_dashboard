@@ -8184,29 +8184,8 @@ body, .bk {
         flex: 1 1 100%;
         min-width: 0;
     }
-    .mobile-stack {
-        display: flex !important;
-        flex-direction: column !important;
-        flex-wrap: nowrap !important;
-        align-items: stretch !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        min-width: 0 !important;
-    }
-    .mobile-stack > *,
-    .mobile-stack > .bk,
-    .mobile-stack .bk-input-group,
-    .mobile-stack .bk-input,
-    .mobile-stack .bk-btn,
-    .mobile-stack button {
-        width: 100% !important;
-        max-width: 100% !important;
-        min-width: 0 !important;
-        flex: 1 1 auto !important;
-        box-sizing: border-box !important;
-    }
     .controls-card .bk-card-body {
-        max-height: 56vh;
+        max-height: 34vh;
         overflow-y: auto;
     }
     .action-row .bk-input-group {
@@ -8242,12 +8221,27 @@ body, .bk {
 # Controls card: group all widgets in a tidy stack.
 controls = pn.Card(
     pn.Column(
-        pn.Row(instrument_select, range_start, range_end, live_toggle, reset_view_btn, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(var1_select, var2_select, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(bottom_range_m, top_range_m, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(beta_vmin, beta_vmax, ldr_vmin, ldr_vmax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(lwp_ymin, lwp_ymax, iwv_ymin, iwv_ymax, irr_ymin, irr_ymax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        pn.Row(prev_btn, next_btn, sizing_mode="stretch_width", margin=(5, 0, 0, 0), css_classes=["mobile-stack"]),
+        instrument_select,
+        range_start,
+        range_end,
+        live_toggle,
+        reset_view_btn,
+        var1_select,
+        var2_select,
+        bottom_range_m,
+        top_range_m,
+        beta_vmin,
+        beta_vmax,
+        ldr_vmin,
+        ldr_vmax,
+        lwp_ymin,
+        lwp_ymax,
+        iwv_ymin,
+        iwv_ymax,
+        irr_ymin,
+        irr_ymax,
+        prev_btn,
+        next_btn,
         sizing_mode="stretch_width",
     ),
     title="Controls",
