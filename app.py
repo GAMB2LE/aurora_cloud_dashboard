@@ -3344,11 +3344,11 @@ range_end.param.watch(_on_manual_time_change, "value")
 # Persistent plot pane so we can listen for zoom/pan events (relayout).
 # Keep one stable shell for the interactive area so switching instruments
 # reuses the same pane tree instead of rebuilding the whole section.
-plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width")
+plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width", css_classes=["interactive-plot-pane"])
 interactive_loading = pn.pane.HTML("", visible=False, sizing_mode="stretch_width", margin=(0, 0, 8, 0))
 interactive_placeholder = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
-interactive_body = pn.Column(plot_pane, sizing_mode="stretch_width", margin=0)
-interactive_content = pn.Column(interactive_loading, interactive_body, sizing_mode="stretch_width", margin=0)
+interactive_body = pn.Column(plot_pane, sizing_mode="stretch_width", margin=0, css_classes=["interactive-plot-body"])
+interactive_content = pn.Column(interactive_loading, interactive_body, sizing_mode="stretch_width", margin=0, css_classes=["interactive-content"])
 
 
 def _interactive_placeholder_height(inst: str) -> int:
@@ -3409,16 +3409,78 @@ def _clear_interactive_loading() -> None:
     interactive_loading.visible = False
 
 
+def _viewport_int(attr: str) -> int | None:
+    try:
+        value = getattr(pn.state, attr, None)
+    except Exception:
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _mobile_request_user_agent() -> bool:
+    user_agent = (_request_header("User-Agent") or "").lower()
+    return any(token in user_agent for token in ("iphone", "ipod", "android", "mobile"))
+
+
+def _is_mobile_viewport() -> bool:
+    viewport_width = _viewport_int("viewport_width")
+    if viewport_width is not None:
+        return viewport_width <= 768
+    return _mobile_request_user_agent()
+
+
+def _mobile_plot_width() -> int:
+    viewport_width = _viewport_int("viewport_width")
+    if viewport_width is None:
+        viewport_width = 390 if _mobile_request_user_agent() else 768
+    return max(320, min(760, viewport_width - 16))
+
+
+def _figure_for_current_viewport(fig: go.Figure) -> tuple[go.Figure, int | None, int]:
+    """Return a per-session display figure without mutating shared caches."""
+    plot_height = int(getattr(fig.layout, "height", 900) or 900)
+    if not _is_mobile_viewport():
+        return fig, None, plot_height
+
+    mobile_width = _mobile_plot_width()
+    display_fig = go.Figure(fig)
+    if plot_height > 900:
+        mobile_height = max(900, min(plot_height, int(mobile_width * 4.2)))
+    else:
+        mobile_height = max(420, min(plot_height, int(mobile_width * 1.75)))
+
+    display_fig.update_layout(
+        autosize=False,
+        width=mobile_width,
+        height=mobile_height,
+        margin=dict(l=44, r=14, t=42, b=56),
+        showlegend=False,
+        font=dict(size=10, color=THEME_TEXT),
+        title=dict(font=dict(size=13, color=THEME_TEXT)),
+    )
+    display_fig.update_xaxes(automargin=True, tickfont=dict(size=9), title_font=dict(size=10), title_standoff=18)
+    display_fig.update_yaxes(automargin=True, tickfont=dict(size=9), title_font=dict(size=10), title_standoff=8)
+    for annotation in display_fig.layout.annotations or ():
+        annotation.update(font=dict(size=10, color=THEME_TEXT), borderwidth=1)
+    return display_fig, mobile_width, mobile_height
+
+
 def _show_plot(fig: go.Figure, instrument: str | None = None, cache_figure: bool = True) -> None:
     global _DISPLAYED_INTERACTIVE_INSTRUMENT
     instrument = instrument or CURRENT_INSTRUMENT
-    plot_height = int(getattr(fig.layout, "height", 900) or 900)
+    display_fig, plot_width, plot_height = _figure_for_current_viewport(fig)
+    plot_pane.width = plot_width
     plot_pane.height = plot_height
     plot_pane.min_height = plot_height
+    interactive_body.width = plot_width
     interactive_body.height = plot_height
     interactive_body.min_height = plot_height
     _set_interactive_body(plot_pane)
-    plot_pane.object = fig
+    plot_pane.object = display_fig
     _DISPLAYED_INTERACTIVE_INSTRUMENT = instrument
     if cache_figure:
         _INTERACTIVE_FIGURE_CACHE[instrument] = go.Figure(fig)
@@ -3426,8 +3488,10 @@ def _show_plot(fig: go.Figure, instrument: str | None = None, cache_figure: bool
 
 def _show_interactive_panel(panel_obj, instrument: str | None = None) -> None:
     global _DISPLAYED_INTERACTIVE_INSTRUMENT
+    plot_pane.width = None
     plot_pane.height = None
     plot_pane.min_height = None
+    interactive_body.width = None
     interactive_body.height = None
     interactive_body.min_height = None
     _set_interactive_body(panel_obj)
@@ -7065,6 +7129,14 @@ body, .bk {
     font-size: 12px;
     line-height: 1.35;
 }
+.interactive-content,
+.interactive-plot-body,
+.interactive-plot-pane {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+}
 .interactive-skeleton {
     display: flex;
     flex-direction: column;
@@ -8007,7 +8079,44 @@ body, .bk {
     display: none;
 }
 @media (max-width: 768px) {
+    html,
+    body {
+        overflow-x: hidden;
+    }
     body, .bk { font-size: 14px; }
+    .pn-template,
+    .pn-template .pn-main,
+    .pn-template .pn-wrapper,
+    .main-tabs,
+    .interactive-content,
+    .interactive-plot-body,
+    .interactive-plot-pane {
+        width: 100% !important;
+        max-width: 100vw !important;
+        min-width: 0 !important;
+        overflow-x: hidden !important;
+    }
+    .mdc-top-app-bar {
+        height: 54px !important;
+        min-height: 54px !important;
+    }
+    .mdc-top-app-bar__row {
+        height: 54px !important;
+    }
+    .mdc-top-app-bar__section {
+        padding: 0 8px !important;
+    }
+    .mdc-top-app-bar__title {
+        font-size: 20px !important;
+        line-height: 1.2 !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .mdc-top-app-bar img {
+        width: 34px !important;
+        height: 34px !important;
+    }
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
     .bk.pn-row { gap: 8px; }
@@ -8029,22 +8138,33 @@ body, .bk {
         width: 100%;
         overflow-x: auto;
         gap: 4px;
-        padding: 6px 4px;
+        padding: 4px;
         -webkit-overflow-scrolling: touch;
     }
     .mobile-tab-nav .bk-btn-group .bk-btn,
-    .mobile-tab-nav button.bk-btn {
+    .mobile-tab-nav button.bk-btn,
+    .mobile-tab-nav button {
         flex: 0 0 auto;
         white-space: nowrap;
-        min-height: 34px;
-        padding: 5px 10px !important;
+        min-height: 30px;
+        padding: 4px 8px !important;
         font-size: 12px !important;
+        line-height: 1.15 !important;
     }
     .main-tabs > .bk-tabs-header,
     .main-tabs > .bk-Tabs-header,
     .main-tabs > .bk-headers,
-    .main-tabs > .bk-headers-wrapper {
+    .main-tabs > .bk-headers-wrapper,
+    .main-tabs .bk-tabs-header,
+    .main-tabs .bk-Tabs-header,
+    .main-tabs .bk-tab {
         display: none !important;
+    }
+    .interactive-plot-pane .js-plotly-plot,
+    .interactive-plot-pane .plot-container,
+    .interactive-plot-pane .svg-container,
+    .interactive-plot-pane .main-svg {
+        max-width: 100% !important;
     }
     .mobile-stack > .bk {
         flex: 1 1 100%;
