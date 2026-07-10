@@ -1315,7 +1315,7 @@ def human_unit(name: str) -> str | None:
         return "Hz"
     if "yield" in lower or lower.endswith("kwh"):
         return "kWh"
-    if "temp" in lower or lower.endswith("_t") or lower.endswith("_td") or "_amb_" in lower or "_tem_" in lower:
+    if "temp" in lower or lower.endswith(("_t", "_td")) or "_amb_" in lower or "_tem_" in lower:
         return "C"
     if lower.endswith("_rh") or "_rh_" in lower or lower == "batterystate":
         return "%"
@@ -1535,7 +1535,7 @@ def _daily_cumulative_counter_delta(times: pd.DatetimeIndex, counter_kwh: np.nda
     current_day = None
     running_total = 0.0
     last_value = np.nan
-    for idx, (day_start, raw_value) in enumerate(zip(day_starts, counter_kwh)):
+    for idx, (day_start, raw_value) in enumerate(zip(day_starts, counter_kwh, strict=False)):
         if current_day is None or day_start != current_day:
             current_day = day_start
             running_total = 0.0
@@ -1928,9 +1928,7 @@ def _has_signal(values: np.ndarray, trace: TraceSpec) -> bool:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return False
-    if trace.skip_if_all_zero and np.allclose(finite, 0.0):
-        return False
-    return True
+    return not (trace.skip_if_all_zero and np.allclose(finite, 0.0))
 
 
 def _panel_series(ds: xr.Dataset, panel: PanelSpec) -> list[tuple[TraceSpec, np.ndarray]]:
@@ -2033,7 +2031,7 @@ def _insert_day_breaks(
 
     out_times = []
     out_values: list[float] = []
-    for idx, (timestamp, value) in enumerate(zip(times, values)):
+    for idx, (timestamp, value) in enumerate(zip(times, values, strict=False)):
         if idx > 0 and day_starts[idx] != day_starts[idx - 1]:
             out_times.append(timestamp)
             out_values.append(np.nan)
@@ -2260,7 +2258,7 @@ def plot_housekeeping_timeseries(
     fig, axes = plt.subplots(len(names), 1, figsize=(13, height), sharex=True, squeeze=False)
     axes = axes[:, 0]
     colors = [COLOR["teal"], COLOR["red"], COLOR["green"], COLOR["purple"], COLOR["brown"], COLOR["magenta"], COLOR["olive"], COLOR["blue"]]
-    for idx, (ax, name) in enumerate(zip(axes, names)):
+    for idx, (ax, name) in enumerate(zip(axes, names, strict=False)):
         values = np.asarray(ds[name].values, dtype=np.float64) * display_scale(name)
         trace_times, trace_values = _trace_time_values(times, values)
         trace_times, trace_values = _insert_line_gap_breaks(trace_times, trace_values)
@@ -2341,7 +2339,7 @@ def save_summary_png(
 
     fig, axes = plt.subplots(len(panels), 1, figsize=(14, max(7.5, 2.6 * len(panels))), sharex=True, squeeze=False)
     axes = axes[:, 0]
-    for ax, (panel, rows) in zip(axes, panels):
+    for ax, (panel, rows) in zip(axes, panels, strict=False):
         right_ax = ax.twinx() if panel.right_axis_label else None
         left_color = None
         right_color = None

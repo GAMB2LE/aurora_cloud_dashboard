@@ -233,6 +233,7 @@ def append_new(
     combined.to_zarr(zarr_path, mode="a", append_dim="time")
     _consolidate(zarr_path)
     print("Append complete.")
+    return
 
 
 def main() -> None:

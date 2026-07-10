@@ -2,7 +2,7 @@
 """
 Append new RPG FMCW 94 GHz cloud radar NetCDF files into an existing Zarr store.
 - Scans the root directory recursively for *.NC files newer than the latest time in the Zarr.
-- Uses the same conversion logic as cloud_radar_to_zarr.py (Chirp 1 Ze -> dBZ, SLDR).
+- Combines chirp ranges and normalizes radar variables into the dashboard cloud-radar Zarr.
 """
 
 from __future__ import annotations
@@ -137,7 +137,6 @@ def _load_nc(path: Path) -> xr.Dataset:
     time_vals = np.array(time.values)
     ranges = _range_values_from_raw(raw, path)
     r1 = raw["C1Range"].values
-    r2 = raw["C2Range"].values
     t_len = raw["Time"].sizes["Time"]
 
     var_specs = [

@@ -10,7 +10,7 @@ For each day up to (but not including) today:
 Skip any PNG that already exists.
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 import os
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from matplotlib.dates import HourLocator, DateFormatter
 import numpy as np
 import pandas as pd
 import xarray as xr
-from extra_housekeeping import extra_housekeeping_daily_png, plot_ceilometer_housekeeping
+from extra_housekeeping import extra_housekeeping_daily_png, pick_range_coord, plot_ceilometer_housekeeping
 from time_gap_breaks import insert_time_gap_breaks
 
 # --- Paths and constants ---
@@ -55,7 +55,7 @@ def _plot_day(ds_day: xr.Dataset, range_coord: str, date_label: str, output: Pat
         ("linear_depol_ratio", "Linear Depolarization Ratio"),
     ]
 
-    for ax, (var, title) in zip(axes, vars_and_titles):
+    for ax, (var, title) in zip(axes, vars_and_titles, strict=False):
         da = ds_day[var].transpose("time", range_coord)
         data = da.values
         if var == "beta_att":
@@ -118,7 +118,7 @@ def main():
         raise KeyError("Dataset must contain beta_att and linear_depol_ratio.")
 
     # Determine range coordinate and time index
-    range_coord = "range" if "range" in ds.coords else _pick_range_coord(ds)
+    range_coord = pick_range_coord(ds)
     time_index = pd.DatetimeIndex(ds["time"].values)
     tz = time_index.tz
     today = (pd.Timestamp.now(tz=tz) if tz is not None else pd.Timestamp.utcnow()).date()

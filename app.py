@@ -746,6 +746,10 @@ _POWER_DISPLAY_SUMMARY_REFRESHED_AT: datetime | None = None
 _OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
 
 
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _safe_periodic_callback(callback, period: int, start: bool = True):
     """Register a Panel timer, but allow plain Python imports for smoke tests."""
     timer = pn.state.add_periodic_callback(callback, period=period, start=False)
@@ -820,10 +824,6 @@ def _wxcam_media_url(path: Path) -> str:
 
 def _auroracam_raw_root() -> Path:
     return Path(os.environ.get("AURORACAM_RAW_ROOT", os.environ.get("AURORACAM_ROOT", "/project/aurora/raw/auroracam")))
-
-
-def _auroracam_zarr_path() -> Path:
-    return Path(os.environ.get("AURORACAM_ZARR_PATH", "/data/aurora/products/auroracam/auroracam.zarr"))
 
 
 def _auroracam_media_url(path: Path) -> str:
@@ -1057,16 +1057,6 @@ def _valid_time_mask(times: np.ndarray) -> np.ndarray:
     cutoff = np.datetime64(_ensure_utc(datetime.now(timezone.utc) + FUTURE_TIME_TOLERANCE))
     valid &= times <= cutoff
     return valid if np.any(valid) else ~np.isnat(times)
-
-
-def _median_filter_nan(arr, k=3):
-    """Simple nan-aware median filter with square window k x k."""
-    if arr.ndim != 2 or k < 2:
-        return arr
-    pad = k // 2
-    padded = np.pad(arr, ((pad, pad), (pad, pad)), mode="constant", constant_values=np.nan)
-    windows = np.lib.stride_tricks.sliding_window_view(padded, (k, k))
-    return np.nanmedian(windows, axis=(-2, -1))
 
 
 def _dataset_time_bounds(inst: str | None = None):
@@ -1983,7 +1973,7 @@ def _ops_sparkline_svg(values: np.ndarray | None, level: str, width: int = 150, 
         y_min -= 1.0
         y_max += 1.0
     y_scaled = height - 4.0 - ((y_values - y_min) / (y_max - y_min)) * (height - 8.0)
-    points = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(x_values, y_scaled))
+    points = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(x_values, y_scaled, strict=False))
     color = {
         "green": "#2a9d8f",
         "amber": "#b7791f",
@@ -2841,17 +2831,6 @@ def _make_plot(ds, var, clim, logz, coloraxis):
     return trace
 
 
-def _numeric_time_vars(ds: xr.Dataset) -> list[str]:
-    """Return numeric one-dimensional data variables aligned to time."""
-    names: list[str] = []
-    for name, da in ds.data_vars.items():
-        if da.dims != ("time",):
-            continue
-        if np.issubdtype(da.dtype, np.number):
-            names.append(name)
-    return names
-
-
 def _is_stacked_timeseries_instrument(inst: str) -> bool:
     return is_summary_instrument(inst)
 
@@ -2861,7 +2840,7 @@ def _is_wxcam_instrument(inst: str) -> bool:
 
 
 # Widgets / controls (Panel wires these into the view updater)
-default_end = datetime.utcnow()
+default_end = _utcnow_naive()
 default_start = default_end - DEFAULT_WINDOW
 range_start = pn.widgets.DatetimePicker(name="Start (UTC)", value=default_start)
 range_end = pn.widgets.DatetimePicker(name="End (UTC)", value=default_end)
@@ -2899,7 +2878,7 @@ _base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period
 
 
 def _last_24h_utc_window() -> tuple[datetime, datetime]:
-    end = datetime.utcnow()
+    end = _utcnow_naive()
     return end - DEFAULT_WINDOW, end
 
 
@@ -3297,7 +3276,7 @@ def _shift_previous(_event=None):
     """Jump to the previous full UTC day (00:00–24:00), clamping to data start."""
     _set_live(False)
     tmin, tmax = _dataset_time_bounds()
-    anchor_end = _ensure_utc(range_end.value) or _ensure_utc(range_start.value) or (tmax or datetime.utcnow())
+    anchor_end = _ensure_utc(range_end.value) or _ensure_utc(range_start.value) or (tmax or _utcnow_naive())
     prev_day = (anchor_end - timedelta(days=1)).date()
     prev_start = datetime.combine(prev_day, datetime.min.time())
     prev_end = datetime.combine(prev_day, time(hour=23, minute=59))
@@ -3306,7 +3285,6 @@ def _shift_previous(_event=None):
         return
     if tmin and prev_start < tmin:
         # Clamp to first day available, ending at that day's 23:59 (or tmax if earlier)
-        day_start = datetime.combine(tmin.date(), time.min)
         prev_start = tmin
         prev_end = datetime.combine(tmin.date(), time(hour=23, minute=59))
         if tmax:
@@ -6363,7 +6341,8 @@ def _current_science_status_markup() -> str:
         window_times = times
     latest_dt = window_times.max().to_pydatetime(warn=False) if len(window_times) else _dataset_time_bounds(inst)[1]
     bits, missing, total = _hourly_coverage_summary(window_times, start, end)
-    lag = datetime.now() - latest_dt if latest_dt is not None and start and start.date() == datetime.utcnow().date() else None
+    now = _utcnow_naive()
+    lag = now - latest_dt if latest_dt is not None and start and start.date() == now.date() else None
     items = [("Last sample", _format_status_time(latest_dt), "info")]
     if total:
         items.append(("Hourly gaps", str(missing), "warn" if missing else "ok"))
@@ -6431,7 +6410,8 @@ def _current_hk_status_markup() -> str:
         window_times = times
     latest_dt = window_times.max().to_pydatetime(warn=False) if len(window_times) else _dataset_time_bounds(inst)[1]
     bits, missing, total = _hourly_coverage_summary(window_times, start, end)
-    lag = datetime.now() - latest_dt if latest_dt is not None and start and start.date() == datetime.utcnow().date() else None
+    now = _utcnow_naive()
+    lag = now - latest_dt if latest_dt is not None and start and start.date() == now.date() else None
     items = [("Last sample", _format_status_time(latest_dt), "info")]
     if total:
         items.append(("Hourly gaps", str(missing), "warn" if missing else "ok"))

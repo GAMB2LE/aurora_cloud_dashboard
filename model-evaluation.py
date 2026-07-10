@@ -3857,9 +3857,6 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
     archive_manifest = _campaign_archive_manifest()
     paths = _lasso_bundle_paths()
     rows = _lasso_bundle_rows(paths)
-    process_rollup = _process_skill_rollup(index)
-    process_diagnoses = _process_diagnoses(diagnosis)
-    scheduler_rollup = _scheduler_policy_rollup(index)
     operational_qa_rollup = _operational_qa_rollup(index)
     ready_count = sum(1 for row in rows if row.get("status") == "ready")
     compliance_pass_count = sum(1 for row in rows if row.get("compliance") == "pass")
@@ -3949,7 +3946,6 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
     latest_path = paths[0] if paths else OPERATIONAL_CAMPAIGN_ROOT / "days" / "*" / "operational_run.json"
     index_pending = _index_required_pending(index)
     index_days = index.get("days", []) if isinstance(index, dict) else []
-    scheduler_rollup = _scheduler_policy_rollup(index)
     operational_qa_rollup = _operational_qa_rollup(index)
     cards = [
         _card("campaign index", index.get("status", "missing") if index else "missing"),

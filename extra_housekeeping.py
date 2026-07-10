@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import timedelta
 from pathlib import Path
 import re
@@ -73,7 +72,7 @@ def _apply_time_axis(ax, times: pd.DatetimeIndex) -> None:
     ax.tick_params(axis="x", labelrotation=0, labelsize=9)
 
 
-def _pick_range_coord(ds: xr.Dataset) -> str:
+def pick_range_coord(ds: xr.Dataset) -> str:
     for cand in ("range", "height", "altitude", "distance"):
         if cand in ds.coords:
             return cand
@@ -139,7 +138,7 @@ def _plot_grouped_housekeeping(
         squeeze=False,
     )
     axes = axes[:, 0]
-    for ax, panel in zip(axes, active_panels):
+    for ax, panel in zip(axes, active_panels, strict=False):
         right_ax = ax.twinx() if panel.get("right_label") else None
         left_color = "#22313f"
         right_color = "#22313f"
@@ -472,7 +471,7 @@ def _wxcam_representative_offset(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
     chosen_rows = []
-    for (_hour, image_type), group in frame.groupby(["hour", "image_type"]):
+    for (_hour, _image_type), group in frame.groupby(["hour", "image_type"]):
         chosen_rows.append(group.iloc[(group["minute_offset"].abs()).argmin()])
     rep = pd.DataFrame(chosen_rows)
     if rep.empty:
@@ -516,7 +515,7 @@ def _plot_wxcam_housekeeping_frame(df: pd.DataFrame, title: str, output: Path) -
     labels = {image_type: spec["label"] for image_type, spec in WXCAM_IMAGE_TYPES.items()}
     fig, axes = plt.subplots(len(panels), 1, figsize=(13, 10.5), sharex=True, squeeze=False)
     axes = axes[:, 0]
-    for ax, (panel_title, y_label, frame) in zip(axes, panels):
+    for ax, (panel_title, y_label, frame) in zip(axes, panels, strict=False):
         if frame.empty:
             ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, color="#555555")
         else:

@@ -114,7 +114,7 @@ def plot_radar_quicklook(
         axes = [axes]
 
     colorbars = []
-    for ax, (var, panel_title, vmin, vmax, cbar_label, cmap) in zip(axes, RADAR_PANELS):
+    for ax, (var, panel_title, vmin, vmax, cbar_label, cmap) in zip(axes, RADAR_PANELS, strict=False):
         da = window[var].transpose("time", "range")
         plot_times, plot_data = insert_time_gap_breaks(da["time"].values, da.values.T, time_axis=1)
         mesh = ax.pcolormesh(

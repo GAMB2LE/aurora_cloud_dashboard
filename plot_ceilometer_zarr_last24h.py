@@ -16,19 +16,11 @@ import pandas as pd
 import xarray as xr
 from pathlib import Path
 
-from extra_housekeeping import extra_housekeeping_latest_png, plot_ceilometer_housekeeping
+from extra_housekeeping import extra_housekeeping_latest_png, pick_range_coord, plot_ceilometer_housekeeping
 from quicklook_time_axis import apply_quicklook_time_axis
 from time_gap_breaks import insert_time_gap_breaks
 
 BETA_CMAP = "cividis"
-
-
-def _pick_range_coord(ds):
-    """Return the best-guess range/height coordinate name."""
-    for cand in ("range", "height", "altitude", "distance"):
-        if cand in ds.coords:
-            return cand
-    raise KeyError("No range/height-like coordinate found (tried range/height/altitude/distance).")
 
 
 def plot_last_24h(zarr_path, output_png="last24h.png"):
@@ -38,7 +30,7 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
     if "time" not in ds:
         raise KeyError("Dataset is missing a 'time' coordinate.")
 
-    range_coord = _pick_range_coord(ds)
+    range_coord = pick_range_coord(ds)
 
     time_index = pd.DatetimeIndex(ds["time"].values)
     tz = time_index.tz  # None for naive, tzinfo for aware
@@ -75,7 +67,7 @@ def plot_last_24h(zarr_path, output_png="last24h.png"):
         ("linear_depol_ratio", "Linear Depolarization Ratio"),
     ]
 
-    for ax, (var, title) in zip(axes, vars_and_titles):
+    for ax, (var, title) in zip(axes, vars_and_titles, strict=False):
         da = ds_window[var]
         data = da.transpose("time", range_coord).values
 

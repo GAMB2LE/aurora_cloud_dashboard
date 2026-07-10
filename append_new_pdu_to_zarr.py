@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
