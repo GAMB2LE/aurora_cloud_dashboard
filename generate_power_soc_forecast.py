@@ -34,6 +34,7 @@ DEFAULT_BATTERY_CAPACITY_KWH = float(os.environ.get("APS_BATTERY_CAPACITY_KWH", 
 DEFAULT_SOLAR_CALIBRATION_FACTOR = float(os.environ.get("AURORA_POWER_SOLAR_CALIBRATION_FACTOR", "1.0"))
 DEFAULT_LOAD_W = float(os.environ.get("AURORA_POWER_FORECAST_DEFAULT_LOAD_W", "0"))
 DEFAULT_ADAPTIVE_ALPHA = float(os.environ.get("AURORA_POWER_SOC_FORECAST_ADAPTIVE_ALPHA", "0.25"))
+DEFAULT_LOAD_BIAS_CORRECTION_LIMIT_W = float(os.environ.get("AURORA_POWER_LOAD_BIAS_CORRECTION_LIMIT_W", "2000"))
 DEFAULT_OPEN_DATA_SOURCE = os.environ.get("AURORA_POWER_ECMWF_OPEN_DATA_SOURCE", "azure")
 ECMWF_PARAM = "ssrd"
 
@@ -193,6 +194,36 @@ def estimate_load_w(frame: pd.DataFrame, *, end: pd.Timestamp, calibration_days:
     return float(finite.median())
 
 
+def build_historical_load_forecast(
+    frame: pd.DataFrame,
+    forecast_times: pd.DatetimeIndex,
+    *,
+    end: pd.Timestamp,
+    calibration_days: float,
+    default_load_w: float = DEFAULT_LOAD_W,
+) -> pd.Series:
+    """Forecast station load from recent historical UTC-hour medians."""
+    forecast_times = pd.DatetimeIndex(forecast_times)
+    if len(forecast_times) == 0:
+        return pd.Series(dtype=np.float64)
+    start = end - pd.Timedelta(days=float(calibration_days))
+    load = _observed_load_w(frame)
+    load = load.loc[(load.index >= start) & (load.index <= end)]
+    finite = load[np.isfinite(load)]
+    if finite.empty:
+        return pd.Series(np.full(len(forecast_times), float(default_load_w)), index=forecast_times)
+
+    # Collapse dense APS samples before grouping, otherwise one-second bursts can
+    # dominate the hourly historical profile.
+    hourly_samples = finite.resample("15min").median().dropna()
+    if hourly_samples.empty:
+        hourly_samples = finite
+    fallback = float(hourly_samples.median()) if not hourly_samples.empty else float(default_load_w)
+    by_hour = hourly_samples.groupby(hourly_samples.index.hour).median()
+    values = [float(by_hour.get(ts.hour, fallback)) for ts in forecast_times]
+    return pd.Series(np.clip(values, 0.0, None), index=forecast_times)
+
+
 def _observed_solar_w(frame: pd.DataFrame) -> pd.Series:
     solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
     if not solar_fields:
@@ -266,6 +297,25 @@ def _adaptive_value(raw_value: float, state_value: object, *, alpha: float = DEF
     return float((1.0 - alpha) * previous + alpha * raw_value)
 
 
+def _load_bias_correction(previous_correction: object, previous_bias: object, *, alpha: float = DEFAULT_ADAPTIVE_ALPHA) -> float:
+    try:
+        correction = float(previous_correction)
+    except Exception:
+        correction = 0.0
+    if not np.isfinite(correction):
+        correction = 0.0
+    try:
+        bias = float(previous_bias)
+    except Exception:
+        return float(correction)
+    if not np.isfinite(bias):
+        return float(correction)
+    # Positive bias means the previous forecast load was too high, so reduce the
+    # next load profile; negative bias means it was too low.
+    updated = correction - float(alpha) * bias
+    return float(np.clip(updated, -DEFAULT_LOAD_BIAS_CORRECTION_LIMIT_W, DEFAULT_LOAD_BIAS_CORRECTION_LIMIT_W))
+
+
 def calibrate_solar_factor(
     frame: pd.DataFrame,
     irradiance: pd.Series,
@@ -308,7 +358,7 @@ def integrate_soc_forecast(
     initial_time: pd.Timestamp | None = None,
     irradiance: pd.Series,
     solar_factor: float,
-    load_w: float,
+    load_w: float | pd.Series,
     capacity_kwh: float = DEFAULT_BATTERY_CAPACITY_KWH,
 ) -> pd.DataFrame:
     """Integrate SOC forward from ECMWF solar and expected load."""
@@ -333,7 +383,15 @@ def integrate_soc_forecast(
         times = forecast_times
         irradiance_values = forecast_irradiance
         solar_w = forecast_solar_w
-    load = np.full(len(times), max(float(load_w), 0.0), dtype=np.float64)
+    if isinstance(load_w, pd.Series):
+        load_series = load_w.reindex(times, method="nearest", tolerance=pd.Timedelta(hours=2))
+        if load_series.isna().all():
+            load_values = np.full(len(times), DEFAULT_LOAD_W, dtype=np.float64)
+        else:
+            load_values = load_series.ffill().bfill().to_numpy(dtype=np.float64)
+        load = np.clip(load_values, 0.0, None)
+    else:
+        load = np.full(len(times), max(float(load_w), 0.0), dtype=np.float64)
     soc = np.full(len(times), np.nan, dtype=np.float64)
     soc[0] = float(np.clip(initial_soc, 0.0, 100.0))
     for idx in range(1, len(times)):
@@ -371,7 +429,6 @@ def build_forecast_dataset(
     latest_time, latest_soc = latest_finite(frame["BatterySOC"])
     state = dict(state or {})
     previous_metrics = evaluate_previous_forecast(previous_forecast, frame)
-    load_w_raw = estimate_load_w(frame, end=latest_time, calibration_days=calibration_days)
     irradiance = solar_irradiance_from_ssrd(solar)
     if irradiance.empty:
         raise ValueError("No ECMWF solar forecast samples could be converted from ssrd")
@@ -387,17 +444,32 @@ def build_forecast_dataset(
         fallback_hours=fallback_calibration_hours,
     )
     factor = _adaptive_value(factor_raw, state.get("solar_calibration_factor_w_per_wm2"))
-    load_w = _adaptive_value(load_w_raw, state.get("forecast_load_w"))
+    raw_load_profile = build_historical_load_forecast(
+        frame,
+        pd.DatetimeIndex(irradiance.index),
+        end=latest_time,
+        calibration_days=calibration_days,
+        default_load_w=DEFAULT_LOAD_W,
+    )
+    load_bias_correction = _load_bias_correction(
+        state.get("load_bias_correction_w"),
+        previous_metrics.get("load_bias_w"),
+    )
+    load_profile = (raw_load_profile + load_bias_correction).clip(lower=0.0)
+    raw_load_w = float(raw_load_profile.median()) if not raw_load_profile.empty else float(DEFAULT_LOAD_W)
+    load_w = float(load_profile.median()) if not load_profile.empty else float(DEFAULT_LOAD_W)
     forecast = integrate_soc_forecast(
         initial_soc=latest_soc,
         initial_time=latest_time,
         irradiance=irradiance,
         solar_factor=factor,
-        load_w=load_w,
+        load_w=load_profile,
         capacity_kwh=capacity_kwh,
     )
     soc_mae = float(previous_metrics.get("soc_mae_pct_points", np.nan))
     solar_mae = float(previous_metrics.get("solar_mae_w", np.nan))
+    load_mae = float(previous_metrics.get("load_mae_w", np.nan))
+    load_bias = float(previous_metrics.get("load_bias_w", np.nan))
     evaluation_samples = max(
         int(previous_metrics.get("soc_sample_count", 0) or 0),
         int(previous_metrics.get("solar_sample_count", 0) or 0),
@@ -405,6 +477,8 @@ def build_forecast_dataset(
     )
     forecast["ForecastSOCMAERecent"] = soc_mae
     forecast["ForecastSolarMAERecent"] = solar_mae
+    forecast["ForecastLoadMAERecent"] = load_mae
+    forecast["ForecastLoadBiasRecent"] = load_bias
     forecast["ForecastEvaluationSamples"] = float(evaluation_samples)
     out = xr.Dataset(
         {name: (("time",), forecast[name].to_numpy(dtype=np.float32)) for name in forecast.columns},
@@ -421,7 +495,9 @@ def build_forecast_dataset(
             "solar_calibration_factor_w_per_wm2": f"{factor:.6g}",
             "raw_solar_calibration_factor_w_per_wm2": f"{factor_raw:.6g}",
             "forecast_load_w": f"{load_w:.6g}",
-            "raw_forecast_load_w": f"{load_w_raw:.6g}",
+            "raw_forecast_load_w": f"{raw_load_w:.6g}",
+            "load_bias_correction_w": f"{load_bias_correction:.6g}",
+            "load_model": "historical_utc_hour_median",
             "battery_capacity_kwh": f"{float(capacity_kwh):.6g}",
             "previous_forecast_metrics": json.dumps(previous_metrics, sort_keys=True),
         },
@@ -432,6 +508,8 @@ def build_forecast_dataset(
     out["ForecastLoadWatts"].attrs["units"] = "W"
     out["ForecastSOCMAERecent"].attrs["units"] = "percentage points"
     out["ForecastSolarMAERecent"].attrs["units"] = "W"
+    out["ForecastLoadMAERecent"].attrs["units"] = "W"
+    out["ForecastLoadBiasRecent"].attrs["units"] = "W"
     out["ForecastEvaluationSamples"].attrs["units"] = "samples"
     return out
 
@@ -477,6 +555,7 @@ def generate(
             "updated_at_utc": _utc_now(),
             "solar_calibration_factor_w_per_wm2": float(forecast.attrs["solar_calibration_factor_w_per_wm2"]),
             "forecast_load_w": float(forecast.attrs["forecast_load_w"]),
+            "load_bias_correction_w": float(forecast.attrs["load_bias_correction_w"]),
             "latest_metrics": json.loads(forecast.attrs["previous_forecast_metrics"]),
         }
     )

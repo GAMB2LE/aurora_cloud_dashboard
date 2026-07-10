@@ -101,6 +101,8 @@ POWER_SOC_FORECAST_FIELDS = (
     "ForecastLoadWatts",
     "ForecastSOCMAERecent",
     "ForecastSolarMAERecent",
+    "ForecastLoadMAERecent",
+    "ForecastLoadBiasRecent",
     "ForecastEvaluationSamples",
 )
 FAST_SONIC_TO_LOGGER_AVG = {
@@ -350,6 +352,8 @@ HUMAN_LABELS = {
     "ForecastLoadWatts": "Forecast Load",
     "ForecastSOCMAERecent": "Recent SOC Forecast MAE",
     "ForecastSolarMAERecent": "Recent Solar Forecast MAE",
+    "ForecastLoadMAERecent": "Recent Load Forecast MAE",
+    "ForecastLoadBiasRecent": "Recent Load Forecast Bias",
     "ForecastEvaluationSamples": "Evaluated Forecast Samples",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
@@ -492,6 +496,8 @@ HUMAN_UNITS = {
     "ForecastLoadWatts": "W",
     "ForecastSOCMAERecent": "percentage points",
     "ForecastSolarMAERecent": "W",
+    "ForecastLoadMAERecent": "W",
+    "ForecastLoadBiasRecent": "W",
     "ForecastEvaluationSamples": "samples",
     "TempSensor1": "C",
     "TempSensor2": "C",
@@ -894,11 +900,13 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "soc_forecast_skill",
             "SOC Forecast Skill",
             "SOC MAE [percentage points] / Samples",
-            "Solar MAE [W]",
+            "Power Forecast Error [W]",
             (
                 TraceSpec("ForecastEvaluationSamples", "Evaluated Forecast Samples", COLOR["green"], valid_min=0.0),
                 TraceSpec("ForecastSOCMAERecent", "Recent SOC Forecast MAE", COLOR["blue"], valid_min=0.0),
                 TraceSpec("ForecastSolarMAERecent", "Recent Solar Forecast MAE", COLOR["brown"], axis="right", valid_min=0.0),
+                TraceSpec("ForecastLoadMAERecent", "Recent Load Forecast MAE", COLOR["red"], axis="right", dash="dash", valid_min=0.0),
+                TraceSpec("ForecastLoadBiasRecent", "Recent Load Forecast Bias", COLOR["purple"], axis="right", dash="dot"),
             ),
         ),
     ),
@@ -1813,6 +1821,10 @@ def build_power_display_summary_dataset(
         out["ForecastSOCMAERecent"].attrs["units"] = "percentage points"
     if "ForecastSolarMAERecent" in out:
         out["ForecastSolarMAERecent"].attrs["units"] = "W"
+    if "ForecastLoadMAERecent" in out:
+        out["ForecastLoadMAERecent"].attrs["units"] = "W"
+    if "ForecastLoadBiasRecent" in out:
+        out["ForecastLoadBiasRecent"].attrs["units"] = "W"
     if "ForecastEvaluationSamples" in out:
         out["ForecastEvaluationSamples"].attrs["units"] = "samples"
     return out
