@@ -7,17 +7,18 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
 - `aurora-dashboard.service`
 
 The deployed dashboard service runs Panel with websocket keepalives and a
-longer unused-session lifetime:
+short unused-session lifetime so mobile browsers do not leave large stale
+documents behind on the single-process Panel server:
 
 - `--keep-alive=15000`
-- `--check-unused-sessions=600000`
-- `--unused-session-lifetime=3600000`
+- `--check-unused-sessions=60000`
+- `--unused-session-lifetime=600000`
 - `--session-token-expiration=86400`
 
 This does not stop a mobile operating system from killing a background browser
-tab, but it gives short backgrounding events a better chance of reconnecting.
-The app also mirrors view state into the URL so a killed tab can reload into
-the same tab, instrument, and key controls.
+tab. The app mirrors view state into the URL so a killed tab can reload into
+the same tab, instrument, and key controls without retaining old server-side
+documents for an hour.
 
 The service also exposes camera media as static routes:
 

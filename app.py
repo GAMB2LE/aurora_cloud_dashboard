@@ -275,7 +275,7 @@ PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().
 PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
 PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
 PERF_LOG_BACKUP_COUNT = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT", "5"))
-SESSION_HEARTBEAT_MS = int(os.environ.get("AURORA_DASHBOARD_SESSION_HEARTBEAT_MS", "60000"))
+SESSION_HEARTBEAT_MS = int(os.environ.get("AURORA_DASHBOARD_SESSION_HEARTBEAT_MS", "0"))
 _SESSION_BOOT_TS = datetime.now(timezone.utc)
 OPS_TREND_CACHE_TTL = timedelta(minutes=int(os.environ.get("AURORA_OPS_TREND_CACHE_TTL_MINUTES", "5")))
 OPS_TREND_WINDOW = timedelta(days=int(os.environ.get("AURORA_OPS_TREND_DAYS", "7")))
@@ -6048,7 +6048,9 @@ wxcam_calendar_state.param.watch(
 )
 pn.state.onload(_log_session_loaded)
 pn.state.on_session_destroyed(_log_session_destroyed)
-_session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
+_session_heartbeat_cb = None
+if SESSION_HEARTBEAT_MS > 0:
+    _session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
 
 
 def _sync_wxcam_calendar_hour(*_events):

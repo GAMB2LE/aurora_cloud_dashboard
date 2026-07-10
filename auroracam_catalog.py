@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import calendar
+from functools import lru_cache
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -81,6 +82,66 @@ def _iter_camera_files(root: Path, camera_id: str) -> Iterable[Path]:
             yield path
 
 
+def _root_key(root: Path) -> str:
+    root = Path(root)
+    if root.is_absolute():
+        return str(root)
+    return str(root.resolve())
+
+
+def _path_mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _available_days_fingerprint(root: Path, camera_id: str | None) -> tuple[tuple[str, int], ...]:
+    cameras = [camera_id] if camera_id else list(AURORACAM_CAMERAS)
+    return tuple(
+        (current_camera, _path_mtime_ns(root / current_camera))
+        for current_camera in cameras
+        if current_camera in AURORACAM_CAMERAS
+    )
+
+
+@lru_cache(maxsize=64)
+def _available_days_cached(root_key: str, camera_id: str | None, fingerprint: tuple[tuple[str, int], ...]) -> tuple[str, ...]:
+    root = Path(root_key)
+    days: set[str] = set()
+    cameras = [camera_id] if camera_id else list(AURORACAM_CAMERAS)
+    for current_camera in cameras:
+        if current_camera not in AURORACAM_CAMERAS:
+            continue
+        camera_root = root / current_camera
+        if not camera_root.exists():
+            continue
+        for day_dir in camera_root.iterdir():
+            if not day_dir.is_dir():
+                continue
+            day = day_dir.name
+            if len(day) == 10 and day[4] == "-" and day[7] == "-":
+                days.add(day)
+    return tuple(sorted(days))
+
+
+@lru_cache(maxsize=256)
+def _day_records_cached(root_key: str, camera_id: str, day_utc: str, day_mtime_ns: int) -> tuple[AuroracamRecord, ...]:
+    root = Path(root_key)
+    day_dir = root / camera_id / day_utc
+    if not day_dir.exists():
+        return ()
+    records: list[AuroracamRecord] = []
+    for path in sorted(day_dir.glob("*.jpg")):
+        if not path.is_file():
+            continue
+        try:
+            records.append(build_record(root, path))
+        except ValueError:
+            continue
+    return tuple(sorted(records, key=lambda record: (record.time_epoch_ns, record.filename)))
+
+
 def iter_image_paths(root: Path, camera_id: str | None = None) -> Iterable[Path]:
     cameras = [camera_id] if camera_id else list(AURORACAM_CAMERAS)
     for current_camera in cameras:
@@ -90,6 +151,10 @@ def iter_image_paths(root: Path, camera_id: str | None = None) -> Iterable[Path]
 
 
 def build_record(root: Path, path: Path) -> AuroracamRecord:
+    root = Path(root)
+    path = Path(path)
+    root_abs = root if root.is_absolute() else root.resolve()
+    path_abs = path if path.is_absolute() else path.resolve()
     timestamp = parse_timestamp(path)
     if timestamp is None:
         raise ValueError(f"Could not parse AURORACam timestamp from {path.name}")
@@ -104,7 +169,10 @@ def build_record(root: Path, path: Path) -> AuroracamRecord:
 
     spec = AURORACAM_CAMERAS[camera_id]
     stat_result = path.stat()
-    relative_path = path.resolve().relative_to(root.resolve()).as_posix()
+    try:
+        relative_path = path_abs.relative_to(root_abs).as_posix()
+    except ValueError:
+        relative_path = path_abs.resolve().relative_to(root_abs.resolve()).as_posix()
     time_epoch_ns = calendar.timegm(timestamp.utctimetuple()) * 1_000_000_000
     return AuroracamRecord(
         camera_id=camera_id,
@@ -113,7 +181,7 @@ def build_record(root: Path, path: Path) -> AuroracamRecord:
         time_utc=timestamp.replace(tzinfo=None).isoformat(sep=" ", timespec="minutes"),
         time_epoch_ns=time_epoch_ns,
         day_utc=day_utc,
-        raw_path=str(path.resolve()),
+        raw_path=str(path_abs),
         relative_path=relative_path,
         filename=path.name,
         size_bytes=stat_result.st_size,
@@ -130,26 +198,24 @@ def iter_image_records(root: Path, camera_id: str | None = None) -> Iterable[Aur
 
 
 def available_days(root: Path, camera_id: str | None = None) -> list[str]:
-    return sorted({record.day_utc for record in iter_image_records(root, camera_id)})
+    root = Path(root)
+    return list(_available_days_cached(_root_key(root), camera_id, _available_days_fingerprint(root, camera_id)))
 
 
 def day_records(root: Path, camera_id: str, day_utc: str) -> list[AuroracamRecord]:
-    records = [
-        record
-        for record in iter_image_records(root, camera_id)
-        if record.day_utc == day_utc
-    ]
-    return sorted(records, key=lambda record: (record.time_epoch_ns, record.filename))
+    if camera_id not in AURORACAM_CAMERAS:
+        return []
+    root = Path(root)
+    day_dir = root / camera_id / day_utc
+    return list(_day_records_cached(_root_key(root), camera_id, day_utc, _path_mtime_ns(day_dir)))
 
 
 def latest_records(root: Path, day_utc: str | None = None) -> dict[str, AuroracamRecord]:
     latest: dict[str, AuroracamRecord] = {}
-    for record in iter_image_records(root):
-        if day_utc and record.day_utc != day_utc:
-            continue
-        current = latest.get(record.camera_id)
-        if current is None or record.time_epoch_ns >= current.time_epoch_ns:
-            latest[record.camera_id] = record
+    for camera_id in AURORACAM_CAMERAS:
+        record = latest_record(root, camera_id, day_utc)
+        if record is not None:
+            latest[camera_id] = record
     return {
         camera_id: latest[camera_id]
         for camera_id in AURORACAM_CAMERAS
@@ -158,7 +224,14 @@ def latest_records(root: Path, day_utc: str | None = None) -> dict[str, Auroraca
 
 
 def latest_record(root: Path, camera_id: str, day_utc: str | None = None) -> AuroracamRecord | None:
-    records = day_records(root, camera_id, day_utc) if day_utc else list(iter_image_records(root, camera_id))
+    if camera_id not in AURORACAM_CAMERAS:
+        return None
+    if day_utc is None:
+        days = available_days(root, camera_id)
+        if not days:
+            return None
+        day_utc = days[-1]
+    records = day_records(root, camera_id, day_utc)
     if not records:
         return None
     return max(records, key=lambda record: (record.time_epoch_ns, record.filename))

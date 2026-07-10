@@ -85,10 +85,10 @@ moments.
 
 Panel sessions still depend on an active browser websocket, so a phone can
 lose the live session when the operating system backgrounds the browser. The
-service is configured with longer unused-session retention and frequent
-keepalives, and the app updates the URL query string as controls change. That
-combination gives short backgrounding events a chance to reconnect and lets a
-killed tab reload into the same selected view.
+service uses websocket keepalives but short unused-session cleanup so killed
+mobile tabs do not leave large stale server documents behind. The app updates
+the URL query string as controls change, so a killed tab can reload into the
+same selected view.
 
 The main interactive controls are collapsible on small screens and stack
 vertically so the data surface remains the primary scroll target.

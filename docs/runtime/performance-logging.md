@@ -45,6 +45,10 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_OPS_TREND_DAYS`
 - `AURORA_QUICKLOOK_MAX_TIME_SAMPLES`
 
+`AURORA_DASHBOARD_SESSION_HEARTBEAT_MS` defaults to `0`, which disables
+per-session heartbeat logging. That avoids keeping mobile browser sessions
+alive on the server after the phone has backgrounded or killed the tab.
+
 ## Useful commands
 
 ```bash

@@ -230,7 +230,7 @@ The log rotates automatically. You can change the path and rotation settings wit
 - `AURORA_DASHBOARD_PERF_LOG_MAX_BYTES`
 - `AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT`
 - `AURORA_DASHBOARD_PERF_ENABLED`
-- `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS`
+- `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS` (defaults to `0`, disabled)
 
 Useful commands:
 

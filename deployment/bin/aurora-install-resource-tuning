@@ -229,6 +229,7 @@ append_guard_units=(
 for unit in "${dashboard_units[@]}"; do
   unit_exists "$unit" || continue
   install_dropin "$unit" "$tuning_root/drop-ins/dashboard-priority.conf" "10-resource-priority.conf"
+  install_dropin "$unit" "$tuning_root/drop-ins/dashboard-session-cleanup.conf" "20-session-cleanup.conf"
 done
 
 if unit_exists aurora-radar-quicklooks.service; then
