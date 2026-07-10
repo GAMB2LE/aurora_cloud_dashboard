@@ -3462,8 +3462,20 @@ def _figure_for_current_viewport(fig: go.Figure) -> tuple[go.Figure, int | None,
         font=dict(size=10, color=THEME_TEXT),
         title=dict(font=dict(size=13, color=THEME_TEXT)),
     )
-    display_fig.update_xaxes(automargin=True, tickfont=dict(size=9), title_font=dict(size=10), title_standoff=18)
-    display_fig.update_yaxes(automargin=True, tickfont=dict(size=9), title_font=dict(size=10), title_standoff=8)
+    display_fig.update_xaxes(
+        automargin=False,
+        domain=[0.0, 1.0],
+        tickfont=dict(size=9),
+        title_font=dict(size=10),
+        title_standoff=14,
+    )
+    display_fig.update_yaxes(
+        automargin=False,
+        title_text="",
+        tickfont=dict(size=9),
+        title_font=dict(size=10),
+        title_standoff=4,
+    )
     for annotation in display_fig.layout.annotations or ():
         annotation.update(font=dict(size=10, color=THEME_TEXT), borderwidth=1)
     return display_fig, mobile_width, mobile_height
@@ -3472,7 +3484,9 @@ def _figure_for_current_viewport(fig: go.Figure) -> tuple[go.Figure, int | None,
 def _show_plot(fig: go.Figure, instrument: str | None = None, cache_figure: bool = True) -> None:
     global _DISPLAYED_INTERACTIVE_INSTRUMENT
     instrument = instrument or CURRENT_INSTRUMENT
+    is_mobile = _is_mobile_viewport()
     display_fig, plot_width, plot_height = _figure_for_current_viewport(fig)
+    plot_pane.config = {"responsive": True, "displayModeBar": not is_mobile, "displaylogo": False}
     plot_pane.width = plot_width
     plot_pane.height = plot_height
     plot_pane.min_height = plot_height
@@ -6869,16 +6883,7 @@ def _build_share_url(tab_slug: str) -> str:
 
 
 def _active_tab_slug() -> str:
-    if "tabs" not in globals():
-        return "interactive"
-    return {
-        0: "interactive",
-        1: "science",
-        2: "housekeeping",
-        3: "auroracam",
-        4: "uas",
-        5: "operations",
-    }.get(getattr(tabs, "active", 0), "interactive")
+    return globals().get("ACTIVE_TAB_SLUG", "interactive")
 
 
 def _update_browser_location() -> None:
@@ -8075,8 +8080,34 @@ body, .bk {
     max-height: calc(100vh - 320px);
     object-fit: contain;
 }
+.mobile-tab-nav,
+.active-tab-container {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
 .mobile-tab-nav {
-    display: none;
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    margin: 0 0 8px 0 !important;
+    background: #ffffff;
+    border-bottom: 1px solid #d8e1e8;
+}
+.mobile-tab-nav .bk-btn-group {
+    display: flex !important;
+    width: 100%;
+    overflow-x: auto;
+    gap: 6px;
+    padding: 8px 10px;
+    -webkit-overflow-scrolling: touch;
+}
+.mobile-tab-nav .bk-btn-group .bk-btn,
+.mobile-tab-nav button.bk-btn,
+.mobile-tab-nav button {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 @media (max-width: 768px) {
     html,
@@ -8087,7 +8118,7 @@ body, .bk {
     .pn-template,
     .pn-template .pn-main,
     .pn-template .pn-wrapper,
-    .main-tabs,
+    .active-tab-container,
     .interactive-content,
     .interactive-plot-body,
     .interactive-plot-pane {
@@ -8121,25 +8152,15 @@ body, .bk {
     .bk-panel-card { padding: 8px; }
     .bk.pn-row { gap: 8px; }
     .mobile-tab-nav {
-        display: block !important;
-        position: sticky;
-        top: 0;
-        z-index: 20;
         margin: 0 0 8px 0 !important;
-        background: #ffffff;
-        border-bottom: 1px solid #d8e1e8;
     }
     .mobile-tab-nav .bk-input-group,
     .mobile-tab-nav .bk-input {
         width: 100%;
     }
     .mobile-tab-nav .bk-btn-group {
-        display: flex !important;
-        width: 100%;
-        overflow-x: auto;
         gap: 4px;
         padding: 4px;
-        -webkit-overflow-scrolling: touch;
     }
     .mobile-tab-nav .bk-btn-group .bk-btn,
     .mobile-tab-nav button.bk-btn,
@@ -8150,15 +8171,6 @@ body, .bk {
         padding: 4px 8px !important;
         font-size: 12px !important;
         line-height: 1.15 !important;
-    }
-    .main-tabs > .bk-tabs-header,
-    .main-tabs > .bk-Tabs-header,
-    .main-tabs > .bk-headers,
-    .main-tabs > .bk-headers-wrapper,
-    .main-tabs .bk-tabs-header,
-    .main-tabs .bk-Tabs-header,
-    .main-tabs .bk-tab {
-        display: none !important;
     }
     .interactive-plot-pane .js-plotly-plot,
     .interactive-plot-pane .plot-container,
@@ -8412,49 +8424,53 @@ uas_tab = pn.Column(
     sizing_mode="stretch_width",
 )
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
-MOBILE_TAB_OPTIONS = {
-    "Interactive": 0,
-    "Science": 1,
-    "Housekeeping": 2,
-    "AURORACam": 3,
-    "UAS": 4,
-    "Operations": 5,
+TAB_OPTIONS = {
+    "Interactive": "interactive",
+    "Science": "science",
+    "Housekeeping": "housekeeping",
+    "AURORACam": "auroracam",
+    "UAS": "uas",
+    "Operations": "operations",
 }
-MOBILE_TAB_LABEL_BY_INDEX = {value: key for key, value in MOBILE_TAB_OPTIONS.items()}
+TAB_LABEL_BY_SLUG = {value: key for key, value in TAB_OPTIONS.items()}
+TAB_PANEL_BY_SLUG = {
+    "interactive": interactive_tab,
+    "science": science_quicklooks_tab,
+    "housekeeping": housekeeping_quicklooks_tab,
+    "auroracam": auroracam_tab,
+    "uas": uas_tab,
+    "operations": operations_tab,
+}
+ACTIVE_TAB_SLUG = "interactive"
 mobile_tab_select = pn.widgets.RadioButtonGroup(
     name="",
     value="Interactive",
-    options=list(MOBILE_TAB_OPTIONS),
+    options=list(TAB_OPTIONS),
     button_type="default",
     sizing_mode="stretch_width",
 )
 mobile_tab_nav = pn.Column(mobile_tab_select, sizing_mode="stretch_width", margin=0, css_classes=["mobile-tab-nav"])
-tabs = pn.Tabs(
-    ("Interactive Data Browser", interactive_tab),
-    ("Science Quicklooks", science_quicklooks_tab),
-    ("House Keeping Quicklooks", housekeeping_quicklooks_tab),
-    ("AURORACam", auroracam_tab),
-    ("UAS", uas_tab),
-    ("Operations Dashboard", operations_tab),
-    sizing_mode="stretch_both",
-    css_classes=["main-tabs"],
-)
+active_tab_container = pn.Column(interactive_tab, sizing_mode="stretch_width", margin=0, css_classes=["active-tab-container"])
 _mobile_tab_syncing = False
 
 
-def _ensure_active_tab_loaded() -> None:
-    active = tabs.active
-    if active == 1 and "science" not in _LOADED_TABS:
+def _normalize_tab_slug(slug: str | None) -> str:
+    return slug if slug in TAB_PANEL_BY_SLUG else "interactive"
+
+
+def _ensure_active_tab_loaded(slug: str | None = None) -> None:
+    active = _normalize_tab_slug(slug or ACTIVE_TAB_SLUG)
+    if active == "science" and "science" not in _LOADED_TABS:
         science_quicklook_container[:] = [_science_quicklook_image]
         science_status_container[:] = [science_status]
         science_availability_container[:] = [science_availability]
         _LOADED_TABS.add("science")
-    elif active == 2 and "housekeeping" not in _LOADED_TABS:
+    elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
         housekeeping_quicklook_container[:] = [_housekeeping_quicklook_image]
         hk_status_container[:] = [hk_status]
         hk_availability_container[:] = [hk_availability]
         _LOADED_TABS.add("housekeeping")
-    elif active == 4 and "uas" not in _LOADED_TABS:
+    elif active == "uas" and "uas" not in _LOADED_TABS:
         uas_container[:] = [pn.Column(uas_status_pane, uas_plot_pane, uas_table_pane, sizing_mode="stretch_width", css_classes=["uas-shell"])]
         _refresh_uas_dashboard()
         _LOADED_TABS.add("uas")
@@ -8462,7 +8478,7 @@ def _ensure_active_tab_loaded() -> None:
             _uas_timer.start()
         except RuntimeError:
             pass
-    elif active == 5 and "operations" not in _LOADED_TABS:
+    elif active == "operations" and "operations" not in _LOADED_TABS:
         operations_container[:] = [operations_dashboard]
         _refresh_operations_dashboard()
         _LOADED_TABS.add("operations")
@@ -8472,10 +8488,30 @@ def _ensure_active_tab_loaded() -> None:
             pass
 
 
+def _set_active_tab(slug: str | None) -> None:
+    """Mount exactly one dashboard tab so mobile does not inherit desktop tab width."""
+    global ACTIVE_TAB_SLUG, _mobile_tab_syncing
+    active = _normalize_tab_slug(slug)
+    ACTIVE_TAB_SLUG = active
+    _ensure_active_tab_loaded(active)
+    panel = TAB_PANEL_BY_SLUG[active]
+    if len(active_tab_container.objects) != 1 or active_tab_container.objects[0] is not panel:
+        active_tab_container[:] = [panel]
+
+    label = TAB_LABEL_BY_SLUG[active]
+    if mobile_tab_select.value != label:
+        _mobile_tab_syncing = True
+        try:
+            mobile_tab_select.value = label
+        finally:
+            _mobile_tab_syncing = False
+    _refresh_share_and_download_state()
+
+
 def _sync_mobile_tab_select() -> None:
-    """Reflect programmatic/desktop tab changes into the mobile selector."""
+    """Reflect programmatic tab changes into the compact selector."""
     global _mobile_tab_syncing
-    label = MOBILE_TAB_LABEL_BY_INDEX.get(tabs.active, "Interactive")
+    label = TAB_LABEL_BY_SLUG.get(ACTIVE_TAB_SLUG, "Interactive")
     if mobile_tab_select.value == label:
         return
     _mobile_tab_syncing = True
@@ -8486,23 +8522,13 @@ def _sync_mobile_tab_select() -> None:
 
 
 def _on_mobile_tab_select_change(event) -> None:
-    """Switch the real tab from the phone-sized View selector."""
+    """Switch the mounted dashboard tab from the compact selector."""
     if _mobile_tab_syncing:
         return
-    index = MOBILE_TAB_OPTIONS.get(event.new)
-    if index is None or tabs.active == index:
-        return
-    tabs.active = index
-
-
-def _on_tabs_active_change(_event=None) -> None:
-    _sync_mobile_tab_select()
-    _ensure_active_tab_loaded()
-    _refresh_share_and_download_state()
+    _set_active_tab(TAB_OPTIONS.get(event.new))
 
 
 mobile_tab_select.param.watch(_on_mobile_tab_select_change, "value")
-tabs.param.watch(_on_tabs_active_change, "active")
 
 SITE_FOOTER_HTML = """
 <div class="site-footer">
@@ -8532,21 +8558,18 @@ auroracam_tab.append(_site_footer_pane())
 uas_tab.append(_site_footer_pane())
 operations_tab.append(_site_footer_pane())
 
-main_layout = pn.Column(mobile_tab_nav, tabs, sizing_mode="stretch_width", margin=0)
+main_layout = pn.Column(mobile_tab_nav, active_tab_container, sizing_mode="stretch_width", margin=0)
 
-_QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "auroracam": 3, "uas": 4, "operations": 5}
+_QUERY_TAB_SLUGS = set(TAB_PANEL_BY_SLUG)
 
 _apply_query_state()
 requested_tab = _request_query_args().get("tab")
-if requested_tab in _QUERY_TAB_INDEX:
-    tabs.active = _QUERY_TAB_INDEX[requested_tab]
+_set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
 _sync_mobile_tab_select()
-_ensure_active_tab_loaded()
 _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
 pn.state.onload(_enable_browser_interactive_render)
 
-tabs.sizing_mode = "stretch_width"
 template.main[:] = [main_layout]
 
 # Serve the app. `location=True` installs Panel's Location model so the app can
