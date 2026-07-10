@@ -8024,6 +8024,22 @@ body, .bk {
     .mobile-tab-nav .bk-input {
         width: 100%;
     }
+    .mobile-tab-nav .bk-btn-group {
+        display: flex !important;
+        width: 100%;
+        overflow-x: auto;
+        gap: 4px;
+        padding: 6px 4px;
+        -webkit-overflow-scrolling: touch;
+    }
+    .mobile-tab-nav .bk-btn-group .bk-btn,
+    .mobile-tab-nav button.bk-btn {
+        flex: 0 0 auto;
+        white-space: nowrap;
+        min-height: 34px;
+        padding: 5px 10px !important;
+        font-size: 12px !important;
+    }
     .main-tabs > .bk-tabs-header,
     .main-tabs > .bk-Tabs-header,
     .main-tabs > .bk-headers,
@@ -8095,6 +8111,7 @@ template = pn.template.MaterialTemplate(
     header_background=ACCENT,
     header_color="white",
     main_max_width="1800px",  # wide but keeps a valid string
+    meta_viewport="width=device-width, initial-scale=1, viewport-fit=cover",
 )
 
 
@@ -8284,10 +8301,11 @@ MOBILE_TAB_OPTIONS = {
     "Operations": 5,
 }
 MOBILE_TAB_LABEL_BY_INDEX = {value: key for key, value in MOBILE_TAB_OPTIONS.items()}
-mobile_tab_select = pn.widgets.Select(
-    name="View",
+mobile_tab_select = pn.widgets.RadioButtonGroup(
+    name="",
     value="Interactive",
     options=list(MOBILE_TAB_OPTIONS),
+    button_type="default",
     sizing_mode="stretch_width",
 )
 mobile_tab_nav = pn.Column(mobile_tab_select, sizing_mode="stretch_width", margin=0, css_classes=["mobile-tab-nav"])
