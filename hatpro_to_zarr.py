@@ -26,6 +26,8 @@ import pandas as pd
 import xarray as xr
 import zarr
 
+from rebuild_cutoff import filter_dataset_from_time, parse_from_time
+
 ROOT_DEFAULT = Path("/project/aurora/raw/hatprog5")
 ZARR_DEFAULT = Path("/data/aurora/products/hatprog5/hatpro.zarr")
 FILE_REGEX = re.compile(r"_(\d{6})_(\d{6})")
@@ -281,8 +283,15 @@ def _align_to_existing(combined: xr.Dataset, existing: xr.Dataset) -> xr.Dataset
     return combined[existing_vars]
 
 
-def build_zarr(root: Path, zarr_path: Path, chunk_time: int = 600, chunk_range: int = 48):
-    merged = _build_dataset(root, chunk_time=chunk_time, chunk_range=chunk_range)
+def build_zarr(
+    root: Path,
+    zarr_path: Path,
+    chunk_time: int = 600,
+    chunk_range: int = 48,
+    from_time: datetime | None = None,
+):
+    merged = _build_dataset(root, chunk_time=chunk_time, chunk_range=chunk_range, since=from_time)
+    merged = filter_dataset_from_time(merged, from_time)
 
     tmp_path = zarr_path.with_name(f"{zarr_path.name}.tmp")
     old_path = zarr_path.with_name(f"{zarr_path.name}.old")
@@ -301,13 +310,20 @@ def build_zarr(root: Path, zarr_path: Path, chunk_time: int = 600, chunk_range: 
     print("[done]")
 
 
-def append_new(root: Path, zarr_path: Path, chunk_time: int = 600, chunk_range: int = 48, lookback_hours: int = 6) -> None:
+def append_new(
+    root: Path,
+    zarr_path: Path,
+    chunk_time: int = 600,
+    chunk_range: int = 48,
+    lookback_hours: int = 6,
+    from_time: datetime | None = None,
+) -> None:
     if not root.exists():
         print(f"Raw HATPRO directory does not exist: {root}")
         return
     if not zarr_path.exists():
         print("No existing HATPRO Zarr found; bootstrapping from raw files.")
-        build_zarr(root, zarr_path, chunk_time=chunk_time, chunk_range=chunk_range)
+        build_zarr(root, zarr_path, chunk_time=chunk_time, chunk_range=chunk_range, from_time=from_time)
         return
 
     existing = xr.open_zarr(zarr_path, chunks={})
@@ -321,10 +337,14 @@ def append_new(root: Path, zarr_path: Path, chunk_time: int = 600, chunk_range: 
     print(f"Latest time in Zarr: {last_time_utc.isoformat()}")
 
     scan_start = last_time_utc - timedelta(hours=max(lookback_hours, 0))
+    parsed_from_time = parse_from_time(from_time)
+    if parsed_from_time is not None:
+        scan_start = max(scan_start, parsed_from_time)
     combined = _build_dataset(root, chunk_time=chunk_time, chunk_range=chunk_range, since=scan_start, allow_empty=True)
     if combined.sizes.get("time", 0) == 0:
         print("No candidate HATPRO files to append.")
         return
+    combined = filter_dataset_from_time(combined, from_time)
     last_np = np.datetime64(last_time_utc.replace(tzinfo=None))
     combined = combined.isel(time=(combined["time"] > last_np).values)
     if combined.sizes.get("time", 0) == 0:
@@ -345,11 +365,13 @@ def main():
     parser.add_argument("--chunk-time", type=int, default=600, help="Time chunk size")
     parser.add_argument("--chunk-range", type=int, default=48, help="Range/altitude chunk size")
     parser.add_argument("--lookback-hours", type=int, default=6, help="Hours before the existing Zarr frontier to rescan when appending")
+    parser.add_argument("--from-time", help="Only write samples at or after this UTC ISO timestamp")
     parser.add_argument("--rebuild", action="store_true", help="Rewrite the full HATPRO Zarr from all raw files")
     args = parser.parse_args()
+    from_time = parse_from_time(args.from_time)
 
     if args.rebuild:
-        build_zarr(args.root, args.zarr, chunk_time=args.chunk_time, chunk_range=args.chunk_range)
+        build_zarr(args.root, args.zarr, chunk_time=args.chunk_time, chunk_range=args.chunk_range, from_time=from_time)
     else:
         append_new(
             args.root,
@@ -357,6 +379,7 @@ def main():
             chunk_time=args.chunk_time,
             chunk_range=args.chunk_range,
             lookback_hours=args.lookback_hours,
+            from_time=from_time,
         )
 
 

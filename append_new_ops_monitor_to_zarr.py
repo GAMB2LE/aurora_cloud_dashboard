@@ -16,6 +16,8 @@ import pandas as pd
 import xarray as xr
 import zarr
 
+from rebuild_cutoff import cutoff_date, filter_dataset_from_time, parse_from_time
+
 
 ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
 ZARR_DEFAULT = Path("/data/aurora/products/ops_monitor/ops_monitor.zarr")
@@ -160,18 +162,26 @@ def _backup_existing_store(zarr_path: Path, reason: str) -> None:
     print(f"Moved existing operations Zarr to {backup_path}")
 
 
-def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None, lookback_days: int = 2) -> None:
+def append_new(
+    root: Path,
+    zarr_path: Path,
+    chunks: dict[str, int] | None = None,
+    lookback_days: int = 2,
+    from_time: datetime | None = None,
+) -> None:
     if not root.exists():
         print(f"Raw operations snapshot directory does not exist: {root}")
         return
 
+    from_date = cutoff_date(from_time)
     if not zarr_path.exists():
-        files = _list_files(root)
+        files = _list_files(root, from_date)
         if not files:
             print("No operations snapshot files available to bootstrap.")
             return
         print(f"Bootstrapping operations Zarr from {len(files)} files")
         combined = _load_files(files, chunks=chunks)
+        combined = filter_dataset_from_time(combined, from_time)
         if combined.sizes.get("time", 0) == 0:
             print("No readable operations snapshots available to bootstrap.")
             return
@@ -185,17 +195,19 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
     except Exception as exc:
         print(f"Existing operations Zarr is unreadable ({exc}); rebuilding from raw snapshots.")
         _backup_existing_store(zarr_path, "corrupt")
-        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
+        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days, from_time=from_time)
     if "time" not in existing:
         raise KeyError("Zarr store missing time coordinate")
     if not _has_sorted_unique_time(existing):
         print("Existing operations Zarr has unsorted or duplicate time samples; rebuilding from raw snapshots.")
         _backup_existing_store(zarr_path, "time_order")
-        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
+        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days, from_time=from_time)
     last_time = pd.to_datetime(existing["time"].max().values).to_pydatetime()
     print(f"Latest time in Zarr: {last_time}")
 
     scan_date = (last_time - timedelta(days=max(lookback_days, 0))).date()
+    if from_date is not None:
+        scan_date = max(scan_date, from_date)
     files = _list_files(root, scan_date)
     if not files:
         print("No candidate operations snapshot files to append.")
@@ -206,6 +218,7 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no readable operations snapshots.")
         return
+    combined = filter_dataset_from_time(combined, from_time)
     combined = combined.isel(time=(combined["time"] > np.datetime64(last_time)).values)
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no snapshots newer than the existing Zarr.")
@@ -215,7 +228,7 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
     except SchemaExpansionRequired as exc:
         print(f"{exc}; rebuilding from raw snapshots.")
         _backup_existing_store(zarr_path, "schema")
-        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days)
+        return append_new(root, zarr_path, chunks=chunks, lookback_days=lookback_days, from_time=from_time)
     combined = combined.load()
     combined.to_zarr(zarr_path, mode="a", append_dim="time")
     _consolidate(zarr_path)
@@ -228,6 +241,7 @@ def main() -> None:
     parser.add_argument("--zarr", type=Path, default=ZARR_DEFAULT)
     parser.add_argument("--chunk-time", type=int, default=720)
     parser.add_argument("--lookback-days", type=int, default=3)
+    parser.add_argument("--from-time", help="Only write samples at or after this UTC ISO timestamp.")
     parser.add_argument("--rebuild", action="store_true", help="Remove the existing Zarr before rebuilding from all raw snapshots.")
     args = parser.parse_args()
 
@@ -236,7 +250,13 @@ def main() -> None:
         print(f"Removed existing Zarr store: {args.zarr}")
 
     chunks = {"time": args.chunk_time} if args.chunk_time else None
-    append_new(args.root, args.zarr, chunks=chunks, lookback_days=args.lookback_days)
+    append_new(
+        args.root,
+        args.zarr,
+        chunks=chunks,
+        lookback_days=args.lookback_days,
+        from_time=parse_from_time(args.from_time),
+    )
 
 
 if __name__ == "__main__":

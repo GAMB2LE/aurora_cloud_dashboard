@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from rebuild_cutoff import filter_dataset_from_time, naive_utc, parse_from_time
+
 ROOT_DEFAULT = Path("/project/aurora/raw/rpgfmcw94")
 ZARR_DEFAULT = Path("/data/aurora/products/rpgfmcw94/cloud_radar.zarr")
 TIME_ZERO = np.datetime64("2001-01-01T00:00:00")
@@ -239,12 +241,14 @@ def _bootstrap_store(
     zarr_path: Path,
     chunks: dict | str | None = None,
     description: str = "bootstrap",
+    from_time: datetime | None = None,
 ):
     if not files:
         print(f"No radar files available for {description}.")
         return
     print(f"{description.capitalize()} from {len(files)} files")
     combined = _load_files(files, chunks=chunks)
+    combined = filter_dataset_from_time(combined, from_time)
     if combined.sizes.get("time", 0) == 0:
         print(f"No readable radar samples available for {description}.")
         return
@@ -260,6 +264,7 @@ def rebuild_from_latest_geometry_run(
     zarr_path: Path,
     chunks: dict | str | None = None,
     backup_existing: bool = True,
+    from_time: datetime | None = None,
 ):
     run, target_key, target_count = _latest_geometry_run(root)
     print(
@@ -274,6 +279,7 @@ def rebuild_from_latest_geometry_run(
         zarr_path,
         chunks=chunks,
         description=f"latest-geometry rebuild ({target_count} gates, key={target_key})",
+        from_time=from_time,
     )
 
 
@@ -284,14 +290,18 @@ def append_new(
     max_backfill_days: int | None = 11,
     lookback_hours: int = 6,
     rebuild_latest_geometry: bool = False,
+    from_time: datetime | None = None,
 ):
     if rebuild_latest_geometry:
-        rebuild_from_latest_geometry_run(root, zarr_path, chunks=chunks, backup_existing=True)
+        rebuild_from_latest_geometry_run(root, zarr_path, chunks=chunks, backup_existing=True, from_time=from_time)
         return
 
     if not zarr_path.exists():
         start_cutoff = None
-        if max_backfill_days is not None:
+        if from_time is not None:
+            start_cutoff = parse_from_time(from_time) - timedelta(microseconds=1)
+            print(f"Zarr store not found; bootstrapping from samples at or after {parse_from_time(from_time)}.")
+        elif max_backfill_days is not None:
             start_cutoff = datetime.now(timezone.utc) - timedelta(days=max_backfill_days)
             print(f"Zarr store not found; bootstrapping from files newer than {start_cutoff}.")
         else:
@@ -300,7 +310,7 @@ def append_new(
         if not files:
             print("No radar .LV1.NC files available to bootstrap.")
             return
-        _bootstrap_store(files, zarr_path, chunks=chunks, description="bootstrap")
+        _bootstrap_store(files, zarr_path, chunks=chunks, description="bootstrap", from_time=from_time)
         return
 
     base = xr.open_zarr(zarr_path, chunks={})
@@ -312,6 +322,11 @@ def append_new(
     print(f"Existing radar geometry: {base_count} range gates ({base_key})")
 
     scan_after = last_time - timedelta(hours=max(lookback_hours, 0))
+    from_time_naive = naive_utc(from_time)
+    if from_time_naive is not None:
+        from_time_aware = from_time_naive.replace(tzinfo=timezone.utc) - timedelta(microseconds=1)
+        if from_time_aware > scan_after:
+            scan_after = from_time_aware
     files = _list_files_after(root, scan_after)
     if not files:
         print("No new .NC files to append.")
@@ -329,7 +344,7 @@ def append_new(
             f"store has {base_count} gates ({base_key}), "
             f"latest file has {latest_record.range_count} gates ({latest_record.key})."
         )
-        rebuild_from_latest_geometry_run(root, zarr_path, chunks=chunks, backup_existing=True)
+        rebuild_from_latest_geometry_run(root, zarr_path, chunks=chunks, backup_existing=True, from_time=from_time)
         return
     files = [record.path for record in geometry_records if record.key == base_key]
     skipped = len(geometry_records) - len(files)
@@ -344,6 +359,7 @@ def append_new(
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no readable radar samples.")
         return
+    combined = filter_dataset_from_time(combined, from_time)
     new_time_mask = (combined["time"] > np.datetime64(last_time.replace(tzinfo=None))).values
     combined = combined.isel(time=new_time_mask)
     if combined.sizes.get("time", 0) == 0:
@@ -361,6 +377,7 @@ def main():
     parser.add_argument("--chunk-time", type=int, default=400)
     parser.add_argument("--max-backfill-days", type=int, default=11)
     parser.add_argument("--lookback-hours", type=int, default=6)
+    parser.add_argument("--from-time", help="Only write samples at or after this UTC ISO timestamp.")
     parser.add_argument(
         "--rebuild-latest-geometry",
         action="store_true",
@@ -376,6 +393,7 @@ def main():
         max_backfill_days=args.max_backfill_days,
         lookback_hours=args.lookback_hours,
         rebuild_latest_geometry=args.rebuild_latest_geometry,
+        from_time=parse_from_time(args.from_time),
     )
 
 

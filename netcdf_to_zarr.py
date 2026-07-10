@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from rebuild_cutoff import filter_dataset_from_time, parse_from_time
+
 
 def extract_date_from_name(path):
     """
@@ -92,6 +94,7 @@ def make_zarr_from_netcdf(
     chunks=None,
     engine="h5netcdf",
     start_date=None,
+    start_time=None,
 ):
     """
     Convert a collection of NetCDF files into a single Zarr store using xarray+zarr,
@@ -112,7 +115,13 @@ def make_zarr_from_netcdf(
         segfaults when opening many files in parallel with netCDF4.
     start_date : datetime.date or None, optional
         If provided, only files whose encoded date is >= start_date are included.
+    start_time : datetime.datetime or str or None, optional
+        If provided, files are preselected by that UTC date and samples are
+        filtered exactly to timestamps >= start_time before writing.
     """
+    parsed_start_time = parse_from_time(start_time)
+    if start_date is None and parsed_start_time is not None:
+        start_date = parsed_start_time.date()
     file_pattern = os.path.join(input_dir, pattern)
     all_files = sorted(glob.glob(file_pattern))
 
@@ -159,7 +168,9 @@ def make_zarr_from_netcdf(
         parallel=False,
     )
     ds = _sort_and_deduplicate_time(ds, time_dim="time")
-    if start_date is not None:
+    if parsed_start_time is not None:
+        ds = filter_dataset_from_time(ds, parsed_start_time)
+    elif start_date is not None:
         ds = _filter_time_floor(ds, time_floor=pd.Timestamp(start_date))
 
     print("Dataset opened.")

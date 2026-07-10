@@ -15,6 +15,8 @@ import pandas as pd
 import xarray as xr
 import zarr
 
+from rebuild_cutoff import cutoff_date, filter_dataset_from_time, parse_from_time
+
 ROOT_DEFAULT = Path("/project/aurora/raw/vaisalamet")
 ZARR_DEFAULT = Path("/data/aurora/products/vaisalamet/vaisalamet.zarr")
 FILE_REGEX = re.compile(r"vaisala_met_level0_(\d{2})-(\d{2})-(\d{4})\.dat$")
@@ -147,18 +149,26 @@ def _consolidate(zarr_path: Path) -> None:
         print(f"Could not consolidate Zarr metadata for {zarr_path}: {exc}")
 
 
-def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None, lookback_days: int = 2) -> None:
+def append_new(
+    root: Path,
+    zarr_path: Path,
+    chunks: dict[str, int] | None = None,
+    lookback_days: int = 2,
+    from_time: datetime | None = None,
+) -> None:
     if not root.exists():
         print(f"Raw Vaisala met directory does not exist: {root}")
         return
 
+    from_date = cutoff_date(from_time)
     if not zarr_path.exists():
-        files = _list_files(root)
+        files = _list_files(root, from_date)
         if not files:
             print("No Vaisala met .dat files available to bootstrap.")
             return
         print(f"Bootstrapping Vaisala met Zarr from {len(files)} files")
         combined = _load_files(files, chunks=chunks)
+        combined = filter_dataset_from_time(combined, from_time)
         if combined.sizes.get("time", 0) == 0:
             print("No readable Vaisala met samples available to bootstrap.")
             return
@@ -174,6 +184,8 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
     print(f"Latest time in Zarr: {last_time}")
 
     scan_date = (last_time - timedelta(days=max(lookback_days, 0))).date()
+    if from_date is not None:
+        scan_date = max(scan_date, from_date)
     files = _list_files(root, scan_date)
     if not files:
         print("No candidate Vaisala met .dat files to append.")
@@ -184,6 +196,7 @@ def append_new(root: Path, zarr_path: Path, chunks: dict[str, int] | None = None
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no readable Vaisala met samples.")
         return
+    combined = filter_dataset_from_time(combined, from_time)
     combined = combined.isel(time=(combined["time"] > np.datetime64(last_time)).values)
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no samples newer than the existing Zarr.")
@@ -201,6 +214,7 @@ def main() -> None:
     parser.add_argument("--zarr", type=Path, default=ZARR_DEFAULT)
     parser.add_argument("--chunk-time", type=int, default=1200)
     parser.add_argument("--lookback-days", type=int, default=2)
+    parser.add_argument("--from-time", help="Only write samples at or after this UTC ISO timestamp.")
     parser.add_argument("--rebuild", action="store_true", help="Remove the existing Zarr before rebuilding from all raw files.")
     args = parser.parse_args()
 
@@ -209,7 +223,13 @@ def main() -> None:
         print(f"Removed existing Zarr store: {args.zarr}")
 
     chunks = {"time": args.chunk_time} if args.chunk_time else None
-    append_new(args.root, args.zarr, chunks=chunks, lookback_days=args.lookback_days)
+    append_new(
+        args.root,
+        args.zarr,
+        chunks=chunks,
+        lookback_days=args.lookback_days,
+        from_time=parse_from_time(args.from_time),
+    )
 
 
 if __name__ == "__main__":

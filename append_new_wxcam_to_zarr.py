@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import time
 from typing import Iterable
 
@@ -14,7 +16,8 @@ from PIL import Image
 import xarray as xr
 import zarr
 
-from wxcam_catalog import WXCAM_IMAGE_TYPES, catalog_frontier, ns_to_datetime, records_after
+from rebuild_cutoff import parse_from_time
+from wxcam_catalog import WXCAM_IMAGE_TYPES, catalog_frontier, datetime_to_ns, ns_to_datetime, records_after
 
 CATALOG_DEFAULT = Path("/data/aurora/products/wxcam/wxcam_catalog.sqlite")
 STATE_DEFAULT = Path("/var/lib/aurora-cloud/wxcam-zarr-state.json")
@@ -50,8 +53,21 @@ def _save_state(state_path: Path, state: dict[str, int]) -> None:
     state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
 
 
-def _initialize_state(catalog_path: Path, zarr_path: Path, state_path: Path) -> dict[str, int]:
+def _initialize_state(
+    catalog_path: Path,
+    zarr_path: Path,
+    state_path: Path,
+    from_time: str | datetime | None = None,
+) -> dict[str, int]:
     _ensure_store(zarr_path)
+    parsed_from_time = parse_from_time(from_time)
+    if parsed_from_time is not None:
+        start_ns = datetime_to_ns(parsed_from_time)
+        state = {image_type: start_ns - 1 for image_type in WXCAM_IMAGE_TYPES}
+        _save_state(state_path, state)
+        print(f"Initialized wxcam pixel-Zarr state at cutoff {parsed_from_time.isoformat()}.")
+        return state
+
     frontier = catalog_frontier(catalog_path, media_kind="image")
     state = {image_type: int(frontier.get(image_type, 0)) for image_type in WXCAM_IMAGE_TYPES}
     _save_state(state_path, state)
@@ -182,15 +198,104 @@ def _consolidate(zarr_path: Path) -> None:
         print(f"Could not consolidate Zarr metadata for {zarr_path}: {exc}")
 
 
-def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size: int = DEFAULT_BATCH_SIZE) -> None:
+def _zarr_encoding(ds: xr.Dataset, batch_size: int) -> dict[str, dict[str, tuple[int, ...]]]:
+    y_chunk = min(ds.sizes["y"], 1024)
+    x_chunk = min(ds.sizes["x"], 1024)
+    time_chunk = min(ds.sizes["time"], max(batch_size, 1))
+    return {
+        "image": {"chunks": (1, y_chunk, x_chunk, ds.sizes["channel"])},
+        "size_bytes": {"chunks": (time_chunk,)},
+        "width": {"chunks": (time_chunk,)},
+        "height": {"chunks": (time_chunk,)},
+        "filename": {"chunks": (time_chunk,)},
+    }
+
+
+def rebuild_from_catalog(
+    catalog_path: Path,
+    zarr_path: Path,
+    state_path: Path,
+    from_time: datetime,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> None:
+    if not catalog_path.exists():
+        print(f"wxcam catalog does not exist: {catalog_path}")
+        return
+    parsed_from_time = parse_from_time(from_time)
+    if parsed_from_time is None:
+        raise ValueError("--from-time is required for wxcam pixel-Zarr rebuilds")
+
+    if zarr_path.exists():
+        shutil.rmtree(zarr_path)
+        print(f"Removed existing wxcam pixel Zarr target before rebuild: {zarr_path}")
+    if state_path.exists():
+        state_path.unlink()
+        print(f"Removed existing wxcam pixel-Zarr state before rebuild: {state_path}")
+
+    _ensure_store(zarr_path)
+    start_ns = datetime_to_ns(parsed_from_time)
+    state = {image_type: start_ns - 1 for image_type in WXCAM_IMAGE_TYPES}
+    changed = False
+
+    for image_type in WXCAM_IMAGE_TYPES:
+        rows = records_after(catalog_path, image_type, start_ns - 1, media_kind="image")
+        if not rows:
+            print(f"No wxcam catalog records at or after {parsed_from_time.isoformat()} for {image_type}.")
+            continue
+
+        print(f"Rebuilding wxcam pixel Zarr for {image_type} from {len(rows)} catalog records")
+        group_exists = False
+        last_appended_ns = start_ns - 1
+        for batch in _batched(rows, max(batch_size, 1)):
+            ds, advanced_ns, deferred = _build_dataset(image_type, batch)
+            if ds is not None and ds.sizes.get("time", 0) > 0:
+                if group_exists:
+                    ds.to_zarr(zarr_path, group=image_type, mode="a", append_dim="time")
+                else:
+                    ds.to_zarr(
+                        zarr_path,
+                        group=image_type,
+                        mode="a",
+                        consolidated=False,
+                        encoding=_zarr_encoding(ds, batch_size),
+                    )
+                    group_exists = True
+                changed = True
+            if advanced_ns is not None:
+                last_appended_ns = max(last_appended_ns, advanced_ns)
+            if deferred:
+                break
+        state[image_type] = last_appended_ns
+
+    _save_state(state_path, state)
+    if changed:
+        _consolidate(zarr_path)
+    print(f"wxcam pixel-Zarr rebuild complete: {zarr_path}")
+
+
+def append_new(
+    catalog_path: Path,
+    zarr_path: Path,
+    state_path: Path,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    from_time: str | datetime | None = None,
+) -> None:
     if not catalog_path.exists():
         print(f"wxcam catalog does not exist: {catalog_path}")
         return
 
+    parsed_from_time = parse_from_time(from_time)
     state = _load_state(state_path)
     if state is None:
-        state = _initialize_state(catalog_path, zarr_path, state_path)
-        return
+        state = _initialize_state(catalog_path, zarr_path, state_path, parsed_from_time)
+        if parsed_from_time is None:
+            return
+    elif parsed_from_time is not None:
+        start_ns = datetime_to_ns(parsed_from_time)
+        state = {
+            image_type: max(int(state.get(image_type, 0)), start_ns - 1)
+            for image_type in WXCAM_IMAGE_TYPES
+        }
 
     _ensure_store(zarr_path)
     changed = False
@@ -207,16 +312,6 @@ def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size
         for batch in _batched(rows, max(batch_size, 1)):
             ds, advanced_ns, deferred = _build_dataset(image_type, batch)
             if ds is not None and ds.sizes.get("time", 0) > 0:
-                y_chunk = min(ds.sizes["y"], 1024)
-                x_chunk = min(ds.sizes["x"], 1024)
-                time_chunk = min(ds.sizes["time"], max(batch_size, 1))
-                encoding = {
-                    "image": {"chunks": (1, y_chunk, x_chunk, ds.sizes["channel"])},
-                    "size_bytes": {"chunks": (time_chunk,)},
-                    "width": {"chunks": (time_chunk,)},
-                    "height": {"chunks": (time_chunk,)},
-                    "filename": {"chunks": (time_chunk,)},
-                }
                 if group_exists:
                     ds.to_zarr(
                         zarr_path,
@@ -230,7 +325,7 @@ def append_new(catalog_path: Path, zarr_path: Path, state_path: Path, batch_size
                         group=image_type,
                         mode="a",
                         consolidated=False,
-                        encoding=encoding,
+                        encoding=_zarr_encoding(ds, batch_size),
                     )
                     group_exists = True
                 changed = True
@@ -254,9 +349,20 @@ def main() -> None:
     parser.add_argument("--zarr", type=Path, default=ZARR_DEFAULT)
     parser.add_argument("--state", type=Path, default=STATE_DEFAULT)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--from-time", help="Only append or rebuild catalog image rows at or after this UTC ISO timestamp.")
+    parser.add_argument("--rebuild-from-time", action="store_true", help="Rewrite the pixel Zarr and state from the catalog cutoff.")
     args = parser.parse_args()
 
-    append_new(args.catalog, args.zarr, args.state, batch_size=args.batch_size)
+    if args.rebuild_from_time:
+        rebuild_from_catalog(
+            args.catalog,
+            args.zarr,
+            args.state,
+            parse_from_time(args.from_time),
+            batch_size=args.batch_size,
+        )
+    else:
+        append_new(args.catalog, args.zarr, args.state, batch_size=args.batch_size, from_time=args.from_time)
 
 
 if __name__ == "__main__":

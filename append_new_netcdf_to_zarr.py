@@ -11,13 +11,16 @@ Filenames are expected to contain a timestamp like YYYYMMDD_HHMMSS, e.g.:
     gamb2le_depolarisation_lidar_ceilometer_aurora_20251203_000056.nc
 """
 
+import argparse
 import glob
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+from rebuild_cutoff import parse_from_time
 from netcdf_to_zarr import (
     choose_engine,
     extract_datetime_from_name,
@@ -88,8 +91,13 @@ def append_new_files(
     append_dim="time",
     max_backfill_days=11,
     batch_size=200,
+    from_time=None,
 ):
     engine = choose_engine(engine)
+    parsed_from_time = parse_from_time(from_time)
+    from_timestamp = pd.Timestamp(parsed_from_time) if parsed_from_time is not None else None
+    if from_timestamp is not None:
+        from_timestamp = from_timestamp.tz_convert("UTC").tz_localize(None)
 
     file_pattern = os.path.join(input_dir, pattern)
     all_files = sorted(glob.glob(file_pattern))
@@ -99,7 +107,12 @@ def append_new_files(
 
     if not os.path.isdir(zarr_path):
         start_date = None
-        if max_backfill_days is not None:
+        start_time = None
+        if from_timestamp is not None:
+            start_date = from_timestamp.date()
+            start_time = from_timestamp.to_pydatetime()
+            print(f"Zarr store not found; bootstrapping from samples at or after {from_timestamp.isoformat()}.")
+        elif max_backfill_days is not None:
             start_date = (
                 pd.Timestamp.utcnow().replace(tzinfo=None) - pd.Timedelta(days=max_backfill_days)
             ).date()
@@ -113,6 +126,7 @@ def append_new_files(
             chunks=chunks,
             engine=engine,
             start_date=start_date,
+            start_time=start_time,
         )
         return
 
@@ -124,6 +138,9 @@ def append_new_files(
     print(f"Latest {append_dim} in Zarr: {last_time.isoformat()}")
 
     start_cutoff = last_time
+    if from_timestamp is not None and from_timestamp > start_cutoff:
+        start_cutoff = from_timestamp
+        print(f"Limiting append scan to samples at or after {start_cutoff}")
     if max_backfill_days is not None:
         cutoff = pd.Timestamp.utcnow().replace(tzinfo=None) - pd.Timedelta(
             days=max_backfill_days
@@ -218,26 +235,35 @@ def append_new_files(
 
 
 if __name__ == "__main__":
-    INPUT_DIR = os.environ.get("CEILOMETER_DIR", "/mnt/data/cl61")
-    PATTERN = "gamb2le_depolarisation_lidar_ceilometer_aurora_*.nc"
-    ZARR_PATH = os.environ.get(
-        "CEILOMETER_ZARR_PATH",
-        "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
+    parser = argparse.ArgumentParser(description="Append or bootstrap CL61 NetCDF files into a Zarr store.")
+    parser.add_argument("--input-dir", type=Path, default=Path(os.environ.get("CEILOMETER_DIR", "/mnt/data/cl61")))
+    parser.add_argument("--pattern", default="gamb2le_depolarisation_lidar_ceilometer_aurora_*.nc")
+    parser.add_argument(
+        "--zarr",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CEILOMETER_ZARR_PATH",
+                "/mnt/data/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora_20251201.zarr",
+            )
+        ),
     )
-
-    # Ceilometer files naturally arrive as 30-profile chunks.
-    CHUNKS = {"time": 30}
-
-    ENGINE = "h5netcdf"
-    APPEND_DIM = "time"
-    MAX_BACKFILL_DAYS = 11
+    parser.add_argument("--chunk-time", type=int, default=30)
+    parser.add_argument("--engine", default="h5netcdf")
+    parser.add_argument("--append-dim", default="time")
+    parser.add_argument("--max-backfill-days", type=int, default=11)
+    parser.add_argument("--batch-size", type=int, default=200)
+    parser.add_argument("--from-time", help="Only write samples at or after this UTC ISO timestamp.")
+    args = parser.parse_args()
 
     append_new_files(
-        input_dir=INPUT_DIR,
-        pattern=PATTERN,
-        zarr_path=ZARR_PATH,
-        chunks=CHUNKS,
-        engine=ENGINE,
-        append_dim=APPEND_DIM,
-        max_backfill_days=MAX_BACKFILL_DAYS,
+        input_dir=str(args.input_dir),
+        pattern=args.pattern,
+        zarr_path=str(args.zarr),
+        chunks={"time": args.chunk_time} if args.chunk_time else "auto",
+        engine=args.engine,
+        append_dim=args.append_dim,
+        max_backfill_days=args.max_backfill_days,
+        batch_size=args.batch_size,
+        from_time=args.from_time,
     )
