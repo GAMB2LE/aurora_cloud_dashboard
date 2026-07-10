@@ -83,6 +83,8 @@ unit_exists() {
 
 install_unit_if_present aurora-radar-daily-quicklooks.service
 install_unit_if_present aurora-radar-daily-quicklooks.timer
+install_unit_if_present aurora-dashboard-perf-summary.service
+install_unit_if_present aurora-dashboard-perf-summary.timer
 systemctl daemon-reload
 
 dashboard_units=(
@@ -90,6 +92,7 @@ dashboard_units=(
 )
 
 batch_units=(
+  aurora-dashboard-perf-summary.service
   aurora-asfs-fast-gas-append.service
   aurora-asfs-fast-gas-source-sync.service
   aurora-asfs-fast-sonic-append.service
@@ -282,5 +285,8 @@ done
 systemctl daemon-reload
 if unit_exists aurora-radar-daily-quicklooks.timer; then
   systemctl enable --now aurora-radar-daily-quicklooks.timer >/dev/null
+fi
+if unit_exists aurora-dashboard-perf-summary.timer; then
+  systemctl enable --now aurora-dashboard-perf-summary.timer >/dev/null
 fi
 echo "Installed Aurora dashboard resource tuning drop-ins."

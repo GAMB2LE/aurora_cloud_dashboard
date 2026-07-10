@@ -198,6 +198,7 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
   - `aurora-ops-monitor-alerts.timer`
   - `aurora-ops-monitor-quicklooks.timer`
   - `aurora-mirror-verify.timer`
+  - `aurora-dashboard-perf-summary.timer`
 - JASMIN GWS sync:
   - `aurora-gws-rsync-raw.timer`
   - `aurora-gws-rsync-products.timer`
@@ -238,6 +239,9 @@ Useful commands:
 tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 /opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 24
 /opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 6 --event interactive_view_update
+cat /data/aurora/products/dashboard/perf_summaries/latest_24h.md
+tail -n 20 /data/aurora/products/dashboard/perf_summaries/history_24h.jsonl
+systemctl status aurora-dashboard-perf-summary.timer
 ```
 
 The main event families currently logged are:

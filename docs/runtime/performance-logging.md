@@ -6,6 +6,20 @@ The dashboard writes structured JSONL timing events to:
 
 The log rotates automatically.
 
+`aurora-dashboard-perf-summary.timer` runs every 15 minutes and writes derived
+watch files under:
+
+- `/data/aurora/products/dashboard/perf_summaries/latest_24h.json`
+- `/data/aurora/products/dashboard/perf_summaries/latest_24h.md`
+- `/data/aurora/products/dashboard/perf_summaries/history_24h.jsonl`
+
+The JSON and Markdown files are the latest 24 h view. The history JSONL keeps
+one summary record per timer run, so we can look back at usage, slow renders,
+session counts, and frequently changed controls even after the raw timing log
+rotates. Session summaries include mobile/tablet/desktop/bot counts derived
+from user agents plus the most common request paths, which helps separate
+phone-specific loading problems from desktop/browser workflows.
+
 Operations monitoring records whether this log exists, how large it is, and
 when it was last written. The Operations Dashboard shows that as the
 `Dashboard perf log` card so stale browsing telemetry is visible alongside the
@@ -55,6 +69,10 @@ alive on the server after the phone has backgrounded or killed the tab.
 tail -f /data/aurora/products/dashboard/dashboard_perf.jsonl
 /opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 24
 /opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 6 --event interactive_view_update
+cat /data/aurora/products/dashboard/perf_summaries/latest_24h.md
+tail -n 20 /data/aurora/products/dashboard/perf_summaries/history_24h.jsonl
+systemctl status aurora-dashboard-perf-summary.timer
+journalctl -u aurora-dashboard-perf-summary.service --since '1 hour ago' --no-pager
 ```
 
 ## Logged event families

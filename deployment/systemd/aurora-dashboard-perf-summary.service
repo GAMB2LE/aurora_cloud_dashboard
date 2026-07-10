@@ -1,0 +1,14 @@
+[Unit]
+Description=Aurora dashboard performance summary
+After=aurora-dashboard.service
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+EnvironmentFile=/etc/aurora-dashboard.env
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python summarize_dashboard_perf.py --hours 24 --output-json /data/aurora/products/dashboard/perf_summaries/latest_24h.json --output-markdown /data/aurora/products/dashboard/perf_summaries/latest_24h.md --history-jsonl /data/aurora/products/dashboard/perf_summaries/history_24h.jsonl
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
