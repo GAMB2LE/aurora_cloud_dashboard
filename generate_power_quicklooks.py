@@ -8,10 +8,12 @@ from datetime import timedelta
 from pathlib import Path
 
 import os
+import numpy as np
 import pandas as pd
 import xarray as xr
 
 from grouped_timeseries import (
+    POWER_SOC_FORECAST_FIELDS,
     clear_generated_quicklooks,
     build_summary_plotly,
     combine_summary_datasets,
@@ -58,6 +60,13 @@ def _slice_window(ds: xr.Dataset | None, start: pd.Timestamp, end: pd.Timestamp)
         return None
     time_index = pd.DatetimeIndex(ds["time"].values)
     mask = (time_index >= start) & (time_index <= end)
+    forecast_names = [name for name in POWER_SOC_FORECAST_FIELDS if name in ds]
+    if forecast_names:
+        forecast_valid = np.zeros(len(time_index), dtype=bool)
+        for name in forecast_names:
+            forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
+        horizon = end + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
+        mask |= forecast_valid & (time_index >= start) & (time_index <= horizon)
     if not mask.any():
         return None
     return ds.isel(time=mask).sortby("time")

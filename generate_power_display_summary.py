@@ -21,6 +21,9 @@ from grouped_timeseries import (
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
 PDU_ZARR_PATH = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
+POWER_SOC_FORECAST_ZARR_PATH = Path(
+    os.environ.get("POWER_SOC_FORECAST_ZARR_PATH", "/data/aurora/products/power/power_soc_forecast.zarr")
+)
 POWER_DISPLAY_SUMMARY_ZARR_PATH = Path(
     os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
 )
@@ -71,6 +74,7 @@ def generate(
     output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH,
     ass_logger_zarr: Path = ASFS_LOGGER_ZARR_PATH,
     pdu_zarr: Path = PDU_ZARR_PATH,
+    forecast_zarr: Path = POWER_SOC_FORECAST_ZARR_PATH,
     energy_output_zarr: Path | None = POWER_DISPLAY_ENERGY_ZARR_PATH,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> Path:
@@ -78,7 +82,8 @@ def generate(
     power = xr.open_zarr(power_zarr, chunks={})
     ass_logger = _open_optional_zarr(ass_logger_zarr, "ASFS logger")
     pdu = _open_optional_zarr(pdu_zarr, "ASS PDU")
-    display = build_power_display_summary_dataset(power, ass_logger, pdu, freq=freq)
+    forecast = _open_optional_zarr(forecast_zarr, "Power SOC forecast")
+    display = build_power_display_summary_dataset(power, ass_logger, pdu, forecast, freq=freq)
     if display.sizes.get("time", 0) == 0:
         raise ValueError("No display-summary samples could be generated from the Power Zarr")
 
@@ -99,6 +104,7 @@ def main() -> None:
     parser.add_argument("--power-zarr", type=Path, default=POWER_ZARR_PATH)
     parser.add_argument("--asfs-logger-zarr", type=Path, default=ASFS_LOGGER_ZARR_PATH)
     parser.add_argument("--pdu-zarr", type=Path, default=PDU_ZARR_PATH)
+    parser.add_argument("--forecast-zarr", type=Path, default=POWER_SOC_FORECAST_ZARR_PATH)
     parser.add_argument("--output-zarr", type=Path, default=POWER_DISPLAY_SUMMARY_ZARR_PATH)
     parser.add_argument("--energy-output-zarr", type=Path, default=POWER_DISPLAY_ENERGY_ZARR_PATH)
     parser.add_argument("--no-energy-output", action="store_true", help="Do not refresh the legacy cumulative-energy display Zarr")
@@ -109,6 +115,7 @@ def main() -> None:
         output_zarr=args.output_zarr,
         ass_logger_zarr=args.asfs_logger_zarr,
         pdu_zarr=args.pdu_zarr,
+        forecast_zarr=args.forecast_zarr,
         energy_output_zarr=None if args.no_energy_output else args.energy_output_zarr,
         freq=args.freq,
     )

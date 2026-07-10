@@ -83,6 +83,8 @@ unit_exists() {
 
 install_unit_if_present aurora-radar-daily-quicklooks.service
 install_unit_if_present aurora-radar-daily-quicklooks.timer
+install_unit_if_present aurora-power-soc-forecast.service
+install_unit_if_present aurora-power-soc-forecast.timer
 install_unit_if_present aurora-dashboard-perf-summary.service
 install_unit_if_present aurora-dashboard-perf-summary.timer
 systemctl daemon-reload
@@ -124,6 +126,7 @@ batch_units=(
   aurora-pdu-source-sync.service
   aurora-power-append.service
   aurora-power-quicklooks.service
+  aurora-power-soc-forecast.service
   aurora-power-source-sync.service
   aurora-radar-append.service
   aurora-radar-daily-quicklooks.service
@@ -160,6 +163,7 @@ heavy_units=(
   aurora-ops-monitor-quicklooks.service
   aurora-power-append.service
   aurora-power-quicklooks.service
+  aurora-power-soc-forecast.service
   aurora-radar-append.service
   aurora-radar-daily-quicklooks.service
   aurora-radar-quicklooks.service
@@ -191,6 +195,7 @@ quicklook_timers=(
   aurora-ceilometer-quicklooks.timer
   aurora-hatpro-quicklooks.timer
   aurora-ops-monitor-quicklooks.timer
+  aurora-power-soc-forecast.timer
   aurora-power-quicklooks.timer
   aurora-radar-daily-quicklooks.timer
   aurora-radar-quicklooks.timer
@@ -288,5 +293,8 @@ if unit_exists aurora-radar-daily-quicklooks.timer; then
 fi
 if unit_exists aurora-dashboard-perf-summary.timer; then
   systemctl enable --now aurora-dashboard-perf-summary.timer >/dev/null
+fi
+if unit_exists aurora-power-soc-forecast.timer; then
+  systemctl enable --now aurora-power-soc-forecast.timer >/dev/null
 fi
 echo "Installed Aurora dashboard resource tuning drop-ins."

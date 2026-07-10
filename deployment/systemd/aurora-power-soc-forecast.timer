@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aurora power SOC forecast every 3 hours
+
+[Timer]
+OnCalendar=*-*-* 00/3:08:00
+RandomizedDelaySec=10min
+Persistent=true
+Unit=aurora-power-soc-forecast.service
+
+[Install]
+WantedBy=timers.target

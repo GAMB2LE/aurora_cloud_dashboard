@@ -155,10 +155,13 @@ quicklooks for LI-COR continuity. It does not contain radiation variables.
 
 - `aurora-power-source-sync.timer`
 - `aurora-power-append.timer`
+- `aurora-power-soc-forecast.timer`
 - `aurora-power-quicklooks.timer`
 
 `aurora-power-quicklooks.service` regenerates the compact APS display summary
 and prewarmed Plotly JSON after the APS append cycle.
+`aurora-power-soc-forecast.service` refreshes the ECMWF-informed SOC forecast
+and adaptive forecast-skill state before the display summary is rebuilt.
 
 ## ASS PDU
 

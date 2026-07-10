@@ -1,0 +1,14 @@
+[Unit]
+Description=Aurora power SOC forecast from ECMWF solar data
+After=network-online.target aurora-power-append.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+EnvironmentFile=/etc/aurora-dashboard.env
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python generate_power_soc_forecast.py --power-zarr /data/aurora/products/power/power.zarr --output-zarr /data/aurora/products/power/power_soc_forecast.zarr --cache-dir /data/aurora/products/power/ecmwf_solar_forecast --state /data/aurora/products/power/power_soc_forecast_state.json --horizon-hours 48
+Nice=10
+TimeoutStartSec=900

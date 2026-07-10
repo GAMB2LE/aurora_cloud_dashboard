@@ -55,6 +55,7 @@ from grouped_timeseries import (
     SUMMARY_DISPLAY_END_ATTR,
     SUMMARY_DISPLAY_START_ATTR,
     POWER_CUMULATIVE_CONTEXT_DAYS,
+    POWER_SOC_FORECAST_FIELDS,
     widget_group_options,
 )
 from extra_housekeeping import (
@@ -1012,6 +1013,13 @@ def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
     with _timed_perf("power_display_summary_window", instrument="power", start=start_dt, end=end_dt) as perf:
         times = pd.DatetimeIndex(ds["time"].values)
         mask = (times >= start_dt) & (times <= end_dt)
+        forecast_names = [name for name in POWER_SOC_FORECAST_FIELDS if name in ds]
+        if forecast_names:
+            forecast_valid = np.zeros(len(times), dtype=bool)
+            for name in forecast_names:
+                forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
+            forecast_horizon = end_dt + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
+            mask |= forecast_valid & (times >= start_dt) & (times <= forecast_horizon)
         matched = int(np.count_nonzero(mask))
         perf["matched_time_count"] = matched
         if not mask.any():

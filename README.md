@@ -186,6 +186,7 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
 - Power:
   - `aurora-power-source-sync.timer`
   - `aurora-power-append.timer`
+  - `aurora-power-soc-forecast.timer`
   - `aurora-power-quicklooks.timer`
 - WXcam:
   - `aurora-wxcam-source-sync.timer`

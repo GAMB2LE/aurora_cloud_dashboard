@@ -94,6 +94,15 @@ POWER_DISPLAY_SUMMARY_FIELDS = (
     "TempSensor4",
 )
 POWER_DISPLAY_SUMMARY_CONTEXT_FIELDS = ("watts_on_48vdc_Avg",)
+POWER_SOC_FORECAST_FIELDS = (
+    "BatterySOCForecast",
+    "ECMWFSolarIrradiance",
+    "ForecastSolarWatts",
+    "ForecastLoadWatts",
+    "ForecastSOCMAERecent",
+    "ForecastSolarMAERecent",
+    "ForecastEvaluationSamples",
+)
 FAST_SONIC_TO_LOGGER_AVG = {
     "metek_x_out": "metek_x_out_Avg",
     "metek_y_out": "metek_y_out_Avg",
@@ -335,6 +344,13 @@ HUMAN_LABELS = {
     "CumulativePowerUtilised": "Power Utilised",
     "PowerDisplayCumulativePowerGeneratedTotal": "Total Generated",
     "PowerDisplayCumulativePowerUtilised": "Power Utilised",
+    "BatterySOCForecast": "ECMWF SOC Forecast",
+    "ECMWFSolarIrradiance": "ECMWF Solar Power",
+    "ForecastSolarWatts": "Forecast Solar Charging",
+    "ForecastLoadWatts": "Forecast Load",
+    "ForecastSOCMAERecent": "Recent SOC Forecast MAE",
+    "ForecastSolarMAERecent": "Recent Solar Forecast MAE",
+    "ForecastEvaluationSamples": "Evaluated Forecast Samples",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -470,6 +486,13 @@ HUMAN_UNITS = {
     "CumulativePowerUtilised": "kWh",
     "PowerDisplayCumulativePowerGeneratedTotal": "kWh",
     "PowerDisplayCumulativePowerUtilised": "kWh",
+    "BatterySOCForecast": "%",
+    "ECMWFSolarIrradiance": "W/m2",
+    "ForecastSolarWatts": "W",
+    "ForecastLoadWatts": "W",
+    "ForecastSOCMAERecent": "percentage points",
+    "ForecastSolarMAERecent": "W",
+    "ForecastEvaluationSamples": "samples",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -822,7 +845,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "soc_projection",
-            "SOC 24 h Projection",
+            "SOC 24 h Forecast",
             "SOC [%]",
             None,
             (
@@ -845,6 +868,37 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     valid_max=100.0,
                     projection_lookback_minutes=120.0,
                 ),
+            ),
+        ),
+        PanelSpec(
+            "soc_ecmwf_forecast",
+            "SOC 48 h Forecast",
+            "SOC [%]",
+            None,
+            (
+                TraceSpec("BatterySOCForecast", "ECMWF SOC Forecast", COLOR["green"], valid_min=0.0, valid_max=100.0),
+            ),
+        ),
+        PanelSpec(
+            "ecmwf_solar_forecast",
+            "ECMWF Solar & Load Forecast",
+            "ECMWF Solar Power [W/m2]",
+            "Forecast Power [W]",
+            (
+                TraceSpec("ECMWFSolarIrradiance", "ECMWF Solar Power", COLOR["brown"], valid_min=0.0),
+                TraceSpec("ForecastSolarWatts", "Forecast Solar Charging", COLOR["green"], axis="right", dash="dot", valid_min=0.0),
+                TraceSpec("ForecastLoadWatts", "Forecast Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0),
+            ),
+        ),
+        PanelSpec(
+            "soc_forecast_skill",
+            "SOC Forecast Skill",
+            "SOC MAE [percentage points] / Samples",
+            "Solar MAE [W]",
+            (
+                TraceSpec("ForecastEvaluationSamples", "Evaluated Forecast Samples", COLOR["green"], valid_min=0.0),
+                TraceSpec("ForecastSOCMAERecent", "Recent SOC Forecast MAE", COLOR["blue"], valid_min=0.0),
+                TraceSpec("ForecastSolarMAERecent", "Recent Solar Forecast MAE", COLOR["brown"], axis="right", valid_min=0.0),
             ),
         ),
     ),
@@ -1669,6 +1723,7 @@ def build_power_display_summary_dataset(
     power_ds: xr.Dataset,
     ass_power_ds: xr.Dataset | None = None,
     pdu_ds: xr.Dataset | None = None,
+    forecast_ds: xr.Dataset | None = None,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> xr.Dataset:
     """Build one-minute APS traces for fast dashboard plotting.
@@ -1712,6 +1767,11 @@ def build_power_display_summary_dataset(
         if not pdu_frame.empty:
             frames.append(pdu_frame)
 
+    if forecast_ds is not None:
+        forecast_frame = _time_frame_from_dataset(forecast_ds.sortby("time"), POWER_SOC_FORECAST_FIELDS)
+        if not forecast_frame.empty:
+            frames.append(forecast_frame)
+
     if not frames:
         return xr.Dataset()
 
@@ -1728,7 +1788,7 @@ def build_power_display_summary_dataset(
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
         attrs={
             POWER_DISPLAY_SUMMARY_ATTR: "true",
-            "source": "derived from power.zarr plus optional asfs_logger.zarr ASS 48 V power and pdu.zarr outlet power",
+            "source": "derived from power.zarr plus optional asfs_logger.zarr ASS 48 V power, pdu.zarr outlet power, and power_soc_forecast.zarr",
             "frequency": freq,
             "time_coverage_start": start,
             "time_coverage_end": end,
@@ -1742,6 +1802,19 @@ def build_power_display_summary_dataset(
     for name in POWER_DISPLAY_ENERGY_MAP.values():
         if name in out:
             out[name].attrs["units"] = "kWh"
+    if "BatterySOCForecast" in out:
+        out["BatterySOCForecast"].attrs["units"] = "%"
+    if "ECMWFSolarIrradiance" in out:
+        out["ECMWFSolarIrradiance"].attrs["units"] = "W m-2"
+    for name in ("ForecastSolarWatts", "ForecastLoadWatts"):
+        if name in out:
+            out[name].attrs["units"] = "W"
+    if "ForecastSOCMAERecent" in out:
+        out["ForecastSOCMAERecent"].attrs["units"] = "percentage points"
+    if "ForecastSolarMAERecent" in out:
+        out["ForecastSolarMAERecent"].attrs["units"] = "W"
+    if "ForecastEvaluationSamples" in out:
+        out["ForecastEvaluationSamples"].attrs["units"] = "samples"
     return out
 
 
@@ -1769,6 +1842,16 @@ def _crop_to_summary_display_window(ds: xr.Dataset, times: pd.DatetimeIndex) -> 
         mask &= times >= start
     if end is not None:
         mask &= times <= end
+    forecast_names = [name for name in POWER_SOC_FORECAST_FIELDS if name in ds]
+    if end is not None and forecast_names:
+        forecast_valid = np.zeros(len(times), dtype=bool)
+        for name in forecast_names:
+            forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
+        forecast_end = end + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
+        forecast_mask = forecast_valid & (times <= forecast_end)
+        if start is not None:
+            forecast_mask &= times >= start
+        mask |= forecast_mask
     return ds.isel(time=mask)
 
 
@@ -2495,7 +2578,8 @@ def build_summary_plotly(
     else:
         per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
         max_height = PLOTLY_SUMMARY_MAX_HEIGHT
-    separate_projection_axis = instrument == "power" and any(panel.key == "soc_projection" for panel, _rows in panels)
+    forecast_panel_keys = {"soc_projection", "soc_ecmwf_forecast", "ecmwf_solar_forecast", "soc_forecast_skill"}
+    separate_projection_axis = instrument == "power" and any(panel.key in forecast_panel_keys for panel, _rows in panels)
     base_time_start = times.min()
     base_time_end = times.max()
     if x_limits is not None:
@@ -2526,7 +2610,7 @@ def build_summary_plotly(
     plot_time_end = base_time_end
     panel_x_ranges: dict[int, tuple[pd.Timestamp, pd.Timestamp]] = {}
     last_base_axis_row = max(
-        (idx for idx, (panel, _rows) in enumerate(panels, start=1) if panel.key != "soc_projection"),
+        (idx for idx, (panel, _rows) in enumerate(panels, start=1) if panel.key not in forecast_panel_keys),
         default=len(panels),
     )
     for row_index, (panel, rows) in enumerate(panels, start=1):
@@ -2561,7 +2645,10 @@ def build_summary_plotly(
                 continue
             trace_start = trace_times.min()
             trace_end = trace_times.max()
-            if separate_projection_axis and panel.key == "soc_projection" and trace.projection_lookback_minutes is not None:
+            if separate_projection_axis and panel.key in forecast_panel_keys and (
+                trace.projection_lookback_minutes is not None
+                or panel.key in {"soc_ecmwf_forecast", "ecmwf_solar_forecast", "soc_forecast_skill"}
+            ):
                 if projection_time_start is None or trace_start < projection_time_start:
                     projection_time_start = trace_start
                 if projection_time_end is None or trace_end > projection_time_end:
@@ -2639,7 +2726,7 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=True,
             )
-        if separate_projection_axis and panel.key == "soc_projection" and projection_time_start is not None and projection_time_end is not None:
+        if separate_projection_axis and panel.key in forecast_panel_keys and projection_time_start is not None and projection_time_end is not None:
             panel_x_ranges[row_index] = (projection_time_start, projection_time_end)
         else:
             panel_x_ranges[row_index] = (base_time_start, base_time_end)
@@ -2649,7 +2736,7 @@ def build_summary_plotly(
         for row_index, (panel, _rows) in enumerate(panels, start=1):
             start, end = panel_x_ranges[row_index]
             tickvals, ticktext = _plotly_time_ticks(start, end)
-            is_projection_row = panel.key == "soc_projection"
+            is_projection_row = panel.key in forecast_panel_keys
             if is_projection_row:
                 projection_rows.append(row_index)
             fig.update_xaxes(
@@ -2670,7 +2757,7 @@ def build_summary_plotly(
                 fig.update_xaxes(matches="x", row=row_index, col=1)
         fig.update_xaxes(title_text="Time (UTC)", row=last_base_axis_row, col=1)
         if projection_rows:
-            fig.update_xaxes(title_text="Projection Time (UTC)", row=projection_rows[-1], col=1)
+            fig.update_xaxes(title_text="Forecast Time (UTC)", row=projection_rows[-1], col=1)
     else:
         tickvals, ticktext = _plotly_time_ticks(plot_time_start, plot_time_end)
         fig.update_xaxes(
