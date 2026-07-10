@@ -7995,11 +7995,33 @@ body, .bk {
     max-height: calc(100vh - 320px);
     object-fit: contain;
 }
+.mobile-tab-nav {
+    display: none;
+}
 @media (max-width: 768px) {
     body, .bk { font-size: 14px; }
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
     .bk.pn-row { gap: 8px; }
+    .mobile-tab-nav {
+        display: block !important;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        margin: 0 0 8px 0 !important;
+        background: #ffffff;
+        border-bottom: 1px solid #d8e1e8;
+    }
+    .mobile-tab-nav .bk-input-group,
+    .mobile-tab-nav .bk-input {
+        width: 100%;
+    }
+    .main-tabs > .bk-tabs-header,
+    .main-tabs > .bk-Tabs-header,
+    .main-tabs > .bk-headers,
+    .main-tabs > .bk-headers-wrapper {
+        display: none !important;
+    }
     .mobile-stack > .bk {
         flex: 1 1 100%;
         min-width: 0;
@@ -8245,6 +8267,22 @@ uas_tab = pn.Column(
     sizing_mode="stretch_width",
 )
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
+MOBILE_TAB_OPTIONS = {
+    "Interactive": 0,
+    "Science": 1,
+    "Housekeeping": 2,
+    "AURORACam": 3,
+    "UAS": 4,
+    "Operations": 5,
+}
+MOBILE_TAB_LABEL_BY_INDEX = {value: key for key, value in MOBILE_TAB_OPTIONS.items()}
+mobile_tab_select = pn.widgets.Select(
+    name="View",
+    value="Interactive",
+    options=list(MOBILE_TAB_OPTIONS),
+    sizing_mode="stretch_width",
+)
+mobile_tab_nav = pn.Column(mobile_tab_select, sizing_mode="stretch_width", margin=0, css_classes=["mobile-tab-nav"])
 tabs = pn.Tabs(
     ("Interactive Data Browser", interactive_tab),
     ("Science Quicklooks", science_quicklooks_tab),
@@ -8253,7 +8291,9 @@ tabs = pn.Tabs(
     ("UAS", uas_tab),
     ("Operations Dashboard", operations_tab),
     sizing_mode="stretch_both",
+    css_classes=["main-tabs"],
 )
+_mobile_tab_syncing = False
 
 
 def _ensure_active_tab_loaded() -> None:
@@ -8286,11 +8326,36 @@ def _ensure_active_tab_loaded() -> None:
             pass
 
 
+def _sync_mobile_tab_select() -> None:
+    """Reflect programmatic/desktop tab changes into the mobile selector."""
+    global _mobile_tab_syncing
+    label = MOBILE_TAB_LABEL_BY_INDEX.get(tabs.active, "Interactive")
+    if mobile_tab_select.value == label:
+        return
+    _mobile_tab_syncing = True
+    try:
+        mobile_tab_select.value = label
+    finally:
+        _mobile_tab_syncing = False
+
+
+def _on_mobile_tab_select_change(event) -> None:
+    """Switch the real tab from the phone-sized View selector."""
+    if _mobile_tab_syncing:
+        return
+    index = MOBILE_TAB_OPTIONS.get(event.new)
+    if index is None or tabs.active == index:
+        return
+    tabs.active = index
+
+
 def _on_tabs_active_change(_event=None) -> None:
+    _sync_mobile_tab_select()
     _ensure_active_tab_loaded()
     _refresh_share_and_download_state()
 
 
+mobile_tab_select.param.watch(_on_mobile_tab_select_change, "value")
 tabs.param.watch(_on_tabs_active_change, "active")
 
 SITE_FOOTER_HTML = """
@@ -8321,7 +8386,7 @@ auroracam_tab.append(_site_footer_pane())
 uas_tab.append(_site_footer_pane())
 operations_tab.append(_site_footer_pane())
 
-main_layout = pn.Column(tabs, sizing_mode="stretch_width", margin=0)
+main_layout = pn.Column(mobile_tab_nav, tabs, sizing_mode="stretch_width", margin=0)
 
 _QUERY_TAB_INDEX = {"interactive": 0, "science": 1, "housekeeping": 2, "auroracam": 3, "uas": 4, "operations": 5}
 
@@ -8329,6 +8394,7 @@ _apply_query_state()
 requested_tab = _request_query_args().get("tab")
 if requested_tab in _QUERY_TAB_INDEX:
     tabs.active = _QUERY_TAB_INDEX[requested_tab]
+_sync_mobile_tab_select()
 _ensure_active_tab_loaded()
 _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
