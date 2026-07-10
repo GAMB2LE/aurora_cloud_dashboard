@@ -8443,8 +8443,8 @@ uas_tab = pn.Column(
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
 TAB_OPTIONS = {
     "Data": "interactive",
-    "Science": "science",
-    "House": "housekeeping",
+    "Sci": "science",
+    "HK": "housekeeping",
     "Cam": "auroracam",
     "UAS": "uas",
     "Ops": "operations",
