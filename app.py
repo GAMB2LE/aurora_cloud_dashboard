@@ -8105,7 +8105,8 @@ body, .bk {
 }
 .mobile-tab-nav .bk-btn-group .bk-btn,
 .mobile-tab-nav button.bk-btn,
-.mobile-tab-nav button {
+.mobile-tab-nav button,
+.mobile-tab-nav label {
     flex: 0 0 auto;
     white-space: nowrap;
 }
@@ -8164,12 +8165,13 @@ body, .bk {
     }
     .mobile-tab-nav .bk-btn-group .bk-btn,
     .mobile-tab-nav button.bk-btn,
-    .mobile-tab-nav button {
+    .mobile-tab-nav button,
+    .mobile-tab-nav label {
         flex: 0 0 auto;
         white-space: nowrap;
         min-height: 30px;
-        padding: 4px 8px !important;
-        font-size: 12px !important;
+        padding: 4px 7px !important;
+        font-size: 11px !important;
         line-height: 1.15 !important;
     }
     .interactive-plot-pane .js-plotly-plot,
@@ -8181,6 +8183,27 @@ body, .bk {
     .mobile-stack > .bk {
         flex: 1 1 100%;
         min-width: 0;
+    }
+    .mobile-stack {
+        display: flex !important;
+        flex-direction: column !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+    .mobile-stack > *,
+    .mobile-stack > .bk,
+    .mobile-stack .bk-input-group,
+    .mobile-stack .bk-input,
+    .mobile-stack .bk-btn,
+    .mobile-stack button {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        flex: 1 1 auto !important;
+        box-sizing: border-box !important;
     }
     .controls-card .bk-card-body {
         max-height: 56vh;
@@ -8425,12 +8448,12 @@ uas_tab = pn.Column(
 )
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
 TAB_OPTIONS = {
-    "Interactive": "interactive",
+    "Data": "interactive",
     "Science": "science",
-    "Housekeeping": "housekeeping",
-    "AURORACam": "auroracam",
+    "House": "housekeeping",
+    "Cam": "auroracam",
     "UAS": "uas",
-    "Operations": "operations",
+    "Ops": "operations",
 }
 TAB_LABEL_BY_SLUG = {value: key for key, value in TAB_OPTIONS.items()}
 TAB_PANEL_BY_SLUG = {
@@ -8444,7 +8467,7 @@ TAB_PANEL_BY_SLUG = {
 ACTIVE_TAB_SLUG = "interactive"
 mobile_tab_select = pn.widgets.RadioButtonGroup(
     name="",
-    value="Interactive",
+    value="Data",
     options=list(TAB_OPTIONS),
     button_type="default",
     sizing_mode="stretch_width",
@@ -8511,7 +8534,7 @@ def _set_active_tab(slug: str | None) -> None:
 def _sync_mobile_tab_select() -> None:
     """Reflect programmatic tab changes into the compact selector."""
     global _mobile_tab_syncing
-    label = TAB_LABEL_BY_SLUG.get(ACTIVE_TAB_SLUG, "Interactive")
+    label = TAB_LABEL_BY_SLUG.get(ACTIVE_TAB_SLUG, "Data")
     if mobile_tab_select.value == label:
         return
     _mobile_tab_syncing = True
