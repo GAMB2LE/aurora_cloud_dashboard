@@ -8126,7 +8126,7 @@ body, .bk {
     min-width: 0;
 }
 .mobile-shell--power {
-    gap: 8px;
+    gap: 6px;
 }
 .mobile-shell--power .mobile-section-title {
     font-size: 16px;
@@ -8196,21 +8196,21 @@ body, .bk {
     line-height: 1.35;
 }
 .mobile-plot-card {
-    padding: 7px;
+    padding: 5px;
 }
 .mobile-plot-card__title {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
     color: #22313f;
-    margin: 0 0 4px;
+    margin: 0 0 2px;
 }
 .mobile-plot-card__legend {
     display: flex;
     flex-wrap: wrap;
-    gap: 3px 8px;
+    gap: 2px 7px;
     align-items: center;
-    margin: 0 0 2px;
-    font-size: 10px;
+    margin: 0;
+    font-size: 9px;
     line-height: 1.15;
     color: #344154;
 }
@@ -8254,8 +8254,8 @@ body, .bk {
 .mobile-figure {
     width: 100%;
     min-width: 0;
-    height: 140px !important;
-    max-height: 140px !important;
+    height: 124px !important;
+    max-height: 124px !important;
     overflow: hidden;
 }
 .mobile-figure > div,
@@ -8264,9 +8264,38 @@ body, .bk {
 .mobile-figure .plotly,
 .mobile-figure .plot-container,
 .mobile-figure .svg-container {
-    height: 140px !important;
-    max-height: 140px !important;
+    height: 124px !important;
+    max-height: 124px !important;
     min-height: 0 !important;
+}
+.mobile-power-title {
+    font-size: 15px;
+    margin: 0;
+}
+.mobile-power-note {
+    display: none;
+}
+@media (max-width: 700px) {
+    .mdc-top-app-bar,
+    .mdc-top-app-bar__row,
+    .pn-template-header,
+    .app-header,
+    header {
+        min-height: 58px !important;
+        height: 58px !important;
+    }
+    .mdc-top-app-bar__title,
+    .pn-template-title {
+        font-size: 22px !important;
+        line-height: 1.05 !important;
+    }
+    .pn-template-logo,
+    .pn-template-logo img,
+    .app-logo,
+    .app-logo img {
+        width: 38px !important;
+        height: 38px !important;
+    }
 }
 .mobile-bottom-nav {
     position: fixed;
@@ -8883,7 +8912,7 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         )
     if not fig.data:
         return None
-    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "132"))
+    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "116"))
     layout = dict(
         height=plot_height,
         autosize=True,
@@ -8928,8 +8957,8 @@ def _mobile_power_tab() -> pn.Column:
         cards = [pn.pane.HTML("<div class='mobile-plot-card__empty'>No plottable Power panels are available.</div>", sizing_mode="stretch_width")]
     return pn.Column(
         pn.pane.HTML(
-            "<div class='mobile-section-title'>Power</div>"
-            "<div class='mobile-section-note'>Last 24 hours, split into phone-readable cards. Forecast cards extend into the available forecast horizon.</div>",
+            "<div class='mobile-section-title mobile-power-title'>Power</div>"
+            "<div class='mobile-section-note mobile-power-note'>Last 24 hours, split into phone-readable cards. Forecast cards extend into the available forecast horizon.</div>",
             sizing_mode="stretch_width",
             margin=0,
         ),
