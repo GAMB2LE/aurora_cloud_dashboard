@@ -8186,13 +8186,48 @@ body, .bk {
     line-height: 1.35;
 }
 .mobile-plot-card {
-    padding: 8px;
+    padding: 7px;
 }
 .mobile-plot-card__title {
     font-size: 13px;
     font-weight: 700;
     color: #22313f;
-    margin: 0 0 6px;
+    margin: 0 0 4px;
+}
+.mobile-plot-card__legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 8px;
+    align-items: center;
+    margin: 0 0 2px;
+    font-size: 10px;
+    line-height: 1.15;
+    color: #344154;
+}
+.mobile-plot-card__legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+}
+.mobile-plot-card__legend-line {
+    display: inline-block;
+    width: 16px;
+    height: 0;
+    border-top: 2px solid currentColor;
+    flex: 0 0 auto;
+}
+.mobile-plot-card__legend-line--dash {
+    border-top-style: dashed;
+}
+.mobile-plot-card__legend-line--dot {
+    border-top-style: dotted;
+}
+.mobile-plot-card__legend-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .mobile-plot-card__empty {
     min-height: 110px;
@@ -8792,8 +8827,7 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
     include_future = panel.key in forecast_panel_keys
     fig = go.Figure()
     has_right_axis = panel.right_axis_label is not None
-    left_values: list[np.ndarray] = []
-    right_values: list[np.ndarray] = []
+    legend_items: list[str] = []
     for trace in panel.traces:
         if trace.projection_lookback_minutes is not None:
             continue
@@ -8801,10 +8835,18 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         if len(times) == 0:
             continue
         use_right = trace.axis == "right" and has_right_axis
-        if use_right:
-            right_values.append(values)
+        if trace.dash in {"dash", "dashdot", "longdash", "longdashdot"}:
+            dash_class = " mobile-plot-card__legend-line--dash"
+        elif trace.dash == "dot":
+            dash_class = " mobile-plot-card__legend-line--dot"
         else:
-            left_values.append(values)
+            dash_class = ""
+        legend_items.append(
+            "<span class='mobile-plot-card__legend-item'>"
+            f"<span class='mobile-plot-card__legend-line{dash_class}' style='color:{escape(trace.color)}'></span>"
+            f"<span class='mobile-plot-card__legend-label'>{escape(trace.label)}</span>"
+            "</span>"
+        )
         fig.add_trace(
             go.Scatter(
                 x=times,
@@ -8819,30 +8861,32 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         )
     if not fig.data:
         return None
+    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "158"))
     layout = dict(
-        height=260,
+        height=plot_height,
         autosize=True,
-        margin=dict(l=42, r=42 if has_right_axis else 12, t=8, b=38),
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=9), itemwidth=30),
+        margin=dict(l=31, r=31 if has_right_axis else 8, t=4, b=24),
+        showlegend=False,
         paper_bgcolor="white",
         plot_bgcolor="white",
-        font=dict(size=10, color=THEME_TEXT),
-        xaxis=dict(showgrid=True, gridcolor=THEME_GRID, tickfont=dict(size=9), title=dict(text="UTC", font=dict(size=9))),
-        yaxis=dict(title=dict(text=panel.left_axis_label, font=dict(size=9)), tickfont=dict(size=9), showgrid=True, gridcolor=THEME_GRID),
+        font=dict(size=9, color=THEME_TEXT),
+        xaxis=dict(showgrid=True, gridcolor=THEME_GRID, tickfont=dict(size=8), title=None, nticks=4),
+        yaxis=dict(title=None, tickfont=dict(size=8), showgrid=True, gridcolor=THEME_GRID, nticks=4),
     )
     if has_right_axis:
         layout["yaxis2"] = dict(
-            title=dict(text=panel.right_axis_label, font=dict(size=9)),
-            tickfont=dict(size=9),
+            title=None,
+            tickfont=dict(size=8),
             overlaying="y",
             side="right",
             showgrid=False,
+            nticks=4,
         )
     fig.update_layout(**layout)
     return pn.Column(
         pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0),
-        pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=270, css_classes=["mobile-figure"]),
+        pn.pane.HTML(f"<div class='mobile-plot-card__legend'>{''.join(legend_items)}</div>", margin=0),
+        pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=plot_height + 8, css_classes=["mobile-figure"]),
         sizing_mode="stretch_width",
         css_classes=["mobile-plot-card"],
     )
