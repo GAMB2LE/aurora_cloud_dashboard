@@ -8352,7 +8352,7 @@ body, .bk {
     }
     .mobile-app .auroracam-grid {
         display: grid !important;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 1fr) !important;
         gap: 8px;
     }
     .mobile-app .auroracam-grid > .bk {
@@ -8904,7 +8904,7 @@ def _mobile_auroracam_grid(selected_day: str | None, selected_time: str | None, 
             sizing_mode="stretch_width",
             margin=0,
         ),
-        pn.GridBox(*auroracam_cards.values(), ncols=2, sizing_mode="stretch_width", css_classes=["auroracam-grid"]),
+        pn.GridBox(*auroracam_cards.values(), ncols=1, sizing_mode="stretch_width", css_classes=["auroracam-grid"]),
         sizing_mode="stretch_width",
         css_classes=["auroracam-section"],
     )
