@@ -8351,8 +8351,13 @@ body, .bk {
         display: none;
     }
     .mobile-app .auroracam-grid {
+        display: grid !important;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
+    }
+    .mobile-app .auroracam-grid > .bk {
+        min-width: 0 !important;
+        width: auto !important;
     }
     .mobile-app .auroracam-card {
         padding: 6px;
@@ -8883,10 +8888,63 @@ def _mobile_plots_tab() -> pn.Column:
     )
 
 
+def _mobile_auroracam_grid(selected_day: str | None, selected_time: str | None, selected_camera_id: str | None) -> pn.Column:
+    day = _auroracam_selected_day(selected_day)
+    label = day or "Latest available"
+    time_label = selected_time or "Latest"
+    for camera_id, card in auroracam_cards.items():
+        record = _auroracam_record_for_time(camera_id, selected_day, selected_time)
+        card.param.update(**_auroracam_card_params(camera_id, record, selected_camera_id))
+    return pn.Column(
+        pn.pane.HTML(
+            "<div class='auroracam-section__head'>"
+            "<div class='auroracam-section__title'>AURORACam frames</div>"
+            f"<div class='auroracam-section__meta'>{escape(label)} | {escape(time_label)}</div>"
+            "</div>",
+            sizing_mode="stretch_width",
+            margin=0,
+        ),
+        pn.GridBox(*auroracam_cards.values(), ncols=2, sizing_mode="stretch_width", css_classes=["auroracam-grid"]),
+        sizing_mode="stretch_width",
+        css_classes=["auroracam-section"],
+    )
+
+
+@pn.depends(auroracam_date.param.value, auroracam_time.param.value, auroracam_camera.param.value)
+def _mobile_auroracam_browser(selected_day, selected_time, camera_id):
+    root = _auroracam_raw_root()
+    if not root.exists():
+        return pn.pane.HTML(
+            "<div class='auroracam-empty'>AURORACam image root is not available.</div>",
+            sizing_mode="stretch_width",
+            margin=0,
+        )
+    return pn.Column(
+        _mobile_auroracam_grid(selected_day, selected_time, camera_id),
+        pn.pane.HTML(_auroracam_viewer_markup(camera_id, selected_day, selected_time), sizing_mode="stretch_width", margin=0),
+        sizing_mode="stretch_width",
+        css_classes=["auroracam-browser"],
+    )
+
+
 def _mobile_camera_tab() -> pn.Column:
     return pn.Column(
         pn.pane.HTML("<div class='mobile-section-title'>Camera</div>", sizing_mode="stretch_width", margin=0),
-        auroracam_tab,
+        pn.Card(
+            pn.Column(
+                auroracam_latest,
+                auroracam_date,
+                auroracam_time,
+                pn.Row(auroracam_prev_time, auroracam_next_time, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+                pn.Row(auroracam_prev, auroracam_next, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+                sizing_mode="stretch_width",
+            ),
+            title="",
+            collapsible=False,
+            sizing_mode="stretch_width",
+            css_classes=["small-card", "auroracam-toolbar"],
+        ),
+        _mobile_auroracam_browser,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell"],
     )
