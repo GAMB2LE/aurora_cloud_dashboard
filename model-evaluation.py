@@ -3266,6 +3266,19 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         sheet_status = mdf_source_layer.get("source_metadata_review_sheet_status", "n/a")
         sheet_rows = mdf_source_layer.get("source_metadata_review_sheet_row_count", "n/a")
         sheet_text = f"{sheet_status}; rows:{sheet_rows}"
+        import_status = mdf_source_layer.get(
+            "source_metadata_review_import_status", "n/a"
+        )
+        import_approved = mdf_source_layer.get(
+            "source_metadata_review_import_approved_count", "n/a"
+        )
+        import_written = mdf_source_layer.get(
+            "source_metadata_review_import_overrides_written", False
+        )
+        import_text = (
+            f"{import_status}; approved:{import_approved}; "
+            f"overrides:{import_written}"
+        )
         overlap_hours = day.get("common_overlap_hours", "n/a")
         body.append(
             "<tr>"
@@ -3276,6 +3289,7 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
             f"<td>{escape(str(source_review_status))}</td>"
             f"<td>{escape(str(source_review_required))}</td>"
             f"<td>{escape(str(sheet_text))}</td>"
+            f"<td>{escape(str(import_text))}</td>"
             f"<td>{escape(str(_compact_float(overlap_hours)))}</td>"
             f"<td>{escape(missing_text)}</td>"
             "</tr>"
@@ -3286,7 +3300,7 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         "<thead><tr>"
         "<th>day</th><th>summary</th><th>release/v1 gate</th><th>model inputs</th>"
         "<th>MDF source review</th><th>reviews required</th><th>worksheet</th>"
-        "<th>overlap h</th><th>missing required</th>"
+        "<th>import</th><th>overlap h</th><th>missing required</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
