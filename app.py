@@ -39,6 +39,7 @@ try:
 except Exception:  # pragma: no cover - dashboard can still serve source images.
     Image = None
 from grouped_timeseries import (
+    SUMMARY_LAYOUTS,
     build_summary_plotly,
     calendar_date_tokens,
     combine_summary_datasets,
@@ -8110,6 +8111,137 @@ body, .bk {
     flex: 0 0 auto;
     white-space: nowrap;
 }
+.mobile-app {
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    padding: 0 10px 78px;
+    box-sizing: border-box;
+}
+.mobile-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+    min-width: 0;
+}
+.mobile-section-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #22313f;
+    margin: 2px 0 0;
+}
+.mobile-section-note {
+    font-size: 12px;
+    color: #5f6c7b;
+    line-height: 1.35;
+}
+.mobile-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 10px;
+}
+.mobile-status-card,
+.mobile-plot-card {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    padding: 10px;
+    box-sizing: border-box;
+    min-width: 0;
+}
+.mobile-status-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.mobile-status-card--green {
+    border-color: #b7e4dc;
+    background: #f1fbf8;
+}
+.mobile-status-card--amber {
+    border-color: #f1d4b5;
+    background: #fff8ef;
+}
+.mobile-status-card--red {
+    border-color: #f3c1bb;
+    background: #fff5f4;
+}
+.mobile-status-card__label {
+    font-size: 11px;
+    font-weight: 650;
+    color: #5f6c7b;
+    line-height: 1.2;
+}
+.mobile-status-card__value {
+    font-size: 18px;
+    font-weight: 750;
+    color: #22313f;
+    line-height: 1.12;
+    overflow-wrap: anywhere;
+}
+.mobile-status-card__meta {
+    font-size: 11px;
+    color: #647283;
+    line-height: 1.35;
+}
+.mobile-plot-card {
+    padding: 8px;
+}
+.mobile-plot-card__title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #22313f;
+    margin: 0 0 6px;
+}
+.mobile-plot-card__empty {
+    min-height: 110px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed #c5d0da;
+    border-radius: 8px;
+    color: #647283;
+    font-size: 12px;
+    text-align: center;
+    padding: 12px;
+}
+.mobile-figure {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
+.mobile-bottom-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    padding: 7px 8px calc(7px + env(safe-area-inset-bottom));
+    background: rgba(255, 255, 255, 0.96);
+    border-top: 1px solid #d8e1e8;
+    box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.08);
+}
+.mobile-bottom-nav .bk-btn-group {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 5px;
+    width: 100%;
+}
+.mobile-bottom-nav .bk-btn-group .bk-btn,
+.mobile-bottom-nav button.bk-btn,
+.mobile-bottom-nav button,
+.mobile-bottom-nav label {
+    width: 100%;
+    min-width: 0;
+    min-height: 38px;
+    padding: 5px 4px !important;
+    font-size: 11px !important;
+    line-height: 1.1 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 @media (max-width: 768px) {
     html,
     body {
@@ -8214,6 +8346,33 @@ body, .bk {
     .wxcam-still__frame img,
     .wxcam-still--vertical .wxcam-still__frame img {
         max-height: 52vh;
+    }
+    .mobile-app .site-footer {
+        display: none;
+    }
+    .mobile-app .auroracam-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+    .mobile-app .auroracam-card {
+        padding: 6px;
+    }
+    .mobile-app .auroracam-card__title {
+        font-size: 11px;
+    }
+    .mobile-app .auroracam-card__ip,
+    .mobile-app .auroracam-card__file {
+        display: none;
+    }
+    .mobile-app .auroracam-card__meta {
+        font-size: 10px;
+    }
+    .mobile-app .auroracam-viewer__frame {
+        padding: 6px;
+    }
+    .mobile-app .quicklook-image__img {
+        border: 1px solid #d8e1e8;
+        border-radius: 8px;
     }
 }
 """
@@ -8441,6 +8600,391 @@ uas_tab = pn.Column(
     sizing_mode="stretch_width",
 )
 operations_tab = pn.Column(operations_container, sizing_mode="stretch_width")
+
+MOBILE_TAB_OPTIONS = {
+    "Overview": "overview",
+    "Power": "power",
+    "Plots": "plots",
+    "Camera": "camera",
+    "Ops": "ops",
+}
+MOBILE_TAB_LABEL_BY_SLUG = {value: key for key, value in MOBILE_TAB_OPTIONS.items()}
+
+
+def _mobile_view_requested() -> bool:
+    mode = (_request_query_args().get("view") or "auto").strip().lower()
+    if mode == "desktop":
+        return False
+    if mode == "mobile":
+        return True
+    return _is_mobile_viewport()
+
+
+def _mobile_query_params(tab_slug: str) -> dict[str, str]:
+    params = _view_query_params("interactive")
+    params["view"] = "mobile"
+    params["mobile_tab"] = tab_slug
+    return {key: value for key, value in params.items() if value not in ("", None)}
+
+
+def _mobile_level(level: str | None) -> str:
+    text = str(level or "gray").lower()
+    if text in {"green", "amber", "red"}:
+        return text
+    return "gray"
+
+
+def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: str | None = None) -> str:
+    level_class = f" mobile-status-card--{_mobile_level(level)}" if level else ""
+    return (
+        f"<div class='mobile-status-card{level_class}'>"
+        f"<div class='mobile-status-card__label'>{escape(label)}</div>"
+        f"<div class='mobile-status-card__value'>{escape(value)}</div>"
+        f"<div class='mobile-status-card__meta'>{escape(meta)}</div>"
+        "</div>"
+    )
+
+
+def _mobile_auroracam_freshness() -> tuple[str, str, str]:
+    latest_time: datetime | None = None
+    latest_label = "No camera"
+    for camera_id, spec in AURORACAM_CAMERAS.items():
+        record = auroracam_latest_record(_auroracam_raw_root(), camera_id)
+        moment = _auroracam_record_time(record)
+        if moment is not None and (latest_time is None or moment > latest_time):
+            latest_time = moment
+            latest_label = str(spec["label"])
+    if latest_time is None:
+        return "No image", "AURORACam latest image unavailable", "amber"
+    age_min = max((datetime.now(timezone.utc) - latest_time).total_seconds() / 60.0, 0.0)
+    level = "green" if age_min < 30 else "amber" if age_min < 120 else "red"
+    return latest_label, _humanize_age(latest_time), level
+
+
+def _mobile_power_latest_measured_time() -> datetime | None:
+    candidates = ("BatterySOC", "BatteryWatts", "DCInverterVolts", "ACOutputWatts")
+    try:
+        ds = _get_power_display_summary_dataset()
+    except Exception:
+        ds = None
+    if ds is None or "time" not in ds:
+        return _dataset_time_bounds("power")[1]
+    times = pd.DatetimeIndex(ds["time"].values)
+    latest: pd.Timestamp | None = None
+    now = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
+    for name in candidates:
+        if name not in ds:
+            continue
+        values = np.asarray(ds[name].values, dtype=np.float64)
+        mask = np.isfinite(values) & (times <= now)
+        if not mask.any():
+            continue
+        candidate = times[mask].max()
+        if latest is None or candidate > latest:
+            latest = candidate
+    if latest is None:
+        return _dataset_time_bounds("power")[1]
+    return latest.to_pydatetime(warn=False)
+
+
+def _mobile_overview_markup() -> str:
+    snapshot = _ops_read_snapshot()
+    if snapshot.get("_missing") or snapshot.get("_error"):
+        ops_level = "red"
+        ops_value = "No ops snapshot"
+        ops_meta = snapshot.get("_error") or f"Missing {snapshot.get('_path', 'snapshot')}"
+        snapshot_age = "Age unknown"
+    else:
+        updated_at = _ops_timestamp(snapshot.get("time_utc"))
+        snapshot_age_min = None
+        if updated_at is not None:
+            snapshot_age_min = max((datetime.now(timezone.utc) - updated_at).total_seconds() / 60.0, 0.0)
+        source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
+        source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
+        battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
+        battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
+        battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
+        processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
+        ops_level = _ops_worst_level([source_level, source_freshness_level, battery_level, battery_soc_level, battery_depletion_level, processing_level])
+        ops_value = "Healthy" if ops_level == "green" else "Attention" if ops_level == "amber" else "Action" if ops_level == "red" else "Waiting"
+        failed = len(_ops_failed_service_names(snapshot))
+        snapshot_age = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
+        ops_meta = f"Snapshot {snapshot_age}; {failed} unhealthy services"
+
+    battery_value, battery_meta = _ops_battery_text(snapshot)
+    battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
+    depletion_value, depletion_meta = _ops_battery_depletion_text(snapshot)
+    camera_value, camera_meta, camera_level = _mobile_auroracam_freshness()
+    power_latest = _mobile_power_latest_measured_time()
+    power_latest_utc = power_latest.replace(tzinfo=timezone.utc) if power_latest and power_latest.tzinfo is None else power_latest
+    power_meta = _humanize_age(power_latest_utc)
+    power_level = _ops_level_from_age_minutes(max((datetime.now(timezone.utc) - power_latest_utc).total_seconds() / 60.0, 0.0) if power_latest_utc else None)
+    cards = [
+        _mobile_status_card_markup("Operations", ops_value, ops_meta, ops_level),
+        _mobile_status_card_markup("State of Charge", battery_soc_value, battery_soc_meta, _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))),
+        _mobile_status_card_markup("Battery Voltage", battery_value, battery_meta, _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))),
+        _mobile_status_card_markup("Time to Depleted", depletion_value, depletion_meta, _ops_level_from_battery_depletion(snapshot)),
+        _mobile_status_card_markup("Power Data", power_latest.strftime("%H:%M UTC") if power_latest else "No data", power_meta, power_level),
+        _mobile_status_card_markup("AURORACam", camera_value, camera_meta, camera_level),
+    ]
+    return (
+        "<div class='mobile-shell'>"
+        "<div><div class='mobile-section-title'>AURORA Mobile Overview</div>"
+        "<div class='mobile-section-note'>Fast status for phone checks. Detailed plots and camera browsing are in the bottom tabs.</div></div>"
+        f"<div class='mobile-card-grid'>{''.join(cards)}</div>"
+        "</div>"
+    )
+
+
+def _mobile_overview() -> pn.Column:
+    return pn.Column(pn.pane.HTML(_mobile_overview_markup(), sizing_mode="stretch_width", margin=0), sizing_mode="stretch_width", css_classes=["mobile-shell"])
+
+
+def _mobile_power_window() -> xr.Dataset | None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = now - DEFAULT_WINDOW
+    end = now + timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
+    ds = _open_power_display_summary_window(start, end)
+    if ds is None:
+        ds = open_window(start, end, instrument="power", render_quality="coarse")
+    if ds is not None and "time" in ds:
+        ds.attrs[SUMMARY_DISPLAY_START_ATTR] = start.isoformat()
+        ds.attrs[SUMMARY_DISPLAY_END_ATTR] = now.isoformat()
+    return ds
+
+
+def _mobile_trace_values(ds: xr.Dataset, trace, include_future: bool) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    if trace.var not in ds or "time" not in ds:
+        return pd.DatetimeIndex([]), np.asarray([], dtype=float)
+    times = pd.DatetimeIndex(ds["time"].values)
+    values = np.asarray(ds[trace.var].values, dtype=np.float64)
+    if values.shape[0] != len(times):
+        return pd.DatetimeIndex([]), np.asarray([], dtype=float)
+    now = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
+    mask = np.isfinite(values)
+    if trace.valid_min is not None:
+        mask &= values >= float(trace.valid_min)
+    if trace.valid_max is not None:
+        mask &= values <= float(trace.valid_max)
+    if not include_future:
+        mask &= times <= now
+    if not mask.any():
+        return pd.DatetimeIndex([]), np.asarray([], dtype=float)
+    out_times = times[mask]
+    out_values = values[mask]
+    if trace.skip_if_all_zero and np.allclose(out_values[np.isfinite(out_values)], 0.0):
+        return pd.DatetimeIndex([]), np.asarray([], dtype=float)
+    max_points = 260
+    if len(out_times) > max_points:
+        stride = int(np.ceil(len(out_times) / max_points))
+        out_times = out_times[::stride]
+        out_values = out_values[::stride]
+    return out_times, out_values
+
+
+def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
+    forecast_panel_keys = {"soc_ecmwf_forecast", "ecmwf_solar_forecast", "soc_forecast_skill"}
+    include_future = panel.key in forecast_panel_keys
+    fig = go.Figure()
+    has_right_axis = panel.right_axis_label is not None
+    left_values: list[np.ndarray] = []
+    right_values: list[np.ndarray] = []
+    for trace in panel.traces:
+        if trace.projection_lookback_minutes is not None:
+            continue
+        times, values = _mobile_trace_values(ds, trace, include_future=include_future)
+        if len(times) == 0:
+            continue
+        use_right = trace.axis == "right" and has_right_axis
+        if use_right:
+            right_values.append(values)
+        else:
+            left_values.append(values)
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=values,
+                mode="lines",
+                name=trace.label,
+                yaxis="y2" if use_right else "y",
+                line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.4g}}<extra></extra>",
+                connectgaps=False,
+            )
+        )
+    if not fig.data:
+        return None
+    layout = dict(
+        height=260,
+        autosize=True,
+        margin=dict(l=42, r=42 if has_right_axis else 12, t=8, b=38),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=9), itemwidth=30),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(size=10, color=THEME_TEXT),
+        xaxis=dict(showgrid=True, gridcolor=THEME_GRID, tickfont=dict(size=9), title=dict(text="UTC", font=dict(size=9))),
+        yaxis=dict(title=dict(text=panel.left_axis_label, font=dict(size=9)), tickfont=dict(size=9), showgrid=True, gridcolor=THEME_GRID),
+    )
+    if has_right_axis:
+        layout["yaxis2"] = dict(
+            title=dict(text=panel.right_axis_label, font=dict(size=9)),
+            tickfont=dict(size=9),
+            overlaying="y",
+            side="right",
+            showgrid=False,
+        )
+    fig.update_layout(**layout)
+    return pn.Column(
+        pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0),
+        pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=270, css_classes=["mobile-figure"]),
+        sizing_mode="stretch_width",
+        css_classes=["mobile-plot-card"],
+    )
+
+
+def _mobile_power_tab() -> pn.Column:
+    ds = _mobile_power_window()
+    if ds is None or "time" not in ds:
+        return pn.Column(
+            pn.pane.HTML("<div class='mobile-plot-card__empty'>Power display data is not available.</div>", sizing_mode="stretch_width"),
+            sizing_mode="stretch_width",
+            css_classes=["mobile-shell"],
+        )
+    cards = [_mobile_power_card(ds, panel) for panel in SUMMARY_LAYOUTS["power"]]
+    cards = [card for card in cards if card is not None]
+    if not cards:
+        cards = [pn.pane.HTML("<div class='mobile-plot-card__empty'>No plottable Power panels are available.</div>", sizing_mode="stretch_width")]
+    return pn.Column(
+        pn.pane.HTML(
+            "<div class='mobile-section-title'>Power</div>"
+            "<div class='mobile-section-note'>Last 24 hours, split into phone-readable cards. Forecast cards extend into the available forecast horizon.</div>",
+            sizing_mode="stretch_width",
+            margin=0,
+        ),
+        *cards,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-shell"],
+    )
+
+
+def _mobile_plots_tab() -> pn.Column:
+    _ensure_active_tab_loaded("science")
+    return pn.Column(
+        pn.pane.HTML(
+            "<div class='mobile-section-title'>Plots</div>"
+            "<div class='mobile-section-note'>Generated quicklooks load faster on a phone. Use desktop view for full interactive controls.</div>",
+            sizing_mode="stretch_width",
+            margin=0,
+        ),
+        science_quicklooks_tab,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-shell"],
+    )
+
+
+def _mobile_camera_tab() -> pn.Column:
+    return pn.Column(
+        pn.pane.HTML("<div class='mobile-section-title'>Camera</div>", sizing_mode="stretch_width", margin=0),
+        auroracam_tab,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-shell"],
+    )
+
+
+def _mobile_ops_tab() -> pn.Column:
+    _ensure_active_tab_loaded("operations")
+    return pn.Column(
+        pn.pane.HTML("<div class='mobile-section-title'>Operations</div>", sizing_mode="stretch_width", margin=0),
+        operations_tab,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-shell"],
+    )
+
+
+def _mobile_initial_tab() -> str:
+    args = _request_query_args()
+    explicit = args.get("mobile_tab")
+    if explicit in MOBILE_TAB_LABEL_BY_SLUG:
+        return explicit
+    legacy = args.get("tab")
+    if legacy == "auroracam":
+        return "camera"
+    if legacy in {"science", "housekeeping"}:
+        return "plots"
+    if legacy in {"operations", "uas"}:
+        return "ops"
+    if legacy == "interactive" and args.get("instrument") not in (None, "", "power"):
+        return "plots"
+    return "overview"
+
+
+mobile_app_tab_select = pn.widgets.RadioButtonGroup(
+    name="",
+    value=MOBILE_TAB_LABEL_BY_SLUG[_mobile_initial_tab()],
+    options=list(MOBILE_TAB_OPTIONS),
+    button_type="default",
+    sizing_mode="stretch_width",
+)
+mobile_app_nav = pn.Column(mobile_app_tab_select, sizing_mode="stretch_width", margin=0, css_classes=["mobile-bottom-nav"])
+mobile_app_active = pn.Column(sizing_mode="stretch_width", margin=0)
+_MOBILE_LOADED_TABS: dict[str, object] = {}
+_mobile_app_syncing = False
+
+
+def _mobile_panel_for_slug(slug: str):
+    if slug not in _MOBILE_LOADED_TABS:
+        if slug == "overview":
+            _MOBILE_LOADED_TABS[slug] = _mobile_overview()
+        elif slug == "power":
+            _MOBILE_LOADED_TABS[slug] = _mobile_power_tab()
+        elif slug == "plots":
+            _MOBILE_LOADED_TABS[slug] = _mobile_plots_tab()
+        elif slug == "camera":
+            _MOBILE_LOADED_TABS[slug] = _mobile_camera_tab()
+        elif slug == "ops":
+            _MOBILE_LOADED_TABS[slug] = _mobile_ops_tab()
+        else:
+            _MOBILE_LOADED_TABS[slug] = _mobile_overview()
+    return _MOBILE_LOADED_TABS[slug]
+
+
+def _set_mobile_app_tab(slug: str | None) -> None:
+    global _mobile_app_syncing
+    active = slug if slug in MOBILE_TAB_LABEL_BY_SLUG else "overview"
+    panel = _mobile_panel_for_slug(active)
+    if len(mobile_app_active.objects) != 1 or mobile_app_active.objects[0] is not panel:
+        mobile_app_active[:] = [panel]
+    label = MOBILE_TAB_LABEL_BY_SLUG[active]
+    if mobile_app_tab_select.value != label:
+        _mobile_app_syncing = True
+        try:
+            mobile_app_tab_select.value = label
+        finally:
+            _mobile_app_syncing = False
+    try:
+        location = pn.state.location
+    except Exception:
+        location = None
+    if location is not None:
+        search = "?" + urlencode(_mobile_query_params(active))
+        if getattr(location, "search", None) != search:
+            location.search = search
+
+
+def _on_mobile_app_tab_change(event) -> None:
+    if _mobile_app_syncing:
+        return
+    _set_mobile_app_tab(MOBILE_TAB_OPTIONS.get(event.new, "overview"))
+
+
+mobile_app_tab_select.param.watch(_on_mobile_app_tab_change, "value")
+
+
+def _build_mobile_layout() -> pn.Column:
+    _set_mobile_app_tab(_mobile_initial_tab())
+    return pn.Column(mobile_app_active, mobile_app_nav, sizing_mode="stretch_width", margin=0, css_classes=["mobile-app"])
+
 TAB_OPTIONS = {
     "Data": "interactive",
     "Sci": "science",
@@ -8575,17 +9119,21 @@ auroracam_tab.append(_site_footer_pane())
 uas_tab.append(_site_footer_pane())
 operations_tab.append(_site_footer_pane())
 
-main_layout = pn.Column(mobile_tab_nav, active_tab_container, sizing_mode="stretch_width", margin=0)
-
 _QUERY_TAB_SLUGS = set(TAB_PANEL_BY_SLUG)
+_MOBILE_LAYOUT_ACTIVE = _mobile_view_requested()
 
 _apply_query_state()
-requested_tab = _request_query_args().get("tab")
-_set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
-_sync_mobile_tab_select()
-_refresh_share_and_download_state()
+if _MOBILE_LAYOUT_ACTIVE:
+    main_layout = _build_mobile_layout()
+else:
+    main_layout = pn.Column(mobile_tab_nav, active_tab_container, sizing_mode="stretch_width", margin=0)
+    requested_tab = _request_query_args().get("tab")
+    _set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
+    _sync_mobile_tab_select()
+    _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
-pn.state.onload(_enable_browser_interactive_render)
+if not _MOBILE_LAYOUT_ACTIVE:
+    pn.state.onload(_enable_browser_interactive_render)
 
 template.main[:] = [main_layout]
 
