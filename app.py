@@ -8125,6 +8125,16 @@ body, .bk {
     width: 100%;
     min-width: 0;
 }
+.mobile-shell--power {
+    gap: 8px;
+}
+.mobile-shell--power .mobile-section-title {
+    font-size: 16px;
+    margin: 0;
+}
+.mobile-shell--power .mobile-section-note {
+    display: none;
+}
 .mobile-section-title {
     font-size: 18px;
     font-weight: 700;
@@ -8244,7 +8254,19 @@ body, .bk {
 .mobile-figure {
     width: 100%;
     min-width: 0;
+    height: 140px !important;
+    max-height: 140px !important;
     overflow: hidden;
+}
+.mobile-figure > div,
+.mobile-figure .bk,
+.mobile-figure .js-plotly-plot,
+.mobile-figure .plotly,
+.mobile-figure .plot-container,
+.mobile-figure .svg-container {
+    height: 140px !important;
+    max-height: 140px !important;
+    min-height: 0 !important;
 }
 .mobile-bottom-nav {
     position: fixed;
@@ -8861,7 +8883,7 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         )
     if not fig.data:
         return None
-    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "158"))
+    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "132"))
     layout = dict(
         height=plot_height,
         autosize=True,
@@ -8913,7 +8935,7 @@ def _mobile_power_tab() -> pn.Column:
         ),
         *cards,
         sizing_mode="stretch_width",
-        css_classes=["mobile-shell"],
+        css_classes=["mobile-shell", "mobile-shell--power"],
     )
 
 
