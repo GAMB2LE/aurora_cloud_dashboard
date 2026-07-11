@@ -1151,7 +1151,12 @@ def _direct_scorecard(day: str, name: str) -> dict[str, object] | None:
 
 
 def _campaign_index() -> dict[str, object] | None:
-    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json")
+    return _read_first_json(
+        [
+            OPERATIONAL_CAMPAIGN_ROOT / "campaign_virtual_observatory_index.json",
+            OPERATIONAL_CAMPAIGN_ROOT / "campaign_index.json",
+        ]
+    )
 
 
 def _campaign_process_diagnosis() -> dict[str, object] | None:
@@ -1174,6 +1179,14 @@ def _operator_physics_day(day: str) -> dict[str, object] | None:
 
 def _campaign_archive_manifest() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "archive_manifest.json")
+
+
+def _read_first_json(paths: list[Path]) -> dict[str, object] | None:
+    for path in paths:
+        payload = _read_json(path)
+        if payload is not None:
+            return payload
+    return None
 
 
 def load_campaign_index() -> dict[str, object] | None:
@@ -2447,11 +2460,22 @@ def _lwp_policy_summary(scorecard: dict[str, object] | None) -> str:
 
 def _campaign_days(limit: int = 7) -> list[str]:
     days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
-    if not days_root.exists():
-        return []
-    days = sorted(
-        path.name for path in days_root.iterdir() if path.is_dir() and path.name[:4].isdigit()
-    )
+    days = []
+    if days_root.exists():
+        days = sorted(
+            path.name
+            for path in days_root.iterdir()
+            if path.is_dir() and path.name[:4].isdigit()
+        )
+    if not days:
+        index = _campaign_index()
+        indexed_days = index.get("days") if isinstance(index, dict) else []
+        if isinstance(indexed_days, list):
+            days = sorted(
+                str(day.get("day"))
+                for day in indexed_days
+                if isinstance(day, dict) and day.get("day")
+            )
     return list(reversed(days))[:limit]
 
 
@@ -3230,12 +3254,23 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
             missing_text = ", ".join(str(item) for item in missing[:5])
         else:
             missing_text = "none"
+        summary_status = day.get("summary_status", day.get("bundle_status", ""))
+        gate_status = day.get("release_gate_status", day.get("v1_status", ""))
+        model_input_status = day.get("model_input_status", "n/a")
+        source_review_status = day.get("mdf_source_metadata_review_status", "n/a")
+        source_review_required = day.get(
+            "mdf_source_metadata_review_required_count", "n/a"
+        )
+        overlap_hours = day.get("common_overlap_hours", "n/a")
         body.append(
             "<tr>"
             f"<td>{escape(str(day.get('day', '')))}</td>"
-            f"<td>{escape(str(day.get('summary_status', '')))}</td>"
-            f"<td>{escape(str(day.get('release_gate_status', '')))}</td>"
-            f"<td>{escape(str(_compact_float(day.get('common_overlap_hours'))))}</td>"
+            f"<td>{escape(str(summary_status))}</td>"
+            f"<td>{escape(str(gate_status))}</td>"
+            f"<td>{escape(str(model_input_status))}</td>"
+            f"<td>{escape(str(source_review_status))}</td>"
+            f"<td>{escape(str(source_review_required))}</td>"
+            f"<td>{escape(str(_compact_float(overlap_hours)))}</td>"
             f"<td>{escape(missing_text)}</td>"
             "</tr>"
         )
@@ -3243,7 +3278,9 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table'>"
         "<thead><tr>"
-        "<th>day</th><th>summary</th><th>release gate</th><th>overlap h</th><th>missing required</th>"
+        "<th>day</th><th>summary</th><th>release/v1 gate</th><th>model inputs</th>"
+        "<th>MDF source review</th><th>reviews required</th><th>overlap h</th>"
+        "<th>missing required</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -3769,6 +3806,18 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
     cards = [
         _card("latest day", latest_day or "missing"),
         _card("campaign", index.get("status", "missing") if isinstance(index, dict) else "missing"),
+        _card(
+            "MDF source reviews",
+            index.get("mdf_source_metadata_review_required_count", "n/a")
+            if isinstance(index, dict)
+            else "n/a",
+        ),
+        _card(
+            "MDF review status",
+            _count_dict_text(index.get("mdf_source_metadata_review_status_counts"))
+            if isinstance(index, dict)
+            else "missing",
+        ),
         _card("QA ready days", operational_qa.get("ready_day_count", "n/a")),
         _card("QA incomplete", operational_qa.get("qa_incomplete_day_count", "n/a")),
         _card("CM1 run h", latest_runtime.get("run_hours", "n/a")),
