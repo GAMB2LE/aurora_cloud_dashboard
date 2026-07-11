@@ -3261,6 +3261,11 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         source_review_required = day.get(
             "mdf_source_metadata_review_required_count", "n/a"
         )
+        mdf_source_layer = day.get("mdf_source_layer")
+        mdf_source_layer = mdf_source_layer if isinstance(mdf_source_layer, dict) else {}
+        sheet_status = mdf_source_layer.get("source_metadata_review_sheet_status", "n/a")
+        sheet_rows = mdf_source_layer.get("source_metadata_review_sheet_row_count", "n/a")
+        sheet_text = f"{sheet_status}; rows:{sheet_rows}"
         overlap_hours = day.get("common_overlap_hours", "n/a")
         body.append(
             "<tr>"
@@ -3270,6 +3275,7 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
             f"<td>{escape(str(model_input_status))}</td>"
             f"<td>{escape(str(source_review_status))}</td>"
             f"<td>{escape(str(source_review_required))}</td>"
+            f"<td>{escape(str(sheet_text))}</td>"
             f"<td>{escape(str(_compact_float(overlap_hours)))}</td>"
             f"<td>{escape(missing_text)}</td>"
             "</tr>"
@@ -3279,8 +3285,8 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         "<table class='model-table operational-table'>"
         "<thead><tr>"
         "<th>day</th><th>summary</th><th>release/v1 gate</th><th>model inputs</th>"
-        "<th>MDF source review</th><th>reviews required</th><th>overlap h</th>"
-        "<th>missing required</th>"
+        "<th>MDF source review</th><th>reviews required</th><th>worksheet</th>"
+        "<th>overlap h</th><th>missing required</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
