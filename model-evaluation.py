@@ -125,7 +125,15 @@ THEME_ACCENT = "#0b7285"
 def _asset_data_uri(path: Path) -> str:
     if not path.exists():
         return ""
-    mime = "image/png" if path.suffix.lower() == ".png" else "application/octet-stream"
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        mime = "image/png"
+    elif suffix in {".jpg", ".jpeg"}:
+        mime = "image/jpeg"
+    elif suffix == ".svg":
+        mime = "image/svg+xml"
+    else:
+        mime = "application/octet-stream"
     return f"data:{mime};base64,{b64encode(path.read_bytes()).decode('utf-8')}"
 
 
@@ -3957,6 +3965,179 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
     )
 
 
+def _plot_reference(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _plot_path(value: object) -> Path | None:
+    plot = _plot_reference(value)
+    path_value = plot.get("path")
+    if not isinstance(path_value, str) or not path_value:
+        return None
+    path = Path(path_value)
+    return path if path.exists() else None
+
+
+def _process_plot_card(title: str, plot: object, note: str = "") -> str:
+    path = _plot_path(plot)
+    if path is None:
+        return ""
+    data_uri = _asset_data_uri(path)
+    if not data_uri:
+        return ""
+    note_html = f"<div class='instrument-plot-note'>{escape(note)}</div>" if note else ""
+    return (
+        "<div class='instrument-plot-card'>"
+        f"<div class='instrument-plot-title'>{escape(title)}</div>"
+        f"{note_html}"
+        f"<a href='{data_uri}' target='_blank' rel='noopener'>"
+        f"<img class='instrument-plot-image' src='{data_uri}' alt='{escape(title)}'>"
+        "</a>"
+        "</div>"
+    )
+
+
+def _cloud_seb_process_plot_gallery(process: dict[str, object]) -> str:
+    cards = [
+        _process_plot_card(
+            "Observed Cloudnet-regime cloud/SEB",
+            process.get("plot"),
+            "Official Cloudnet-regime reference; currently samples only cloudy periods.",
+        ),
+        _process_plot_card(
+            "Diagnostic HATPRO-LWP process split",
+            process.get("diagnostic_lwp_plot"),
+            "Diagnostic only: useful for process interpretation, not model ranking.",
+        ),
+    ]
+    model_reviews = process.get("model_process_review")
+    if isinstance(model_reviews, dict):
+        era5 = model_reviews.get("direct_era5")
+        if isinstance(era5, dict):
+            cards.append(
+                _process_plot_card(
+                    "ERA5 direct matched cloud/SEB",
+                    era5.get("plot"),
+                    "Direct model-variable path; not comparable yet because only clear samples are present.",
+                )
+            )
+    cards = [card for card in cards if card]
+    if not cards:
+        return "<div class='model-note'>No cloud/SEB process plots are available for preview.</div>"
+    return "<div class='instrument-plot-grid cloud-seb-plot-grid'>" + "".join(cards) + "</div>"
+
+
+def _cloud_seb_role_rows(process: dict[str, object]) -> list[dict[str, object]]:
+    rows = []
+    observation = process.get("observation_process_review")
+    if isinstance(observation, dict):
+        rows.append(
+            {
+                "role": "observations",
+                "path": observation.get("path") or "cloud_seb_process.json",
+                "status": observation.get("scorecard_status", observation.get("status", "unknown")),
+                "production": observation.get("production_status", "unknown"),
+                "samples": observation.get("sample_count", 0),
+                "clear": observation.get("clear_count", 0),
+                "cloudy": observation.get("cloudy_count", 0),
+                "support": observation.get("support_status", "unknown"),
+                "next": "Extend Cloudnet/SEB overlap until clear and cloudy regimes are both present.",
+            }
+        )
+    elif any(key in process for key in ("sample_count", "clear_count", "cloudy_count")):
+        rows.append(
+            {
+                "role": "observations",
+                "path": "cloud_seb_process.json",
+                "status": process.get("scorecard_status", process.get("observation_status", "unknown")),
+                "production": process.get("production_status", "unknown"),
+                "samples": process.get("sample_count", 0),
+                "clear": process.get("clear_count", 0),
+                "cloudy": process.get("cloudy_count", 0),
+                "support": process.get("support_status", "unknown"),
+                "next": "Extend Cloudnet/SEB overlap until clear and cloudy regimes are both present.",
+            }
+        )
+    diagnostic = process.get("diagnostic_process_review")
+    if isinstance(diagnostic, dict):
+        rows.append(
+            {
+                "role": "diagnostic_lwp",
+                "path": "cloud_seb_process_diagnostic_lwp.json",
+                "status": diagnostic.get("status", "unknown"),
+                "production": diagnostic.get("production_status", "diagnostic_only"),
+                "samples": diagnostic.get("sample_count", 0),
+                "clear": diagnostic.get("clear_count", 0),
+                "cloudy": diagnostic.get("cloudy_count", 0),
+                "support": diagnostic.get("support_status", "unknown"),
+                "next": diagnostic.get("next_action", "Use for process interpretation only."),
+            }
+        )
+    model_reviews = process.get("model_process_review")
+    if isinstance(model_reviews, dict):
+        for role in ("direct_era5", "direct_carra2", "les_cm1_carra2"):
+            review = model_reviews.get(role)
+            if not isinstance(review, dict):
+                continue
+            rows.append(
+                {
+                    "role": role,
+                    "path": Path(str(review.get("path", ""))).name,
+                    "status": review.get("scorecard_status", review.get("status", "unknown")),
+                    "production": review.get("production_status", "unknown"),
+                    "samples": review.get("sample_count", 0),
+                    "clear": review.get("clear_count", 0),
+                    "cloudy": review.get("cloudy_count", 0),
+                    "support": review.get("support_status", "unknown"),
+                    "next": review.get("next_action", ""),
+                }
+            )
+    return rows
+
+
+def _cloud_seb_scorecard_table(process: dict[str, object]) -> str:
+    rows = _cloud_seb_role_rows(process)
+    if not rows:
+        return "<div class='model-note'>No cloud/SEB process scorecard rows are available.</div>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('role', '')))}</td>"
+            f"<td>{_badge(row.get('status'))}</td>"
+            f"<td>{_badge(row.get('production'))}</td>"
+            f"<td>{escape(str(row.get('samples', 0)))}</td>"
+            f"<td>{escape(str(row.get('clear', 0)))}</td>"
+            f"<td>{escape(str(row.get('cloudy', 0)))}</td>"
+            f"<td>{escape(str(row.get('support', 'unknown')))}</td>"
+            f"<td><code>{escape(str(row.get('path', '')))}</code></td>"
+            f"<td>{escape(str(row.get('next', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table cloud-seb-scorecard-table'>"
+        "<thead><tr><th>role</th><th>scorecard</th><th>production</th>"
+        "<th>samples</th><th>clear</th><th>cloudy</th><th>support</th>"
+        "<th>artifact</th><th>next action</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _cloud_seb_process_evidence_panel(day: str) -> str:
+    if not day:
+        return ""
+    process = _cloud_seb_process_summary(day)
+    if not process:
+        return ""
+    return (
+        "<div class='model-section-title'>Cloud/SEB Process Evidence</div>"
+        f"{_cloud_seb_process_plot_gallery(process)}"
+        f"{_cloud_seb_scorecard_table(process)}"
+    )
+
+
 def _overview_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
     operator_physics = _campaign_operator_physics_diagnosis()
@@ -4019,6 +4200,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
+        f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_operational_wait_state(index)}"
         f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
