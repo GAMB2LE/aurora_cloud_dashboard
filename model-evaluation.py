@@ -2473,6 +2473,69 @@ def _operational_wait_state(index: dict[str, object] | None) -> str:
     )
 
 
+def _latest_index_day_row(index: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(index, dict):
+        return {}
+    days = index.get("days")
+    if not isinstance(days, list):
+        return {}
+    rows = [
+        row
+        for row in days
+        if isinstance(row, dict) and isinstance(row.get("day"), str)
+    ]
+    if not rows:
+        return {}
+    return max(rows, key=lambda row: str(row.get("day", "")))
+
+
+def _cm1_forcing_handoff_panel(index: dict[str, object] | None) -> str:
+    row = _latest_index_day_row(index)
+    if not row:
+        return ""
+    status = row.get("virtual_observatory_forcing_handoff_status")
+    if status is None:
+        return ""
+    command_ids = row.get("virtual_observatory_forcing_handoff_command_step_ids")
+    command_ids = command_ids if isinstance(command_ids, list) else []
+    manual_ids = row.get("virtual_observatory_forcing_handoff_manual_step_ids")
+    manual_ids = manual_ids if isinstance(manual_ids, list) else []
+    cards = [
+        _card("CM1 handoff", status),
+        _card("forcing status", row.get("virtual_observatory_forcing_status", "unknown")),
+        _card(
+            "CARRA2 inputs",
+            row.get("virtual_observatory_forcing_required_input_count", "n/a"),
+        ),
+        _card(
+            "handoff steps",
+            row.get("virtual_observatory_forcing_handoff_command_count", "n/a"),
+        ),
+        _card("manual step", _list_summary(manual_ids, limit=2)),
+        _card(
+            "retry after",
+            row.get("virtual_observatory_forcing_retry_after_utc", "none"),
+        ),
+    ]
+    step_cells = []
+    for step_id in command_ids:
+        classes = "model-step-chip"
+        if step_id in manual_ids:
+            classes += " manual"
+        step_cells.append(f"<span class='{classes}'>{escape(str(step_id))}</span>")
+    step_html = "".join(step_cells) or "<span class='model-step-chip'>none</span>"
+    return (
+        "<div class='model-section-title'>CM1/CARRA2 Forcing Handoff</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        "When CARRA2 single- and pressure-level inputs arrive, continue this fixed "
+        "CM1 recipe through the sequence below. Manual means the external CM1 run "
+        "must produce NetCDF outputs before registration and forward operators run."
+        "</div>"
+        f"<div class='model-step-strip'>{step_html}</div>"
+    )
+
+
 def _count_dict_text(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "none"
@@ -3342,6 +3405,23 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
             f"overrides:{import_written}"
         )
         overlap_hours = day.get("common_overlap_hours", "n/a")
+        handoff_status = day.get(
+            "virtual_observatory_forcing_handoff_status",
+            "n/a",
+        )
+        handoff_inputs = day.get(
+            "virtual_observatory_forcing_required_input_count",
+            "n/a",
+        )
+        handoff_steps = day.get(
+            "virtual_observatory_forcing_handoff_command_count",
+            "n/a",
+        )
+        handoff_manual = _list_summary(
+            day.get("virtual_observatory_forcing_handoff_manual_step_ids"),
+            limit=2,
+        )
+        handoff_text = f"{handoff_status}; steps:{handoff_steps}"
         body.append(
             "<tr>"
             f"<td>{escape(str(day.get('day', '')))}</td>"
@@ -3353,6 +3433,9 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
             f"<td>{escape(str(sheet_text))}</td>"
             f"<td>{escape(str(import_text))}</td>"
             f"<td>{escape(str(_compact_float(overlap_hours)))}</td>"
+            f"<td>{escape(str(handoff_text))}</td>"
+            f"<td>{escape(str(handoff_inputs))}</td>"
+            f"<td>{escape(str(handoff_manual))}</td>"
             f"<td>{escape(missing_text)}</td>"
             "</tr>"
         )
@@ -3362,7 +3445,8 @@ def _campaign_index_table(index: dict[str, object] | None) -> str:
         "<thead><tr>"
         "<th>day</th><th>summary</th><th>release/v1 gate</th><th>model inputs</th>"
         "<th>MDF source review</th><th>reviews required</th><th>worksheet</th>"
-        "<th>import</th><th>overlap h</th><th>missing required</th>"
+        "<th>import</th><th>overlap h</th><th>CM1 handoff</th>"
+        "<th>CARRA2 inputs</th><th>manual step</th><th>missing required</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "</table></div>"
@@ -4505,6 +4589,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_direct_model_evidence_panel(latest_day)}"
+        f"{_cm1_forcing_handoff_panel(index)}"
         f"{_operational_wait_state(index)}"
         f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
@@ -4696,6 +4781,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
+        f"{_cm1_forcing_handoff_panel(index)}"
         f"{_operational_table(rows)}"
         f"{detail_html}"
         f"<div class='model-subtitle'>pending required: {escape(', '.join(index_pending) if index_pending else 'none')}</div>"
@@ -5754,6 +5840,30 @@ body, .bk {
     color: #3b4a5a;
     font-size: 12px;
     line-height: 1.45;
+}
+.model-step-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0 16px;
+}
+.model-step-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid #d8e1e8;
+    background: #fbfcfd;
+    color: #2f4154;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+.model-step-chip.manual {
+    border-color: #f0d58c;
+    background: #fff8df;
+    color: #7a5b00;
 }
 .model-pill {
     display: inline-flex;
