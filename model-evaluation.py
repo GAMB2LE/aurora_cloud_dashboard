@@ -4238,6 +4238,12 @@ def _direct_highlight_table(day: str) -> str:
     )
 
 
+def _direct_support_rollup(day: str) -> dict[str, object]:
+    report = _direct_review_report(day)
+    rollup = report.get("support_transform_rollup")
+    return rollup if isinstance(rollup, dict) else {}
+
+
 def _direct_science_plot_card(summary: dict[str, object]) -> str:
     plot = summary.get("plot")
     if not isinstance(plot, dict):
@@ -4259,6 +4265,13 @@ def _direct_model_evidence_panel(day: str) -> str:
         return ""
     release = report.get("release_state") if isinstance(report.get("release_state"), dict) else {}
     readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
+    support_rollup = _direct_support_rollup(day)
+    aggregation_counts = support_rollup.get("temporal_aggregation_status_counts")
+    nearest_count = (
+        aggregation_counts.get("not_yet_implemented_nearest_sample_used", 0)
+        if isinstance(aggregation_counts, dict)
+        else 0
+    )
     usable_models = release.get("usable_models") or readiness.get("usable_models")
     missing_models = release.get("missing_models") or readiness.get("missing_models")
     cards = [
@@ -4267,10 +4280,16 @@ def _direct_model_evidence_panel(day: str) -> str:
         _card("usable models", _list_summary(usable_models, limit=3)),
         _card("missing models", _list_summary(missing_models, limit=3)),
         _card("highest support", readiness.get("highest_support_variable", "n/a")),
+        _card("support transform", support_rollup.get("status", "unknown")),
+        _card("nearest-support vars", nearest_count),
         _card("full-day ready", release.get("full_day_release_ready", False)),
     ]
     headline = summary.get("headline") or "Direct matched-product evidence is partial."
-    caveats = summary.get("caveats") if isinstance(summary.get("caveats"), list) else []
+    caveats = []
+    for source in (report.get("caveats"), summary.get("caveats")):
+        if isinstance(source, list):
+            caveats.extend(str(item) for item in source)
+    caveats = list(dict.fromkeys(caveats))
     caveat_html = "".join(f"<li>{escape(str(item))}</li>" for item in caveats[:5])
     plot_card = _direct_science_plot_card(summary)
     return (
