@@ -4138,6 +4138,152 @@ def _cloud_seb_process_evidence_panel(day: str) -> str:
     )
 
 
+def _direct_science_summary(day: str) -> dict[str, object]:
+    payload = _read_json(_day_file(day, "process", "direct_science_summary.json"))
+    if isinstance(payload, dict) and isinstance(payload.get("summary"), dict):
+        return payload["summary"]
+    status = _day_status(day)
+    summary = status.get("summary") if isinstance(status, dict) else None
+    direct = summary.get("direct_science_summary") if isinstance(summary, dict) else None
+    return direct if isinstance(direct, dict) else {}
+
+
+def _direct_review_report(day: str) -> dict[str, object]:
+    payload = _read_json(_day_file(day, "process", "direct_review_report.json"))
+    if isinstance(payload, dict) and isinstance(payload.get("report"), dict):
+        return payload["report"]
+    status = _day_status(day)
+    summary = status.get("summary") if isinstance(status, dict) else None
+    direct = summary.get("direct_review_report") if isinstance(summary, dict) else None
+    return direct if isinstance(direct, dict) else {}
+
+
+def _direct_model_rows(day: str) -> list[dict[str, object]]:
+    report = _direct_review_report(day)
+    rows = report.get("model_summaries")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    summary = _direct_science_summary(day)
+    rows = summary.get("model_findings")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _direct_model_table(day: str) -> str:
+    rows = _direct_model_rows(day)
+    if not rows:
+        return "<div class='model-note'>No direct-path model rows are available.</div>"
+    body = []
+    for row in rows:
+        matched = Path(str(row.get("matched_product", ""))).name
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('model_id', '')))}</td>"
+            f"<td>{_badge(row.get('status'))}</td>"
+            f"<td>{escape(str(row.get('metric_status', 'unknown')))}</td>"
+            f"<td>{escape(str(row.get('sample_count', row.get('total_pair_count', 0))))}</td>"
+            f"<td>{escape(str(row.get('scored_variable_count', 0)))}</td>"
+            f"<td>{escape(str(row.get('unscored_variable_count', 0)))}</td>"
+            f"<td>{escape(str(row.get('missing_input_count', 0)))}</td>"
+            f"<td>{escape(str(row.get('bias', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('rmse', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('correlation', 'n/a')))}</td>"
+            f"<td><code>{escape(matched)}</code></td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table direct-model-table'>"
+        "<thead><tr><th>model</th><th>status</th><th>metrics</th>"
+        "<th>pairs</th><th>scored vars</th><th>unscored vars</th>"
+        "<th>missing inputs</th><th>bias</th><th>RMSE</th><th>corr</th>"
+        "<th>matched product</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _direct_highlight_rows(day: str, limit: int = 8) -> list[dict[str, object]]:
+    report = _direct_review_report(day)
+    rows = report.get("highlighted_variables")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)][:limit]
+    return []
+
+
+def _direct_highlight_table(day: str) -> str:
+    rows = _direct_highlight_rows(day)
+    if not rows:
+        return "<div class='model-note'>No highlighted direct variables are available.</div>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('variable_name', '')))}</td>"
+            f"<td>{escape(str(row.get('kind', '')))}</td>"
+            f"<td>{escape(str(row.get('sample_count', row.get('pair_count', 0))))}</td>"
+            f"<td>{escape(str(row.get('bias', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('rmse', 'n/a')))}</td>"
+            f"<td>{escape(str(row.get('correlation', 'n/a')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table direct-highlight-table'>"
+        "<thead><tr><th>variable</th><th>family</th><th>pairs</th>"
+        "<th>bias</th><th>RMSE</th><th>corr</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _direct_science_plot_card(summary: dict[str, object]) -> str:
+    plot = summary.get("plot")
+    if not isinstance(plot, dict):
+        output_svg = summary.get("output_svg")
+        plot = {"path": output_svg} if isinstance(output_svg, str) else {}
+    return _process_plot_card(
+        "Direct matched-product science summary",
+        plot,
+        "MODF/MMDF-like direct path: model variables compared to matched observation-derived variables.",
+    )
+
+
+def _direct_model_evidence_panel(day: str) -> str:
+    if not day:
+        return ""
+    summary = _direct_science_summary(day)
+    report = _direct_review_report(day)
+    if not summary and not report:
+        return ""
+    release = report.get("release_state") if isinstance(report.get("release_state"), dict) else {}
+    readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
+    usable_models = release.get("usable_models") or readiness.get("usable_models")
+    missing_models = release.get("missing_models") or readiness.get("missing_models")
+    cards = [
+        _card("direct status", summary.get("status", report.get("status", "unknown"))),
+        _card("review ready", release.get("science_review_ready", "unknown")),
+        _card("usable models", _list_summary(usable_models, limit=3)),
+        _card("missing models", _list_summary(missing_models, limit=3)),
+        _card("highest support", readiness.get("highest_support_variable", "n/a")),
+        _card("full-day ready", release.get("full_day_release_ready", False)),
+    ]
+    headline = summary.get("headline") or "Direct matched-product evidence is partial."
+    caveats = summary.get("caveats") if isinstance(summary.get("caveats"), list) else []
+    caveat_html = "".join(f"<li>{escape(str(item))}</li>" for item in caveats[:5])
+    plot_card = _direct_science_plot_card(summary)
+    return (
+        "<div class='model-section-title'>Direct Model-Evaluation Evidence</div>"
+        f"<div class='model-note'>{escape(str(headline))}</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{plot_card}"
+        f"{_direct_model_table(day)}"
+        f"{_direct_highlight_table(day)}"
+        + (f"<ul class='model-compact-list'>{caveat_html}</ul>" if caveat_html else "")
+    )
+
+
 def _overview_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
     operator_physics = _campaign_operator_physics_diagnosis()
@@ -4201,6 +4347,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
+        f"{_direct_model_evidence_panel(latest_day)}"
         f"{_operational_wait_state(index)}"
         f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
