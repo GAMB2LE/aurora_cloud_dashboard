@@ -3867,17 +3867,29 @@ def _day_review_index(day: str) -> dict[str, object] | None:
 
 
 def _cloud_seb_process_summary(day: str) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    bundle = load_day_bundle(day)
+    readiness = bundle.get("readiness") if isinstance(bundle, dict) else None
+    process = readiness.get("cloud_seb_process") if isinstance(readiness, dict) else None
+    if isinstance(process, dict):
+        merged.update(process)
+    review = _day_review_index(day)
+    readiness = review.get("readiness") if isinstance(review, dict) else None
+    process = readiness.get("cloud_seb_process") if isinstance(readiness, dict) else None
+    if isinstance(process, dict):
+        merged.update(process)
     status = _day_status(day)
     if isinstance(status, dict):
         summary = status.get("summary")
         if isinstance(summary, dict) and isinstance(summary.get("cloud_seb_process"), dict):
-            return summary["cloud_seb_process"]
+            merged.update(summary["cloud_seb_process"])
+            return merged
         process = status.get("cloud_seb_process")
         if isinstance(process, dict):
-            return process
-    review = _day_review_index(day)
-    readiness = review.get("readiness") if isinstance(review, dict) else None
-    process = readiness.get("cloud_seb_process") if isinstance(readiness, dict) else None
+            merged.update(process)
+            return merged
+    if merged:
+        return merged
     if isinstance(process, dict):
         production = process.get("production_readiness")
         if isinstance(production, dict):
@@ -4125,6 +4137,104 @@ def _cloud_seb_scorecard_table(process: dict[str, object]) -> str:
     )
 
 
+def _cloud_seb_process_window_contingency(process: dict[str, object]) -> str:
+    process_window = process.get("process_window")
+    if not isinstance(process_window, dict):
+        return "<div class='model-note'>No process-window regime contingency is available.</div>"
+    pairs = process_window.get("pairs")
+    if not isinstance(pairs, dict) or not pairs:
+        return "<div class='model-note'>No process-window model pairs are available.</div>"
+    rows = []
+    headline = ""
+    for role, raw_pair in sorted(pairs.items()):
+        if not isinstance(raw_pair, dict):
+            continue
+        contingency = raw_pair.get("regime_contingency")
+        if not isinstance(contingency, dict):
+            continue
+        table = contingency.get("table")
+        table = table if isinstance(table, dict) else {}
+        metrics = contingency.get("metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        role_text = str(role)
+        dominant = contingency.get("dominant_pair")
+        if role_text == "direct_era5" and dominant:
+            headline = _cloud_seb_regime_contingency_headline(
+                role=role_text,
+                contingency=contingency,
+                metrics=metrics,
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{escape(role_text)}</td>"
+            f"<td>{_badge(contingency.get('status'))}</td>"
+            f"<td>{escape(str(contingency.get('paired_sample_count', 0)))}</td>"
+            f"<td>{escape(str(table.get('observed_cloudy_model_cloudy', 0)))}</td>"
+            f"<td>{escape(str(table.get('observed_cloudy_model_clear', 0)))}</td>"
+            f"<td>{escape(str(table.get('observed_clear_model_cloudy', 0)))}</td>"
+            f"<td>{escape(str(table.get('observed_clear_model_clear', 0)))}</td>"
+            f"<td>{escape(str(metrics.get('probability_of_detection', 'n/a')))}</td>"
+            f"<td>{escape(str(metrics.get('false_alarm_ratio', 'n/a')))}</td>"
+            f"<td>{escape(str(metrics.get('critical_success_index', 'n/a')))}</td>"
+            f"<td>{escape(str(dominant or 'none'))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return "<div class='model-note'>No process-window regime contingency rows are available.</div>"
+    note = (
+        "<div class='model-note'>"
+        f"{escape(headline or str(process_window.get('next_action', 'Diagnostic only.')))}"
+        "</div>"
+    )
+    return (
+        "<div class='model-subsection-title'>Process-Window Cloud Regime Contingency</div>"
+        f"{note}"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table cloud-seb-contingency-table'>"
+        "<thead><tr><th>model role</th><th>diagnostic</th><th>paired samples</th>"
+        "<th>hits</th><th>misses</th><th>false alarms</th><th>correct negatives</th>"
+        "<th>POD</th><th>FAR</th><th>CSI</th><th>dominant pair</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _cloud_seb_regime_contingency_headline(
+    *,
+    role: str,
+    contingency: dict[str, object],
+    metrics: dict[str, object],
+) -> str:
+    dominant = str(contingency.get("dominant_pair") or "unknown")
+    paired = contingency.get("paired_sample_count", 0)
+    hits = metrics.get("hits", 0)
+    misses = metrics.get("misses", 0)
+    false_alarms = metrics.get("false_alarms", 0)
+    if dominant == "observed_cloudy_model_clear":
+        return (
+            f"{role} is mostly clear where Cloudnet/observations are cloudy in the "
+            f"overlap: {misses} misses, {hits} hits, {false_alarms} false alarms "
+            f"from {paired} paired samples. This is diagnostic-only and does not "
+            "make the production cloudy-minus-clear process comparison ready."
+        )
+    if dominant == "observed_cloudy_model_cloudy":
+        return (
+            f"{role} cloud occurrence aligns with observed cloudy samples for the "
+            f"largest paired-regime category ({hits} hits from {paired} samples)."
+        )
+    if dominant == "observed_clear_model_cloudy":
+        return (
+            f"{role} is mostly cloudy where observations are clear in the overlap: "
+            f"{false_alarms} false alarms from {paired} paired samples."
+        )
+    if dominant == "observed_clear_model_clear":
+        return (
+            f"{role} is mostly clear where observations are clear in the overlap: "
+            f"{paired} paired samples, {hits} hits and {false_alarms} false alarms."
+        )
+    return f"{role} process-window regime diagnostic is available for {paired} paired samples."
+
+
 def _cloud_seb_process_evidence_panel(day: str) -> str:
     if not day:
         return ""
@@ -4135,6 +4245,7 @@ def _cloud_seb_process_evidence_panel(day: str) -> str:
         "<div class='model-section-title'>Cloud/SEB Process Evidence</div>"
         f"{_cloud_seb_process_plot_gallery(process)}"
         f"{_cloud_seb_scorecard_table(process)}"
+        f"{_cloud_seb_process_window_contingency(process)}"
     )
 
 
