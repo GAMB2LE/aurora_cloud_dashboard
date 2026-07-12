@@ -4267,11 +4267,16 @@ def _direct_model_evidence_panel(day: str) -> str:
     readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
     support_rollup = _direct_support_rollup(day)
     aggregation_counts = support_rollup.get("temporal_aggregation_status_counts")
-    nearest_count = (
-        aggregation_counts.get("not_yet_implemented_nearest_sample_used", 0)
-        if isinstance(aggregation_counts, dict)
-        else 0
-    )
+    time_window_count = 0
+    transform_count_label = "time-window vars"
+    if isinstance(aggregation_counts, dict):
+        time_window_count = aggregation_counts.get("implemented_time_window_mean", 0)
+        if not time_window_count:
+            time_window_count = aggregation_counts.get(
+                "not_yet_implemented_nearest_sample_used",
+                0,
+            )
+            transform_count_label = "nearest-support vars"
     usable_models = release.get("usable_models") or readiness.get("usable_models")
     missing_models = release.get("missing_models") or readiness.get("missing_models")
     cards = [
@@ -4281,7 +4286,7 @@ def _direct_model_evidence_panel(day: str) -> str:
         _card("missing models", _list_summary(missing_models, limit=3)),
         _card("highest support", readiness.get("highest_support_variable", "n/a")),
         _card("support transform", support_rollup.get("status", "unknown")),
-        _card("nearest-support vars", nearest_count),
+        _card(transform_count_label, time_window_count),
         _card("full-day ready", release.get("full_day_release_ready", False)),
     ]
     headline = summary.get("headline") or "Direct matched-product evidence is partial."
