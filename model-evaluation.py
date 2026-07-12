@@ -30,7 +30,7 @@ OUTPUT_ROOT = CASE_ROOT / CASE_ID
 OPERATIONAL_CAMPAIGN_ROOT = Path(
     os.environ.get(
         "AURORA_MODEL_EVALUATION_CAMPAIGN_ROOT",
-        f"/data/aurora/les/campaigns/{CASE_ID}",
+        "/data/aurora/model-evaluation/campaigns/aurora_iceland_model_evaluation_v1",
     )
 )
 ICELAND_CAMPAIGN_ROOT = Path(
@@ -1138,6 +1138,44 @@ def _read_json(path: Path) -> dict[str, object] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _calendar_day_root(day: str) -> Path:
+    parts = day.split("-")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        return OPERATIONAL_CAMPAIGN_ROOT / parts[0] / parts[1] / parts[2]
+    return OPERATIONAL_CAMPAIGN_ROOT / day
+
+
+def _legacy_day_root(day: str) -> Path:
+    return OPERATIONAL_CAMPAIGN_ROOT / "days" / day
+
+
+def _day_root(day: str) -> Path:
+    for candidate in (_calendar_day_root(day), _legacy_day_root(day)):
+        if candidate.exists():
+            return candidate
+    return _calendar_day_root(day)
+
+
+def _day_file(day: str, *parts: str) -> Path:
+    return _day_root(day).joinpath(*parts)
+
+
+def _day_from_bundle_path(path: Path) -> str:
+    if path.parent.name == "lasso_bundle":
+        return path.parents[1].name
+    parent = path.parent
+    if (
+        parent.name.isdigit()
+        and len(parent.name) == 2
+        and parent.parent.name.isdigit()
+        and len(parent.parent.name) == 2
+        and parent.parent.parent.name.isdigit()
+        and len(parent.parent.parent.name) == 4
+    ):
+        return f"{parent.parent.parent.name}-{parent.parent.name}-{parent.name}"
+    return parent.name
+
+
 def _operational_run_paths(limit: int = 14) -> list[Path]:
     days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
     if not days_root.exists():
@@ -1147,7 +1185,7 @@ def _operational_run_paths(limit: int = 14) -> list[Path]:
 
 
 def _direct_scorecard(day: str, name: str) -> dict[str, object] | None:
-    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{name}.json")
+    return _read_json(_day_file(day, "scorecards", f"{name}.json"))
 
 
 def _campaign_index() -> dict[str, object] | None:
@@ -1168,13 +1206,7 @@ def _campaign_operator_physics_diagnosis() -> dict[str, object] | None:
 
 
 def _operator_physics_day(day: str) -> dict[str, object] | None:
-    return _read_json(
-        OPERATIONAL_CAMPAIGN_ROOT
-        / "days"
-        / day
-        / "scorecards"
-        / "operator_physics_diagnosis.json"
-    )
+    return _read_json(_day_file(day, "scorecards", "operator_physics_diagnosis.json"))
 
 
 def _campaign_archive_manifest() -> dict[str, object] | None:
@@ -1194,7 +1226,12 @@ def load_campaign_index() -> dict[str, object] | None:
 
 
 def load_day_bundle(day: str) -> dict[str, object] | None:
-    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "bundle.json")
+    return _read_first_json(
+        [
+            _day_file(day, "bundle.json"),
+            _legacy_day_root(day) / "lasso_bundle" / "bundle.json",
+        ]
+    )
 
 
 def load_scorecard(day: str, name: str) -> dict[str, object] | None:
@@ -1425,10 +1462,17 @@ def _bundle_runtime_summary(day: str) -> dict[str, object]:
 
 
 def _lasso_bundle_paths(limit: int = 31) -> list[Path]:
+    calendar_paths = sorted(
+        OPERATIONAL_CAMPAIGN_ROOT.glob("[0-9][0-9][0-9][0-9]/*/*/bundle.json"),
+        reverse=True,
+    )
     days_root = OPERATIONAL_CAMPAIGN_ROOT / "days"
-    if not days_root.exists():
-        return []
-    paths = sorted(days_root.glob("*/lasso_bundle/bundle.json"), reverse=True)
+    legacy_paths = (
+        sorted(days_root.glob("*/lasso_bundle/bundle.json"), reverse=True)
+        if days_root.exists()
+        else []
+    )
+    paths = sorted({*calendar_paths, *legacy_paths}, reverse=True)
     return paths[:limit]
 
 
@@ -1443,10 +1487,11 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
         )
         compliance_detail = _lasso_compliance_detail(compliance)
         if not payload:
-            runtime = _bundle_runtime_summary(path.parents[1].name)
+            day = _day_from_bundle_path(path)
+            runtime = _bundle_runtime_summary(day)
             rows.append(
                 {
-                    "day": path.parents[1].name,
+                    "day": day,
                     "status": "unreadable",
                     "bundle_json": str(path),
                     "compliance": compliance_status,
@@ -1464,7 +1509,7 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                 }
             )
             continue
-        day = str(payload.get("day", path.parents[1].name))
+        day = str(payload.get("day", _day_from_bundle_path(path)))
         runtime = _bundle_runtime_summary(day)
         rows.append(
             {
@@ -1591,7 +1636,7 @@ def _dict_status(value: object) -> str:
 
 
 def _operational_summary_for_day(day: str) -> dict[str, object] | None:
-    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / "operational_summary.json")
+    return _read_json(_day_file(day, "scorecards", "operational_summary.json"))
 
 
 def _latest_operational_summary(
@@ -2016,11 +2061,11 @@ def _scheduler_policy_day_table(index: dict[str, object] | None) -> str:
 
 
 def _day_status(day: str) -> dict[str, object] | None:
-    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "status.json")
+    return _read_json(_day_file(day, "status.json"))
 
 
 def _day_command_state(day: str) -> dict[str, object] | None:
-    return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "command_state.json")
+    return _read_json(_day_file(day, "command_state.json"))
 
 
 def _missing_required_inputs(status: dict[str, object] | None) -> list[str]:
@@ -2068,7 +2113,11 @@ def _daily_review_queue_rows(index: dict[str, object] | None, limit: int = 10) -
             for path in days_root.glob("*/status.json")
             if path.parent.name[:4].isdigit()
         ]
-    days = sorted({*indexed_days, *status_days}, reverse=True)[:limit]
+    calendar_status_days = [
+        _day_from_bundle_path(path.with_name("bundle.json"))
+        for path in OPERATIONAL_CAMPAIGN_ROOT.glob("[0-9][0-9][0-9][0-9]/*/*/status.json")
+    ]
+    days = sorted({*indexed_days, *status_days, *calendar_status_days}, reverse=True)[:limit]
     indexed = {}
     if isinstance(index, dict) and isinstance(index.get("days"), list):
         indexed = {
@@ -2170,13 +2219,7 @@ def _scorecard_state(day: str, scorecard_name: str) -> str:
 
 
 def _source_readiness_state(day: str, product: str) -> str:
-    path = (
-        OPERATIONAL_CAMPAIGN_ROOT
-        / "days"
-        / day
-        / "cloudnet_source_readiness"
-        / f"{product}.json"
-    )
+    path = _day_file(day, "cloudnet_source_readiness", f"{product}.json")
     payload = _read_json(path)
     if not isinstance(payload, dict):
         return "missing"
@@ -2184,8 +2227,11 @@ def _source_readiness_state(day: str, product: str) -> str:
 
 
 def _day_compliance_state(day: str) -> tuple[str, str]:
-    payload = _read_json(
-        OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "lasso_bundle" / "compliance.json"
+    payload = _read_first_json(
+        [
+            _day_file(day, "compliance.json"),
+            _legacy_day_root(day) / "lasso_bundle" / "compliance.json",
+        ]
     )
     if not isinstance(payload, dict):
         return "missing", "n/a"
@@ -2197,7 +2243,9 @@ def _day_compliance_state(day: str) -> tuple[str, str]:
 
 
 def _cm1_output_count(day: str) -> object:
-    run_dir = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "cm1" / "run"
+    run_dir = _day_file(day, "cm1", "run")
+    if not run_dir.exists():
+        run_dir = _day_file(day, "les", "cm1_carra2", "run")
     if not run_dir.exists():
         return "missing"
     return len(list(run_dir.glob("cm1out_*.nc")))
@@ -2243,7 +2291,7 @@ def _seven_day_replay_rows(index: dict[str, object] | None) -> list[dict[str, ob
     indexed = _indexed_day_map(index)
     rows = []
     for day in LEEDS_REPLAY_DAYS:
-        if not (OPERATIONAL_CAMPAIGN_ROOT / "days" / day).exists():
+        if not _day_root(day).exists():
             continue
         instrument_rows = build_instrument_catalog([day])
         era5_cf = _row_for_instrument(instrument_rows, "Cloudnet CF", "ERA5")
@@ -2467,6 +2515,12 @@ def _campaign_days(limit: int = 7) -> list[str]:
             for path in days_root.iterdir()
             if path.is_dir() and path.name[:4].isdigit()
         )
+    calendar_days = [
+        _day_from_bundle_path(path.with_name("bundle.json"))
+        for path in OPERATIONAL_CAMPAIGN_ROOT.glob("[0-9][0-9][0-9][0-9]/*/*/status.json")
+    ]
+    if calendar_days:
+        days = sorted({*days, *calendar_days})
     if not days:
         index = _campaign_index()
         indexed_days = index.get("days") if isinstance(index, dict) else []
@@ -2840,7 +2894,7 @@ def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
         path = Path(value)
         if path.exists():
             return path
-    fallback = OPERATIONAL_CAMPAIGN_ROOT / "days" / day / "scorecards" / f"{scorecard_name}.png"
+    fallback = _day_file(day, "scorecards", f"{scorecard_name}.png")
     return fallback if fallback.exists() else None
 
 
@@ -3800,6 +3854,109 @@ def _evaluation_schematic() -> str:
     """
 
 
+def _day_review_index(day: str) -> dict[str, object] | None:
+    return _read_json(_day_file(day, "dashboard", "day_review_index.json"))
+
+
+def _cloud_seb_process_summary(day: str) -> dict[str, object]:
+    status = _day_status(day)
+    if isinstance(status, dict):
+        summary = status.get("summary")
+        if isinstance(summary, dict) and isinstance(summary.get("cloud_seb_process"), dict):
+            return summary["cloud_seb_process"]
+        process = status.get("cloud_seb_process")
+        if isinstance(process, dict):
+            return process
+    review = _day_review_index(day)
+    readiness = review.get("readiness") if isinstance(review, dict) else None
+    process = readiness.get("cloud_seb_process") if isinstance(readiness, dict) else None
+    if isinstance(process, dict):
+        production = process.get("production_readiness")
+        if isinstance(production, dict):
+            return {
+                "production_readiness_status": production.get("status", "unknown"),
+                "production_blocked_gate_count": production.get("blocked_gate_count", 0),
+                "production_blocking_gate_ids": production.get("blocking_gate_ids", []),
+                "production_top_next_action": production.get("top_next_action"),
+                "production_role_groups": production.get("role_groups", {}),
+                "production_era5_process_ready": production.get("era5_process_ready", False),
+                "production_les_ready": production.get("les_ready", False),
+                "comparison_status": process.get("comparison", {}).get("status")
+                if isinstance(process.get("comparison"), dict)
+                else "unknown",
+            }
+    return {}
+
+
+def _cloud_seb_process_gate_panel(day: str) -> str:
+    if not day:
+        return ""
+    process = _cloud_seb_process_summary(day)
+    if not process:
+        return (
+            "<div class='model-section-title'>Cloud/SEB Process Gate</div>"
+            "<div class='model-note'>No cloud/SEB process readiness record found for "
+            f"{escape(day)}.</div>"
+        )
+    role_groups = process.get("production_role_groups")
+    role_groups = role_groups if isinstance(role_groups, dict) else {}
+    ready_roles = role_groups.get("ready_roles")
+    blocked_roles = role_groups.get("blocked_roles")
+    missing_roles = role_groups.get("missing_roles")
+    gate_statuses = process.get("production_gate_statuses")
+    gate_statuses = gate_statuses if isinstance(gate_statuses, dict) else {}
+    blocking_gate_ids = process.get("production_blocking_gate_ids")
+    blocking_gate_ids = blocking_gate_ids if isinstance(blocking_gate_ids, list) else []
+    if not gate_statuses and blocking_gate_ids:
+        gate_statuses = {str(gate): "blocked" for gate in blocking_gate_ids}
+    cards = [
+        _card("process gate", process.get("production_readiness_status", "unknown")),
+        _card("blocked gates", process.get("production_blocked_gate_count", 0)),
+        _card("ERA5 process", process.get("production_era5_process_ready", False)),
+        _card("CM1 LES process", process.get("production_les_ready", False)),
+        _card("ready roles", _list_summary(ready_roles, limit=3)),
+        _card("blocked roles", _list_summary(blocked_roles, limit=3)),
+        _card("missing roles", _list_summary(missing_roles, limit=3)),
+        _card("comparison", process.get("comparison_status", "unknown")),
+    ]
+    gate_rows = []
+    for gate_id, gate_status in sorted(gate_statuses.items()):
+        gate_rows.append(
+            "<tr>"
+            f"<td>{escape(str(gate_id))}</td>"
+            f"<td>{_badge(gate_status)}</td>"
+            "</tr>"
+        )
+    gate_table = ""
+    if gate_rows:
+        gate_table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table'>"
+            "<thead><tr><th>gate</th><th>status</th></tr></thead>"
+            f"<tbody>{''.join(gate_rows)}</tbody>"
+            "</table></div>"
+        )
+    next_action = process.get("production_top_next_action") or process.get(
+        "process_triage_next_unlock"
+    )
+    diagnostic_statement = process.get("diagnostic_lwp_process_statement")
+    diagnostic_note = ""
+    if diagnostic_statement:
+        diagnostic_note = (
+            "<div class='model-note'>Diagnostic HATPRO-LWP contrast: "
+            f"{escape(str(diagnostic_statement))}</div>"
+        )
+    return (
+        "<div class='model-section-title'>Cloud/SEB Process Gate</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        f"Next action: {escape(str(next_action or 'Inspect cloud/SEB process readiness.'))}"
+        "</div>"
+        f"{diagnostic_note}"
+        f"{gate_table}"
+    )
+
+
 def _overview_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
     operator_physics = _campaign_operator_physics_diagnosis()
@@ -3861,6 +4018,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_operational_wait_state(index)}"
         f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
