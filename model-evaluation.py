@@ -3881,14 +3881,15 @@ def _cloud_seb_process_summary(day: str) -> dict[str, object]:
     status = _day_status(day)
     if isinstance(status, dict):
         summary = status.get("summary")
+        status_process = None
         if isinstance(summary, dict) and isinstance(summary.get("cloud_seb_process"), dict):
-            merged.update(summary["cloud_seb_process"])
-            return merged
-        process = status.get("cloud_seb_process")
-        if isinstance(process, dict):
-            merged.update(process)
-            return merged
+            status_process = summary["cloud_seb_process"]
+        else:
+            status_process = status.get("cloud_seb_process")
+        if isinstance(status_process, dict):
+            merged.update(status_process)
     if merged:
+        _merge_cloud_seb_process_report(day, merged)
         return merged
     if isinstance(process, dict):
         production = process.get("production_readiness")
@@ -3906,6 +3907,27 @@ def _cloud_seb_process_summary(day: str) -> dict[str, object]:
                 else "unknown",
             }
     return {}
+
+
+def _merge_cloud_seb_process_report(day: str, process: dict[str, object]) -> None:
+    payload = _read_json(_day_file(day, "process", "cloud_seb_process_report.json"))
+    report = payload.get("report") if isinstance(payload, dict) else None
+    if not isinstance(report, dict):
+        return
+    window = report.get("process_window_diagnostic")
+    if isinstance(window, dict):
+        process["process_window_report"] = window
+        statement = window.get("process_statement")
+        if isinstance(statement, str) and statement:
+            process["process_window_interpretation_statement"] = statement
+        interpretation_class = window.get("interpretation_class")
+        if isinstance(interpretation_class, str) and interpretation_class:
+            process["process_window_interpretation_class"] = interpretation_class
+    triage = report.get("readiness_triage")
+    if isinstance(triage, dict):
+        statement = triage.get("process_window_statement")
+        if isinstance(statement, str) and statement:
+            process["process_window_interpretation_statement"] = statement
 
 
 def _cloud_seb_process_gate_panel(day: str) -> str:
@@ -4183,7 +4205,7 @@ def _cloud_seb_process_window_contingency(process: dict[str, object]) -> str:
         return "<div class='model-note'>No process-window regime contingency rows are available.</div>"
     note = (
         "<div class='model-note'>"
-        f"{escape(headline or str(process_window.get('next_action', 'Diagnostic only.')))}"
+        f"{escape(str(process.get('process_window_interpretation_statement') or headline or process_window.get('next_action', 'Diagnostic only.')))}"
         "</div>"
     )
     return (
