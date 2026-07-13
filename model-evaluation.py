@@ -1217,6 +1217,14 @@ def _operator_physics_day(day: str) -> dict[str, object] | None:
     return _read_json(_day_file(day, "scorecards", "operator_physics_diagnosis.json"))
 
 
+def _operator_review_handoff(day: str) -> dict[str, object] | None:
+    return _read_json(_day_file(day, "provenance", "operator_review_handoff.json"))
+
+
+def _mdf_metadata_review_brief(day: str) -> dict[str, object] | None:
+    return _read_json(_day_file(day, "provenance", "mdf_metadata_review_brief.json"))
+
+
 def _campaign_archive_manifest() -> dict[str, object] | None:
     return _read_json(OPERATIONAL_CAMPAIGN_ROOT / "archive_manifest.json")
 
@@ -2533,6 +2541,151 @@ def _cm1_forcing_handoff_panel(index: dict[str, object] | None) -> str:
         "must produce NetCDF outputs before registration and forward operators run."
         "</div>"
         f"<div class='model-step-strip'>{step_html}</div>"
+    )
+
+
+def _int_value(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _metadata_review_packet(handoff: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(handoff, dict):
+        return {}
+    for key in ("decision_queue", "action_queue"):
+        queue = handoff.get(key)
+        if not isinstance(queue, list):
+            continue
+        for item in queue:
+            if not isinstance(item, dict):
+                continue
+            if item.get("packet_id") == "mdf_metadata" or item.get("review_batches"):
+                return item
+    return {}
+
+
+def _operator_review_batch_payload(day: str) -> dict[str, object]:
+    handoff = _operator_review_handoff(day)
+    brief = _mdf_metadata_review_brief(day)
+    packet = _metadata_review_packet(handoff)
+    batch_source = "missing"
+    batches: list[dict[str, object]] = []
+    for label, payload in (
+        ("operator handoff", handoff),
+        ("operator handoff packet", packet),
+        ("MDF metadata brief", brief),
+    ):
+        candidate = payload.get("review_batches") if isinstance(payload, dict) else None
+        if not isinstance(candidate, list):
+            continue
+        rows = [row for row in candidate if isinstance(row, dict)]
+        if len(rows) > len(batches):
+            batch_source = label
+            batches = rows
+    return {
+        "handoff": handoff if isinstance(handoff, dict) else {},
+        "packet": packet,
+        "brief": brief if isinstance(brief, dict) else {},
+        "batch_source": batch_source,
+        "batches": batches,
+    }
+
+
+def _review_batch_affected_text(batch: dict[str, object]) -> str:
+    parts = []
+    for key in ("product_ids", "source_ids", "variable_keys"):
+        value = batch.get(key)
+        if isinstance(value, list) and value:
+            parts.append(f"{key.replace('_', ' ')}: {_list_summary(value, limit=3)}")
+    return "; ".join(parts) or "none"
+
+
+def _operator_review_batch_table(
+    batches: list[dict[str, object]],
+    limit: int = 8,
+    include_sample_action: bool = False,
+) -> str:
+    if not batches:
+        return "<div class='model-note'>No operator review batches are available.</div>"
+    rows = []
+    for batch in batches[:limit]:
+        samples = batch.get("sample_actions")
+        sample = samples[0] if include_sample_action and isinstance(samples, list) and samples else ""
+        action = str(batch.get("next_action", ""))
+        if sample:
+            action = f"{escape(action)}<br><span class='model-muted'>{escape(str(sample))}</span>"
+        else:
+            action = escape(action)
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(batch.get('priority', 'n/a')))}</td>"
+            f"<td>{_badge(batch.get('status', 'unknown'))}</td>"
+            f"<td>{escape(str(batch.get('reviewer_role', 'unknown')))}</td>"
+            f"<td>{escape(str(batch.get('category', 'unknown')))} / {escape(str(batch.get('scope', 'unknown')))}</td>"
+            f"<td>{escape(str(batch.get('item_count', 'n/a')))} / {escape(str(batch.get('blocking_item_count', 'n/a')))}</td>"
+            f"<td>{escape(_review_batch_affected_text(batch))}</td>"
+            f"<td>{action}</td>"
+            "</tr>"
+        )
+    more = ""
+    if len(batches) > limit:
+        more = (
+            "<div class='model-note'>"
+            f"Showing {limit} of {len(batches)} review batches; use Details / Provenance for the full packet."
+            "</div>"
+        )
+    return (
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr><th>priority</th><th>status</th><th>reviewer</th>"
+        "<th>category / scope</th><th>items / blocking</th><th>affected</th>"
+        "<th>next action</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+        f"{more}"
+    )
+
+
+def _operator_review_batch_panel(
+    day: str,
+    *,
+    limit: int = 8,
+    include_sample_actions: bool = False,
+) -> str:
+    if not day:
+        return ""
+    payload = _operator_review_batch_payload(day)
+    handoff = payload["handoff"] if isinstance(payload.get("handoff"), dict) else {}
+    packet = payload["packet"] if isinstance(payload.get("packet"), dict) else {}
+    brief = payload["brief"] if isinstance(payload.get("brief"), dict) else {}
+    batches = payload["batches"] if isinstance(payload.get("batches"), list) else []
+    if not isinstance(batches, list):
+        batches = []
+    status = handoff.get("status") or packet.get("status") or brief.get("status") or "missing"
+    blocking_batches = sum(
+        1 for batch in batches if _int_value(batch.get("blocking_item_count")) > 0
+    )
+    blocking_items = sum(_int_value(batch.get("blocking_item_count")) for batch in batches)
+    first_batch = batches[0] if batches and isinstance(batches[0], dict) else {}
+    cards = [
+        _card("operator review", status),
+        _card("batch source", payload.get("batch_source", "missing")),
+        _card("review batches", len(batches)),
+        _card("blocking batches", blocking_batches),
+        _card("blocking items", blocking_items),
+        _card("top reviewer", first_batch.get("reviewer_role", "n/a")),
+    ]
+    return (
+        "<div class='model-section-title'>Operator Review Batches</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-note'>"
+        "These batches are the human review queue blocking archive-grade MODF/MMDF, "
+        "operator readiness and production scoring claims. Paths stay in provenance; "
+        "this table shows the reviewer role, affected products and next action."
+        "</div>"
+        f"{_operator_review_batch_table(batches, limit=limit, include_sample_action=include_sample_actions)}"
     )
 
 
@@ -4589,6 +4742,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_direct_model_evidence_panel(latest_day)}"
+        f"{_operator_review_batch_panel(latest_day, limit=6)}"
         f"{_cm1_forcing_handoff_panel(index)}"
         f"{_operational_wait_state(index)}"
         f"{_iceland_readiness_panel()}"
@@ -4723,6 +4877,7 @@ def _details_provenance_panel(_clicks: int = 0) -> pn.Column:
         f"{_scheduler_policy_day_table(index)}"
         f"{_archive_manifest_table(archive_manifest)}"
         f"{_operator_policy_rollup_table(index)}"
+        f"{_operator_review_batch_panel(bundle_rows[0].get('day', '') if bundle_rows else '', limit=12, include_sample_actions=True)}"
         f"{_operator_physics_panel_html(operator_physics, include_paths=True)}"
         f"{_process_diagnosis_table(diagnosis)}"
         f"{_process_skill_rollup_table(index)}"
@@ -5828,6 +5983,11 @@ body, .bk {
     color: #5f6c7b;
     font-size: 12px;
     line-height: 1.4;
+}
+.model-muted {
+    color: #6b7785;
+    font-size: 11px;
+    line-height: 1.35;
 }
 .model-two-column {
     display: grid;
