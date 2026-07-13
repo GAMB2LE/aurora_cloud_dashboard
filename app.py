@@ -8480,49 +8480,49 @@ body, .bk {
     z-index: 1000;
     margin: 0 -10px 8px;
     padding: 0 10px;
+    box-sizing: border-box;
+    overflow: hidden;
     background: #ffffff;
     border-bottom: 1px solid #d8e1e8;
     box-shadow: none;
 }
-.mobile-bottom-nav .bk-btn-group {
+.mobile-app-tabs {
     display: grid !important;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 0;
     width: 100%;
-}
-.mobile-bottom-nav .bk-btn-group .bk-btn,
-.mobile-bottom-nav button.bk-btn,
-.mobile-bottom-nav button,
-.mobile-bottom-nav label {
-    width: 100%;
     min-width: 0;
-    min-height: 32px;
-    padding: 5px 2px 4px !important;
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    line-height: 1.05 !important;
+}
+.mobile-app-tabs__link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 30px;
+    padding: 4px 1px 3px;
+    box-sizing: border-box;
+    color: #344154;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.05;
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+}
+.mobile-app-tabs__link:hover,
+.mobile-app-tabs__link:focus {
+    color: #087b88;
+    text-decoration: none;
+}
+.mobile-app-tabs__link--active {
+    color: #087b88;
+    border-bottom-color: #087b88;
+}
+.mobile-app-tabs__label {
+    display: block;
+    max-width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #2f3d4a !important;
-    background: transparent !important;
-    border: 0 !important;
-    border-bottom: 2px solid transparent !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-}
-.mobile-bottom-nav .bk-btn-group .bk-btn span,
-.mobile-bottom-nav button.bk-btn span,
-.mobile-bottom-nav .bk-btn-content {
-    font-size: 12px !important;
-    line-height: 1.05 !important;
-}
-.mobile-bottom-nav .bk-btn-group .bk-btn.bk-active,
-.mobile-bottom-nav button.bk-btn.bk-active,
-.mobile-bottom-nav button[aria-pressed="true"] {
-    color: #087b88 !important;
-    background: #f3fafb !important;
-    border-bottom-color: #087b88 !important;
 }
 @media (max-width: 768px) {
     html,
@@ -8590,6 +8590,7 @@ body, .bk {
         line-height: 1.15 !important;
     }
     .mobile-bottom-nav { padding: 0 10px; }
+    .mobile-app-tabs__link { font-size: 11px; }
     .interactive-plot-pane .js-plotly-plot,
     .interactive-plot-pane .plot-container,
     .interactive-plot-pane .svg-container,
@@ -9284,17 +9285,32 @@ def _mobile_initial_tab() -> str:
     return "overview"
 
 
-mobile_app_tab_select = pn.widgets.RadioButtonGroup(
-    name="",
-    value=MOBILE_TAB_LABEL_BY_SLUG[_mobile_initial_tab()],
-    options=list(MOBILE_TAB_OPTIONS),
-    button_type="default",
+def _mobile_app_nav_markup(active_slug: str | None = None) -> str:
+    active = active_slug if active_slug in MOBILE_TAB_LABEL_BY_SLUG else "overview"
+    items: list[str] = []
+    for label, slug in MOBILE_TAB_OPTIONS.items():
+        classes = "mobile-app-tabs__link"
+        aria_current = ""
+        if slug == active:
+            classes += " mobile-app-tabs__link--active"
+            aria_current = " aria-current='page'"
+        href = "?" + escape(urlencode(_mobile_query_params(slug)), quote=True)
+        items.append(
+            f"<a class='{classes}' href='{href}'{aria_current}>"
+            f"<span class='mobile-app-tabs__label'>{escape(label)}</span>"
+            "</a>"
+        )
+    return "<nav class='mobile-app-tabs' aria-label='Mobile dashboard sections'>" + "".join(items) + "</nav>"
+
+
+mobile_app_nav = pn.pane.HTML(
+    _mobile_app_nav_markup(_mobile_initial_tab()),
     sizing_mode="stretch_width",
+    margin=0,
+    css_classes=["mobile-bottom-nav"],
 )
-mobile_app_nav = pn.Column(mobile_app_tab_select, sizing_mode="stretch_width", margin=0, css_classes=["mobile-bottom-nav"])
 mobile_app_active = pn.Column(sizing_mode="stretch_width", margin=0)
 _MOBILE_LOADED_TABS: dict[str, object] = {}
-_mobile_app_syncing = False
 
 
 def _mobile_panel_for_slug(slug: str):
@@ -9315,18 +9331,13 @@ def _mobile_panel_for_slug(slug: str):
 
 
 def _set_mobile_app_tab(slug: str | None) -> None:
-    global _mobile_app_syncing
     active = slug if slug in MOBILE_TAB_LABEL_BY_SLUG else "overview"
     panel = _mobile_panel_for_slug(active)
     if len(mobile_app_active.objects) != 1 or mobile_app_active.objects[0] is not panel:
         mobile_app_active[:] = [panel]
-    label = MOBILE_TAB_LABEL_BY_SLUG[active]
-    if mobile_app_tab_select.value != label:
-        _mobile_app_syncing = True
-        try:
-            mobile_app_tab_select.value = label
-        finally:
-            _mobile_app_syncing = False
+    markup = _mobile_app_nav_markup(active)
+    if mobile_app_nav.object != markup:
+        mobile_app_nav.object = markup
     try:
         location = pn.state.location
     except Exception:
@@ -9335,15 +9346,6 @@ def _set_mobile_app_tab(slug: str | None) -> None:
         search = "?" + urlencode(_mobile_query_params(active))
         if getattr(location, "search", None) != search:
             location.search = search
-
-
-def _on_mobile_app_tab_change(event) -> None:
-    if _mobile_app_syncing:
-        return
-    _set_mobile_app_tab(MOBILE_TAB_OPTIONS.get(event.new, "overview"))
-
-
-mobile_app_tab_select.param.watch(_on_mobile_app_tab_change, "value")
 
 
 def _build_mobile_layout() -> pn.Column:
