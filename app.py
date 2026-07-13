@@ -8292,15 +8292,18 @@ body, .bk {
     width: 100%;
     max-width: 100vw;
     min-width: 0;
-    padding: 0 10px 14px;
+    padding: 0 8px calc(92px + env(safe-area-inset-bottom));
     box-sizing: border-box;
+    overflow-x: hidden;
 }
 .mobile-shell {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     width: 100%;
+    max-width: 100%;
     min-width: 0;
+    overflow-x: hidden;
 }
 .mobile-shell--power {
     gap: 6px;
@@ -8335,7 +8338,10 @@ body, .bk {
     background: #ffffff;
     padding: 10px;
     box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
     min-width: 0;
+    overflow: hidden;
 }
 .mobile-status-card {
     display: flex;
@@ -8373,34 +8379,38 @@ body, .bk {
     line-height: 1.35;
 }
 .mobile-plot-card {
-    padding: 5px;
+    padding: 6px;
 }
 .mobile-plot-card__title {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
     color: #22313f;
     margin: 0 0 2px;
+    line-height: 1.15;
 }
 .mobile-plot-card__legend {
     display: flex;
     flex-wrap: wrap;
-    gap: 2px 7px;
+    gap: 2px 6px;
     align-items: center;
     margin: 0;
-    font-size: 9px;
+    max-width: 100%;
+    font-size: 8.5px;
     line-height: 1.15;
     color: #344154;
+    overflow: hidden;
 }
 .mobile-plot-card__legend-item {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
+    flex: 0 1 calc(50% - 4px);
     min-width: 0;
     max-width: 100%;
 }
 .mobile-plot-card__legend-line {
     display: inline-block;
-    width: 16px;
+    width: 13px;
     height: 0;
     border-top: 2px solid currentColor;
     flex: 0 0 auto;
@@ -8430,19 +8440,24 @@ body, .bk {
 }
 .mobile-figure {
     width: 100%;
+    max-width: 100%;
     min-width: 0;
-    height: 124px !important;
-    max-height: 124px !important;
+    height: 118px !important;
+    max-height: 118px !important;
     overflow: hidden;
+    box-sizing: border-box;
 }
 .mobile-figure > div,
 .mobile-figure .bk,
 .mobile-figure .js-plotly-plot,
 .mobile-figure .plotly,
 .mobile-figure .plot-container,
-.mobile-figure .svg-container {
-    height: 124px !important;
-    max-height: 124px !important;
+.mobile-figure .svg-container,
+.mobile-figure .main-svg {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 118px !important;
+    max-height: 118px !important;
     min-height: 0 !important;
 }
 .mobile-power-title {
@@ -8463,23 +8478,23 @@ body, .bk {
     }
     .mdc-top-app-bar__title,
     .pn-template-title {
-        font-size: 22px !important;
+        font-size: 19px !important;
         line-height: 1.05 !important;
     }
     .pn-template-logo,
     .pn-template-logo img,
     .app-logo,
     .app-logo img {
-        width: 38px !important;
-        height: 38px !important;
+        width: 32px !important;
+        height: 32px !important;
     }
 }
 .mobile-bottom-nav {
     position: sticky;
     top: 0;
     z-index: 1000;
-    margin: 0 -10px 8px;
-    padding: 0 10px;
+    margin: 0 -8px 8px;
+    padding: 0 8px;
     box-sizing: border-box;
     overflow: hidden;
     background: #ffffff;
@@ -8502,7 +8517,7 @@ body, .bk {
     padding: 4px 1px 3px;
     box-sizing: border-box;
     color: #344154;
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 600;
     line-height: 1.05;
     text-decoration: none;
@@ -8528,8 +8543,10 @@ body, .bk {
     html,
     body {
         overflow-x: hidden;
+        width: 100%;
+        max-width: 100vw;
     }
-    .mobile-app { padding-bottom: 14px; }
+    .mobile-app { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
     body, .bk { font-size: 14px; }
     .pn-template,
     .pn-template .pn-main,
@@ -8543,26 +8560,37 @@ body, .bk {
         min-width: 0 !important;
         overflow-x: hidden !important;
     }
+    .mobile-app,
+    .mobile-app .bk,
+    .mobile-shell,
+    .mobile-shell .bk,
+    .mobile-plot-card,
+    .mobile-plot-card .bk,
+    .mobile-status-card {
+        max-width: 100% !important;
+        min-width: 0 !important;
+        box-sizing: border-box;
+    }
     .mdc-top-app-bar {
-        height: 54px !important;
-        min-height: 54px !important;
+        height: 50px !important;
+        min-height: 50px !important;
     }
     .mdc-top-app-bar__row {
-        height: 54px !important;
+        height: 50px !important;
     }
     .mdc-top-app-bar__section {
         padding: 0 8px !important;
     }
     .mdc-top-app-bar__title {
-        font-size: 20px !important;
+        font-size: 18px !important;
         line-height: 1.2 !important;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
     .mdc-top-app-bar img {
-        width: 34px !important;
-        height: 34px !important;
+        width: 30px !important;
+        height: 30px !important;
     }
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
@@ -8589,8 +8617,8 @@ body, .bk {
         font-size: 11px !important;
         line-height: 1.15 !important;
     }
-    .mobile-bottom-nav { padding: 0 10px; }
-    .mobile-app-tabs__link { font-size: 11px; }
+    .mobile-bottom-nav { padding: 0 8px; }
+    .mobile-app-tabs__link { font-size: 10.5px; }
     .interactive-plot-pane .js-plotly-plot,
     .interactive-plot-pane .plot-container,
     .interactive-plot-pane .svg-container,
@@ -9125,22 +9153,22 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         )
     if not fig.data:
         return None
-    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "116"))
+    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "110"))
     layout = dict(
         height=plot_height,
         autosize=True,
-        margin=dict(l=31, r=31 if has_right_axis else 8, t=4, b=24),
+        margin=dict(l=27, r=27 if has_right_axis else 6, t=3, b=22),
         showlegend=False,
         paper_bgcolor="white",
         plot_bgcolor="white",
-        font=dict(size=9, color=THEME_TEXT),
-        xaxis=dict(showgrid=True, gridcolor=THEME_GRID, tickfont=dict(size=8), title=None, nticks=4),
-        yaxis=dict(title=None, tickfont=dict(size=8), showgrid=True, gridcolor=THEME_GRID, nticks=4),
+        font=dict(size=8, color=THEME_TEXT),
+        xaxis=dict(showgrid=True, gridcolor=THEME_GRID, tickfont=dict(size=7), title=None, nticks=4),
+        yaxis=dict(title=None, tickfont=dict(size=7), showgrid=True, gridcolor=THEME_GRID, nticks=4),
     )
     if has_right_axis:
         layout["yaxis2"] = dict(
             title=None,
-            tickfont=dict(size=8),
+            tickfont=dict(size=7),
             overlaying="y",
             side="right",
             showgrid=False,
