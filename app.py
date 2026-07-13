@@ -8292,7 +8292,7 @@ body, .bk {
     width: 100%;
     max-width: 100vw;
     min-width: 0;
-    padding: 0 10px calc(84px + env(safe-area-inset-bottom));
+    padding: 0 10px 14px;
     box-sizing: border-box;
 }
 .mobile-shell {
@@ -8475,15 +8475,14 @@ body, .bk {
     }
 }
 .mobile-bottom-nav {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    position: sticky;
+    top: 0;
     z-index: 1000;
-    padding: 7px 8px calc(7px + env(safe-area-inset-bottom));
-    background: rgba(255, 255, 255, 0.96);
-    border-top: 1px solid #d8e1e8;
-    box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.08);
+    margin: 0 -10px 10px;
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.98);
+    border-bottom: 1px solid #d8e1e8;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 .mobile-bottom-nav .bk-btn-group {
     display: grid !important;
@@ -8510,9 +8509,7 @@ body, .bk {
     body {
         overflow-x: hidden;
     }
-    .mobile-app {
-        padding-bottom: calc(158px + env(safe-area-inset-bottom));
-    }
+    .mobile-app { padding-bottom: 14px; }
     body, .bk { font-size: 14px; }
     .pn-template,
     .pn-template .pn-main,
@@ -8572,12 +8569,7 @@ body, .bk {
         font-size: 11px !important;
         line-height: 1.15 !important;
     }
-    .mobile-bottom-nav {
-        bottom: calc(76px + env(safe-area-inset-bottom));
-        padding: 7px 8px;
-        border: 1px solid #d8e1e8;
-        border-radius: 12px 12px 0 0;
-    }
+    .mobile-bottom-nav { padding: 6px 8px; }
     .interactive-plot-pane .js-plotly-plot,
     .interactive-plot-pane .plot-container,
     .interactive-plot-pane .svg-container,
@@ -9336,7 +9328,7 @@ mobile_app_tab_select.param.watch(_on_mobile_app_tab_change, "value")
 
 def _build_mobile_layout() -> pn.Column:
     _set_mobile_app_tab(_mobile_initial_tab())
-    return pn.Column(mobile_app_active, mobile_app_nav, sizing_mode="stretch_width", margin=0, css_classes=["mobile-app"])
+    return pn.Column(mobile_app_nav, mobile_app_active, sizing_mode="stretch_width", margin=0, css_classes=["mobile-app"])
 
 TAB_OPTIONS = {
     "Data": "interactive",
