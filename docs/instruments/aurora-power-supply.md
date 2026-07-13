@@ -101,6 +101,19 @@ The **ASS PDU Outlet Power** panel depends on the ASS PDU CSV logger. It can go
 stale independently of both APS and ASFS; operations monitoring tracks its
 source sync and append timers separately.
 
+Operations monitoring scores APS `InternalTemperature` on both cold and hot
+thresholds: green from `10-40 C`, amber from `5-10 C` or `40-45 C`, and red
+below `5 C` or at `45 C` or above.
+
+APS internal dew-point monitoring is optional and requires a true APS internal
+relative-humidity field named `InternalHumidity` in percent. The dashboard does
+not substitute ambient HATPRO, Vaisala, or ASFS humidity for internal APS
+humidity. When `InternalHumidity` is present, operations snapshots calculate
+dew point from same-sample `InternalTemperature` and `InternalHumidity`, then
+mark the dew-point margin red when `InternalTemperature - dewpoint <= 0 C`.
+When the field is absent, the Operations Dashboard shows internal humidity as
+unavailable rather than estimating it from site meteorology.
+
 `DCInverterWatts` is plotted on its own right axis because its raw value is
 often much smaller than AC output power. The source CSV reports it consistently
 with `DCInverterVolts * DCInverterAmps`, so a 53.75 V, 0.17 A sample appears as

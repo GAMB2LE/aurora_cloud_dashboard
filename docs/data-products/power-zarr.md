@@ -34,6 +34,8 @@ Important ingest rules:
 - raw column names are normalized by replacing `.` with `_`
 - columns containing `wind` are excluded
 - columns ending in `time` are excluded
+- `InternalHumidity` is the reserved optional APS internal relative-humidity
+  field in percent, used for operations dew-point monitoring when present
 
 Examples include:
 
@@ -47,6 +49,7 @@ Examples include:
 - `BatteryWatts`
 - `DCInverterWatts`
 - `InternalTemperature`
+- `InternalHumidity`, when the APS logger provides a true internal RH signal
 - `HeatsinkTemperature`
 - `TempSensor1`
 - `TempSensor2`
@@ -58,6 +61,9 @@ Examples include:
 
 - append runs keep the existing variable set fixed in the same way as
   `vaisalamet`
+- `InternalHumidity` is the one allowed optional schema expansion; if it first
+  appears in new raw APS CSV files, the appender adds it to the existing store
+  with `NaN` backfill for older samples instead of silently dropping it
 - append writes materialize only the already-filtered new sample block before
   writing, matching the cross-instrument Zarr append policy
 

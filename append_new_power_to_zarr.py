@@ -20,6 +20,7 @@ from rebuild_cutoff import cutoff_date, filter_dataset_from_time, parse_from_tim
 ROOT_DEFAULT = Path("/project/aurora/raw/power/level1")
 ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 FILE_REGEX = re.compile(r"power_data_(\d{4})(\d{2})(\d{2})\.csv$")
+OPTIONAL_SCHEMA_EXPANSION_VARS = {"InternalHumidity"}
 
 
 def _parse_file_date(path: Path) -> date | None:
@@ -128,8 +129,42 @@ def _load_files(files: Iterable[Path], chunks: dict[str, int] | None = None) -> 
     return combined
 
 
-def _align_to_existing(combined: xr.Dataset, existing: xr.Dataset) -> xr.Dataset:
+def _expand_existing_schema(
+    zarr_path: Path,
+    existing: xr.Dataset,
+    new_vars: list[str],
+    chunks: dict[str, int] | None = None,
+) -> list[str]:
+    allowed = [name for name in new_vars if name in OPTIONAL_SCHEMA_EXPANSION_VARS]
+    if not allowed:
+        return []
+
+    total = int(existing.sizes.get("time", 0))
+    if total <= 0:
+        return []
+    data_vars = {
+        name: (("time",), np.full(total, np.nan, dtype=np.float32))
+        for name in allowed
+    }
+    schema_ds = xr.Dataset(data_vars=data_vars)
+    chunk_size = int((chunks or {}).get("time") or 1200)
+    encoding = {name: {"chunks": (chunk_size,)} for name in allowed}
+    schema_ds.to_zarr(zarr_path, mode="a", encoding=encoding)
+    _consolidate(zarr_path)
+    print(f"Expanded existing Power Zarr schema with NaN backfill: {', '.join(allowed)}")
+    return allowed
+
+
+def _align_to_existing(
+    combined: xr.Dataset,
+    existing: xr.Dataset,
+    zarr_path: Path,
+    chunks: dict[str, int] | None = None,
+) -> xr.Dataset:
     existing_vars = list(existing.data_vars)
+    extras = [name for name in combined.data_vars if name not in existing_vars]
+    expanded_vars = _expand_existing_schema(zarr_path, existing, extras, chunks=chunks)
+    existing_vars.extend(name for name in expanded_vars if name not in existing_vars)
     for name in existing_vars:
         if name not in combined:
             combined[name] = (("time",), np.full(combined.sizes["time"], np.nan, dtype=np.float32))
@@ -200,7 +235,7 @@ def append_new(
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no samples newer than the existing Zarr.")
         return
-    combined = _align_to_existing(combined, existing)
+    combined = _align_to_existing(combined, existing, zarr_path, chunks=chunks)
     combined = combined.load()
     combined.to_zarr(zarr_path, mode="a", append_dim="time")
     _consolidate(zarr_path)

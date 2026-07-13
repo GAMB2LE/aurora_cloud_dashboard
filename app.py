@@ -119,6 +119,11 @@ if not SITE_ENV and SITE_DOMAIN:
     elif SITE_DOMAIN == "data.gamb2le.co.uk":
         SITE_ENV = "production"
 SITE_ENV = SITE_ENV or "unknown"
+APS_INTERNAL_TEMP_LOW_AMBER_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_AMBER_C", "10"))
+APS_INTERNAL_TEMP_LOW_RED_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_RED_C", "5"))
+APS_INTERNAL_TEMP_HIGH_AMBER_C = float(os.environ.get("APS_INTERNAL_TEMP_HIGH_AMBER_C", "40"))
+APS_INTERNAL_TEMP_HIGH_RED_C = float(os.environ.get("APS_INTERNAL_TEMP_HIGH_RED_C", "45"))
+APS_DEWPOINT_RED_MARGIN_C = float(os.environ.get("APS_DEWPOINT_RED_MARGIN_C", "0"))
 
 
 class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
@@ -1572,11 +1577,22 @@ def _ops_level_from_internal_temp(value) -> str:
     temperature = _ops_float(value)
     if temperature is None:
         return "gray"
-    if temperature < 40.0:
-        return "green"
-    if temperature < 45.0:
+    if temperature < APS_INTERNAL_TEMP_LOW_RED_C or temperature >= APS_INTERNAL_TEMP_HIGH_RED_C:
+        return "red"
+    if temperature < APS_INTERNAL_TEMP_LOW_AMBER_C or temperature >= APS_INTERNAL_TEMP_HIGH_AMBER_C:
         return "amber"
-    return "red"
+    return "green"
+
+
+def _ops_level_from_dewpoint_margin(snapshot: dict) -> str:
+    if _ops_bool(snapshot.get("aps_internal_humidity_available_state")) is False:
+        return "gray"
+    margin = _ops_float(snapshot.get("aps_internal_dewpoint_margin_c"))
+    if margin is None:
+        return "gray"
+    if margin <= APS_DEWPOINT_RED_MARGIN_C:
+        return "red"
+    return "green"
 
 
 def _ops_level_from_perf_log(snapshot: dict) -> str:
@@ -1666,6 +1682,27 @@ def _ops_internal_temp_text(snapshot: dict) -> tuple[str, str]:
         return value, "Aurora Power Supply internal temperature"
     age_text = _format_duration(timedelta(minutes=age_min))
     return value, f"Aurora Power Supply internal temperature, {age_text} old"
+
+
+def _ops_dewpoint_text(snapshot: dict) -> tuple[str, str]:
+    humidity_available = _ops_bool(snapshot.get("aps_internal_humidity_available_state"))
+    if humidity_available is False:
+        return "No data", "APS InternalHumidity is not available; dew point is not calculated"
+
+    humidity = _ops_float(snapshot.get("aps_internal_humidity_pct"))
+    dewpoint = _ops_float(snapshot.get("aps_internal_dewpoint_c"))
+    margin = _ops_float(snapshot.get("aps_internal_dewpoint_margin_c"))
+    temperature = _ops_float(snapshot.get("aps_internal_dewpoint_temp_c"))
+    age_min = _ops_float(snapshot.get("aps_internal_humidity_age_min"))
+    if humidity is None or dewpoint is None or margin is None:
+        return "No data", "Needs same-sample InternalTemperature and InternalHumidity from APS"
+
+    age_text = "" if age_min is None else f", {_format_duration(timedelta(minutes=age_min))} old"
+    temp_text = "unknown" if temperature is None else f"{temperature:.1f} C"
+    return (
+        f"{margin:.1f} C margin",
+        f"T={temp_text}, RH={humidity:.0f} %, dew point={dewpoint:.1f} C{age_text}",
+    )
 
 
 def _ops_perf_log_text(snapshot: dict) -> tuple[str, str]:
@@ -2304,6 +2341,7 @@ def _ops_operations_markup() -> str:
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         internal_temp_level = _ops_level_from_internal_temp(snapshot.get("aps_internal_temp_c"))
+        dewpoint_level = _ops_level_from_dewpoint_margin(snapshot)
         perf_log_level = _ops_level_from_perf_log(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
         site_env = str(snapshot.get("site_env") or SITE_ENV or "").strip().lower()
@@ -2337,6 +2375,7 @@ def _ops_operations_markup() -> str:
             battery_soc_level,
             battery_depletion_level,
             internal_temp_level,
+            dewpoint_level,
             processing_level,
             transfer_level,
             mirror_level,
@@ -2358,6 +2397,7 @@ def _ops_operations_markup() -> str:
         battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
         battery_depletion_value, battery_depletion_meta = _ops_battery_depletion_text(snapshot)
         internal_temp_value, internal_temp_meta = _ops_internal_temp_text(snapshot)
+        dewpoint_value, dewpoint_meta = _ops_dewpoint_text(snapshot)
         perf_log_value, perf_log_meta = _ops_perf_log_text(snapshot)
         batch_resource_value, batch_resource_meta = _ops_batch_resource_text(snapshot)
         batch_resource_level = _ops_batch_resource_level(snapshot)
@@ -2446,7 +2486,18 @@ def _ops_operations_markup() -> str:
                 "APS internal temp",
                 internal_temp_level,
                 internal_temp_value,
-                f"{internal_temp_meta}; green <40 C, amber 40-45 C, red >=45 C",
+                (
+                    f"{internal_temp_meta}; green {APS_INTERNAL_TEMP_LOW_AMBER_C:.0f}-{APS_INTERNAL_TEMP_HIGH_AMBER_C:.0f} C, "
+                    f"amber {APS_INTERNAL_TEMP_LOW_RED_C:.0f}-{APS_INTERNAL_TEMP_LOW_AMBER_C:.0f} C or "
+                    f"{APS_INTERNAL_TEMP_HIGH_AMBER_C:.0f}-{APS_INTERNAL_TEMP_HIGH_RED_C:.0f} C, "
+                    f"red <{APS_INTERNAL_TEMP_LOW_RED_C:.0f} C or >={APS_INTERNAL_TEMP_HIGH_RED_C:.0f} C"
+                ),
+            ),
+            _ops_card_markup(
+                "APS dew point",
+                dewpoint_level,
+                dewpoint_value,
+                f"{dewpoint_meta}; red when temperature-dewpoint margin <= {APS_DEWPOINT_RED_MARGIN_C:.0f} C",
             ),
             _ops_card_markup(
                 "Dashboard perf log",
@@ -8241,7 +8292,7 @@ body, .bk {
     width: 100%;
     max-width: 100vw;
     min-width: 0;
-    padding: 0 10px 78px;
+    padding: 0 10px calc(84px + env(safe-area-inset-bottom));
     box-sizing: border-box;
 }
 .mobile-shell {
@@ -8459,6 +8510,9 @@ body, .bk {
     body {
         overflow-x: hidden;
     }
+    .mobile-app {
+        padding-bottom: calc(158px + env(safe-area-inset-bottom));
+    }
     body, .bk { font-size: 14px; }
     .pn-template,
     .pn-template .pn-main,
@@ -8517,6 +8571,12 @@ body, .bk {
         padding: 4px 7px !important;
         font-size: 11px !important;
         line-height: 1.15 !important;
+    }
+    .mobile-bottom-nav {
+        bottom: calc(76px + env(safe-area-inset-bottom));
+        padding: 7px 8px;
+        border: 1px solid #d8e1e8;
+        border-radius: 12px 12px 0 0;
     }
     .interactive-plot-pane .js-plotly-plot,
     .interactive-plot-pane .plot-container,

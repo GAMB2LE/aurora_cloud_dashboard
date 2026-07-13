@@ -28,6 +28,11 @@ GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 APS_BATTERY_CAPACITY_KWH = float(os.environ.get("APS_BATTERY_CAPACITY_KWH", "26"))
 APS_BATTERY_DEPLETION_DEADBAND_W = float(os.environ.get("APS_BATTERY_DEPLETION_DEADBAND_W", "50"))
+APS_INTERNAL_TEMP_LOW_AMBER_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_AMBER_C", "10"))
+APS_INTERNAL_TEMP_LOW_RED_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_RED_C", "5"))
+APS_INTERNAL_TEMP_HIGH_AMBER_C = float(os.environ.get("APS_INTERNAL_TEMP_HIGH_AMBER_C", "40"))
+APS_INTERNAL_TEMP_HIGH_RED_C = float(os.environ.get("APS_INTERNAL_TEMP_HIGH_RED_C", "45"))
+APS_DEWPOINT_RED_MARGIN_C = float(os.environ.get("APS_DEWPOINT_RED_MARGIN_C", "0"))
 DASHBOARD_PERF_LOG_DEFAULT = Path("/data/aurora/products/dashboard/dashboard_perf.jsonl")
 DASHBOARD_HTTP_URL_DEFAULT = "http://127.0.0.1:5006/app"
 PRIMARY_DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app"
@@ -676,6 +681,60 @@ def _latest_finite_zarr_value(
             close()
 
 
+def _latest_finite_zarr_row(
+    zarr_path: Path,
+    var_names: tuple[str, ...],
+    *,
+    time_name: str = "time",
+) -> tuple[dict[str, float], datetime | None]:
+    if not zarr_path.exists() or not var_names:
+        return {}, None
+    ds = xr.open_zarr(zarr_path)
+    try:
+        if time_name not in ds:
+            return {}, None
+        for name in var_names:
+            if name not in ds or time_name not in ds[name].dims:
+                return {}, None
+        total = int(ds[var_names[0]].sizes.get(time_name, 0))
+        if total <= 0:
+            return {}, None
+        time_coord = ds[time_name]
+        for window in (2048, 16384, None):
+            selector = slice(None) if window is None or total <= window else slice(-window, None)
+            arrays = {name: np.asarray(ds[name].isel({time_name: selector}).values, dtype=float) for name in var_names}
+            mask = np.ones(len(next(iter(arrays.values()))), dtype=bool)
+            for values in arrays.values():
+                mask &= np.isfinite(values)
+            finite_idx = np.flatnonzero(mask)
+            if finite_idx.size == 0:
+                continue
+            idx = int(finite_idx[-1])
+            times = np.asarray(time_coord.isel({time_name: selector}).values)
+            timestamp = pd.Timestamp(times[idx])
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.tz_localize("UTC")
+            else:
+                timestamp = timestamp.tz_convert("UTC")
+            return {name: float(values[idx]) for name, values in arrays.items()}, timestamp.to_pydatetime(warn=False)
+        return {}, None
+    finally:
+        close = getattr(ds, "close", None)
+        if callable(close):
+            close()
+
+
+def _dewpoint_c(temperature_c: float | None, humidity_pct: float | None) -> float | None:
+    temperature = _float_or_none(temperature_c)
+    humidity = _float_or_none(humidity_pct)
+    if temperature is None or humidity is None or humidity <= 0.0 or humidity > 100.0:
+        return None
+    a = 17.625
+    b = 243.04
+    gamma = math.log(humidity / 100.0) + (a * temperature) / (b + temperature)
+    return (b * gamma) / (a - gamma)
+
+
 def _unit_slug(unit: str) -> str:
     return unit.replace("aurora-", "").replace(".", "_").replace("-", "_")
 
@@ -1094,14 +1153,34 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
                 record["aps_battery_depleting_state"] = 0
                 record["aps_battery_charging_state"] = 0
                 record["aps_battery_discharge_power_w"] = 0.0
+    power_zarr_path = _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT)
     internal_temp, internal_temp_time = _latest_finite_zarr_value(
-        _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
+        power_zarr_path,
         "InternalTemperature",
     )
     record["aps_internal_temp_c"] = internal_temp
     if internal_temp_time is not None:
         record["aps_internal_temp_time_utc"] = internal_temp_time.isoformat()
         record["aps_internal_temp_age_min"] = max((now - internal_temp_time).total_seconds(), 0.0) / 60.0
+    humidity_row, humidity_time = _latest_finite_zarr_row(power_zarr_path, ("InternalTemperature", "InternalHumidity"))
+    if humidity_row:
+        humidity = humidity_row.get("InternalHumidity")
+        dewpoint_temp = humidity_row.get("InternalTemperature")
+        dewpoint = _dewpoint_c(dewpoint_temp, humidity)
+        record["aps_internal_humidity_available_state"] = 1
+        record["aps_internal_humidity_pct"] = humidity
+        record["aps_internal_dewpoint_temp_c"] = dewpoint_temp
+        if humidity_time is not None:
+            record["aps_internal_humidity_time_utc"] = humidity_time.isoformat()
+            record["aps_internal_humidity_age_min"] = max((now - humidity_time).total_seconds(), 0.0) / 60.0
+            record["aps_internal_dewpoint_time_utc"] = humidity_time.isoformat()
+        if dewpoint is not None:
+            margin = float(dewpoint_temp) - dewpoint
+            record["aps_internal_dewpoint_c"] = dewpoint
+            record["aps_internal_dewpoint_margin_c"] = margin
+            record["aps_internal_dewpoint_risk_state"] = 1 if margin <= APS_DEWPOINT_RED_MARGIN_C else 0
+    else:
+        record["aps_internal_humidity_available_state"] = 0
 
     streams = summary.get("streams", {})
     local_issue_count = 0
@@ -1316,11 +1395,22 @@ def _level_from_battery_depletion(snapshot: dict[str, Any]) -> str:
 def _level_from_internal_temp(value: float | None) -> str:
     if value is None:
         return "gray"
-    if value < 40.0:
-        return "green"
-    if value < 45.0:
+    if value < APS_INTERNAL_TEMP_LOW_RED_C or value >= APS_INTERNAL_TEMP_HIGH_RED_C:
+        return "red"
+    if value < APS_INTERNAL_TEMP_LOW_AMBER_C or value >= APS_INTERNAL_TEMP_HIGH_AMBER_C:
         return "amber"
-    return "red"
+    return "green"
+
+
+def _level_from_dewpoint_margin(snapshot: dict[str, Any]) -> str:
+    if _state(snapshot, "aps_internal_humidity_available_state") is False:
+        return "gray"
+    margin = _value(snapshot, "aps_internal_dewpoint_margin_c")
+    if margin is None:
+        return "gray"
+    if margin <= APS_DEWPOINT_RED_MARGIN_C:
+        return "red"
+    return "green"
 
 
 def _fmt(value: float | None, suffix: str = "", digits: int = 1) -> str:
@@ -1494,7 +1584,26 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         temp_level,
         "power",
         "APS internal temperature",
-        details=f"temperature={_fmt(_value(snapshot, 'aps_internal_temp_c'), ' C')}, age={_fmt(_value(snapshot, 'aps_internal_temp_age_min'), ' min')}",
+        details=(
+            f"temperature={_fmt(_value(snapshot, 'aps_internal_temp_c'), ' C')}, "
+            f"age={_fmt(_value(snapshot, 'aps_internal_temp_age_min'), ' min')}, "
+            f"green={APS_INTERNAL_TEMP_LOW_AMBER_C:.0f}-{APS_INTERNAL_TEMP_HIGH_AMBER_C:.0f} C, "
+            f"red <{APS_INTERNAL_TEMP_LOW_RED_C:.0f} C or >={APS_INTERNAL_TEMP_HIGH_RED_C:.0f} C"
+        ),
+    )
+    dewpoint_level = _level_from_dewpoint_margin(snapshot)
+    _health_check(
+        checks,
+        dewpoint_level,
+        "power",
+        "APS internal dew point margin",
+        details=(
+            f"humidity={_fmt(_value(snapshot, 'aps_internal_humidity_pct'), '%', 0)}, "
+            f"dewpoint={_fmt(_value(snapshot, 'aps_internal_dewpoint_c'), ' C')}, "
+            f"margin={_fmt(_value(snapshot, 'aps_internal_dewpoint_margin_c'), ' C')}, "
+            f"age={_fmt(_value(snapshot, 'aps_internal_humidity_age_min'), ' min')}"
+        ),
+        affects_overall=dewpoint_level != "gray",
     )
 
     for stream_name, prefix in STREAM_PREFIXES.items():

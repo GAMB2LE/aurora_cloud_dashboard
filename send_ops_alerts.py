@@ -29,6 +29,8 @@ DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app?tab=operations"
 STORAGE_THRESHOLD_PCT = 80.0
 BATTERY_SOC_THRESHOLD_PCT = 20.0
 INTERNAL_TEMP_THRESHOLD_C = 45.0
+INTERNAL_TEMP_LOW_THRESHOLD_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_RED_C", "5"))
+INTERNAL_DEWPOINT_MARGIN_THRESHOLD_C = float(os.environ.get("APS_DEWPOINT_RED_MARGIN_C", "0"))
 BATTERY_VOLTAGE_THRESHOLD_V = 50.0
 STREAM_HOLD_MINUTES = 180.0
 REPEAT_AFTER_HOURS = 12.0
@@ -221,6 +223,39 @@ def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
                 message=f"Aurora Power Supply internal temperature is {_fmt_value(temp, ' C')}.",
                 value=temp,
                 threshold=f">= {INTERNAL_TEMP_THRESHOLD_C:.0f} C",
+            )
+        )
+    if temp is not None and temp < INTERNAL_TEMP_LOW_THRESHOLD_C:
+        alerts.append(
+            AlertRule(
+                id="power:internal_temp_low",
+                title=f"APS internal temperature low at {_fmt_value(temp, ' C')}",
+                message=f"Aurora Power Supply internal temperature is {_fmt_value(temp, ' C')}.",
+                value=temp,
+                threshold=f"< {INTERNAL_TEMP_LOW_THRESHOLD_C:.0f} C",
+            )
+        )
+
+    dewpoint_margin = _float(snapshot.get("aps_internal_dewpoint_margin_c"))
+    humidity_available = _bool_state(snapshot.get("aps_internal_humidity_available_state"))
+    if humidity_available is True and dewpoint_margin is not None and dewpoint_margin <= INTERNAL_DEWPOINT_MARGIN_THRESHOLD_C:
+        humidity = _float(snapshot.get("aps_internal_humidity_pct"))
+        dewpoint = _float(snapshot.get("aps_internal_dewpoint_c"))
+        dewpoint_temp = _float(snapshot.get("aps_internal_dewpoint_temp_c"))
+        details = [
+            f"margin={_fmt_value(dewpoint_margin, ' C')}",
+            f"temperature={_fmt_value(dewpoint_temp, ' C')}" if dewpoint_temp is not None else "",
+            f"RH={_fmt_value(humidity, '%')}" if humidity is not None else "",
+            f"dew point={_fmt_value(dewpoint, ' C')}" if dewpoint is not None else "",
+        ]
+        alerts.append(
+            AlertRule(
+                id="power:internal_dewpoint",
+                title=f"APS internal dew point margin at {_fmt_value(dewpoint_margin, ' C')}",
+                message="Aurora Power Supply internal air is at or below the calculated dew point margin: "
+                + ", ".join(part for part in details if part),
+                value=dewpoint_margin,
+                threshold=f"<= {INTERNAL_DEWPOINT_MARGIN_THRESHOLD_C:.0f} C",
             )
         )
 

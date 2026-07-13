@@ -16,7 +16,11 @@ stack.
   `BatteryWatts` is treated as discharge, while positive power is reported as
   charging
 - Aurora Power Supply internal temperature from `InternalTemperature`,
-  scored green below `40 C`, amber from `40-45 C`, and red at `45 C` or above
+  scored green from `10-40 C`, amber from `5-10 C` or `40-45 C`, and red
+  below `5 C` or at `45 C` or above
+- Aurora Power Supply internal dew-point margin, calculated only when a true
+  APS internal `InternalHumidity` signal is present; ambient/site humidity is
+  not used as a substitute, and missing APS humidity is shown as unavailable
 - source sync and processing health
 - HATPRO source, local mirror, GWS mirror, Zarr-build, and quicklook health
   alongside the other science streams
@@ -101,9 +105,10 @@ These include:
 Operations alert email is handled by `send_ops_alerts.py`, normally from
 `aurora-ops-monitor-alerts.timer`. It evaluates the same latest snapshot used by
 the dashboard and emails `gamb2le@ncas.ac.uk` for storage pressure at `80 %`,
-battery SOC at or below `20 %`, APS internal temperature at or above `45 C`,
-battery voltage below `50 V`, and stream-health problems that persist for
-`3 h`.
+battery SOC at or below `20 %`, APS internal temperature below `5 C` or at or
+above `45 C`, APS internal dew-point margin at or below `0 C` when internal
+humidity is available, battery voltage below `50 V`, and stream-health problems
+that persist for `3 h`.
 
 The service keeps state under `/data/aurora/products/ops_monitor/alerts` so it
 can send initial, repeat, and recovery messages without spamming every timer
