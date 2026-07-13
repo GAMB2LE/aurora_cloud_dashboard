@@ -8478,16 +8478,16 @@ body, .bk {
     position: sticky;
     top: 0;
     z-index: 1000;
-    margin: 0 -10px 10px;
-    padding: 6px 8px;
-    background: rgba(255, 255, 255, 0.98);
+    margin: 0 -10px 8px;
+    padding: 0 10px;
+    background: #ffffff;
     border-bottom: 1px solid #d8e1e8;
-    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+    box-shadow: none;
 }
 .mobile-bottom-nav .bk-btn-group {
     display: grid !important;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 5px;
+    gap: 0;
     width: 100%;
 }
 .mobile-bottom-nav .bk-btn-group .bk-btn,
@@ -8496,13 +8496,33 @@ body, .bk {
 .mobile-bottom-nav label {
     width: 100%;
     min-width: 0;
-    min-height: 38px;
-    padding: 5px 4px !important;
-    font-size: 11px !important;
-    line-height: 1.1 !important;
+    min-height: 32px;
+    padding: 5px 2px 4px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    line-height: 1.05 !important;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    color: #2f3d4a !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+.mobile-bottom-nav .bk-btn-group .bk-btn span,
+.mobile-bottom-nav button.bk-btn span,
+.mobile-bottom-nav .bk-btn-content {
+    font-size: 12px !important;
+    line-height: 1.05 !important;
+}
+.mobile-bottom-nav .bk-btn-group .bk-btn.bk-active,
+.mobile-bottom-nav button.bk-btn.bk-active,
+.mobile-bottom-nav button[aria-pressed="true"] {
+    color: #087b88 !important;
+    background: #f3fafb !important;
+    border-bottom-color: #087b88 !important;
 }
 @media (max-width: 768px) {
     html,
@@ -8569,7 +8589,7 @@ body, .bk {
         font-size: 11px !important;
         line-height: 1.15 !important;
     }
-    .mobile-bottom-nav { padding: 6px 8px; }
+    .mobile-bottom-nav { padding: 0 10px; }
     .interactive-plot-pane .js-plotly-plot,
     .interactive-plot-pane .plot-container,
     .interactive-plot-pane .svg-container,
