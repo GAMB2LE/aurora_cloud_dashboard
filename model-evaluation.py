@@ -2163,6 +2163,30 @@ def _daily_review_queue_rows(index: dict[str, object] | None, limit: int = 10) -
                 "day": day,
                 "bundle": indexed_day.get("lasso_bundle_status", "missing"),
                 "qa": indexed_day.get("operational_qa_status", status.get("status") if status else "missing"),
+                "cloudnet_intake": indexed_day.get(
+                    "cloudnet_observed_product_intake_status",
+                    "unknown",
+                ),
+                "cloudnet_ready": indexed_day.get(
+                    "cloudnet_observed_product_ready_count",
+                    "n/a",
+                ),
+                "cloudnet_expected": indexed_day.get(
+                    "cloudnet_observed_product_expected_count",
+                    "n/a",
+                ),
+                "cloudnet_missing": indexed_day.get(
+                    "cloudnet_observed_product_missing_count",
+                    "n/a",
+                ),
+                "cloudnet_overlap_hours": indexed_day.get(
+                    "cloudnet_instrument_source_common_overlap_hours",
+                    "n/a",
+                ),
+                "cloudnet_coverage": indexed_day.get(
+                    "cloudnet_instrument_source_coverage_status",
+                    "unknown",
+                ),
                 "missing_inputs": _missing_required_inputs(status),
                 "diagnostic_streams": diagnostic,
                 "blocked_streams": blocked,
@@ -2185,11 +2209,23 @@ def _daily_review_queue_table(index: dict[str, object] | None) -> str:
         actions = row.get("actions")
         action_text = _list_summary(actions, limit=2)
         missing_text = _list_summary(row.get("missing_inputs"), limit=4)
+        cloudnet_products = (
+            f"{row.get('cloudnet_ready', 'n/a')}/"
+            f"{row.get('cloudnet_expected', 'n/a')} ready; "
+            f"missing {row.get('cloudnet_missing', 'n/a')}"
+        )
+        cloudnet_overlap = (
+            f"{row.get('cloudnet_overlap_hours', 'n/a')} h; "
+            f"{row.get('cloudnet_coverage', 'unknown')}"
+        )
         body.append(
             "<tr>"
             f"<td>{escape(str(row.get('day', '')))}</td>"
             f"<td>{_badge(row.get('bundle'))}</td>"
             f"<td>{_badge(row.get('qa'))}</td>"
+            f"<td>{_badge(row.get('cloudnet_intake'))}<br>"
+            f"<span class='model-muted'>{escape(cloudnet_products)}</span></td>"
+            f"<td>{escape(cloudnet_overlap)}</td>"
             f"<td>{escape(missing_text)}</td>"
             f"<td>{escape(str(row.get('diagnostic_streams', 0)))}</td>"
             f"<td>{escape(str(row.get('blocked_streams', 0)))}</td>"
@@ -2204,10 +2240,95 @@ def _daily_review_queue_table(index: dict[str, object] | None) -> str:
         "<div class='model-section-title'>Daily Review Queue</div>"
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table daily-review-table'>"
-        "<thead><tr><th>day</th><th>bundle</th><th>QA</th><th>missing inputs</th>"
+        "<thead><tr><th>day</th><th>bundle</th><th>QA</th>"
+        "<th>Cloudnet official products</th><th>Cloudnet overlap</th><th>missing inputs</th>"
         "<th>diagnostic</th><th>blocked</th><th>failed operator</th>"
         "<th>runner</th><th>runner detail</th><th>archive classes</th><th>QA actions</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _cloudnet_backbone_review_panel(index: dict[str, object] | None) -> str:
+    if not isinstance(index, dict):
+        return ""
+    days = index.get("days")
+    if not isinstance(days, list) or not days:
+        return ""
+    latest = next((day for day in days if isinstance(day, dict)), None)
+    if not latest:
+        return ""
+    missing_types = latest.get("cloudnet_observed_product_missing_types")
+    limiting_roles = latest.get("cloudnet_instrument_source_limiting_roles")
+    start = latest.get("cloudnet_instrument_source_common_overlap_start", "n/a")
+    end = latest.get("cloudnet_instrument_source_common_overlap_end", "n/a")
+    hours = latest.get("cloudnet_instrument_source_common_overlap_hours", "n/a")
+    review = latest.get("cloudnet_instrument_source_review_conclusion")
+    products_text = (
+        f"{latest.get('cloudnet_observed_product_ready_count', 'n/a')}/"
+        f"{latest.get('cloudnet_observed_product_expected_count', 'n/a')} ready; "
+        f"{latest.get('cloudnet_observed_product_missing_count', 'n/a')} missing"
+    )
+    cards = [
+        _card("Cloudnet backbone", latest.get("cloudnet_backbone_status", "unknown")),
+        _card(
+            "official products",
+            latest.get("cloudnet_observed_product_intake_status", "unknown"),
+        ),
+        _card("product count", products_text),
+        _card(
+            "categorize",
+            latest.get("cloudnet_categorize_status", "unknown"),
+        ),
+        _card(
+            "instrument coverage",
+            latest.get("cloudnet_instrument_source_coverage_status", "unknown"),
+        ),
+        _card("production overlap", f"{hours} h"),
+    ]
+    rows = [
+        (
+            "official missing products",
+            _list_summary(missing_types, limit=8),
+        ),
+        (
+            "production overlap window",
+            f"{start} to {end}",
+        ),
+        (
+            "limiting instrument roles",
+            _list_summary(limiting_roles, limit=6),
+        ),
+        (
+            "campaign official-product counts",
+            (
+                f"ready {index.get('cloudnet_observed_product_ready_count', 'n/a')}; "
+                f"missing {index.get('cloudnet_observed_product_missing_count', 'n/a')}; "
+                f"invalid {index.get('cloudnet_observed_product_invalid_count', 'n/a')}"
+            ),
+        ),
+        (
+            "campaign overlap total",
+            f"{index.get('cloudnet_instrument_source_common_overlap_total_hours', 'n/a')} h",
+        ),
+        (
+            "review conclusion",
+            str(review or "No Cloudnet instrument-source review conclusion recorded."),
+        ),
+    ]
+    body = "".join(
+        "<tr>"
+        f"<th>{escape(label)}</th>"
+        f"<td>{escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        "<div class='model-section-title'>Cloudnet Backbone Review</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        f"<tbody>{body}</tbody>"
         "</table></div>"
     )
 
@@ -2865,7 +2986,7 @@ def _badge(value: object) -> str:
         css = "badge-diagnostic"
     elif "blocked" in lower or "missing" in lower:
         css = "badge-blocked"
-    elif "colocated" in lower:
+    elif "waiting" in lower or "partial" in lower or "colocated" in lower:
         css = "badge-warning"
     return f"<span class='status-badge {css}'>{escape(text)}</span>"
 
@@ -4740,6 +4861,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
+        f"{_cloudnet_backbone_review_panel(index)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_direct_model_evidence_panel(latest_day)}"
         f"{_operator_review_batch_panel(latest_day, limit=6)}"
