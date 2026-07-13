@@ -32,6 +32,7 @@ DASHBOARD_PERF_LOG_DEFAULT = Path("/data/aurora/products/dashboard/dashboard_per
 DASHBOARD_HTTP_URL_DEFAULT = "http://127.0.0.1:5006/app"
 PRIMARY_DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app"
 STANDBY_DASHBOARD_URL_DEFAULT = "https://data-ocean.gamb2le.co.uk/app"
+DEV_LIVE_MIRROR_STAMP_DEFAULT = Path("/data/aurora/internal/dev-live-mirror/last_success.json")
 REMOTE_DF_TIMEOUT_SECONDS = 45.0
 LOCAL_COMMAND_TIMEOUT_SECONDS = 30.0
 INFRA_REPO_DEFAULT = Path("/tmp/aurora-cloud-infra-codex")
@@ -544,6 +545,8 @@ def _collect_git_metrics(prefix: str, repo: Path, record: dict[str, Any]) -> Non
     record[f"{prefix}_repo_exists_state"] = 1
     record[f"{prefix}_git_branch"] = _git_value(repo, ["rev-parse", "--abbrev-ref", "HEAD"]) or ""
     record[f"{prefix}_git_commit"] = _git_value(repo, ["rev-parse", "--short", "HEAD"]) or ""
+    record[f"{prefix}_git_tag"] = _git_value(repo, ["describe", "--tags", "--exact-match"]) or ""
+    record[f"{prefix}_git_describe"] = _git_value(repo, ["describe", "--tags", "--always", "--dirty"]) or ""
     upstream = _git_value(repo, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
     record[f"{prefix}_git_upstream"] = upstream or ""
 
@@ -568,6 +571,69 @@ def _collect_git_metrics(prefix: str, repo: Path, record: dict[str, Any]) -> Non
                 record[f"{prefix}_git_ahead_count"] = int(ahead)
             except ValueError:
                 pass
+
+
+def _parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.to_pydatetime(warn=False)
+
+
+def _collect_dev_live_mirror_metrics(record: dict[str, Any], now_epoch: int) -> None:
+    stamp_path = _path_from_env("AURORA_DEV_LIVE_MIRROR_STAMP", DEV_LIVE_MIRROR_STAMP_DEFAULT)
+    record["dev_live_mirror_stamp_path"] = str(stamp_path)
+    if not stamp_path.exists():
+        record["dev_live_mirror_stamp_exists_state"] = 0
+        return
+
+    record["dev_live_mirror_stamp_exists_state"] = 1
+    try:
+        stat = stamp_path.stat()
+        record["dev_live_mirror_stamp_age_min"] = max(now_epoch - stat.st_mtime, 0.0) / 60.0
+    except OSError:
+        pass
+
+    payload: dict[str, Any] = {}
+    text = ""
+    try:
+        text = stamp_path.read_text(encoding="utf-8").strip()
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = {"last_success_utc": text}
+    except Exception as exc:
+        record["dev_live_mirror_error"] = str(exc)
+        return
+
+    if isinstance(payload, dict):
+        for key in ("source_host", "source_user", "site_env", "paths_replicated", "rsync_exit_code"):
+            if key in payload:
+                record[f"dev_live_mirror_{key}"] = payload[key]
+        last_success = _parse_utc_timestamp(str(payload.get("last_success_utc") or ""))
+    else:
+        last_success = _parse_utc_timestamp(text)
+
+    if last_success is None:
+        record["dev_live_mirror_recent_state"] = 0
+        record["dev_live_mirror_error"] = "No valid last_success_utc in mirror stamp"
+        return
+
+    now_dt = datetime.fromtimestamp(now_epoch, timezone.utc)
+    age_min = max((now_dt - last_success).total_seconds(), 0.0) / 60.0
+    threshold_min = float(os.environ.get("AURORA_DEV_LIVE_MIRROR_RECENT_MINUTES", "7.5"))
+    record["dev_live_mirror_last_success_utc"] = last_success.isoformat().replace("+00:00", "Z")
+    record["dev_live_mirror_age_min"] = age_min
+    record["dev_live_mirror_recent_threshold_min"] = threshold_min
+    record["dev_live_mirror_recent_state"] = 1 if age_min <= threshold_min else 0
 
 
 def _latest_finite_zarr_value(
@@ -947,11 +1013,13 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     )
     for key, value in perf_log_stats.items():
         record[f"dashboard_perf_log_{key}"] = value
+    _collect_dev_live_mirror_metrics(record, now_epoch)
 
     dashboard_probe = _probe_http(os.environ.get("AURORA_DASHBOARD_HEALTH_URL", DASHBOARD_HTTP_URL_DEFAULT))
     for key, value in dashboard_probe.items():
         record[f"dashboard_http_{key}"] = value
 
+    record["site_env"] = os.environ.get("AURORA_SITE_ENV", "")
     record["failover_collector_role"] = os.environ.get("AURORA_FAILOVER_ROLE", "")
     record["failover_collector_domain"] = os.environ.get("AURORA_DOMAIN", "")
     for endpoint, default_url in (
@@ -1287,6 +1355,7 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
     """Convert the raw metric snapshot into an observe-only health assessment."""
 
     checks: list[dict[str, Any]] = []
+    site_env = str(snapshot.get("site_env") or "").strip().lower()
 
     http_level = _level_from_bool(_state(snapshot, "dashboard_http_ok_state"))
     _health_check(
@@ -1307,6 +1376,28 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         details=f"age={_fmt(_value(snapshot, 'dashboard_perf_log_age_min'), ' min')}",
         affects_overall=False,
     )
+    if site_env:
+        _health_check(
+            checks,
+            "green" if site_env in {"production", "development"} else "amber",
+            "deployment",
+            "Dashboard site environment",
+            details=f"site_env={site_env}",
+            affects_overall=False,
+        )
+    if site_env == "development":
+        mirror_level = _level_from_bool(_state(snapshot, "dev_live_mirror_recent_state"))
+        _health_check(
+            checks,
+            mirror_level,
+            "deployment",
+            "Development live mirror freshness",
+            details=(
+                f"age={_fmt(_value(snapshot, 'dev_live_mirror_age_min'), ' min')}, "
+                f"threshold={_fmt(_value(snapshot, 'dev_live_mirror_recent_threshold_min'), ' min')}, "
+                f"stamp={snapshot.get('dev_live_mirror_stamp_path', '')}"
+            ),
+        )
 
     batch_level = _level_from_used_pct(_value(snapshot, "aurora_batch_memory_pressure_pct"))
     _health_check(
@@ -1575,16 +1666,26 @@ def render_daily_report(snapshot: dict[str, Any], health: dict[str, Any], raw_sn
     lines.extend(
         [
             "",
+            "## Deployment State",
+            "",
+            f"- Site environment: `{snapshot.get('site_env', '') or 'unknown'}`",
+            f"- Served domain: `{snapshot.get('failover_collector_domain', '') or 'unknown'}`",
+            f"- Collector role: `{snapshot.get('failover_collector_role', '') or 'unknown'}`",
+            f"- Development mirror lag: `{_fmt(_value(snapshot, 'dev_live_mirror_age_min'), ' min')}`",
+            f"- Development mirror last success: `{snapshot.get('dev_live_mirror_last_success_utc', '') or 'unknown'}`",
+            "",
             "## Code State",
             "",
-            "| Repository | Branch | Commit | Dirty | Behind | Ahead |",
-            "| --- | --- | --- | ---: | ---: | ---: |",
+            "| Repository | Branch | Commit | Tag | Describe | Dirty | Behind | Ahead |",
+            "| --- | --- | --- | --- | --- | ---: | ---: | ---: |",
         ]
     )
     for prefix, label in (("dashboard_code", "dashboard"), ("infra_code", "infra")):
         lines.append(
             f"| {label} | `{snapshot.get(f'{prefix}_git_branch', '')}` | "
             f"`{snapshot.get(f'{prefix}_git_commit', '')}` | "
+            f"`{snapshot.get(f'{prefix}_git_tag', '') or 'none'}` | "
+            f"`{snapshot.get(f'{prefix}_git_describe', '')}` | "
             f"{int(_value(snapshot, f'{prefix}_git_dirty_count') or 0)} | "
             f"{int(_value(snapshot, f'{prefix}_git_behind_count') or 0)} | "
             f"{int(_value(snapshot, f'{prefix}_git_ahead_count') or 0)} |"

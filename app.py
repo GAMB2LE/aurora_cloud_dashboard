@@ -109,6 +109,16 @@ THEME_LINE = "#c5d0da"
 THEME_GRID = "#e5eaef"
 THEME_PANEL = "#fbfcfd"
 THEME_ACCENT = "#0b7285"
+SITE_ENV_RAW = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
+SITE_ENV_EXPLICIT = bool(SITE_ENV_RAW)
+SITE_ENV = SITE_ENV_RAW
+SITE_DOMAIN = os.environ.get("AURORA_DOMAIN", "").strip()
+if not SITE_ENV and SITE_DOMAIN:
+    if "data-ocean" in SITE_DOMAIN:
+        SITE_ENV = "development"
+    elif SITE_DOMAIN == "data.gamb2le.co.uk":
+        SITE_ENV = "production"
+SITE_ENV = SITE_ENV or "unknown"
 
 
 class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
@@ -1741,6 +1751,89 @@ def _ops_failover_endpoint_card(snapshot: dict, endpoint: str, title: str, expec
     return _ops_card_markup(title, level, value, "; ".join(details))
 
 
+def _ops_site_env_card(snapshot: dict) -> str:
+    site_env = str(snapshot.get("site_env") or SITE_ENV or "unknown").strip().lower()
+    domain = str(snapshot.get("failover_collector_domain") or SITE_DOMAIN or "").strip()
+    role = str(snapshot.get("failover_collector_role") or "").strip()
+    level = "green" if site_env in {"production", "development"} else "amber"
+    value = site_env.title() if site_env else "Unknown"
+    details = [item for item in (domain, f"role={role}" if role else "") if item]
+    return _ops_card_markup("Site environment", level, value, "; ".join(details))
+
+
+def _ops_dev_mirror_level(snapshot: dict) -> str:
+    site_env = str(snapshot.get("site_env") or SITE_ENV or "").strip().lower()
+    if site_env != "development":
+        return "gray"
+    recent = _ops_bool(snapshot.get("dev_live_mirror_recent_state"))
+    if recent is not None:
+        return "green" if recent else "red"
+    age_min = _ops_float(snapshot.get("dev_live_mirror_age_min"))
+    threshold = _ops_float(snapshot.get("dev_live_mirror_recent_threshold_min")) or 7.5
+    if age_min is None:
+        return "gray"
+    if age_min <= threshold:
+        return "green"
+    if age_min <= threshold * 2:
+        return "amber"
+    return "red"
+
+
+def _ops_dev_mirror_card(snapshot: dict) -> str:
+    site_env = str(snapshot.get("site_env") or SITE_ENV or "").strip().lower()
+    if site_env != "development":
+        return _ops_card_markup("Mirror lag", "gray", "Not applicable", "Production owns the authoritative writers")
+    age_min = _ops_float(snapshot.get("dev_live_mirror_age_min"))
+    threshold = _ops_float(snapshot.get("dev_live_mirror_recent_threshold_min")) or 7.5
+    last_success = str(snapshot.get("dev_live_mirror_last_success_utc") or "").strip()
+    stamp = str(snapshot.get("dev_live_mirror_stamp_path") or "").strip()
+    error = str(snapshot.get("dev_live_mirror_error") or "").strip()
+    value = "Unknown" if age_min is None else _format_duration(timedelta(minutes=age_min))
+    details = [f"threshold {threshold:.1f} min"]
+    if last_success:
+        details.append(f"last success {last_success}")
+    if stamp:
+        details.append(stamp)
+    if error:
+        details.append(error[:120])
+    return _ops_card_markup("Mirror lag", _ops_dev_mirror_level(snapshot), value, "; ".join(details))
+
+
+def _ops_code_state_card(snapshot: dict, prefix: str, title: str) -> str:
+    exists = _ops_bool(snapshot.get(f"{prefix}_repo_exists_state"))
+    dirty_count = int(_ops_float(snapshot.get(f"{prefix}_git_dirty_count")) or 0)
+    behind_count = int(_ops_float(snapshot.get(f"{prefix}_git_behind_count")) or 0)
+    ahead_count = int(_ops_float(snapshot.get(f"{prefix}_git_ahead_count")) or 0)
+    if exists is False:
+        level = "red"
+        value = "Missing"
+    elif exists is None:
+        level = "gray"
+        value = "No probe data"
+    else:
+        level = _ops_worst_level(
+            [
+                "green",
+                _ops_level_from_count(dirty_count, amber_at=10.0),
+                "amber" if behind_count > 0 else "green",
+                "amber" if ahead_count > 0 else "green",
+            ]
+        )
+        value = str(snapshot.get(f"{prefix}_git_describe") or snapshot.get(f"{prefix}_git_commit") or "Unknown")
+    branch = str(snapshot.get(f"{prefix}_git_branch") or "").strip()
+    commit = str(snapshot.get(f"{prefix}_git_commit") or "").strip()
+    tag = str(snapshot.get(f"{prefix}_git_tag") or "").strip()
+    details = [
+        f"branch={branch}" if branch else "",
+        f"commit={commit}" if commit else "",
+        f"tag={tag}" if tag else "tag=none",
+        f"dirty={dirty_count}",
+        f"behind={behind_count}",
+        f"ahead={ahead_count}",
+    ]
+    return _ops_card_markup(title, level, value, "; ".join(item for item in details if item))
+
+
 def _ops_perf_summary(path: Path, hours: float = 24.0, max_rows: int = 5000) -> dict:
     if not path.exists():
         return {"level": "red", "value": "Missing", "meta": f"Expected {path}"}
@@ -2213,6 +2306,8 @@ def _ops_operations_markup() -> str:
         internal_temp_level = _ops_level_from_internal_temp(snapshot.get("aps_internal_temp_c"))
         perf_log_level = _ops_level_from_perf_log(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
+        site_env = str(snapshot.get("site_env") or SITE_ENV or "").strip().lower()
+        dev_mirror_level = _ops_dev_mirror_level(snapshot)
         transfer_level = _ops_worst_level(
             [
                 _ops_level_from_count(snapshot.get("failed_transfer_unit_count"), amber_at=1.0),
@@ -2246,6 +2341,8 @@ def _ops_operations_markup() -> str:
             transfer_level,
             mirror_level,
         ])
+        if site_env == "development":
+            overall_level = _ops_worst_level([overall_level, dev_mirror_level])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -2288,8 +2385,14 @@ def _ops_operations_markup() -> str:
         ]
         failover_level = _ops_worst_level(failover_endpoint_levels)
         failover_cards = [
-            _ops_failover_endpoint_card(snapshot, "primary", "JASMIN data endpoint", "data.gamb2le.co.uk"),
-            _ops_failover_endpoint_card(snapshot, "standby", "Droplet data-ocean endpoint", "data-ocean.gamb2le.co.uk"),
+            _ops_failover_endpoint_card(snapshot, "primary", "Production endpoint", "data.gamb2le.co.uk"),
+            _ops_failover_endpoint_card(snapshot, "standby", "Development endpoint", "data-ocean.gamb2le.co.uk"),
+        ]
+        deployment_cards = [
+            _ops_site_env_card(snapshot),
+            _ops_dev_mirror_card(snapshot),
+            _ops_code_state_card(snapshot, "dashboard_code", "Dashboard code"),
+            _ops_code_state_card(snapshot, "infra_code", "Infrastructure code"),
         ]
 
         summary_cards = [
@@ -2647,6 +2750,10 @@ def _ops_operations_markup() -> str:
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Seven-day trends</div>"
             f"<div class='ops-grid ops-grid--trends'>{trend_cards}</div>"
+            "</div>"
+            "<div class='ops-section'>"
+            "<div class='ops-section-title'>Deployment state</div>"
+            f"<div class='ops-grid ops-grid--summary'>{''.join(deployment_cards)}</div>"
             "</div>"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Public endpoints</div>"
@@ -7302,6 +7409,25 @@ body, .bk {
     color: #5b6673;
     line-height: 1.4;
 }
+.site-env-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid #c8e2e7;
+    border-radius: 8px;
+    background: #eef8fa;
+    color: #0b5f6b;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+.site-env-banner__meta {
+    color: #38606a;
+    font-size: 12px;
+    font-weight: 500;
+}
 .ops-shell {
     display: flex;
     flex-direction: column;
@@ -8514,6 +8640,20 @@ template = pn.template.MaterialTemplate(
 )
 
 
+def _site_env_banner_pane() -> pn.pane.HTML | None:
+    if SITE_ENV != "development" or not SITE_ENV_EXPLICIT:
+        return None
+    domain = SITE_DOMAIN or "data-ocean.gamb2le.co.uk"
+    return pn.pane.HTML(
+        "<div class='site-env-banner'>"
+        "<span>Development site - live mirrored data</span>"
+        f"<span class='site-env-banner__meta'>{escape(domain)}</span>"
+        "</div>",
+        sizing_mode="stretch_width",
+        margin=(0, 0, 8, 0),
+    )
+
+
 def _lightweight_placeholder(label: str) -> pn.pane.HTML:
     return pn.pane.HTML(
         f"<div class='lazy-tab-placeholder'>{escape(label)} will load after the page opens.</div>",
@@ -9288,7 +9428,8 @@ _APP_BOOTSTRAPPING = False
 if not _MOBILE_LAYOUT_ACTIVE:
     pn.state.onload(_enable_browser_interactive_render)
 
-template.main[:] = [main_layout]
+site_env_banner = _site_env_banner_pane()
+template.main[:] = ([site_env_banner] if site_env_banner is not None else []) + [main_layout]
 
 # Serve the app. `location=True` installs Panel's Location model so the app can
 # keep the browser URL aligned with the selected view.
