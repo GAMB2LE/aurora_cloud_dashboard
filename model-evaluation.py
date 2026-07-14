@@ -2706,6 +2706,18 @@ def _direct_model_variable_readiness(day: str) -> dict[str, object]:
     return readiness if isinstance(readiness, dict) else {}
 
 
+def _virtual_observatory_readiness(day: str) -> dict[str, object]:
+    status = _day_status(day)
+    if not isinstance(status, dict):
+        return {}
+    summary = status.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    readiness = status.get("virtual_observatory_readiness")
+    if not isinstance(readiness, dict):
+        readiness = summary.get("virtual_observatory_readiness")
+    return readiness if isinstance(readiness, dict) else {}
+
+
 def _direct_model_variable_readiness_panel(day: str) -> str:
     if not day:
         return ""
@@ -3026,6 +3038,100 @@ def _scorecard_caveat(scorecard: dict[str, object] | None, spec: dict[str, objec
     return "ready"
 
 
+def _instrument_path_overlay(
+    *,
+    day: str,
+    spec: dict[str, object],
+    caveat: str,
+    note: str,
+) -> dict[str, object]:
+    """Overlay path-level readiness onto one instrument comparison row."""
+
+    model_group = str(spec.get("model_group", ""))
+    model_label = str(spec.get("model", ""))
+    if model_group == "era5" or (
+        "ERA5" in model_label and "CM1" not in model_label
+    ):
+        readiness = _direct_model_variable_readiness(day)
+        current = readiness.get("current_work")
+        current = current if isinstance(current, dict) else {}
+        gate = readiness.get("external_gate")
+        gate = gate if isinstance(gate, dict) else {}
+        usable_models = readiness.get("usable_models")
+        usable_models = usable_models if isinstance(usable_models, list) else []
+        missing_models = readiness.get("missing_models")
+        missing_models = missing_models if isinstance(missing_models, list) else []
+        can_review = bool(current.get("can_review_now", readiness.get("review_ready", False)))
+        can_rank = bool(current.get("can_rank_all_models_now", False))
+        path_caveat = caveat
+        if caveat == "ready" and can_review and not can_rank:
+            path_caveat = "partial_review_ready"
+        elif caveat == "ready" and not can_review:
+            path_caveat = "blocked_missing_input"
+        path_note = _join_notes(
+            note,
+            (
+                "Direct path: review available-model evidence now; "
+                f"usable={_list_summary(usable_models, limit=4)}; "
+                f"waiting={_list_summary(missing_models, limit=4)}; "
+                f"rank all models={can_rank}."
+            ),
+        )
+        return {
+            "evaluation_path": "direct model variables",
+            "path_readiness": readiness.get("status", gate.get("status", "unknown")),
+            "path_review_ready": can_review,
+            "path_production_ready": bool(readiness.get("production_ready", False)),
+            "path_model_ranking_ready": can_rank,
+            "caveat": path_caveat,
+            "note": path_note,
+        }
+    if (
+        model_group in {"cm1", "synthetic"}
+        or model_label.startswith("CM1")
+        or "CM1 " in model_label
+    ):
+        readiness = _virtual_observatory_readiness(day)
+        gate = readiness.get("external_gate")
+        gate = gate if isinstance(gate, dict) else {}
+        review_ready = bool(readiness.get("review_ready", False))
+        status = str(readiness.get("status", gate.get("status", "unknown")) or "unknown")
+        path_caveat = caveat
+        if not review_ready and (
+            status.startswith("blocked")
+            or "waiting" in status
+            or gate.get("blocking") is True
+        ):
+            path_caveat = "blocked_missing_input"
+        path_note = _join_notes(
+            note,
+            (
+                "Full LES virtual observatory: blocked until CM1/CARRA2 forcing, "
+                "run and operator products are ready."
+            )
+            if path_caveat.startswith("blocked")
+            else "Full LES virtual-observatory evidence is reviewable.",
+        )
+        return {
+            "evaluation_path": "full LES virtual observatory",
+            "path_readiness": status,
+            "path_review_ready": review_ready,
+            "path_production_ready": review_ready,
+            "path_model_ranking_ready": review_ready,
+            "caveat": path_caveat,
+            "note": path_note,
+        }
+    return {
+        "evaluation_path": "process/diagnostic",
+        "path_readiness": "diagnostic_context",
+        "path_review_ready": caveat in {"ready", "diagnostic_only"},
+        "path_production_ready": caveat == "ready",
+        "path_model_ranking_ready": caveat == "ready",
+        "caveat": caveat,
+        "note": note,
+    }
+
+
 def _join_notes(*notes: str) -> str:
     return "; ".join(note for note in notes if note)
 
@@ -3148,6 +3254,11 @@ def _cloud_seb_process_instrument_row(
         "day": day,
         "instrument": spec.get("instrument", ""),
         "model": spec.get("model", ""),
+        "evaluation_path": "process/diagnostic",
+        "path_readiness": status,
+        "path_review_ready": caveat in {"ready", "diagnostic_only"},
+        "path_production_ready": caveat == "ready",
+        "path_model_ranking_ready": False,
         "model_group": spec.get("model_group", "surface"),
         "metric_family": spec.get("metric_family", "process"),
         "basis": spec.get("basis", ""),
@@ -3231,11 +3342,23 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         base_top = scorecard.get("cloud_base_top")
     base_top = base_top if isinstance(base_top, dict) else {}
     runtime = _bundle_runtime_summary(day)
+    caveat = _scorecard_caveat(scorecard, spec)
+    overlay = _instrument_path_overlay(
+        day=day,
+        spec=spec,
+        caveat=caveat,
+        note=note,
+    )
 
     return {
         "day": day,
         "instrument": spec.get("instrument", ""),
         "model": spec.get("model", ""),
+        "evaluation_path": overlay["evaluation_path"],
+        "path_readiness": overlay["path_readiness"],
+        "path_review_ready": overlay["path_review_ready"],
+        "path_production_ready": overlay["path_production_ready"],
+        "path_model_ranking_ready": overlay["path_model_ranking_ready"],
         "model_group": spec.get("model_group", "all"),
         "metric_family": spec.get("metric_family", "readiness"),
         "basis": spec.get("basis", ""),
@@ -3244,7 +3367,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         "cm1_eval_h": runtime["evaluation_hours"],
         "cm1_recipe_class": runtime["recipe_class"],
         "status": status,
-        "caveat": _scorecard_caveat(scorecard, spec),
+        "caveat": overlay["caveat"],
         "valid": valid,
         "pod": _metric_from(occurrence, ("probability_of_detection",)),
         "far": _metric_from(occurrence, ("false_alarm_ratio",)),
@@ -3273,7 +3396,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         ),
         "base_bias_m": _metric_from(base_top, ("cloud_base_bias_mean_m", "model_cloud_base_bias_mean_m")),
         "top_bias_m": _metric_from(base_top, ("cloud_top_bias_mean_m", "model_cloud_top_bias_mean_m")),
-        "note": note,
+        "note": overlay["note"],
     }
 
 
@@ -3351,6 +3474,7 @@ def _instrument_metric_cards(rows: list[dict[str, object]]) -> str:
         cards = [_card("selected products", 0), _card("status", "missing")]
         return f"<div class='model-grid'>{''.join(cards)}</div>"
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
+    partial = sum(1 for row in rows if "partial" in str(row.get("caveat", "")))
     diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
     blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
     csi_values = [
@@ -3362,6 +3486,7 @@ def _instrument_metric_cards(rows: list[dict[str, object]]) -> str:
     cards = [
         _card("selected products", len(rows)),
         _card("ready", ready),
+        _card("partial", partial),
         _card("diagnostic", diagnostic),
         _card("blocked", blocked),
         _card("mean CSI", _compact_float(csi_mean) if csi_mean is not None else "n/a"),
@@ -3387,6 +3512,8 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['day']))}</td>"
             f"<td>{escape(str(row['instrument']))}</td>"
             f"<td>{escape(str(row['model']))}</td>"
+            f"<td>{escape(str(row['evaluation_path']))}</td>"
+            f"<td>{_badge(row['path_readiness'])}</td>"
             f"<td>{_badge(row['caveat'])}</td>"
             f"<td>{escape(str(row['cm1_runtime_h']))}</td>"
             f"<td>{escape(str(row['cm1_eval_h']))}</td>"
@@ -3410,7 +3537,8 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table instrument-comparison-table'>"
         "<thead><tr><th>day</th><th>instrument</th><th>model/output</th>"
-        "<th>caveat</th><th>CM1 h</th><th>eval h</th><th>recipe</th>"
+        "<th>path</th><th>path readiness</th><th>caveat</th>"
+        "<th>CM1 h</th><th>eval h</th><th>recipe</th>"
         "<th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
         "<th>CSI</th><th>bias</th><th>RMSE</th><th>corr</th><th>base bias m</th>"
         "<th>top bias m</th><th>scorecard</th><th>note</th>"
@@ -5096,6 +5224,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
     )
     rows = build_instrument_catalog([latest_day]) if latest_day else []
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
+    partial = sum(1 for row in rows if "partial" in str(row.get("caveat", "")))
     diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
     blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
     cards = [
@@ -5118,6 +5247,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         _card("CM1 run h", latest_runtime.get("run_hours", "n/a")),
         _card("CM1 eval h", latest_runtime.get("evaluation_hours", "n/a")),
         _card("ready products", ready),
+        _card("partial products", partial),
         _card("diagnostic products", diagnostic),
         _card("blocked products", blocked),
         _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
