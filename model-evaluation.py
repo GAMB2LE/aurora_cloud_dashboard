@@ -1018,6 +1018,15 @@ INSTRUMENT_COMPARISON_SPECS = (
         "metric_family": "continuous",
         "caveat": "diagnostic_only",
     },
+    {
+        "instrument": "Cloud/SEB process",
+        "model": "ERA5 direct + CM1 full LES",
+        "model_group": "surface",
+        "scorecard": "cloud_seb_model_observation_review",
+        "basis": "Cloudnet-regime surface-energy process review",
+        "metric_family": "process",
+        "caveat": "diagnostic_only",
+    },
 )
 
 INSTRUMENT_GALLERY_SCORECARDS = {
@@ -1031,6 +1040,7 @@ INSTRUMENT_GALLERY_SCORECARDS = {
     "ASFS radiation": (("ASFS radiation", "asfs_logger_radiation_surface"),),
     "ASFS sonic": (("ASFS sonic/turbulence", "asfs_sonic_turbulence"),),
     "ASFS gas": (("ASFS gas", "asfs_gas"),),
+    "Cloud/SEB process": (),
 }
 
 MODEL_FILTERS = OrderedDict(
@@ -1049,6 +1059,7 @@ METRIC_FAMILY_FILTERS = OrderedDict(
         ("Occurrence skill", "occurrence"),
         ("Continuous values", "continuous"),
         ("Column / base-top", "column"),
+        ("Process diagnostics", "process"),
         ("Readiness only", "readiness"),
     ]
 )
@@ -1518,6 +1529,8 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                     "cloudnet": "missing",
                     "scorecards": "missing",
                     "seb": "missing",
+                    "cloud_seb_review": "missing",
+                    "cloud_seb_interpretation": "missing",
                     "cm1_runtime_h": runtime["run_hours"],
                     "cm1_eval_h": runtime["evaluation_hours"],
                     "cm1_recipe_class": runtime["recipe_class"],
@@ -1541,6 +1554,22 @@ def _lasso_bundle_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "cloudnet": _cloudnet_status_summary(payload.get("cloudnet")),
                 "scorecards": _scorecard_status_summary(payload.get("scorecards")),
                 "seb": _nested_status(payload, ["forward_operators", "rrtmgp_surface_energy_budget"]),
+                "cloud_seb_review": _nested_value(
+                    payload,
+                    ["readiness", "cloud_seb_process", "model_observation_review", "status"],
+                    "missing",
+                ),
+                "cloud_seb_interpretation": _nested_value(
+                    payload,
+                    [
+                        "readiness",
+                        "cloud_seb_process",
+                        "model_observation_review",
+                        "interpretation",
+                        "interpretation_class",
+                    ],
+                    "missing",
+                ),
                 "cm1_runtime_h": runtime["run_hours"],
                 "cm1_eval_h": runtime["evaluation_hours"],
                 "cm1_recipe_class": runtime["recipe_class"],
@@ -2991,8 +3020,75 @@ def _badge(value: object) -> str:
     return f"<span class='status-badge {css}'>{escape(text)}</span>"
 
 
+def _cloud_seb_process_instrument_row(
+    day: str,
+    spec: dict[str, object],
+) -> dict[str, object]:
+    process = _cloud_seb_process_summary(day)
+    review = _cloud_seb_model_observation_review(process)
+    interpretation = review.get("interpretation") if isinstance(review, dict) else {}
+    interpretation = interpretation if isinstance(interpretation, dict) else {}
+    pair = interpretation.get("process_window_highlight_pair")
+    pair = pair if isinstance(pair, dict) else {}
+    table = pair.get("table")
+    table = table if isinstance(table, dict) else {}
+    status = str(review.get("status") or process.get("model_observation_review_status") or "missing")
+    if "blocked" in status or "missing" in status:
+        caveat = status
+    elif "diagnostic" in status:
+        caveat = "diagnostic_only"
+    else:
+        caveat = "ready"
+    runtime = _bundle_runtime_summary(day)
+    output_json = review.get("output_json") or _day_file(
+        day,
+        "process",
+        "cloud_seb_model_observation_review.json",
+    )
+    note = interpretation.get("statement") or interpretation.get("interpretation_class") or ""
+    if table:
+        note = _join_notes(
+            str(note),
+            (
+                "hits={hits}; misses={misses}; false alarms={false_alarms}; "
+                "correct negatives={correct_negatives}"
+            ).format(
+                hits=table.get("observed_cloudy_model_cloudy", "n/a"),
+                misses=table.get("observed_cloudy_model_clear", "n/a"),
+                false_alarms=table.get("observed_clear_model_cloudy", "n/a"),
+                correct_negatives=table.get("observed_clear_model_clear", "n/a"),
+            ),
+        )
+    return {
+        "day": day,
+        "instrument": spec.get("instrument", ""),
+        "model": spec.get("model", ""),
+        "model_group": spec.get("model_group", "surface"),
+        "metric_family": spec.get("metric_family", "process"),
+        "basis": spec.get("basis", ""),
+        "scorecard": Path(str(output_json)).name,
+        "cm1_runtime_h": runtime["run_hours"],
+        "cm1_eval_h": runtime["evaluation_hours"],
+        "cm1_recipe_class": runtime["recipe_class"],
+        "status": status,
+        "caveat": caveat,
+        "valid": pair.get("paired_sample_count", "n/a"),
+        "pod": pair.get("probability_of_detection", "n/a"),
+        "far": pair.get("false_alarm_ratio", "n/a"),
+        "csi": pair.get("critical_success_index", "n/a"),
+        "bias": "n/a",
+        "rmse": "n/a",
+        "correlation": "n/a",
+        "base_bias_m": "n/a",
+        "top_bias_m": "n/a",
+        "note": note,
+    }
+
+
 def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, object]:
     scorecard_name = str(spec["scorecard"])
+    if scorecard_name == "cloud_seb_model_observation_review":
+        return _cloud_seb_process_instrument_row(day, spec)
     scorecard = load_scorecard(day, scorecard_name)
     payload = _comparison_payload(scorecard, spec)
     occurrence_key = spec.get("occurrence")
@@ -3246,6 +3342,12 @@ def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
 def render_scorecard_gallery(day: str | None, instrument: str = "all") -> str:
     if not day:
         return ""
+    if instrument == "Cloud/SEB process":
+        process = _cloud_seb_process_summary(day)
+        return (
+            f"{_cloud_seb_model_observation_note(process)}"
+            f"{_cloud_seb_process_plot_gallery(process)}"
+        )
     cards = []
     if instrument == "all":
         gallery_items = [
@@ -4248,6 +4350,7 @@ def _cloud_seb_process_summary(day: str) -> dict[str, object]:
             merged.update(status_process)
     if merged:
         _merge_cloud_seb_process_report(day, merged)
+        _merge_cloud_seb_model_observation_review(day, merged)
         return merged
     if isinstance(process, dict):
         production = process.get("production_readiness")
@@ -4288,6 +4391,70 @@ def _merge_cloud_seb_process_report(day: str, process: dict[str, object]) -> Non
             process["process_window_interpretation_statement"] = statement
 
 
+def _merge_cloud_seb_model_observation_review(day: str, process: dict[str, object]) -> None:
+    payload = _read_json(_day_file(day, "process", "cloud_seb_model_observation_review.json"))
+    review = payload.get("review") if isinstance(payload, dict) else None
+    if not isinstance(review, dict):
+        return
+    if not isinstance(process.get("model_observation_review"), dict):
+        process["model_observation_review"] = review
+    process.setdefault("model_observation_review_status", review.get("status"))
+    interpretation = review.get("interpretation")
+    if isinstance(interpretation, dict):
+        process.setdefault(
+            "model_observation_review_interpretation",
+            interpretation,
+        )
+        process.setdefault(
+            "model_observation_review_interpretation_class",
+            interpretation.get("interpretation_class"),
+        )
+
+
+def _cloud_seb_model_observation_review(process: dict[str, object]) -> dict[str, object]:
+    review = process.get("model_observation_review")
+    if isinstance(review, dict):
+        return review
+    status = process.get("model_observation_review_status")
+    if not status:
+        return {}
+    interpretation = process.get("model_observation_review_interpretation")
+    interpretation = interpretation if isinstance(interpretation, dict) else {}
+    plot_path = process.get("model_observation_review_plot")
+    plot = plot_path if isinstance(plot_path, dict) else {}
+    return {
+        "status": status,
+        "interpretation": interpretation,
+        "plot": plot,
+        "next_actions": process.get("model_observation_review_next_actions", []),
+    }
+
+
+def _cloud_seb_model_observation_note(process: dict[str, object]) -> str:
+    review = _cloud_seb_model_observation_review(process)
+    if not review:
+        return ""
+    interpretation = review.get("interpretation")
+    interpretation = interpretation if isinstance(interpretation, dict) else {}
+    statement = interpretation.get("statement")
+    interpretation_class = interpretation.get("interpretation_class")
+    all_clear = interpretation.get("all_clear_model_roles")
+    if isinstance(all_clear, list) and all_clear:
+        role_text = ", ".join(str(role) for role in all_clear)
+        detail = f" All-clear model roles: {role_text}."
+    else:
+        detail = ""
+    return (
+        "<div class='model-note'>"
+        "<strong>Model-observation cloud/SEB review:</strong> "
+        f"{_badge(review.get('status'))} "
+        f"{escape(str(interpretation_class or 'not classified'))}. "
+        f"{escape(str(statement or 'No interpretation statement is available.'))}"
+        f"{escape(detail)}"
+        "</div>"
+    )
+
+
 def _cloud_seb_process_gate_panel(day: str) -> str:
     if not day:
         return ""
@@ -4312,6 +4479,14 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
     cards = [
         _card("process gate", process.get("production_readiness_status", "unknown")),
         _card("blocked gates", process.get("production_blocked_gate_count", 0)),
+        _card(
+            "model-observation review",
+            process.get("model_observation_review_status", "missing"),
+        ),
+        _card(
+            "regime conclusion",
+            process.get("model_observation_review_interpretation_class", "missing"),
+        ),
         _card("ERA5 process", process.get("production_era5_process_ready", False)),
         _card("CM1 LES process", process.get("production_les_ready", False)),
         _card("ready roles", _list_summary(ready_roles, limit=3)),
@@ -4390,7 +4565,13 @@ def _process_plot_card(title: str, plot: object, note: str = "") -> str:
 
 
 def _cloud_seb_process_plot_gallery(process: dict[str, object]) -> str:
+    model_observation = _cloud_seb_model_observation_review(process)
     cards = [
+        _process_plot_card(
+            "Model-observation cloud/SEB review",
+            model_observation.get("plot") if model_observation else {},
+            "One-page regime check: shows whether models produce cloud in the same Cloudnet/SEB window as observations.",
+        ),
         _process_plot_card(
             "Observed Cloudnet-regime cloud/SEB",
             process.get("plot"),
@@ -4623,6 +4804,7 @@ def _cloud_seb_process_evidence_panel(day: str) -> str:
         return ""
     return (
         "<div class='model-section-title'>Cloud/SEB Process Evidence</div>"
+        f"{_cloud_seb_model_observation_note(process)}"
         f"{_cloud_seb_process_plot_gallery(process)}"
         f"{_cloud_seb_scorecard_table(process)}"
         f"{_cloud_seb_process_window_contingency(process)}"
@@ -4898,6 +5080,8 @@ def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = Fal
             f"<td>{escape(str(row.get('mmdf', '')))}</td>"
             f"<td>{escape(str(row.get('cloudnet', '')))}</td>"
             f"<td>{escape(str(row.get('seb', '')))}</td>"
+            f"<td>{escape(str(row.get('cloud_seb_review', '')))}</td>"
+            f"<td>{escape(str(row.get('cloud_seb_interpretation', '')))}</td>"
             f"<td>{escape(str(row.get('cm1_runtime_h', 'n/a')))}</td>"
             f"<td>{escape(str(row.get('cm1_eval_h', 'n/a')))}</td>"
             f"<td>{escape(str(row.get('cm1_recipe_class', 'unknown')))}</td>"
@@ -4916,6 +5100,7 @@ def _lasso_bundle_table(rows: list[dict[str, object]], include_paths: bool = Fal
         "<thead><tr>"
         "<th>day</th><th>bundle</th><th>compliance</th><th>compliance detail</th>"
         "<th>MODF</th><th>MMDF</th><th>Cloudnet</th><th>SEB</th>"
+        "<th>cloud/SEB review</th><th>cloud/SEB interpretation</th>"
         "<th>CM1 h</th><th>eval h</th><th>recipe</th>"
         "<th>scheduler</th><th>priority</th><th>QA</th><th>actions</th><th>scorecards</th>"
         f"{path_headers}"
@@ -4944,6 +5129,11 @@ def _lasso_bundle_panel(_clicks: int = 0) -> pn.Column:
         _card("latest compliance", rows[0].get("compliance", "missing") if rows else "missing"),
         _card("latest CM1 h", rows[0].get("cm1_runtime_h", "n/a") if rows else "n/a"),
         _card("latest eval h", rows[0].get("cm1_eval_h", "n/a") if rows else "n/a"),
+        _card("cloud/SEB review", rows[0].get("cloud_seb_review", "missing") if rows else "missing"),
+        _card(
+            "cloud/SEB interpretation",
+            rows[0].get("cloud_seb_interpretation", "missing") if rows else "missing",
+        ),
         _card("QA incomplete", operational_qa_rollup.get("qa_incomplete_day_count", "n/a")),
         _card("latest updated", _format_mtime(latest_path)),
         *_archive_manifest_cards(archive_manifest),
