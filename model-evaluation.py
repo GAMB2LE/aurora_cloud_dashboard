@@ -2694,6 +2694,75 @@ def _cm1_forcing_handoff_panel(index: dict[str, object] | None) -> str:
     )
 
 
+def _direct_model_variable_readiness(day: str) -> dict[str, object]:
+    status = _day_status(day)
+    if not isinstance(status, dict):
+        return {}
+    summary = status.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    readiness = status.get("direct_model_variable_readiness")
+    if not isinstance(readiness, dict):
+        readiness = summary.get("direct_model_variable_readiness")
+    return readiness if isinstance(readiness, dict) else {}
+
+
+def _direct_model_variable_readiness_panel(day: str) -> str:
+    if not day:
+        return ""
+    readiness = _direct_model_variable_readiness(day)
+    if not readiness:
+        return ""
+    gate = readiness.get("external_gate")
+    gate = gate if isinstance(gate, dict) else {}
+    current = readiness.get("current_work")
+    current = current if isinstance(current, dict) else {}
+    comparison = readiness.get("comparison_readiness")
+    comparison = comparison if isinstance(comparison, dict) else {}
+    cards = [
+        _card("direct path", readiness.get("status", "unknown")),
+        _card("review now", current.get("can_review_now", readiness.get("review_ready", "unknown"))),
+        _card("usable models", _list_summary(readiness.get("usable_models"), limit=4)),
+        _card("missing models", _list_summary(readiness.get("missing_models"), limit=4)),
+        _card("rank all models", current.get("can_rank_all_models_now", False)),
+        _card("coverage", comparison.get("coverage", "unknown")),
+        _card("next step", current.get("next_command_step_id", "unknown")),
+        _card("retry after", gate.get("recommended_retry_after_utc", "none")),
+    ]
+    safe_work = _list_summary(current.get("safe_work_while_waiting"), limit=4)
+    do_not_use = _list_summary(current.get("do_not_use_for"), limit=4)
+    rows = [
+        ("gate", gate.get("status", readiness.get("status", "unknown"))),
+        ("blocks current review", gate.get("blocks_current_review", "unknown")),
+        ("blocks full model ranking", gate.get("blocks_full_model_ranking", "unknown")),
+        ("external wait", gate.get("external", "unknown")),
+        ("model input status", gate.get("model_input_status", "unknown")),
+        ("current work", current.get("state", "unknown")),
+        ("safe work now", safe_work),
+        ("do not use for", do_not_use),
+        ("next action", current.get("next_action", readiness.get("next_action", "unknown"))),
+    ]
+    body = "".join(
+        "<tr>"
+        f"<th>{escape(str(label))}</th>"
+        f"<td>{_badge(value) if label in {'gate', 'current work'} else escape(str(value))}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        "<div class='model-section-title'>Direct Model Path Readiness</div>"
+        "<div class='model-note'>"
+        "Direct model-variable products can be reviewed independently from the "
+        "CM1/CARRA2 virtual observatory. Available-model products are usable for "
+        "science review; missing parent models remain excluded from ranking."
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        f"<tbody>{body}</tbody>"
+        "</table></div>"
+    )
+
+
 def _int_value(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -5068,6 +5137,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
+        f"{_direct_model_variable_readiness_panel(latest_day)}"
         f"{_cloudnet_backbone_review_panel(index)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_direct_model_evidence_panel(latest_day)}"
@@ -5273,6 +5343,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
+        f"{_direct_model_variable_readiness_panel(str(latest.get('day', '') or latest_summary_day or ''))}"
         f"{_cm1_forcing_handoff_panel(index)}"
         f"{_operational_table(rows)}"
         f"{detail_html}"
