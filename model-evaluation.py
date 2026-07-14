@@ -5081,6 +5081,31 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
     source_recovery_actions = (
         source_recovery_actions if isinstance(source_recovery_actions, list) else []
     )
+    alternate_candidate_count = process.get(
+        "source_window_recovery_alternate_window_candidate_count",
+        source_recovery.get("alternate_window_candidate_count", 0),
+    )
+    top_alternate_candidate = process.get(
+        "source_window_recovery_top_alternate_window_candidate"
+    )
+    top_alternate_candidate = (
+        top_alternate_candidate
+        if isinstance(top_alternate_candidate, dict)
+        else source_recovery.get("top_alternate_window_candidate")
+    )
+    top_alternate_candidate = (
+        top_alternate_candidate if isinstance(top_alternate_candidate, dict) else {}
+    )
+    top_alternate_label = "none"
+    if top_alternate_candidate:
+        top_alternate_label = " / ".join(
+            str(value)
+            for value in (
+                top_alternate_candidate.get("day"),
+                top_alternate_candidate.get("selection_status"),
+            )
+            if value
+        ) or "candidate listed"
     cards = [
         _card("process gate", process.get("production_readiness_status", "unknown")),
         _card("blocked gates", process.get("production_blocked_gate_count", 0)),
@@ -5114,6 +5139,8 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
                 limit=4,
             ),
         ),
+        _card("alternate windows", alternate_candidate_count),
+        _card("top alternate", top_alternate_label),
     ]
     gate_rows = []
     for gate_id, gate_status in sorted(gate_statuses.items()):
