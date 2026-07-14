@@ -3152,6 +3152,118 @@ def _comparison_readiness_panel(day: str) -> str:
     )
 
 
+TRACK_LABELS = {
+    "direct_model_variable_evaluation": "Direct model variables",
+    "full_les_virtual_observatory": "Full LES virtual observatory",
+    "cloud_seb_process_understanding": "Cloud and SEB process",
+}
+
+
+def _review_tracks_summary(day: str) -> dict[str, object]:
+    review = _day_review_index(day)
+    if not isinstance(review, dict):
+        return {}
+    readiness = review.get("readiness")
+    if not isinstance(readiness, dict):
+        return {}
+    tracks = readiness.get("review_tracks")
+    return tracks if isinstance(tracks, dict) else {}
+
+
+def _review_track_bool(value: object) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _review_track_evidence(track: dict[str, object]) -> str:
+    mode = str(track.get("mode") or "")
+    if mode == "direct_model_variables":
+        usable = _list_summary(track.get("usable_models"))
+        held = _list_summary(track.get("held_models"))
+        return f"usable: {usable}; waiting: {held}"
+    if mode == "full_les_virtual_observatory":
+        scorecard = track.get("wband_scorecard_status", "missing")
+        overlap = track.get("observation_overlap_status", "not_checked")
+        matches = track.get("valid_coordinate_matches", "n/a")
+        return f"W-band: {scorecard}; overlap: {overlap}; pairs: {matches}"
+    if mode == "cloudnet_regime_cloud_seb_process":
+        comparison = track.get(
+            "comparison_status",
+            track.get("comparison_state", "unknown"),
+        )
+        window = track.get("process_window_status", "unknown")
+        label = track.get("process_window_interpretation_class", "n/a")
+        return f"comparison: {comparison}; window: {window}; class: {label}"
+    return str(track.get("comparison_state") or track.get("coverage") or "unknown")
+
+
+def _review_track_rows(tracks: dict[str, object]) -> list[dict[str, object]]:
+    raw_tracks = tracks.get("tracks")
+    if not isinstance(raw_tracks, dict):
+        return []
+    rows = []
+    for track_id in (
+        "direct_model_variable_evaluation",
+        "full_les_virtual_observatory",
+        "cloud_seb_process_understanding",
+    ):
+        track = raw_tracks.get(track_id)
+        if not isinstance(track, dict):
+            continue
+        rows.append({"track_id": track_id, **track})
+    return rows
+
+
+def _review_tracks_panel(day: str) -> str:
+    if not day:
+        return ""
+    tracks = _review_tracks_summary(day)
+    rows = _review_track_rows(tracks)
+    if not rows:
+        return (
+            "<div class='model-section-title'>Evaluation Tracks</div>"
+            "<div class='model-note'>No dashboard review-track summary is available for this day.</div>"
+        )
+    cards = [
+        _card("track status", tracks.get("status", "unknown")),
+        _card("review ready", len(tracks.get("review_ready_track_ids", []) or [])),
+        _card("diagnostic", len(tracks.get("diagnostic_track_ids", []) or [])),
+        _card(
+            "production blocked",
+            len(tracks.get("production_blocked_track_ids", []) or []),
+        ),
+    ]
+    body = []
+    for track in rows:
+        track_id = str(track.get("track_id") or "")
+        label = str(track.get("label") or TRACK_LABELS.get(track_id, track_id))
+        evidence = _review_track_evidence(track)
+        next_action = str(track.get("next_action") or "")
+        body.append(
+            "<tr>"
+            f"<td>{escape(label)}</td>"
+            f"<td>{escape(str(track.get('status', 'unknown')))}</td>"
+            f"<td>{escape(_review_track_bool(track.get('can_review_now')))}</td>"
+            f"<td>{escape(_review_track_bool(track.get('production_ready')))}</td>"
+            f"<td>{escape(evidence)}</td>"
+            f"<td>{escape(next_action)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='model-section-title'>Evaluation Tracks</div>"
+        "<div class='model-note'>"
+        "Top-level review state for the rebuilt direct path, full LES virtual observatory, "
+        "and Cloudnet-regime cloud/surface-energy diagnostics."
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table review-track-table'>"
+        "<thead><tr><th>track</th><th>state</th><th>review</th>"
+        "<th>production</th><th>evidence</th><th>next action</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _int_value(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -5853,6 +5965,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_review_tracks_panel(latest_day)}"
         f"{_comparison_readiness_panel(latest_day)}"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
@@ -7248,6 +7361,9 @@ body, .bk {
 }
 .operational-table {
     min-width: 980px;
+}
+.review-track-table {
+    min-width: 1040px;
 }
 .asfs-detail-table {
     min-width: 920px;
