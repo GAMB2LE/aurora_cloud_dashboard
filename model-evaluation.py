@@ -3030,7 +3030,23 @@ def _cloud_seb_process_instrument_row(
     interpretation = interpretation if isinstance(interpretation, dict) else {}
     pair = interpretation.get("process_window_highlight_pair")
     pair = pair if isinstance(pair, dict) else {}
+    if not pair:
+        process_window = process.get("process_window")
+        process_window = process_window if isinstance(process_window, dict) else {}
+        pairs = process_window.get("pairs")
+        pairs = pairs if isinstance(pairs, dict) else {}
+        candidate = pairs.get("direct_era5") or next(
+            (value for value in pairs.values() if isinstance(value, dict)),
+            {},
+        )
+        pair = candidate if isinstance(candidate, dict) else {}
+    contingency = pair.get("regime_contingency")
+    contingency = contingency if isinstance(contingency, dict) else {}
+    metrics = contingency.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
     table = pair.get("table")
+    if not isinstance(table, dict):
+        table = contingency.get("table")
     table = table if isinstance(table, dict) else {}
     status = str(review.get("status") or process.get("model_observation_review_status") or "missing")
     if "blocked" in status or "missing" in status:
@@ -3072,10 +3088,19 @@ def _cloud_seb_process_instrument_row(
         "cm1_recipe_class": runtime["recipe_class"],
         "status": status,
         "caveat": caveat,
-        "valid": pair.get("paired_sample_count", "n/a"),
-        "pod": pair.get("probability_of_detection", "n/a"),
-        "far": pair.get("false_alarm_ratio", "n/a"),
-        "csi": pair.get("critical_success_index", "n/a"),
+        "valid": pair.get("paired_sample_count", metrics.get("sample_count", "n/a")),
+        "pod": pair.get(
+            "probability_of_detection",
+            metrics.get("probability_of_detection", "n/a"),
+        ),
+        "far": pair.get(
+            "false_alarm_ratio",
+            metrics.get("false_alarm_ratio", "n/a"),
+        ),
+        "csi": pair.get(
+            "critical_success_index",
+            metrics.get("critical_success_index", "n/a"),
+        ),
         "bias": "n/a",
         "rmse": "n/a",
         "correlation": "n/a",
