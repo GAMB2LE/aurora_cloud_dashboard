@@ -5075,6 +5075,12 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
     blocking_gate_ids = blocking_gate_ids if isinstance(blocking_gate_ids, list) else []
     if not gate_statuses and blocking_gate_ids:
         gate_statuses = {str(gate): "blocked" for gate in blocking_gate_ids}
+    source_recovery = process.get("source_window_recovery")
+    source_recovery = source_recovery if isinstance(source_recovery, dict) else {}
+    source_recovery_actions = source_recovery.get("action_queue")
+    source_recovery_actions = (
+        source_recovery_actions if isinstance(source_recovery_actions, list) else []
+    )
     cards = [
         _card("process gate", process.get("production_readiness_status", "unknown")),
         _card("blocked gates", process.get("production_blocked_gate_count", 0)),
@@ -5092,6 +5098,22 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
         _card("blocked roles", _list_summary(blocked_roles, limit=3)),
         _card("missing roles", _list_summary(missing_roles, limit=3)),
         _card("comparison", process.get("comparison_status", "unknown")),
+        _card("source recovery", process.get("source_window_recovery_status", "unknown")),
+        _card(
+            "source feasibility",
+            process.get("source_window_recovery_feasibility_status", "unknown"),
+        ),
+        _card(
+            "limiting roles",
+            _list_summary(process.get("source_window_recovery_limiting_roles"), limit=4),
+        ),
+        _card(
+            "limiting streams",
+            _list_summary(
+                process.get("source_window_recovery_limiting_streams"),
+                limit=4,
+            ),
+        ),
     ]
     gate_rows = []
     for gate_id, gate_status in sorted(gate_statuses.items()):
@@ -5110,9 +5132,33 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
             f"<tbody>{''.join(gate_rows)}</tbody>"
             "</table></div>"
         )
+    source_rows = []
+    for action in source_recovery_actions[:6]:
+        if not isinstance(action, dict):
+            continue
+        source_rows.append(
+            "<tr>"
+            f"<td>{escape(str(action.get('priority', '')))}</td>"
+            f"<td>{escape(str(action.get('role') or action.get('stream') or ''))}</td>"
+            f"<td>{_badge(action.get('status', 'unknown'))}</td>"
+            f"<td>{escape(str(action.get('category', '')))}</td>"
+            f"<td>{escape(str(action.get('action', '')))}</td>"
+            "</tr>"
+        )
+    source_table = ""
+    if source_rows:
+        source_table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table'>"
+            "<thead><tr><th>priority</th><th>role/stream</th><th>state</th>"
+            "<th>category</th><th>action</th></tr></thead>"
+            f"<tbody>{''.join(source_rows)}</tbody>"
+            "</table></div>"
+        )
     next_action = process.get("production_top_next_action") or process.get(
         "process_triage_next_unlock"
     )
+    source_next_action = process.get("source_window_recovery_next_action")
     diagnostic_statement = process.get("diagnostic_lwp_process_statement")
     diagnostic_note = ""
     if diagnostic_statement:
@@ -5126,7 +5172,11 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
         "<div class='model-note'>"
         f"Next action: {escape(str(next_action or 'Inspect cloud/SEB process readiness.'))}"
         "</div>"
+        "<div class='model-note'>"
+        f"Source-window action: {escape(str(source_next_action or 'No source-window recovery action recorded.'))}"
+        "</div>"
         f"{diagnostic_note}"
+        f"{source_table}"
         f"{gate_table}"
     )
 
