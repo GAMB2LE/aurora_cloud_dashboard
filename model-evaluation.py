@@ -5497,6 +5497,138 @@ def _direct_science_summary(day: str) -> dict[str, object]:
     return direct if isinstance(direct, dict) else {}
 
 
+def _direct_era5_process_verdict(day: str) -> dict[str, object]:
+    summary = _direct_science_summary(day)
+    readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
+    process = (
+        readiness.get("cloud_seb_process_review")
+        if isinstance(readiness.get("cloud_seb_process_review"), dict)
+        else {}
+    )
+    highlight = (
+        process.get("process_window_highlight_pair")
+        if isinstance(process.get("process_window_highlight_pair"), dict)
+        else {}
+    )
+    if not highlight:
+        for raw in summary.get("key_conclusions", []):
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("topic") == "cloud_seb_process_window" and raw.get("role") == "direct_era5":
+                highlight = raw
+                break
+    if not highlight:
+        return {
+            "exists": False,
+            "status": process.get("process_window_status")
+            or process.get("status")
+            or "not_available",
+            "statement": process.get("process_window_statement")
+            or "Direct ERA5 process-window verdict is not available yet.",
+        }
+    table = highlight.get("table") if isinstance(highlight.get("table"), dict) else {}
+    hits = _metric_or_table_value(highlight, table, "hits", "observed_cloudy_model_cloudy")
+    misses = _metric_or_table_value(
+        highlight,
+        table,
+        "misses",
+        "observed_cloudy_model_clear",
+    )
+    false_alarms = _metric_or_table_value(
+        highlight,
+        table,
+        "false_alarms",
+        "observed_clear_model_cloudy",
+    )
+    correct_negatives = _metric_or_table_value(
+        highlight,
+        table,
+        "correct_negatives",
+        "observed_clear_model_clear",
+    )
+    return {
+        "exists": True,
+        "status": highlight.get("status")
+        or process.get("process_window_status")
+        or process.get("status")
+        or "unknown",
+        "interpretation_class": process.get("process_window_interpretation_class")
+        or highlight.get("interpretation_class")
+        or "unknown",
+        "statement": process.get("process_window_statement")
+        or highlight.get("statement")
+        or "Direct ERA5 process-window verdict is available.",
+        "role": highlight.get("role") or "direct_era5",
+        "paired_sample_count": highlight.get("paired_sample_count"),
+        "hits": hits,
+        "misses": misses,
+        "false_alarms": false_alarms,
+        "correct_negatives": correct_negatives,
+        "probability_of_detection": highlight.get("probability_of_detection"),
+        "false_alarm_ratio": highlight.get("false_alarm_ratio"),
+        "critical_success_index": highlight.get("critical_success_index"),
+        "dominant_pair": highlight.get("dominant_pair") or "unknown",
+        "production_use": highlight.get("production_use") or "diagnostic_only",
+    }
+
+
+def _metric_or_table_value(
+    metrics: dict[str, object],
+    table: dict[str, object],
+    metric_key: str,
+    table_key: str,
+) -> object:
+    value = metrics.get(metric_key)
+    return table.get(table_key, value)
+
+
+def _direct_era5_process_verdict_panel(day: str) -> str:
+    verdict = _direct_era5_process_verdict(day)
+    if not verdict.get("exists"):
+        return (
+            "<div class='direct-verdict model-note'>"
+            f"{escape(str(verdict.get('statement', 'Direct ERA5 verdict is not available.')))}"
+            "</div>"
+        )
+    cards = [
+        _card("ERA5 process verdict", verdict.get("interpretation_class", "unknown")),
+        _card("paired samples", verdict.get("paired_sample_count", "n/a")),
+        _card("hits", verdict.get("hits", "n/a")),
+        _card("misses", verdict.get("misses", "n/a")),
+        _card("false alarms", verdict.get("false_alarms", "n/a")),
+        _card("POD", _compact_float(verdict.get("probability_of_detection"))),
+        _card("FAR", _compact_float(verdict.get("false_alarm_ratio"))),
+        _card("CSI", _compact_float(verdict.get("critical_success_index"))),
+    ]
+    body = (
+        "<tr>"
+        "<th>observed cloudy</th>"
+        f"<td>{escape(str(verdict.get('hits', 0)))}</td>"
+        f"<td>{escape(str(verdict.get('misses', 0)))}</td>"
+        "</tr>"
+        "<tr>"
+        "<th>observed clear</th>"
+        f"<td>{escape(str(verdict.get('false_alarms', 0)))}</td>"
+        f"<td>{escape(str(verdict.get('correct_negatives', 0)))}</td>"
+        "</tr>"
+    )
+    return (
+        "<div class='direct-verdict'>"
+        "<div class='model-subsection-title'>Direct ERA5 Cloud/SEB Process Verdict</div>"
+        "<div class='model-note'>"
+        f"{escape(str(verdict.get('statement', 'No verdict statement is available.')))} "
+        f"Production use: {escape(str(verdict.get('production_use', 'diagnostic_only')))}."
+        "</div>"
+        f"<div class='model-grid direct-verdict-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap direct-verdict-table-wrap'>"
+        "<table class='model-table direct-verdict-table'>"
+        "<thead><tr><th></th><th>model cloudy</th><th>model clear</th></tr></thead>"
+        f"<tbody>{body}</tbody>"
+        "</table></div>"
+        "</div>"
+    )
+
+
 def _direct_review_report(day: str) -> dict[str, object]:
     payload = _read_json(_day_file(day, "process", "direct_review_report.json"))
     if isinstance(payload, dict) and isinstance(payload.get("report"), dict):
@@ -5650,6 +5782,7 @@ def _direct_model_evidence_panel(day: str) -> str:
         "<div class='model-section-title'>Direct Model-Evaluation Evidence</div>"
         f"<div class='model-note'>{escape(str(headline))}</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_direct_era5_process_verdict_panel(day)}"
         f"{plot_card}"
         f"{_direct_model_table(day)}"
         f"{_direct_highlight_table(day)}"
@@ -7145,6 +7278,21 @@ body, .bk {
     width: 100%;
     max-height: 430px;
     object-fit: contain;
+}
+.direct-verdict {
+    margin: 12px 0 14px;
+}
+.direct-verdict-grid {
+    margin: 8px 0 10px;
+}
+.direct-verdict-table-wrap {
+    max-width: 520px;
+}
+.direct-verdict-table {
+    min-width: 360px;
+}
+.direct-verdict-table th {
+    width: auto;
 }
 .schematic {
     display: grid;
