@@ -3057,6 +3057,101 @@ def _direct_model_variable_readiness_panel(day: str) -> str:
     )
 
 
+def _comparison_readiness_summary(day: str) -> dict[str, object]:
+    if not day:
+        return {}
+    review = _day_review_index(day)
+    if isinstance(review, dict):
+        readiness = review.get("readiness")
+        if isinstance(readiness, dict):
+            comparison = readiness.get("comparison_readiness")
+            if isinstance(comparison, dict):
+                return comparison
+    status = _day_status(day)
+    if isinstance(status, dict):
+        summary = status.get("summary")
+        if isinstance(summary, dict):
+            comparison = summary.get("v1_comparison_readiness")
+            if isinstance(comparison, dict):
+                return comparison
+    bundle = load_day_bundle(day)
+    readiness = bundle.get("readiness") if isinstance(bundle, dict) else None
+    objective = readiness.get("v1_objective") if isinstance(readiness, dict) else None
+    comparison = objective.get("comparison_readiness") if isinstance(objective, dict) else None
+    return comparison if isinstance(comparison, dict) else {}
+
+
+def _comparison_path_label(path_id: object) -> str:
+    labels = {
+        "direct_model_variable_path": "Direct model variables",
+        "full_les_virtual_observatory_path": "Full LES virtual observatory",
+        "cloudnet_regime_cloud_seb_process": "Cloud/SEB process",
+    }
+    return labels.get(str(path_id), str(path_id))
+
+
+def _comparison_readiness_panel(day: str) -> str:
+    comparison = _comparison_readiness_summary(day)
+    if not comparison:
+        return ""
+    paths = comparison.get("paths")
+    paths = paths if isinstance(paths, dict) else {}
+    process = paths.get("cloudnet_regime_cloud_seb_process")
+    process = process if isinstance(process, dict) else {}
+    cards = [
+        _card("ready paths", _list_summary(comparison.get("ready_path_ids"), limit=4)),
+        _card(
+            "reviewable paths",
+            _list_summary(comparison.get("reviewable_path_ids"), limit=4),
+        ),
+        _card(
+            "reviewable blocked",
+            _list_summary(comparison.get("reviewable_blocked_path_ids"), limit=4),
+        ),
+        _card(
+            "ranking blocked",
+            _list_summary(comparison.get("ranking_blocked_path_ids"), limit=4),
+        ),
+        _card("Cloud/SEB state", process.get("state", "unknown")),
+        _card("Cloud/SEB review", process.get("review_ready", "unknown")),
+    ]
+    rows = []
+    for path_id, payload in sorted(paths.items()):
+        if not isinstance(payload, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{escape(_comparison_path_label(path_id))}</td>"
+            f"<td>{_badge(payload.get('state', 'unknown'))}</td>"
+            f"<td>{escape(str(payload.get('review_ready', False)))}</td>"
+            f"<td>{escape(str(payload.get('production_ready', False)))}</td>"
+            f"<td>{escape(str(payload.get('blocks_model_ranking', True)))}</td>"
+            f"<td>{escape(str(payload.get('reason_code', 'unknown')))}</td>"
+            f"<td>{escape(str(payload.get('next_action', '')))}</td>"
+            "</tr>"
+        )
+    table = ""
+    if rows:
+        table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table'>"
+            "<thead><tr><th>path</th><th>state</th><th>reviewable</th>"
+            "<th>production</th><th>blocks ranking</th><th>reason</th>"
+            "<th>next action</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table></div>"
+        )
+    return (
+        "<div class='model-section-title'>Comparison Path Readiness</div>"
+        "<div class='model-note'>"
+        "Reviewable-but-blocked paths have useful diagnostic evidence, but must "
+        "not be used for production model ranking until the stated blocker clears."
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{table}"
+    )
+
+
 def _int_value(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -5548,6 +5643,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_comparison_readiness_panel(latest_day)}"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
         f"{_side_loaded_input_handoff_panel(latest_day)}"
