@@ -1316,7 +1316,13 @@ def _direct_continuous_metrics(variable_score: dict[str, object]) -> dict[str, o
 
 def _direct_occurrence_metrics(variable_score: dict[str, object]) -> dict[str, object]:
     occurrence = variable_score.get("binary_occurrence")
-    return dict(occurrence) if isinstance(occurrence, dict) else {}
+    if not isinstance(occurrence, dict):
+        return {}
+    metrics = dict(occurrence)
+    if "sample_count" in occurrence:
+        metrics.setdefault("valid_points", occurrence["sample_count"])
+        metrics.setdefault("valid_times", occurrence["sample_count"])
+    return metrics
 
 
 def _direct_alias_scorecard(
