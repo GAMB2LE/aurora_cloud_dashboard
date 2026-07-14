@@ -1043,6 +1043,44 @@ INSTRUMENT_GALLERY_SCORECARDS = {
     "Cloud/SEB process": (),
 }
 
+DIRECT_SCORECARD_ALIASES = {
+    "era5_cloud_fraction": {
+        "source": "direct_era5",
+        "variable": "cloud_fraction",
+        "comparison": "cf_V",
+        "occurrence": "contingency",
+        "metrics": "point_metrics",
+    },
+    "era5_lwc": {
+        "source": "direct_era5",
+        "variable": "liquid_water_content",
+        "column_variable": "liquid_water_path",
+        "comparison": "lwc",
+        "occurrence": "liquid_occurrence",
+        "metrics": "point_metrics",
+        "column_metrics": "lwp_metrics",
+    },
+    "era5_iwc": {
+        "source": "direct_era5",
+        "variable": "ice_water_content",
+        "comparison": "iwc",
+        "occurrence": "ice_occurrence",
+        "metrics": "point_metrics",
+    },
+    "surface_met": {
+        "source": "direct_era5",
+        "variable": "air_temperature",
+        "comparison": "air_temperature",
+        "metrics": "metrics",
+    },
+    "asfs_logger_radiation_surface": {
+        "source": "direct_era5",
+        "variable": "surface_downwelling_longwave_radiation",
+        "comparison": "longwave_downwelling",
+        "metrics": "metrics",
+    },
+}
+
 MODEL_FILTERS = OrderedDict(
     [
         ("All model outputs", "all"),
@@ -1207,6 +1245,139 @@ def _direct_scorecard(day: str, name: str) -> dict[str, object] | None:
     return _read_json(_day_file(day, "scorecards", f"{name}.json"))
 
 
+def _unwrap_scorecard(payload: dict[str, object] | None) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    scorecard = payload.get("scorecard")
+    if not isinstance(scorecard, dict):
+        return payload
+    merged = dict(scorecard)
+    if "generated_at_utc" in payload:
+        merged.setdefault("wrapper_generated_at_utc", payload["generated_at_utc"])
+    if "status" in payload:
+        merged.setdefault("wrapper_status", payload["status"])
+    return merged
+
+
+def _direct_variable_scores(scorecard: dict[str, object]) -> list[dict[str, object]]:
+    metrics = scorecard.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    rows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for key in ("variable_scores", "best_supported_variables"):
+        values = metrics.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            variable_name = str(value.get("variable_name", ""))
+            if not variable_name or variable_name in seen:
+                continue
+            rows.append(value)
+            seen.add(variable_name)
+    return rows
+
+
+def _direct_variable_score(
+    scorecard: dict[str, object],
+    variable_name: object,
+) -> dict[str, object]:
+    if not isinstance(variable_name, str):
+        return {}
+    for row in _direct_variable_scores(scorecard):
+        if row.get("variable_name") == variable_name:
+            return row
+    return {}
+
+
+def _direct_continuous_metrics(variable_score: dict[str, object]) -> dict[str, object]:
+    continuous = variable_score.get("continuous")
+    if not isinstance(continuous, dict):
+        continuous = {
+            key: variable_score[key]
+            for key in ("bias", "rmse", "correlation", "mean_absolute_error", "sample_count")
+            if key in variable_score
+        }
+    metrics = dict(continuous)
+    aliases = {
+        "bias": "bias_mean",
+        "rmse": "root_mean_square_error",
+        "correlation": "pearson_correlation",
+        "sample_count": "valid_points",
+    }
+    for source, target in aliases.items():
+        if source in continuous:
+            metrics.setdefault(target, continuous[source])
+    if "sample_count" in continuous:
+        metrics.setdefault("valid_times", continuous["sample_count"])
+    return metrics
+
+
+def _direct_occurrence_metrics(variable_score: dict[str, object]) -> dict[str, object]:
+    occurrence = variable_score.get("binary_occurrence")
+    return dict(occurrence) if isinstance(occurrence, dict) else {}
+
+
+def _direct_alias_scorecard(
+    scorecard: dict[str, object],
+    alias: dict[str, object],
+) -> dict[str, object] | None:
+    variable_score = _direct_variable_score(scorecard, alias.get("variable"))
+    if not variable_score:
+        return None
+    continuous = _direct_continuous_metrics(variable_score)
+    occurrence = _direct_occurrence_metrics(variable_score)
+    comparison_name = str(alias.get("comparison", variable_score.get("variable_name", "direct")))
+    comparison: dict[str, object] = {
+        "status": variable_score.get("status", scorecard.get("status", "unknown")),
+        "production_ready": False,
+        "readiness_note": (
+            "direct aggregate scorecard; partial available-model review, not full model ranking"
+        ),
+        "point_metrics": continuous,
+        "metrics": continuous,
+        "contingency": occurrence,
+    }
+    occurrence_key = alias.get("occurrence")
+    if isinstance(occurrence_key, str):
+        comparison[occurrence_key] = occurrence
+    metrics_key = alias.get("metrics")
+    if isinstance(metrics_key, str):
+        comparison[metrics_key] = continuous
+    column_score = _direct_variable_score(scorecard, alias.get("column_variable"))
+    if column_score:
+        column_metrics = _direct_continuous_metrics(column_score)
+        column_key = alias.get("column_metrics")
+        if isinstance(column_key, str):
+            comparison[column_key] = column_metrics
+    base_score = _direct_variable_score(scorecard, "cloud_base_height")
+    top_score = _direct_variable_score(scorecard, "cloud_top_height")
+    base_top: dict[str, object] = {}
+    if base_score:
+        base_metrics = _direct_continuous_metrics(base_score)
+        base_top["cloud_base_bias_mean_m"] = base_metrics.get("bias_mean", "n/a")
+    if top_score:
+        top_metrics = _direct_continuous_metrics(top_score)
+        base_top["cloud_top_bias_mean_m"] = top_metrics.get("bias_mean", "n/a")
+    notes = variable_score.get("notes")
+    note_text = "; ".join(str(note) for note in notes) if isinstance(notes, list) else ""
+    return {
+        "status": scorecard.get("metric_status", scorecard.get("status", "unknown")),
+        "scoring_status": scorecard.get("metric_status", scorecard.get("status", "unknown")),
+        "metric_status": scorecard.get("metric_status", "unknown"),
+        "model_id": scorecard.get("model_id", "unknown"),
+        "source_scorecard": alias.get("source", "direct"),
+        "scorecard_alias": True,
+        "variable_name": variable_score.get("variable_name", "unknown"),
+        "variable_status": variable_score.get("status", "unknown"),
+        "comparisons": {comparison_name: comparison},
+        "contingency": occurrence,
+        "cloud_base_top": base_top,
+        "readiness_note": note_text,
+    }
+
+
 def _campaign_index() -> dict[str, object] | None:
     return _read_first_json(
         [
@@ -1262,7 +1433,20 @@ def load_day_bundle(day: str) -> dict[str, object] | None:
 
 
 def load_scorecard(day: str, name: str) -> dict[str, object] | None:
-    return _direct_scorecard(day, name)
+    scorecard = _unwrap_scorecard(_direct_scorecard(day, name))
+    if isinstance(scorecard, dict):
+        return scorecard
+    alias = DIRECT_SCORECARD_ALIASES.get(name)
+    if not isinstance(alias, dict):
+        return None
+    source = alias.get("source")
+    if not isinstance(source, str):
+        return None
+    source_scorecard = _unwrap_scorecard(_direct_scorecard(day, source))
+    if not isinstance(source_scorecard, dict):
+        return None
+    return _direct_alias_scorecard(source_scorecard, alias)
+
 
 
 def _iceland_preflight() -> dict[str, object] | None:
