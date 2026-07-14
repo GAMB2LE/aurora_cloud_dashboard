@@ -2908,6 +2908,98 @@ def _virtual_observatory_readiness(day: str) -> dict[str, object]:
     return readiness if isinstance(readiness, dict) else {}
 
 
+def _model_input_wait_audit(day: str) -> dict[str, object]:
+    status = _day_status(day)
+    if isinstance(status, dict):
+        audit = status.get("model_input_wait_audit")
+        if isinstance(audit, dict):
+            return audit
+        summary = status.get("summary")
+        if isinstance(summary, dict):
+            audit = summary.get("model_input_wait_audit")
+            if isinstance(audit, dict):
+                return audit
+    audit = _read_json(_day_file(day, "provenance", "model_input_wait_audit.json"))
+    return audit if isinstance(audit, dict) else {}
+
+
+def _side_loaded_input_handoff(day: str) -> dict[str, object]:
+    audit = _model_input_wait_audit(day)
+    downstream = audit.get("downstream_unblock_summary")
+    downstream = downstream if isinstance(downstream, dict) else {}
+    handoff = downstream.get("side_loaded_input_handoff")
+    if not isinstance(handoff, dict):
+        handoff = audit.get("side_loaded_input_handoff")
+    return handoff if isinstance(handoff, dict) else {}
+
+
+def _side_loaded_input_handoff_panel(day: str) -> str:
+    if not day:
+        return ""
+    handoff = _side_loaded_input_handoff(day)
+    if not handoff:
+        return ""
+    models = handoff.get("models")
+    models = models if isinstance(models, dict) else {}
+    ready_models = handoff.get("models_with_all_inputs_present")
+    ready_models = ready_models if isinstance(ready_models, list) else []
+    rows = []
+    for model_id, payload in sorted(models.items()):
+        if not isinstance(payload, dict):
+            continue
+        required = payload.get("required_inputs")
+        missing = payload.get("missing_inputs")
+        existing = payload.get("existing_inputs")
+        command = str(payload.get("validation_command") or "")
+        required_text = "<br>".join(
+            f"<code>{escape(Path(str(path)).name)}</code>"
+            for path in required[:4]
+        ) if isinstance(required, list) else "n/a"
+        missing_text = "<br>".join(
+            f"<code>{escape(Path(str(path)).name)}</code>"
+            for path in missing[:4]
+        ) if isinstance(missing, list) and missing else "none"
+        existing_text = "<br>".join(
+            f"<code>{escape(Path(str(path)).name)}</code>"
+            for path in existing[:4]
+        ) if isinstance(existing, list) and existing else "none"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(model_id))}</td>"
+            f"<td>{_badge(payload.get('status', 'unknown'))}</td>"
+            f"<td>{escape(str(payload.get('existing_input_count', 'n/a')))} / "
+            f"{escape(str(payload.get('required_input_count', 'n/a')))}</td>"
+            f"<td>{required_text}</td>"
+            f"<td>{existing_text}</td>"
+            f"<td>{missing_text}</td>"
+            f"<td><code>{escape(command)}</code></td>"
+            "</tr>"
+        )
+    if not rows:
+        return ""
+    cards = [
+        _card("side-loaded input handoff", handoff.get("status", "unknown")),
+        _card("models with all inputs", _list_summary(ready_models, limit=4)),
+        _card("model count", len(models)),
+    ]
+    return (
+        "<div class='model-section-title'>Side-loaded CARRA/CARRA2 Input Handoff</div>"
+        "<div class='model-note'>"
+        "If reviewed CARRA/CARRA2 GRIB files arrive outside CDS, stage them at the "
+        "canonical model-input paths and run the no-download validation command. "
+        "This does not approve substitute data; it exposes the operational handoff."
+        "</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr><th>model</th><th>state</th><th>present</th>"
+        "<th>required files</th><th>existing files</th><th>missing files</th>"
+        "<th>validate command</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
 def _direct_model_variable_readiness_panel(day: str) -> str:
     if not day:
         return ""
@@ -5458,6 +5550,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
+        f"{_side_loaded_input_handoff_panel(latest_day)}"
         f"{_cloudnet_backbone_review_panel(index)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_direct_model_evidence_panel(latest_day)}"
@@ -5664,6 +5757,7 @@ def _operational_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_campaign_index_table(index)}"
         f"{_direct_model_variable_readiness_panel(str(latest.get('day', '') or latest_summary_day or ''))}"
+        f"{_side_loaded_input_handoff_panel(str(latest.get('day', '') or latest_summary_day or ''))}"
         f"{_cm1_forcing_handoff_panel(index)}"
         f"{_operational_table(rows)}"
         f"{detail_html}"
