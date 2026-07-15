@@ -134,3 +134,82 @@ def test_parent_model_inputs_panel_shows_ready_era5_and_waiting_carra2(
     assert "CM1/CARRA2 virtual observatory: blocked_missing_input" in html
     assert "ready_full_target_day" in html
     assert "waiting_upstream_not_available" in html
+
+
+def test_goal_progress_panel_shows_v1_tracks(tmp_path) -> None:
+    module = _load_model_evaluation_module()
+    day_root = tmp_path / "2026" / "07" / "06"
+    (day_root / "dashboard").mkdir(parents=True)
+    (day_root / "dashboard" / "day_review_index.json").write_text(
+        json.dumps(
+            {
+                "readiness": {
+                    "goal_progress": {
+                        "status": "partial_review_ready_with_production_blocks",
+                        "goal_complete": False,
+                        "complete_track_count": 1,
+                        "reviewable_track_count": 4,
+                        "diagnostic_track_count": 2,
+                        "production_blocked_track_count": 3,
+                        "policy": "Do not claim production completion yet.",
+                        "tracks": [
+                            {
+                                "track_id": "direct_model_variable_evaluation",
+                                "title": "Direct model-variable evaluation",
+                                "completion_state": "partial_review_ready",
+                                "comparison_state": "ready",
+                                "reviewable_now": True,
+                                "production_ready": False,
+                                "diagnostic_only": False,
+                                "next_action": "Keep ERA5 conclusions partial.",
+                            },
+                            {
+                                "track_id": "full_les_virtual_observatory",
+                                "title": "Full LES virtual observatory",
+                                "completion_state": "diagnostic_only",
+                                "comparison_state": "blocked_missing_input",
+                                "reviewable_now": True,
+                                "production_ready": False,
+                                "diagnostic_only": True,
+                                "next_action": "Stage CARRA2 forcing for CM1.",
+                            },
+                            {
+                                "track_id": "cloud_seb_process_understanding",
+                                "title": "Cloud and SEB process diagnostics",
+                                "completion_state": "diagnostic_only",
+                                "comparison_state": "blocked_regime_mismatch",
+                                "reviewable_now": True,
+                                "production_ready": False,
+                                "diagnostic_only": True,
+                                "next_action": "Recover comparable regimes.",
+                            },
+                            {
+                                "track_id": "daily_bundle_provenance_readiness",
+                                "title": "Daily bundle and provenance",
+                                "completion_state": "complete",
+                                "comparison_state": None,
+                                "reviewable_now": True,
+                                "production_ready": True,
+                                "diagnostic_only": False,
+                                "next_action": "Keep records current.",
+                            },
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+    html = module._goal_progress_panel("2026-07-06")
+
+    assert "Goal Progress" in html
+    assert "partial_review_ready_with_production_blocks" in html
+    assert "Direct model-variable evaluation" in html
+    assert "Full LES virtual observatory" in html
+    assert "Cloud and SEB process diagnostics" in html
+    assert "Daily bundle and provenance" in html
+    assert "blocked_missing_input" in html
+    assert "blocked_regime_mismatch" in html
+    assert "Do not claim production completion yet." in html

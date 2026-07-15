@@ -3156,7 +3156,137 @@ TRACK_LABELS = {
     "direct_model_variable_evaluation": "Direct model variables",
     "full_les_virtual_observatory": "Full LES virtual observatory",
     "cloud_seb_process_understanding": "Cloud and SEB process",
+    "daily_bundle_provenance_readiness": "Daily bundle and provenance",
 }
+
+
+def _goal_progress_summary(day: str) -> dict[str, object]:
+    review = _day_review_index(day)
+    if not isinstance(review, dict):
+        return {}
+    readiness = review.get("readiness")
+    if isinstance(readiness, dict):
+        goal = readiness.get("goal_progress")
+        if isinstance(goal, dict) and goal:
+            return goal
+        objective = readiness.get("v1_objective_audit")
+        if isinstance(objective, dict):
+            matrix = objective.get("goal_completion_matrix")
+            if isinstance(matrix, dict) and matrix:
+                return matrix
+    summary = review.get("summary")
+    if not isinstance(summary, dict):
+        return {}
+    status = summary.get("goal_progress_status")
+    if not status:
+        return {}
+    return {
+        "status": status,
+        "goal_complete": bool(summary.get("goal_complete", False)),
+        "track_count": summary.get("goal_track_count", 0),
+        "complete_track_count": summary.get("goal_complete_track_count", 0),
+        "reviewable_track_count": summary.get("goal_reviewable_track_count", 0),
+        "diagnostic_track_count": summary.get("goal_diagnostic_track_count", 0),
+        "production_blocked_track_count": summary.get(
+            "goal_production_blocked_track_count", 0
+        ),
+        "complete_track_ids": summary.get("goal_complete_track_ids", []),
+        "reviewable_track_ids": summary.get("goal_reviewable_track_ids", []),
+        "diagnostic_track_ids": summary.get("goal_diagnostic_track_ids", []),
+        "production_blocked_track_ids": summary.get(
+            "goal_production_blocked_track_ids", []
+        ),
+        "tracks": [],
+    }
+
+
+def _goal_progress_rows(progress: dict[str, object]) -> list[dict[str, object]]:
+    raw_tracks = progress.get("tracks")
+    if isinstance(raw_tracks, list):
+        rows = [track for track in raw_tracks if isinstance(track, dict)]
+    elif isinstance(raw_tracks, dict):
+        rows = [
+            {"track_id": track_id, **track}
+            for track_id, track in raw_tracks.items()
+            if isinstance(track, dict)
+        ]
+    else:
+        rows = []
+    order = {
+        "direct_model_variable_evaluation": 0,
+        "full_les_virtual_observatory": 1,
+        "cloud_seb_process_understanding": 2,
+        "daily_bundle_provenance_readiness": 3,
+    }
+    return sorted(
+        rows,
+        key=lambda track: order.get(str(track.get("track_id") or ""), 99),
+    )
+
+
+def _goal_progress_bool(value: object) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _goal_progress_panel(day: str) -> str:
+    if not day:
+        return ""
+    progress = _goal_progress_summary(day)
+    if not progress:
+        return ""
+    rows = _goal_progress_rows(progress)
+    cards = [
+        _card("goal state", progress.get("status", "unknown")),
+        _card("complete", progress.get("complete_track_count", 0)),
+        _card("reviewable", progress.get("reviewable_track_count", 0)),
+        _card("diagnostic", progress.get("diagnostic_track_count", 0)),
+        _card("blocked", progress.get("production_blocked_track_count", 0)),
+    ]
+    body = []
+    for track in rows:
+        track_id = str(track.get("track_id") or "")
+        label = str(track.get("title") or TRACK_LABELS.get(track_id, track_id))
+        next_action = str(track.get("next_action") or "")
+        body.append(
+            "<tr>"
+            f"<td>{escape(label)}</td>"
+            f"<td>{escape(str(track.get('completion_state', 'unknown')))}</td>"
+            f"<td>{escape(str(track.get('comparison_state') or 'n/a'))}</td>"
+            f"<td>{escape(_goal_progress_bool(track.get('reviewable_now')))}</td>"
+            f"<td>{escape(_goal_progress_bool(track.get('production_ready')))}</td>"
+            f"<td>{escape(_goal_progress_bool(track.get('diagnostic_only')))}</td>"
+            f"<td>{escape(next_action)}</td>"
+            "</tr>"
+        )
+    table = ""
+    if body:
+        table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table goal-progress-table'>"
+            "<thead><tr><th>goal track</th><th>completion</th>"
+            "<th>comparison</th><th>review</th><th>production</th>"
+            "<th>diagnostic</th><th>next action</th></tr></thead>"
+            f"<tbody>{''.join(body)}</tbody>"
+            "</table></div>"
+        )
+    policy = str(progress.get("policy") or "")
+    note = (
+        "Progress against the rebuilt AURORA Model Evaluation v1 goal: direct "
+        "model-variable evaluation, full LES virtual observatory, Cloudnet-regime "
+        "cloud/SEB process diagnostics, and daily provenance/readiness records."
+    )
+    policy_html = (
+        f"<div class='model-note'>{escape(policy)}</div>"
+        if policy
+        else ""
+    )
+    return (
+        "<div class='model-section-title'>Goal Progress</div>"
+        f"<div class='model-note'>{escape(note)}</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{table}"
+        f"{policy_html}"
+    )
 
 
 def _review_tracks_summary(day: str) -> dict[str, object]:
@@ -6183,6 +6313,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{_goal_progress_panel(latest_day)}"
         f"{_review_tracks_panel(latest_day)}"
         f"{_partial_evidence_brief_panel(latest_day)}"
         f"{_parent_model_inputs_panel(latest_day)}"
