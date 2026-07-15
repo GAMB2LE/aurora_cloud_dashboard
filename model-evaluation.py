@@ -3375,6 +3375,113 @@ def _partial_evidence_brief_panel(day: str) -> str:
     )
 
 
+def _model_input_availability_scorecard(day: str) -> dict[str, object]:
+    payload = _read_json(_day_file(day, "scorecards", "model_input_availability.json"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _model_input_model_rows(scorecard: dict[str, object]) -> list[dict[str, object]]:
+    models = scorecard.get("models")
+    if not isinstance(models, list):
+        return []
+    return [model for model in models if isinstance(model, dict)]
+
+
+def _model_input_review_statement(
+    scorecard: dict[str, object],
+    comparison: dict[str, object],
+) -> str:
+    models = _model_input_model_rows(scorecard)
+    ready_models = [
+        str(model.get("model_id"))
+        for model in models
+        if bool(model.get("target_full_day_available", False))
+        and model.get("model_id")
+    ]
+    waiting_models = [
+        str(model.get("model_id"))
+        for model in models
+        if not bool(model.get("target_full_day_available", False))
+        and model.get("model_id")
+    ]
+    paths = comparison.get("paths")
+    paths = paths if isinstance(paths, dict) else {}
+    direct = paths.get("direct_model_variable_path")
+    direct = direct if isinstance(direct, dict) else {}
+    virtual = paths.get("full_les_virtual_observatory_path")
+    virtual = virtual if isinstance(virtual, dict) else {}
+    direct_state = str(direct.get("state") or "unknown")
+    virtual_state = str(virtual.get("state") or "unknown")
+    return (
+        f"Ready parent models: {_list_summary(ready_models, limit=4)}. "
+        f"Waiting parent models: {_list_summary(waiting_models, limit=4)}. "
+        f"Direct path: {direct_state}; CM1/CARRA2 virtual observatory: {virtual_state}."
+    )
+
+
+def _parent_model_inputs_panel(day: str) -> str:
+    if not day:
+        return ""
+    scorecard = _model_input_availability_scorecard(day)
+    if not scorecard:
+        return ""
+    comparison = _comparison_readiness_summary(day)
+    models = _model_input_model_rows(scorecard)
+    cards = [
+        _card("parent inputs", scorecard.get("status", "unknown")),
+        _card("ready models", scorecard.get("ready_model_count", 0)),
+        _card("waiting models", scorecard.get("waiting_model_count", 0)),
+        _card("next retry", scorecard.get("next_retry_after_utc") or "not scheduled"),
+    ]
+    body = []
+    for model in models:
+        full_day = (
+            "yes" if bool(model.get("target_full_day_available", False)) else "no"
+        )
+        retry_after = str(model.get("recommended_retry_after_utc") or "none")
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(model.get('model_id', 'unknown')))}</td>"
+            f"<td>{_badge(model.get('status', 'unknown'))}</td>"
+            f"<td>{escape(full_day)}</td>"
+            f"<td>{escape(str(model.get('target_available_hours', 'n/a')))}</td>"
+            f"<td>{escape(str(model.get('latest_complete_day') or 'unknown'))}</td>"
+            f"<td>{escape(str(model.get('latest_fetch_status') or 'unknown'))}</td>"
+            f"<td>{escape(str(model.get('retry_trend_status') or 'unknown'))}</td>"
+            f"<td>{escape(retry_after)}</td>"
+            "</tr>"
+        )
+    table = ""
+    if body:
+        table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table parent-model-input-table'>"
+            "<thead><tr><th>model</th><th>state</th><th>full day</th>"
+            "<th>hours</th><th>latest complete day</th><th>fetch</th>"
+            "<th>trend</th><th>retry after</th></tr></thead>"
+            f"<tbody>{''.join(body)}</tbody>"
+            "</table></div>"
+        )
+    next_actions = scorecard.get("next_actions")
+    action_list = (
+        "<ul class='model-compact-list'>"
+        + "".join(
+            f"<li>{escape(str(action))}</li>"
+            for action in (next_actions if isinstance(next_actions, list) else [])[:4]
+        )
+        + "</ul>"
+        if isinstance(next_actions, list) and next_actions
+        else ""
+    )
+    statement = _model_input_review_statement(scorecard, comparison)
+    return (
+        "<div class='model-section-title'>Parent Model Inputs</div>"
+        f"<div class='model-note'>{escape(statement)}</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{table}{action_list}"
+    )
+
+
 def _int_value(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -6078,6 +6185,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_review_tracks_panel(latest_day)}"
         f"{_partial_evidence_brief_panel(latest_day)}"
+        f"{_parent_model_inputs_panel(latest_day)}"
         f"{_comparison_readiness_panel(latest_day)}"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
