@@ -3264,6 +3264,117 @@ def _review_tracks_panel(day: str) -> str:
     )
 
 
+def _partial_evidence_brief(day: str) -> dict[str, object]:
+    review = _day_review_index(day)
+    if not isinstance(review, dict):
+        return {}
+    readiness = review.get("readiness")
+    if isinstance(readiness, dict):
+        brief = readiness.get("partial_evidence_brief")
+        if isinstance(brief, dict):
+            return brief
+    summary = review.get("summary")
+    if not isinstance(summary, dict):
+        return {}
+    return {
+        "status": summary.get("partial_evidence_brief_status", "unknown"),
+        "reviewable_item_count": summary.get(
+            "partial_evidence_reviewable_item_count", 0
+        ),
+        "diagnostic_item_count": summary.get(
+            "partial_evidence_diagnostic_item_count", 0
+        ),
+        "blocked_item_count": summary.get("partial_evidence_blocked_item_count", 0),
+        "reviewable_item_ids": summary.get("partial_evidence_reviewable_item_ids", []),
+        "blocked_item_ids": summary.get("partial_evidence_blocked_item_ids", []),
+    }
+
+
+def _partial_evidence_item_use(value: object) -> str:
+    label = str(value or "unknown")
+    labels = {
+        "partial": "review now",
+        "diagnostic": "diagnostic",
+        "diagnostic_only": "diagnostic only",
+        "blocked": "blocked",
+    }
+    return labels.get(label, label)
+
+
+def _partial_evidence_brief_panel(day: str) -> str:
+    if not day:
+        return ""
+    brief = _partial_evidence_brief(day)
+    if not brief:
+        return ""
+    reviewable_ids = brief.get("reviewable_item_ids")
+    blocked_ids = brief.get("blocked_item_ids")
+    cards = [
+        _card("partial evidence", brief.get("status", "unknown")),
+        _card("review now", brief.get("reviewable_item_count", 0)),
+        _card("diagnostic", brief.get("diagnostic_item_count", 0)),
+        _card("blocked", brief.get("blocked_item_count", 0)),
+    ]
+    items = brief.get("items")
+    rows = []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            metrics = item.get("metrics")
+            metric_text = _count_dict_text(metrics) if isinstance(metrics, dict) else ""
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(item.get('item_id', 'unknown')))}</td>"
+                "<td>"
+                f"{_badge(_partial_evidence_item_use(item.get('review_use')))}"
+                "</td>"
+                f"<td>{escape(str(item.get('status', 'unknown')))}</td>"
+                f"<td>{escape(str(item.get('statement') or ''))}</td>"
+                f"<td>{escape(str(item.get('caveat') or ''))}</td>"
+                f"<td>{escape(metric_text)}</td>"
+                "</tr>"
+            )
+    table = ""
+    if rows:
+        table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table partial-evidence-table'>"
+            "<thead><tr><th>item</th><th>use</th><th>state</th>"
+            "<th>statement</th><th>caveat</th><th>metrics</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table></div>"
+        )
+    fallback = ""
+    if not table:
+        fallback = (
+            "<div class='model-note'>"
+            f"Reviewable items: {escape(_list_summary(reviewable_ids, limit=6))}; "
+            f"blocked items: {escape(_list_summary(blocked_ids, limit=6))}."
+            "</div>"
+        )
+    do_not_claim = brief.get("do_not_claim")
+    caveat_list = (
+        "<ul class='model-compact-list'>"
+        + "".join(
+            f"<li>{escape(str(item))}</li>"
+            for item in (do_not_claim if isinstance(do_not_claim, list) else [])[:4]
+        )
+        + "</ul>"
+        if isinstance(do_not_claim, list) and do_not_claim
+        else ""
+    )
+    headline = brief.get("headline") or (
+        "Partial evidence is available while upstream inputs remain blocked."
+    )
+    return (
+        "<div class='model-section-title'>Partial Evidence Review</div>"
+        f"<div class='model-note'>{escape(str(headline))}</div>"
+        f"<div class='model-grid'>{''.join(cards)}</div>"
+        f"{table}{fallback}{caveat_list}"
+    )
+
+
 def _int_value(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -5966,6 +6077,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         f"{_review_tracks_panel(latest_day)}"
+        f"{_partial_evidence_brief_panel(latest_day)}"
         f"{_comparison_readiness_panel(latest_day)}"
         f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
