@@ -2,6 +2,26 @@
 
 This page describes what each top-level dashboard tab is responsible for.
 
+## Desktop And Phone Navigation
+
+Wide screens use the same full-name top tab bar as the stable production
+dashboard. The six tabs are **Interactive Data Browser**, **Science
+Quicklooks**, **House Keeping Quicklooks**, **AURORACam**, **UAS**, and
+**Operations Dashboard**. Only the selected tab is mounted in the browser, and
+the heavier quicklook, UAS, and Operations content remains lazy-loaded.
+When those full labels do not fit on a narrower desktop or tablet, the tab bar
+scrolls horizontally in one row instead of wrapping or abbreviating them.
+
+Phones use the compact operational views: **Overview**, **Power**, **Plots**,
+**Camera**, and **Ops**. These group the same dashboard content into smaller
+plot cards and stacked controls without forcing the full desktop plotting
+surface into a narrow viewport. Science and housekeeping products are grouped
+under **Plots**; UAS status is available through **Ops**.
+
+The URL continues to store the selected view. A desktop share link uses the
+full tab slug, while a phone link also stores its compact section in
+`mobile_tab`.
+
 ## Interactive Data Browser
 
 This is the primary live-browsing surface.
@@ -30,10 +50,11 @@ Power Supply**, **Meteorology**, and **Radiation** interactive views can also
 start from prewarmed Plotly JSON created by the quicklook generators. This keeps
 the browser responsive without changing the underlying Zarr stores.
 
-On small screens, the main controls are collapsible and stack vertically, while
-the plots remain a tall scrollable data surface. If a selected window has no
-available samples, the empty view reports the UTC window and points to the next
-useful check.
+The desktop controls use two compact rows for instrument, time window, live
+state, reset, and day navigation. Variable and range controls appear beneath
+them only when the selected instrument needs those controls. If a selected
+window has no available samples, the empty view reports the UTC window and
+points to the next useful check.
 
 The current tab, instrument, and important control values are also kept in the
 browser URL. This makes mobile recovery less painful: if the phone backgrounds
@@ -90,6 +111,12 @@ This tab shows the four MOBOTIX M24 cameras from the MX4 FTP ingest.
 The backing metadata product is `/data/aurora/products/auroracam/auroracam.zarr`,
 but the full-resolution JPEGs remain in the raw mirror under
 `/project/aurora/raw/auroracam`.
+
+## UAS
+
+This tab shows the mirrored Menapia MQTT tier log, including the current
+reported/effective tier, freshness, tier-change history, and recent parsed log
+records. It starts its periodic refresh only after the tab is opened.
 
 ## Operations Dashboard
 

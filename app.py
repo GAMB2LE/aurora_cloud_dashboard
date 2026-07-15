@@ -8258,33 +8258,22 @@ body, .bk {
     max-height: calc(100vh - 320px);
     object-fit: contain;
 }
-.mobile-tab-nav,
-.active-tab-container {
+.desktop-tabs {
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    overflow: hidden;
 }
-.mobile-tab-nav {
-    display: block;
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    margin: 0 0 8px 0 !important;
-    background: #ffffff;
-    border-bottom: 1px solid #d8e1e8;
-}
-.mobile-tab-nav .bk-btn-group {
-    display: flex !important;
-    width: 100%;
+:host(.desktop-tabs) .bk-header {
+    display: flex;
+    flex-wrap: nowrap;
+    max-width: 100%;
     overflow-x: auto;
-    gap: 6px;
-    padding: 8px 10px;
+    overflow-y: hidden;
+    scrollbar-width: thin;
     -webkit-overflow-scrolling: touch;
 }
-.mobile-tab-nav .bk-btn-group .bk-btn,
-.mobile-tab-nav button.bk-btn,
-.mobile-tab-nav button,
-.mobile-tab-nav label {
+:host(.desktop-tabs) .bk-tab {
     flex: 0 0 auto;
     white-space: nowrap;
 }
@@ -8551,7 +8540,6 @@ body, .bk {
     .pn-template,
     .pn-template .pn-main,
     .pn-template .pn-wrapper,
-    .active-tab-container,
     .interactive-content,
     .interactive-plot-body,
     .interactive-plot-pane {
@@ -8595,28 +8583,6 @@ body, .bk {
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
     .bk.pn-row { gap: 8px; }
-    .mobile-tab-nav {
-        margin: 0 0 8px 0 !important;
-    }
-    .mobile-tab-nav .bk-input-group,
-    .mobile-tab-nav .bk-input {
-        width: 100%;
-    }
-    .mobile-tab-nav .bk-btn-group {
-        gap: 4px;
-        padding: 4px;
-    }
-    .mobile-tab-nav .bk-btn-group .bk-btn,
-    .mobile-tab-nav button.bk-btn,
-    .mobile-tab-nav button,
-    .mobile-tab-nav label {
-        flex: 0 0 auto;
-        white-space: nowrap;
-        min-height: 30px;
-        padding: 4px 7px !important;
-        font-size: 11px !important;
-        line-height: 1.15 !important;
-    }
     .mobile-bottom-nav { padding: 0 8px; }
     .mobile-app-tabs__link { font-size: 10.5px; }
     .interactive-plot-pane .js-plotly-plot,
@@ -8695,30 +8661,40 @@ body, .bk {
 }
 """
 
-# Controls card: group all widgets in a tidy stack.
+# The desktop browser keeps the compact row layout used by the stable site.
+# Rows still wrap under the responsive CSS when a desktop link is forced on a
+# narrow screen, while the dedicated mobile shell uses its own controls.
 controls = pn.Card(
     pn.Column(
-        instrument_select,
-        range_start,
-        range_end,
-        live_toggle,
-        reset_view_btn,
-        var1_select,
-        var2_select,
-        bottom_range_m,
-        top_range_m,
-        beta_vmin,
-        beta_vmax,
-        ldr_vmin,
-        ldr_vmax,
-        lwp_ymin,
-        lwp_ymax,
-        iwv_ymin,
-        iwv_ymax,
-        irr_ymin,
-        irr_ymax,
-        prev_btn,
-        next_btn,
+        pn.Row(
+            instrument_select,
+            range_start,
+            range_end,
+            live_toggle,
+            sizing_mode="stretch_width",
+            css_classes=["mobile-stack"],
+        ),
+        pn.Row(
+            prev_btn,
+            reset_view_btn,
+            next_btn,
+            sizing_mode="stretch_width",
+            margin=(5, 0, 0, 0),
+            css_classes=["mobile-stack"],
+        ),
+        pn.Row(var1_select, var2_select, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(bottom_range_m, top_range_m, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(beta_vmin, beta_vmax, ldr_vmin, ldr_vmax, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        pn.Row(
+            lwp_ymin,
+            lwp_ymax,
+            iwv_ymin,
+            iwv_ymax,
+            irr_ymin,
+            irr_ymax,
+            sizing_mode="stretch_width",
+            css_classes=["mobile-stack"],
+        ),
         sizing_mode="stretch_width",
     ),
     title="Controls",
@@ -9380,34 +9356,31 @@ def _build_mobile_layout() -> pn.Column:
     _set_mobile_app_tab(_mobile_initial_tab())
     return pn.Column(mobile_app_nav, mobile_app_active, sizing_mode="stretch_width", margin=0, css_classes=["mobile-app"])
 
-TAB_OPTIONS = {
-    "Data": "interactive",
-    "Sci": "science",
-    "HK": "housekeeping",
-    "Cam": "auroracam",
-    "UAS": "uas",
-    "Ops": "operations",
-}
-TAB_LABEL_BY_SLUG = {value: key for key, value in TAB_OPTIONS.items()}
+DESKTOP_TAB_SPECS = (
+    ("Interactive Data Browser", "interactive", interactive_tab),
+    ("Science Quicklooks", "science", science_quicklooks_tab),
+    ("House Keeping Quicklooks", "housekeeping", housekeeping_quicklooks_tab),
+    ("AURORACam", "auroracam", auroracam_tab),
+    ("UAS", "uas", uas_tab),
+    ("Operations Dashboard", "operations", operations_tab),
+)
 TAB_PANEL_BY_SLUG = {
-    "interactive": interactive_tab,
-    "science": science_quicklooks_tab,
-    "housekeeping": housekeeping_quicklooks_tab,
-    "auroracam": auroracam_tab,
-    "uas": uas_tab,
-    "operations": operations_tab,
+    slug: panel for _label, slug, panel in DESKTOP_TAB_SPECS
+}
+TAB_INDEX_BY_SLUG = {
+    slug: index for index, (_label, slug, _panel) in enumerate(DESKTOP_TAB_SPECS)
+}
+TAB_SLUG_BY_INDEX = {
+    index: slug for slug, index in TAB_INDEX_BY_SLUG.items()
 }
 ACTIVE_TAB_SLUG = "interactive"
-mobile_tab_select = pn.widgets.RadioButtonGroup(
-    name="",
-    value="Data",
-    options=list(TAB_OPTIONS),
-    button_type="default",
+desktop_tabs = pn.Tabs(
+    *((label, panel) for label, _slug, panel in DESKTOP_TAB_SPECS),
+    dynamic=True,
     sizing_mode="stretch_width",
+    css_classes=["desktop-tabs"],
 )
-mobile_tab_nav = pn.Column(mobile_tab_select, sizing_mode="stretch_width", margin=0, css_classes=["mobile-tab-nav"])
-active_tab_container = pn.Column(interactive_tab, sizing_mode="stretch_width", margin=0, css_classes=["active-tab-container"])
-_mobile_tab_syncing = False
+_desktop_tab_syncing = False
 
 
 def _normalize_tab_slug(slug: str | None) -> str:
@@ -9445,46 +9418,32 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
 
 
 def _set_active_tab(slug: str | None) -> None:
-    """Mount exactly one dashboard tab so mobile does not inherit desktop tab width."""
-    global ACTIVE_TAB_SLUG, _mobile_tab_syncing
+    """Select and prepare one full-name desktop tab."""
+    global ACTIVE_TAB_SLUG, _desktop_tab_syncing
     active = _normalize_tab_slug(slug)
     ACTIVE_TAB_SLUG = active
     _ensure_active_tab_loaded(active)
-    panel = TAB_PANEL_BY_SLUG[active]
-    if len(active_tab_container.objects) != 1 or active_tab_container.objects[0] is not panel:
-        active_tab_container[:] = [panel]
-
-    label = TAB_LABEL_BY_SLUG[active]
-    if mobile_tab_select.value != label:
-        _mobile_tab_syncing = True
+    tab_index = TAB_INDEX_BY_SLUG[active]
+    if desktop_tabs.active != tab_index:
+        _desktop_tab_syncing = True
         try:
-            mobile_tab_select.value = label
+            desktop_tabs.active = tab_index
         finally:
-            _mobile_tab_syncing = False
+            _desktop_tab_syncing = False
     _refresh_share_and_download_state()
 
 
-def _sync_mobile_tab_select() -> None:
-    """Reflect programmatic tab changes into the compact selector."""
-    global _mobile_tab_syncing
-    label = TAB_LABEL_BY_SLUG.get(ACTIVE_TAB_SLUG, "Data")
-    if mobile_tab_select.value == label:
+def _on_desktop_tab_change(event) -> None:
+    """Lazy-load the selected desktop tab and keep its share URL current."""
+    global ACTIVE_TAB_SLUG
+    if _desktop_tab_syncing:
         return
-    _mobile_tab_syncing = True
-    try:
-        mobile_tab_select.value = label
-    finally:
-        _mobile_tab_syncing = False
+    ACTIVE_TAB_SLUG = TAB_SLUG_BY_INDEX.get(event.new, "interactive")
+    _ensure_active_tab_loaded(ACTIVE_TAB_SLUG)
+    _refresh_share_and_download_state()
 
 
-def _on_mobile_tab_select_change(event) -> None:
-    """Switch the mounted dashboard tab from the compact selector."""
-    if _mobile_tab_syncing:
-        return
-    _set_active_tab(TAB_OPTIONS.get(event.new))
-
-
-mobile_tab_select.param.watch(_on_mobile_tab_select_change, "value")
+desktop_tabs.param.watch(_on_desktop_tab_change, "active")
 
 SITE_FOOTER_HTML = """
 <div class="site-footer">
@@ -9521,10 +9480,9 @@ _apply_query_state()
 if _MOBILE_LAYOUT_ACTIVE:
     main_layout = _build_mobile_layout()
 else:
-    main_layout = pn.Column(mobile_tab_nav, active_tab_container, sizing_mode="stretch_width", margin=0)
+    main_layout = pn.Column(desktop_tabs, sizing_mode="stretch_width", margin=0)
     requested_tab = _request_query_args().get("tab")
     _set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
-    _sync_mobile_tab_select()
     _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
 if not _MOBILE_LAYOUT_ACTIVE:
