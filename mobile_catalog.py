@@ -401,13 +401,14 @@ def overview() -> dict[str, Any]:
     latest_cameras = auroracam("latest")
     camera_times = [record.get("timeUTC") for record in latest_cameras["frames"] if record.get("timeUTC")]
     latest_camera_time = max(camera_times) if camera_times else None
+    latest_power_time = snapshot.get("power_latest_time_utc") or _latest_power_time()
     depletion_value, depletion_detail = _battery_depletion_text(snapshot)
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
         _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
         _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
         _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
-        _overview_card("power", "Power Data", _power_time_text(snapshot.get("power_latest_time_utc")), _age_level(snapshot.get("power_latest_time_utc"), 30, 120), snapshot.get("power_latest_time_utc"), _age_text(snapshot.get("power_latest_time_utc"))),
+        _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
     ]
     return {"serverTime": utc_now_iso(), "cards": cards, "activeAlerts": status["alerts"]}
@@ -429,6 +430,47 @@ def _metric_age_detail(snapshot: dict[str, Any], key: str) -> str:
 def _power_time_text(value: Any) -> str:
     moment = _parse_utc(str(value)) if value else None
     return moment.strftime("%H:%M UTC") if moment else "No data"
+
+
+def _power_age_text(value: Any) -> str:
+    moment = _parse_utc(str(value)) if value else None
+    if moment is None:
+        return "Latest measured power timestamp unavailable"
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return f"Updated {_duration_text(age_minutes / 60)} ago"
+
+
+def _latest_power_time() -> str | None:
+    """Read the latest measured timestamp from the existing display summary."""
+    path = power_display_summary_path()
+    if not path.exists():
+        return None
+    dataset = None
+    try:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        dataset = xr.open_zarr(path, consolidated=True, chunks=None)
+        if "time" not in dataset:
+            return None
+        times = pd.DatetimeIndex(dataset["time"].values)
+        now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
+        latest = None
+        for name in ("BatterySOC", "BatteryWatts", "DCInverterVolts", "ACOutputWatts"):
+            if name not in dataset or dataset[name].dims != ("time",):
+                continue
+            values = np.asarray(dataset[name].values, dtype=np.float64)
+            mask = np.isfinite(values) & (times <= now)
+            if mask.any():
+                candidate = times[mask].max()
+                latest = candidate if latest is None or candidate > latest else latest
+        return None if latest is None else pd.Timestamp(latest).isoformat() + "Z"
+    except Exception:
+        return None
+    finally:
+        if dataset is not None:
+            dataset.close()
 
 
 def _battery_depletion_text(snapshot: dict[str, Any]) -> tuple[str, str]:
