@@ -40,6 +40,7 @@ from grouped_timeseries import (
     _trace_plot_values,
     build_power_display_summary_dataset,
     build_summary_plotly,
+    merge_operating_scenarios_into_display_summary,
     prepare_summary_dataset,
 )
 from power_soc_thresholds import (
@@ -914,6 +915,11 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(summary.attrs["forecast_load_balance_measurement"], "solar_generation_minus_battery_power")
         self.assertEqual(float(summary.attrs["minimum_operational_soc_pct"]), 40.0)
         self.assertGreater(summary.sizes["time"], power.sizes["time"])
+
+        merged = merge_operating_scenarios_into_display_summary(power, operating)
+        self.assertIn("OperatingLearned1SOCP50", merged)
+        self.assertEqual(merged.attrs["operating_learned_1_label"], "DC + Radar")
+        self.assertEqual(pd.Timestamp(merged["time"].values[-1]), forecast_times[-1])
 
     def test_all_soc_decision_panels_draw_40_percent_operational_minimum(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=4, freq="3h")

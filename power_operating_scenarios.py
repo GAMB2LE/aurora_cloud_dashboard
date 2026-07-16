@@ -87,7 +87,12 @@ def mode_from_code(value: int) -> str:
     return mode_id(name for name, bit in KIT_BITS.items() if int(value) & bit)
 
 
-def _power_frame(power: xr.Dataset) -> pd.DataFrame:
+def _power_frame(
+    power: xr.Dataset,
+    *,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
     fields = (
         "BatterySOC",
         "BatteryWatts",
@@ -99,14 +104,17 @@ def _power_frame(power: xr.Dataset) -> pd.DataFrame:
     )
     if "time" not in power:
         return pd.DataFrame()
+    source = power
+    if start is not None or end is not None:
+        source = power.sel(time=slice(start, end))
     values = {
-        name: np.asarray(power[name].values, dtype=np.float64)
+        name: np.asarray(source[name].values, dtype=np.float64)
         for name in fields
-        if name in power and power[name].dims == ("time",)
+        if name in source and source[name].dims == ("time",)
     }
     if not values:
         return pd.DataFrame()
-    frame = pd.DataFrame(values, index=pd.DatetimeIndex(power["time"].values)).sort_index()
+    frame = pd.DataFrame(values, index=pd.DatetimeIndex(source["time"].values)).sort_index()
     return frame.loc[~frame.index.duplicated(keep="last")]
 
 
@@ -126,18 +134,26 @@ def observed_total_load(frame: pd.DataFrame) -> pd.Series:
     return result
 
 
-def _pdu_frame(pdu: xr.Dataset | None) -> pd.DataFrame:
+def _pdu_frame(
+    pdu: xr.Dataset | None,
+    *,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
     if pdu is None or "time" not in pdu:
         return pd.DataFrame()
+    source = pdu
+    if start is not None or end is not None:
+        source = pdu.sel(time=slice(start, end))
     values: dict[str, np.ndarray] = {}
     for kit, outlet in KIT_OUTLETS.items():
         for metric in ("Watts", "State"):
             name = f"PDUOutlet{outlet}{metric}"
-            if name in pdu and pdu[name].dims == ("time",):
-                values[f"{kit}_{metric.lower()}"] = np.asarray(pdu[name].values, dtype=np.float64)
+            if name in source and source[name].dims == ("time",):
+                values[f"{kit}_{metric.lower()}"] = np.asarray(source[name].values, dtype=np.float64)
     if not values:
         return pd.DataFrame()
-    frame = pd.DataFrame(values, index=pd.DatetimeIndex(pdu["time"].values)).sort_index()
+    frame = pd.DataFrame(values, index=pd.DatetimeIndex(source["time"].values)).sort_index()
     return frame.loc[~frame.index.duplicated(keep="last")]
 
 
@@ -149,19 +165,21 @@ def build_observation_frame(
     lookback_days: float = 7.0,
     frequency: str = OBSERVATION_FREQUENCY,
 ) -> pd.DataFrame:
-    power_frame = _power_frame(power)
+    if "time" not in power or power.sizes.get("time", 0) == 0:
+        return pd.DataFrame()
+    power_times = pd.DatetimeIndex(power["time"].values)
+    end = pd.Timestamp(end if end is not None else power_times.max())
+    start = end - pd.Timedelta(days=float(lookback_days))
+    power_frame = _power_frame(power, start=start, end=end)
     if power_frame.empty:
         return pd.DataFrame()
-    end = pd.Timestamp(end if end is not None else power_frame.index.max())
-    start = end - pd.Timedelta(days=float(lookback_days))
-    power_frame = power_frame.loc[(power_frame.index >= start) & (power_frame.index <= end)]
     observed = pd.DataFrame(index=power_frame.resample(frequency).median().index)
     observed["load_w"] = observed_total_load(power_frame).resample(frequency).median()
     for name in ("BatterySOC", "ACOutputWatts"):
         if name in power_frame:
             observed[name] = power_frame[name].resample(frequency).median()
 
-    pdu_frame = _pdu_frame(pdu)
+    pdu_frame = _pdu_frame(pdu, start=start, end=end)
     if not pdu_frame.empty:
         pdu_frame = pdu_frame.loc[(pdu_frame.index >= start) & (pdu_frame.index <= end)]
         pdu_samples = pdu_frame.resample(frequency).median()
@@ -507,13 +525,18 @@ def fit_operating_model(
 
 
 def _latest_soc(power: xr.Dataset) -> tuple[pd.Timestamp, float]:
-    frame = _power_frame(power)
-    if "BatterySOC" not in frame:
+    if "time" not in power or "BatterySOC" not in power or power.sizes.get("time", 0) == 0:
         raise ValueError("Power data do not contain BatterySOC")
-    finite = frame["BatterySOC"].dropna()
-    if finite.empty:
-        raise ValueError("Power data do not contain a finite BatterySOC sample")
-    return pd.Timestamp(finite.index[-1]), float(finite.iloc[-1])
+    count = int(power.sizes["time"])
+    starts = tuple(dict.fromkeys((max(count - 100_000, 0), 0)))
+    for start_index in starts:
+        view = power[["BatterySOC"]].isel(time=slice(start_index, None))
+        values = np.asarray(view["BatterySOC"].values, dtype=np.float64)
+        finite_indices = np.flatnonzero(np.isfinite(values))
+        if finite_indices.size:
+            index = int(finite_indices[-1])
+            return pd.Timestamp(view["time"].values[index]), float(values[index])
+    raise ValueError("Power data do not contain a finite BatterySOC sample")
 
 
 def _hourly_solar_members(

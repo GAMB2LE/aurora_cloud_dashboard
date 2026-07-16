@@ -2022,6 +2022,63 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     return frame[~frame.index.duplicated(keep="last")]
 
 
+def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
+    if ds is None or "scenario" not in ds:
+        return {}
+    attrs: dict[str, str] = {}
+    for source_name, target_name in (
+        ("current_mode", "operating_current_mode"),
+        ("current_mode_label", "operating_current_mode_label"),
+        ("current_mode_confidence", "operating_current_mode_confidence"),
+        ("model", "operating_model"),
+        ("model_version", "operating_model_version"),
+        ("forecast_horizon_hours", "operating_forecast_horizon_hours"),
+        ("optimization_horizon_hours", "operating_optimization_horizon_hours"),
+        ("control_authority", "operating_control_authority"),
+        ("solar_member_source", "operating_solar_member_source"),
+        ("native_ensemble_end_time", "operating_native_ensemble_end_time"),
+    ):
+        if source_name in ds.attrs:
+            attrs[target_name] = str(ds.attrs[source_name])
+    scenario_ids = [str(value) for value in ds["scenario"].values]
+    current_mode = str(ds.attrs.get("current_mode", ""))
+    learned_ids = [
+        value
+        for value in scenario_ids
+        if value.startswith("learned_") and value != f"learned_{current_mode}"
+    ][:MAX_OPERATING_LEARNED_SCENARIOS]
+    labels = [str(value) for value in ds["scenario_label"].values] if "scenario_label" in ds else scenario_ids
+    for slot, scenario_id in enumerate(learned_ids, start=1):
+        attrs[f"operating_learned_{slot}_label"] = labels[scenario_ids.index(scenario_id)]
+    return attrs
+
+
+def merge_operating_scenarios_into_display_summary(
+    display_ds: xr.Dataset,
+    operating_scenarios_ds: xr.Dataset | None,
+) -> xr.Dataset:
+    """Merge the compact scenario contract into an existing display summary."""
+    frame = _operating_scenario_frame(operating_scenarios_ds)
+    if frame.empty:
+        return display_ds
+    scenario_ds = xr.Dataset(
+        {name: (("time",), frame[name].to_numpy(dtype=np.float32)) for name in frame.columns},
+        coords={"time": frame.index.to_numpy(dtype="datetime64[ns]")},
+    )
+    for name in scenario_ds.data_vars:
+        if "SOC" in name:
+            scenario_ds[name].attrs["units"] = "%"
+        elif "Probability" in name:
+            scenario_ds[name].attrs["units"] = "1"
+        elif "Watts" in name:
+            scenario_ds[name].attrs["units"] = "W"
+    merged = xr.merge((display_ds, scenario_ds), join="outer", compat="override", combine_attrs="override").sortby("time")
+    merged.attrs = dict(display_ds.attrs)
+    merged.attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
+    merged.attrs["time_coverage_end"] = pd.Timestamp(merged["time"].values[-1]).isoformat()
+    return merged
+
+
 def _resample_display_frame(frame: pd.DataFrame, freq: str) -> pd.DataFrame:
     if frame.empty:
         return frame
@@ -2160,35 +2217,7 @@ def build_power_display_summary_dataset(
         ):
             if source_name in forecast_ds.attrs:
                 summary_attrs[target_name] = str(forecast_ds.attrs[source_name])
-    if operating_scenarios_ds is not None:
-        for source_name, target_name in (
-            ("current_mode", "operating_current_mode"),
-            ("current_mode_label", "operating_current_mode_label"),
-            ("current_mode_confidence", "operating_current_mode_confidence"),
-            ("model", "operating_model"),
-            ("model_version", "operating_model_version"),
-            ("forecast_horizon_hours", "operating_forecast_horizon_hours"),
-            ("optimization_horizon_hours", "operating_optimization_horizon_hours"),
-            ("control_authority", "operating_control_authority"),
-            ("solar_member_source", "operating_solar_member_source"),
-            ("native_ensemble_end_time", "operating_native_ensemble_end_time"),
-        ):
-            if source_name in operating_scenarios_ds.attrs:
-                summary_attrs[target_name] = str(operating_scenarios_ds.attrs[source_name])
-        scenario_ids = [str(value) for value in operating_scenarios_ds["scenario"].values]
-        current_mode = str(operating_scenarios_ds.attrs.get("current_mode", ""))
-        learned_ids = [
-            value
-            for value in scenario_ids
-            if value.startswith("learned_") and value != f"learned_{current_mode}"
-        ][:MAX_OPERATING_LEARNED_SCENARIOS]
-        labels = (
-            [str(value) for value in operating_scenarios_ds["scenario_label"].values]
-            if "scenario_label" in operating_scenarios_ds
-            else scenario_ids
-        )
-        for slot, scenario_id in enumerate(learned_ids, start=1):
-            summary_attrs[f"operating_learned_{slot}_label"] = labels[scenario_ids.index(scenario_id)]
+    summary_attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
     out = xr.Dataset(
         {name: (("time",), display_frame[name].to_numpy(dtype=np.float32)) for name in display_frame.columns},
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},

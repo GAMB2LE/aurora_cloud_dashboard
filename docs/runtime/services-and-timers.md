@@ -178,9 +178,11 @@ does not block deterministic SOC learning.
 UTC deterministic cycle twice daily and writes a 240-hour forecast under
 `/data/aurora/dev-products/power`.
 `aurora-power-operating-scenarios.service` runs every five minutes. It learns
-new mode/component evidence, regenerates named and optimized plans from current
-SOC, and rebuilds the development display summary. These two timers are enabled
-only on `data-ocean`; their production units remain disabled.
+new mode/component evidence and regenerates named and optimized plans from
+current SOC. The app merges that compact product into the mirrored display
+summary at read time; it does not rebuild the full Power summary every five
+minutes. These two timers are enabled only on `data-ocean`; their production
+units remain disabled.
 
 ## ASS PDU
 

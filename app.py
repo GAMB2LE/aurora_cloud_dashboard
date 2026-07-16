@@ -56,6 +56,7 @@ from grouped_timeseries import (
     housekeeping_daily_png,
     housekeeping_latest_png,
     is_summary_instrument,
+    merge_operating_scenarios_into_display_summary,
     summary_daily_png,
     summary_latest_png,
     summary_source_instruments,
@@ -985,6 +986,7 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
     with _timed_perf("power_display_summary_open", instrument="power", zarr_path=str(path)) as perf:
         try:
             ds = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+            ds = merge_operating_scenarios_into_display_summary(ds, _get_power_operating_scenarios_dataset())
         except Exception as exc:
             perf["status"] = "unavailable"
             perf["error"] = str(exc)
