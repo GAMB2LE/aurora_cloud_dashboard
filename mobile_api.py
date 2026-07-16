@@ -97,7 +97,7 @@ def overview() -> dict:
 @app.get("/power", dependencies=[Depends(require_auth)])
 def power(
     window: str = Query("24h", pattern="^(24h|96h)$"),
-    group: str = Query("observed", pattern="^(observed|forecast_24h|forecast_96h|verification)$"),
+    group: str = Query("all", pattern="^(all|observed|forecast_24h|forecast_96h|verification)$"),
 ) -> dict:
     try:
         return catalog.power(window=window, group=group)

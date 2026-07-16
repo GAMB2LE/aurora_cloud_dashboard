@@ -97,7 +97,49 @@ class MobileCatalogTests(unittest.TestCase):
                 response = mobile_catalog.power()
 
         self.assertEqual(response["panels"], [])
+        self.assertEqual(response["group"], "all")
         self.assertIn("warning", response)
+
+    def test_overview_matches_browser_mobile_card_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "latest.json"
+            health = root / "latest_health.json"
+            alerts = root / "state.json"
+            snapshot.write_text(
+                json.dumps(
+                    {
+                        "time_utc": "2026-07-05T07:30:00Z",
+                        "aps_battery_soc_pct": 56,
+                        "aps_battery_voltage_v": 52.56,
+                        "aps_battery_power_w": -57,
+                        "aps_battery_capacity_kwh": 26,
+                        "aps_battery_depletion_hours": 255,
+                        "power_latest_time_utc": "2026-07-05T07:29:00Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            health.write_text(json.dumps({"overall_level": "amber"}), encoding="utf-8")
+            alerts.write_text(json.dumps({"active": {}}), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                    "AURORACAM_RAW_ROOT": str(root / "camera"),
+                },
+            ):
+                response = mobile_catalog.overview()
+
+        self.assertEqual(
+            [card["id"] for card in response["cards"]],
+            ["operations", "battery-soc", "battery-voltage", "battery-depletion", "power", "auroracam"],
+        )
+        depletion = response["cards"][3]
+        self.assertEqual(depletion["value"], "10d 15h")
+        self.assertIn("14.6 kWh remaining", depletion["detail"])
 
     def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

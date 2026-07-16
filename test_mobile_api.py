@@ -98,6 +98,20 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(uas.status_code, 200)
         self.assertEqual(uas.json()["latest"]["effectiveTier"], 3)
 
+    def test_power_accepts_all_group_without_generating_a_product(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.zarr"
+            with patch.dict(
+                os.environ,
+                {"AURORA_MOBILE_API_TOKEN": "secret", "POWER_DISPLAY_SUMMARY_ZARR_PATH": str(missing)},
+                clear=False,
+            ):
+                response = self.client.get("/power?window=24h&group=all", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["group"], "all")
+        self.assertEqual(response.json()["panels"], [])
+
     def test_auroracam_listing_and_original_media_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

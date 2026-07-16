@@ -401,19 +401,83 @@ def overview() -> dict[str, Any]:
     latest_cameras = auroracam("latest")
     camera_times = [record.get("timeUTC") for record in latest_cameras["frames"] if record.get("timeUTC")]
     latest_camera_time = max(camera_times) if camera_times else None
+    depletion_value, depletion_detail = _battery_depletion_text(snapshot)
     cards = [
-        _overview_card("operations", "Operations", status["summary"], status["overallLevel"], status.get("updatedAt")),
-        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), None),
-        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), None),
-        _overview_card("power", "Power Data", _metric_text(snapshot, ("power_latest_time_utc",), ""), "green" if snapshot else "unknown", None),
-        _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time),
-        _overview_card("alerts", "Active Alerts", str(len(status["alerts"])), "red" if status["alerts"] else "green", None),
+        _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
+        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
+        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
+        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
+        _overview_card("power", "Power Data", _power_time_text(snapshot.get("power_latest_time_utc")), _age_level(snapshot.get("power_latest_time_utc"), 30, 120), snapshot.get("power_latest_time_utc"), _age_text(snapshot.get("power_latest_time_utc"))),
+        _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
     ]
     return {"serverTime": utc_now_iso(), "cards": cards, "activeAlerts": status["alerts"]}
 
 
-def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None) -> dict[str, Any]:
-    return {"id": card_id, "title": title, "value": value, "level": level, "updatedAt": updated_at}
+def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None, detail: str = "") -> dict[str, Any]:
+    return {"id": card_id, "title": title, "value": value, "level": level, "updatedAt": updated_at, "detail": detail}
+
+
+def _operations_value(level: str) -> str:
+    return {"green": "Healthy", "amber": "Attention", "red": "Action"}.get(level, "Waiting")
+
+
+def _metric_age_detail(snapshot: dict[str, Any], key: str) -> str:
+    age = _metric_value(snapshot, (key,))
+    return "Age unknown" if age is None else f"{_duration_text(age / 60)} old"
+
+
+def _power_time_text(value: Any) -> str:
+    moment = _parse_utc(str(value)) if value else None
+    return moment.strftime("%H:%M UTC") if moment else "No data"
+
+
+def _battery_depletion_text(snapshot: dict[str, Any]) -> tuple[str, str]:
+    soc = _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))
+    power_w = _metric_value(snapshot, ("aps_battery_power_w", "BatteryWatts"))
+    if soc is None or power_w is None:
+        return "No data", "Needs battery state of charge and power"
+
+    capacity_kwh = _metric_value(snapshot, ("aps_battery_capacity_kwh",)) or 26.0
+    deadband_w = _metric_value(snapshot, ("aps_battery_depletion_deadband_w",)) or 25.0
+    remaining_kwh = _metric_value(snapshot, ("aps_battery_remaining_kwh",))
+    if remaining_kwh is None:
+        remaining_kwh = max(soc, 0.0) / 100.0 * capacity_kwh
+    energy_text = f"{remaining_kwh:.1f} kWh remaining from {capacity_kwh:.0f} kWh"
+
+    if power_w < -deadband_w:
+        hours = _metric_value(snapshot, ("aps_battery_depletion_hours",))
+        if hours is None:
+            hours = remaining_kwh / (abs(power_w) / 1000.0)
+        return _duration_text(hours), f"{energy_text}; discharging at {abs(power_w):.0f} W"
+    if power_w > deadband_w:
+        return "Charging", f"{energy_text}; charging at {power_w:.0f} W"
+    return "Flat", f"{energy_text}; battery power {power_w:.0f} W"
+
+
+def _battery_depletion_level(snapshot: dict[str, Any]) -> str:
+    soc = _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))
+    power_w = _metric_value(snapshot, ("aps_battery_power_w", "BatteryWatts"))
+    if soc is None or power_w is None:
+        return "unknown"
+    deadband_w = _metric_value(snapshot, ("aps_battery_depletion_deadband_w",)) or 25.0
+    if power_w >= -deadband_w:
+        return "green"
+    hours = _metric_value(snapshot, ("aps_battery_depletion_hours",))
+    if hours is None:
+        capacity_kwh = _metric_value(snapshot, ("aps_battery_capacity_kwh",)) or 26.0
+        hours = (max(soc, 0.0) / 100.0 * capacity_kwh) / (abs(power_w) / 1000.0)
+    return "green" if hours >= 24 else "amber" if hours >= 12 else "red"
+
+
+def _duration_text(hours: float) -> str:
+    total_minutes = max(int(round(hours * 60)), 0)
+    days, remainder = divmod(total_minutes, 24 * 60)
+    hour_count, minutes = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hour_count}h"
+    if hour_count:
+        return f"{hour_count}h {minutes}m"
+    return f"{minutes}m"
 
 
 def _metric_value(snapshot: dict[str, Any], keys: tuple[str, ...]) -> float | None:
@@ -539,9 +603,9 @@ def _prune_preview_cache(cache: Path, max_bytes: int = 50 * 1024 * 1024) -> None
         return
 
 
-def power(window: str = "24h", group: str = "observed") -> dict[str, Any]:
+def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     """Return compact chart points from the existing display-summary Zarr only."""
-    if window not in {"24h", "96h"} or group not in {"observed", "forecast_24h", "forecast_96h", "verification"}:
+    if window not in {"24h", "96h"} or group not in {"all", "observed", "forecast_24h", "forecast_96h", "verification"}:
         raise KeyError("Unsupported Power window or group")
     path = power_display_summary_path()
     payload: dict[str, Any] = {
@@ -567,7 +631,11 @@ def power(window: str = "24h", group: str = "observed") -> dict[str, Any]:
         start = now - pd.Timedelta(hours=24)
         horizon = 24 if window == "24h" else 96
         end = now + pd.Timedelta(hours=horizon)
-        panel_keys = set(POWER_PANEL_TIME_GROUPS[group])
+        panel_keys = (
+            {panel_key for panel_group in POWER_PANEL_TIME_GROUPS.values() for panel_key in panel_group}
+            if group == "all"
+            else set(POWER_PANEL_TIME_GROUPS[group])
+        )
         include_future = group != "observed"
         for panel in SUMMARY_LAYOUTS["power"]:
             if panel.key not in panel_keys:
