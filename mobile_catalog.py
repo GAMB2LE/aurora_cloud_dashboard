@@ -700,6 +700,13 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                     selected_values = selected_values[selected]
                 if not len(selected_times):
                     continue
+                segment_ids = [0]
+                if len(selected_times) > 1:
+                    gaps = np.diff(selected_times.asi8) / 1_000_000_000
+                    typical_gap = float(np.median(gaps[gaps > 0])) if (gaps > 0).any() else 60.0
+                    gap_threshold = max(typical_gap * 4, 300.0)
+                    for gap in gaps:
+                        segment_ids.append(segment_ids[-1] + (1 if gap > gap_threshold else 0))
                 traces.append(
                     {
                         "id": trace.var,
@@ -709,8 +716,8 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                         "dash": trace.dash,
                         "unit": str(dataset[trace.var].attrs.get("units", "")),
                         "points": [
-                            {"time": pd.Timestamp(moment).isoformat() + "Z", "value": round(float(value), 5)}
-                            for moment, value in zip(selected_times, selected_values, strict=True)
+                            {"time": pd.Timestamp(moment).isoformat() + "Z", "value": round(float(value), 5), "segment": segment}
+                            for moment, value, segment in zip(selected_times, selected_values, segment_ids, strict=True)
                         ],
                     }
                 )
