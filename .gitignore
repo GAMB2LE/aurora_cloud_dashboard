@@ -10,9 +10,13 @@
 !docs/**
 !mkdocs.yml
 !requirements-docs.txt
+!requirements-dashboard.txt
 !requirements-mobile-api.txt
 !systemd/
 !systemd/**
+!deployment/
+!deployment/systemd/
+!deployment/systemd/**
 !ios/
 !ios/**
 ios/**/.DS_Store

@@ -65,7 +65,7 @@ def _slice_window(ds: xr.Dataset | None, start: pd.Timestamp, end: pd.Timestamp)
         forecast_valid = np.zeros(len(time_index), dtype=bool)
         for name in forecast_names:
             forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
-        horizon = end + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
+        horizon = end + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "96")))
         mask |= forecast_valid & (time_index >= start) & (time_index <= horizon)
     if not mask.any():
         return None

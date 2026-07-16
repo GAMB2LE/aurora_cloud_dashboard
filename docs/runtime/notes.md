@@ -39,6 +39,12 @@ prewarmed Plotly JSON written by the quicklook generators under
 close enough to the latest data, the browser falls back to a normal interactive
 render.
 
+Interactive URLs with `live=1` treat their saved start/end timestamps as
+disposable browser state and resolve a fresh latest-24-hour window when the
+session opens. URLs with `live=0` retain their explicit historical window.
+Power freshness badges and latest-window matching use rows with finite measured
+APS fields, excluding forecast-only timestamps from the reported data bounds.
+
 ## Power interactive performance
 
 The raw Power Zarr schema and chunks are unchanged. The dashboard uses larger

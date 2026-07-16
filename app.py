@@ -34,6 +34,11 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+from power_soc_thresholds import (
+    MINIMUM_OPERATIONAL_SOC_PCT,
+    MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
+    SOC_REFERENCE_PANEL_KEYS,
+)
 try:
     from PIL import Image
 except Exception:  # pragma: no cover - dashboard can still serve source images.
@@ -56,7 +61,9 @@ from grouped_timeseries import (
     SUMMARY_DISPLAY_END_ATTR,
     SUMMARY_DISPLAY_START_ATTR,
     POWER_CUMULATIVE_CONTEXT_DAYS,
+    POWER_DISPLAY_SUMMARY_FIELDS,
     POWER_SOC_FORECAST_FIELDS,
+    prepare_summary_dataset,
     widget_group_options,
 )
 from extra_housekeeping import (
@@ -747,7 +754,7 @@ _INTERACTIVE_RENDER_CACHE: OrderedDict[tuple[object, ...], go.Figure] = OrderedD
 _INSTRUMENT_VIEW_STATE: dict[str, dict[str, object]] = {}
 _DATASET_VERSION: dict[str, int] = {}
 _DATASET_REFRESHED_AT: dict[str, datetime] = {}
-CURRENT_INSTRUMENT = "Ceilometer"
+CURRENT_INSTRUMENT = "power"
 _RENDER_REQUEST_COUNTER = 0
 _ACTIVE_RENDER_REQUEST_ID = 0
 _DISPLAYED_INTERACTIVE_INSTRUMENT: str | None = None
@@ -1073,6 +1080,33 @@ def _time_bounds_from_dataset(ds: xr.Dataset | None) -> tuple[datetime | None, d
     return lower, upper, raw_count, valid_count
 
 
+def _time_bounds_from_power_display_dataset(
+    ds: xr.Dataset | None,
+) -> tuple[datetime | None, datetime | None, int, int]:
+    """Return bounds from measured APS rows, excluding forecast-only timestamps."""
+    if ds is None or "time" not in ds:
+        return None, None, 0, 0
+    times = np.asarray(ds["time"].values)
+    raw_count = int(times.size)
+    if times.size == 0:
+        return None, None, raw_count, 0
+    measured = np.zeros(times.shape, dtype=bool)
+    for name in POWER_DISPLAY_SUMMARY_FIELDS:
+        if name not in ds or ds[name].dims != ("time",):
+            continue
+        values = np.asarray(ds[name].values)
+        if np.issubdtype(values.dtype, np.number):
+            measured |= np.isfinite(values)
+    valid = _valid_time_mask(times) & measured
+    measured_times = times[valid]
+    valid_count = int(measured_times.size)
+    if measured_times.size == 0:
+        return None, None, raw_count, valid_count
+    lower = pd.Timestamp(measured_times.min()).to_pydatetime(warn=False)
+    upper = pd.Timestamp(measured_times.max()).to_pydatetime(warn=False)
+    return lower, upper, raw_count, valid_count
+
+
 def _valid_time_mask(times: np.ndarray) -> np.ndarray:
     """Mask out NaT and clearly bogus future timestamps while preserving original indices."""
     if times.size == 0:
@@ -1106,7 +1140,11 @@ def _dataset_time_bounds(inst: str | None = None):
                 ("power_display_summary", _get_power_display_summary_dataset),
                 ("power_display_energy", _get_power_display_energy_dataset),
             ):
-                lower, upper, raw_count, valid_count = _time_bounds_from_dataset(getter())
+                source = getter()
+                if source_name == "power_display_summary":
+                    lower, upper, raw_count, valid_count = _time_bounds_from_power_display_dataset(source)
+                else:
+                    lower, upper, raw_count, valid_count = _time_bounds_from_dataset(source)
                 perf[f"{source_name}_time_count"] = raw_count
                 perf[f"{source_name}_valid_time_count"] = valid_count
                 if lower is not None and upper is not None:
@@ -1545,7 +1583,7 @@ def _ops_level_from_battery_soc(value) -> str:
         return "gray"
     if soc >= 50.0:
         return "green"
-    if soc >= 25.0:
+    if soc > MINIMUM_OPERATIONAL_SOC_PCT:
         return "amber"
     return "red"
 
@@ -2474,7 +2512,7 @@ def _ops_operations_markup() -> str:
                 "Battery SOC",
                 battery_soc_level,
                 battery_soc_value,
-                f"{battery_soc_meta}; green >=50 %, amber 25-50 %, red <25 %",
+                f"{battery_soc_meta}; green >=50 %, amber >40-50 %, red <=40 %",
             ),
             _ops_card_markup(
                 "Battery depletion",
@@ -7081,6 +7119,26 @@ def _refresh_share_and_download_state(*_events) -> None:
     hk_download.disabled = hk_path is None
 
 
+def _query_interactive_time_state(args: dict[str, str], instrument: str):
+    """Resolve URL time state, treating live URLs as requests for the current window."""
+    if _is_wxcam_instrument(instrument):
+        return None
+    live = args.get("live", "0") == "1"
+    if live:
+        start, end = _last_24h_utc_window()
+        return start, end, True
+    start_raw = args.get("start")
+    end_raw = args.get("end")
+    if not start_raw or not end_raw:
+        return None
+    try:
+        start = pd.Timestamp(start_raw).to_pydatetime(warn=False)
+        end = pd.Timestamp(end_raw).to_pydatetime(warn=False)
+    except Exception:
+        return None
+    return start, end, False
+
+
 def _apply_query_state() -> None:
     args = _request_query_args()
     if not args:
@@ -7090,15 +7148,12 @@ def _apply_query_state() -> None:
     instrument = args.get("instrument")
     if instrument in visible_instruments:
         instrument_select.value = instrument
-    start_raw = args.get("start")
-    end_raw = args.get("end")
-    if start_raw and end_raw and not _is_wxcam_instrument(instrument_select.value):
-        try:
-            range_start.value = pd.Timestamp(start_raw).to_pydatetime(warn=False)
-            range_end.value = pd.Timestamp(end_raw).to_pydatetime(warn=False)
-            _set_live(args.get("live", "0") == "1")
-        except Exception:
-            pass
+    time_state = _query_interactive_time_state(args, instrument_select.value)
+    if time_state is not None:
+        start, end, live = time_state
+        range_start.value = start
+        range_end.value = end
+        _set_live(live)
     if args.get("bottom_m"):
         try:
             bottom_range_m.value = int(args["bottom_m"])
@@ -8462,20 +8517,36 @@ body, .bk {
     .pn-template-header,
     .app-header,
     header {
-        min-height: 58px !important;
-        height: 58px !important;
+        min-height: 54px !important;
+        height: 54px !important;
+    }
+    .mdc-top-app-bar__row,
+    .mdc-top-app-bar__section,
+    .pn-template-header,
+    .pn-template-header .bk {
+        align-items: center !important;
+    }
+    .mdc-top-app-bar__section {
+        display: flex !important;
     }
     .mdc-top-app-bar__title,
     .pn-template-title {
-        font-size: 19px !important;
-        line-height: 1.05 !important;
+        display: flex !important;
+        align-items: center !important;
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        max-width: calc(100vw - 104px) !important;
+        font-size: 16px !important;
+        line-height: 1 !important;
     }
     .pn-template-logo,
     .pn-template-logo img,
     .app-logo,
     .app-logo img {
-        width: 32px !important;
-        height: 32px !important;
+        flex: 0 0 34px !important;
+        width: 34px !important;
+        height: 34px !important;
+        object-fit: contain !important;
     }
 }
 .mobile-bottom-nav {
@@ -8560,25 +8631,35 @@ body, .bk {
         box-sizing: border-box;
     }
     .mdc-top-app-bar {
-        height: 50px !important;
-        min-height: 50px !important;
+        height: 54px !important;
+        min-height: 54px !important;
     }
     .mdc-top-app-bar__row {
-        height: 50px !important;
+        height: 54px !important;
+        align-items: center !important;
     }
     .mdc-top-app-bar__section {
+        display: flex !important;
+        align-items: center !important;
         padding: 0 8px !important;
     }
     .mdc-top-app-bar__title {
-        font-size: 18px !important;
-        line-height: 1.2 !important;
+        display: flex !important;
+        align-items: center !important;
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        max-width: calc(100vw - 104px) !important;
+        font-size: 16px !important;
+        line-height: 1 !important;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
     .mdc-top-app-bar img {
-        width: 30px !important;
-        height: 30px !important;
+        flex: 0 0 34px !important;
+        width: 34px !important;
+        height: 34px !important;
+        object-fit: contain !important;
     }
     .bk.card { padding: 8px; }
     .bk-panel-card { padding: 8px; }
@@ -9058,6 +9139,7 @@ def _mobile_power_window() -> xr.Dataset | None:
     if ds is not None and "time" in ds:
         ds.attrs[SUMMARY_DISPLAY_START_ATTR] = start.isoformat()
         ds.attrs[SUMMARY_DISPLAY_END_ATTR] = now.isoformat()
+        ds = prepare_summary_dataset(ds, "power")
     return ds
 
 
@@ -9079,7 +9161,12 @@ def _mobile_trace_values(ds: xr.Dataset, trace, include_future: bool) -> tuple[p
     if not mask.any():
         return pd.DatetimeIndex([]), np.asarray([], dtype=float)
     out_times = times[mask]
-    out_values = values[mask]
+    out_values = values[mask] * float(trace.scale)
+    if trace.display_horizon_hours is not None and len(out_times):
+        display_end = out_times.min() + pd.Timedelta(hours=float(trace.display_horizon_hours))
+        display_mask = out_times <= display_end
+        out_times = out_times[display_mask]
+        out_values = out_values[display_mask]
     if trace.skip_if_all_zero and np.allclose(out_values[np.isfinite(out_values)], 0.0):
         return pd.DatetimeIndex([]), np.asarray([], dtype=float)
     max_points = 260
@@ -9091,7 +9178,13 @@ def _mobile_trace_values(ds: xr.Dataset, trace, include_future: bool) -> tuple[p
 
 
 def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
-    forecast_panel_keys = {"soc_ecmwf_forecast", "ecmwf_solar_forecast", "soc_forecast_skill"}
+    forecast_panel_keys = {
+        "soc_24h_forecast",
+        "soc_ecmwf_forecast",
+        "soc_load_scenarios",
+        "ecmwf_solar_forecast",
+        "soc_forecast_skill",
+    }
     include_future = panel.key in forecast_panel_keys
     fig = go.Figure()
     has_right_axis = panel.right_axis_label is not None
@@ -9127,6 +9220,26 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
                 connectgaps=False,
             )
         )
+    if panel.key in SOC_REFERENCE_PANEL_KEYS and fig.data:
+        all_times = [pd.Timestamp(value) for trace in fig.data for value in trace.x]
+        if all_times:
+            fig.add_trace(
+                go.Scatter(
+                    x=[min(all_times), max(all_times)],
+                    y=[MINIMUM_OPERATIONAL_SOC_PCT, MINIMUM_OPERATIONAL_SOC_PCT],
+                    mode="lines",
+                    name=MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
+                    line=dict(color=THEME_TEXT, width=1.5, dash="dash"),
+                    hovertemplate=f"{MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL}<extra></extra>",
+                    showlegend=False,
+                )
+            )
+            legend_items.append(
+                "<span class='mobile-plot-card__legend-item'>"
+                f"<span class='mobile-plot-card__legend-line mobile-plot-card__legend-line--dash' style='color:{escape(THEME_TEXT)}'></span>"
+                f"<span class='mobile-plot-card__legend-label'>{escape(MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL)}</span>"
+                "</span>"
+            )
     if not fig.data:
         return None
     plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "110"))

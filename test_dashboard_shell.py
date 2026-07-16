@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
 import app
 
 
@@ -36,3 +42,57 @@ def test_desktop_controls_keep_compact_navigation_rows() -> None:
 
 def test_phone_shell_keeps_operational_groups() -> None:
     assert list(app.MOBILE_TAB_OPTIONS) == ["Overview", "Power", "Plots", "Camera", "Ops"]
+
+
+def test_live_query_uses_current_window_instead_of_stale_url_dates(monkeypatch) -> None:
+    current_start = datetime(2026, 7, 15, 10, 30)
+    current_end = datetime(2026, 7, 16, 10, 30)
+    monkeypatch.setattr(app, "_last_24h_utc_window", lambda: (current_start, current_end))
+
+    state = app._query_interactive_time_state(
+        {
+            "start": "2026-07-15T07:04:01",
+            "end": "2026-07-16T07:04:01",
+            "live": "1",
+        },
+        "power",
+    )
+
+    assert state == (current_start, current_end, True)
+
+
+def test_non_live_query_preserves_historical_window() -> None:
+    state = app._query_interactive_time_state(
+        {
+            "start": "2026-07-15T07:04:01",
+            "end": "2026-07-16T07:04:01",
+            "live": "0",
+        },
+        "power",
+    )
+
+    assert state == (
+        datetime(2026, 7, 15, 7, 4, 1),
+        datetime(2026, 7, 16, 7, 4, 1),
+        False,
+    )
+
+
+def test_power_time_bounds_ignore_forecast_only_rows() -> None:
+    times = pd.date_range("2026-07-16T08:00:00", periods=7, freq="1h")
+    measured = np.array([50.0, 51.0, 52.0, np.nan, np.nan, np.nan, np.nan])
+    forecast = np.array([np.nan, np.nan, 52.0, 53.0, 54.0, 55.0, 56.0])
+    ds = xr.Dataset(
+        {
+            "BatterySOC": (("time",), measured),
+            "BatterySOCForecast": (("time",), forecast),
+        },
+        coords={"time": times},
+    )
+
+    lower, upper, raw_count, valid_count = app._time_bounds_from_power_display_dataset(ds)
+
+    assert lower == datetime(2026, 7, 16, 8, 0)
+    assert upper == datetime(2026, 7, 16, 10, 0)
+    assert raw_count == 7
+    assert valid_count == 3

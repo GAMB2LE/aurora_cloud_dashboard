@@ -62,6 +62,7 @@ nav:
       - ASFS Fast Sonic Zarr: data-products/asfs-fast-sonic-zarr.md
       - ASFS Fast Gas Zarr: data-products/asfs-fast-gas-zarr.md
       - Power Zarr: data-products/power-zarr.md
+      - Power forecast model: analysis/power-load-forecast-model.md
       - WXcam products: data-products/wxcam-products.md
       - WXcam Zarr: data-products/wxcam-zarr.md
       - AURORACam Zarr: data-products/auroracam-zarr.md
