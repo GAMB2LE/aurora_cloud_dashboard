@@ -156,12 +156,22 @@ quicklooks for LI-COR continuity. It does not contain radiation variables.
 - `aurora-power-source-sync.timer`
 - `aurora-power-append.timer`
 - `aurora-power-soc-forecast.timer`
+- `aurora-power-soc-forecast-learn.timer`
+- `aurora-power-soc-ensemble.timer`
 - `aurora-power-quicklooks.timer`
 
 `aurora-power-quicklooks.service` regenerates the compact APS display summary
 and prewarmed Plotly JSON after the APS append cycle.
 `aurora-power-soc-forecast.service` refreshes the ECMWF-informed SOC forecast
-and adaptive forecast-skill state before the display summary is rebuilt.
+and adaptive forecast-skill state from a new ECMWF download every 3 hours.
+`aurora-power-soc-forecast-learn.service` runs on a 15-minute timer, reuses the
+latest cached ECMWF forecast, re-anchors to current SOC, scores archived
+forecast runs, and updates skill/adaptive state faster than ECMWF is refreshed.
+`aurora-power-soc-ensemble.service` checks hourly for a new ECMWF 00/12 UTC
+ensemble cycle. New cycles retrieve all 50 perturbed `ssrd` members, write the
+compact site ensemble and probabilistic verification products, then remove the
+temporary global GRIB. It uses idle I/O scheduling and a two-hour timeout so it
+does not block deterministic SOC learning.
 
 ## ASS PDU
 

@@ -23,6 +23,14 @@ from plotly.subplots import make_subplots
 import xarray as xr
 
 from quicklook_time_axis import apply_quicklook_time_axis
+from power_soc_thresholds import (
+    MINIMUM_OPERATIONAL_SOC_LABEL,
+    MINIMUM_OPERATIONAL_SOC_PCT,
+    MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
+    SOC_BELOW_THRESHOLD_BRIER_FIELD,
+    SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,
+    SOC_REFERENCE_PANEL_KEYS,
+)
 from time_gap_breaks import insert_time_gap_breaks
 
 MAX_TIME_SAMPLES = int(os.environ.get("AURORA_QUICKLOOK_MAX_TIME_SAMPLES", "2200"))
@@ -39,8 +47,8 @@ PLOTLY_SUMMARY_RIGHT_MARGIN = 110
 PLOTLY_SUMMARY_PANEL_HEIGHT = 225
 PLOTLY_SUMMARY_POWER_PANEL_HEIGHT = 330
 PLOTLY_SUMMARY_MAX_HEIGHT = 1650
-PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 6400
-PLOTLY_SUMMARY_POWER_PANEL_GAP = 34
+PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 7000
+PLOTLY_SUMMARY_POWER_PANEL_GAP = 88
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -146,11 +154,52 @@ POWER_SOC_FORECAST_FIELDS = (
     "ECMWFSolarIrradiance",
     "ForecastSolarWatts",
     "ForecastLoadWatts",
-    "ForecastSOCMAERecent",
-    "ForecastSolarMAERecent",
-    "ForecastLoadMAERecent",
-    "ForecastLoadBiasRecent",
-    "ForecastEvaluationSamples",
+    "BatterySOCForecast_Load100W",
+    "BatterySOCForecast_Load200W",
+    "BatterySOCForecast_Load300W",
+    "BatterySOCForecast_Load400W",
+    "BatterySOCForecast_Load500W",
+    "BatterySOCForecast_Load600W",
+)
+POWER_SOC_FORECAST_SKILL_FIELDS = (
+    "ForecastVerificationSamples",
+    "ForecastIndependentCycles",
+    "ForecastSOCMAE_0_6h_Verified",
+    "ForecastSOCMAE_6_24h_Verified",
+    "ForecastSOCMAE_24_48h_Verified",
+    "ForecastSOCMAE_48_96h_Verified",
+    "ForecastSOCBias_0_6h_Verified",
+    "ForecastSOCSkill_0_6h",
+    "ForecastLoadMAE24h",
+    "ForecastLoadBias24h",
+    "ForecastLoadSkill24h",
+    "ForecastSolarMAE24h",
+    "ForecastSolarBias24h",
+    "ForecastSolarSkill24h",
+)
+POWER_SOC_HINDCAST_FIELDS = (
+    "BatterySOCObservedHindcast",
+    "BatterySOCHindcast_6h",
+    "BatterySOCHindcast_24h",
+    "BatterySOCHindcast_48h",
+    "BatterySOCHindcast_72h",
+)
+POWER_SOC_ENSEMBLE_FORECAST_FIELDS = (
+    "BatterySOCForecastP10",
+    "BatterySOCForecastP50",
+    "BatterySOCForecastP90",
+    "BatterySOCForecastMinimum",
+    "BatterySOCForecastMaximum",
+    SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,
+)
+POWER_SOC_ENSEMBLE_SKILL_FIELDS = (
+    "ForecastSOCCRPS_0_6h",
+    "ForecastSOCCRPS_6_24h",
+    "ForecastSOCCRPS_24_48h",
+    "ForecastSOCCRPS_48_96h",
+    "ForecastSOCIntervalCoverage80",
+    SOC_BELOW_THRESHOLD_BRIER_FIELD,
+    "ForecastEnsembleCycles",
 )
 FAST_SONIC_TO_LOGGER_AVG = {
     "metek_x_out": "metek_x_out_Avg",
@@ -187,6 +236,7 @@ class TraceSpec:
     projection_lookback_minutes: float | None = None
     projection_horizon_hours: float = POWER_SOC_PROJECTION_HOURS
     projection_degree: int = POWER_SOC_PROJECTION_POLY_DEGREE
+    display_horizon_hours: float | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +246,14 @@ class PanelSpec:
     left_axis_label: str
     right_axis_label: str | None
     traces: tuple[TraceSpec, ...]
+
+
+def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
+    if trace.var == "ForecastLoadWatts":
+        mode = str(ds.attrs.get("forecast_load_mode", ds.attrs.get("load_mode", ""))).strip()
+        if mode:
+            return f"Forecast Load ({mode})"
+    return trace.label
 
 
 COLOR = {
@@ -397,11 +455,44 @@ HUMAN_LABELS = {
     "ECMWFSolarIrradiance": "ECMWF Solar Power",
     "ForecastSolarWatts": "Forecast Solar Charging",
     "ForecastLoadWatts": "Forecast Load",
-    "ForecastSOCMAERecent": "Recent SOC Forecast MAE",
-    "ForecastSolarMAERecent": "Recent Solar Forecast MAE",
-    "ForecastLoadMAERecent": "Recent Load Forecast MAE",
-    "ForecastLoadBiasRecent": "Recent Load Forecast Bias",
-    "ForecastEvaluationSamples": "Evaluated Forecast Samples",
+    "BatterySOCForecast_Load100W": "SOC Forecast 100 W Load",
+    "BatterySOCForecast_Load200W": "SOC Forecast 200 W Load",
+    "BatterySOCForecast_Load300W": "SOC Forecast 300 W Load",
+    "BatterySOCForecast_Load400W": "SOC Forecast 400 W Load",
+    "BatterySOCForecast_Load500W": "SOC Forecast 500 W Load",
+    "BatterySOCForecast_Load600W": "SOC Forecast 600 W Load",
+    "ForecastVerificationSamples": "Verified Forecast Samples",
+    "ForecastIndependentCycles": "Independent ECMWF Cycles",
+    "ForecastSOCMAE_0_6h_Verified": "SOC MAE 0-6 h",
+    "ForecastSOCMAE_6_24h_Verified": "SOC MAE 6-24 h",
+    "ForecastSOCMAE_24_48h_Verified": "SOC MAE 24-48 h",
+    "ForecastSOCMAE_48_96h_Verified": "SOC MAE 48-96 h",
+    "ForecastSOCBias_0_6h_Verified": "SOC Bias 0-6 h",
+    "ForecastSOCSkill_0_6h": "SOC Skill 0-6 h",
+    "ForecastSolarMAE24h": "Solar MAE 24 h",
+    "ForecastSolarBias24h": "Solar Bias 24 h",
+    "ForecastSolarSkill24h": "Solar Skill 24 h",
+    "ForecastLoadMAE24h": "Load MAE 24 h",
+    "ForecastLoadBias24h": "Load Bias 24 h",
+    "ForecastLoadSkill24h": "Load Skill 24 h",
+    "BatterySOCObservedHindcast": "Observed SOC",
+    "BatterySOCHindcast_6h": "Forecast Issued 6 h Earlier",
+    "BatterySOCHindcast_24h": "Forecast Issued 24 h Earlier",
+    "BatterySOCHindcast_48h": "Forecast Issued 48 h Earlier",
+    "BatterySOCHindcast_72h": "Forecast Issued 72 h Earlier",
+    "BatterySOCForecastP10": "ECMWF Ensemble P10",
+    "BatterySOCForecastP50": "ECMWF Ensemble Median",
+    "BatterySOCForecastP90": "ECMWF Ensemble P90",
+    "BatterySOCForecastMinimum": "ECMWF Ensemble Minimum",
+    "BatterySOCForecastMaximum": "ECMWF Ensemble Maximum",
+    SOC_BELOW_THRESHOLD_PROBABILITY_FIELD: f"Probability SOC Below {MINIMUM_OPERATIONAL_SOC_LABEL}",
+    "ForecastSOCCRPS_0_6h": "SOC CRPS 0-6 h",
+    "ForecastSOCCRPS_6_24h": "SOC CRPS 6-24 h",
+    "ForecastSOCCRPS_24_48h": "SOC CRPS 24-48 h",
+    "ForecastSOCCRPS_48_96h": "SOC CRPS 48-96 h",
+    "ForecastSOCIntervalCoverage80": "P10-P90 Coverage",
+    SOC_BELOW_THRESHOLD_BRIER_FIELD: f"Below {MINIMUM_OPERATIONAL_SOC_LABEL} Brier Score",
+    "ForecastEnsembleCycles": "Verified Ensemble Cycles",
     "SolarState_East": "Solar East State",
     "SolarState_South": "Solar South State",
     "SolarState_West": "Solar West State",
@@ -541,11 +632,44 @@ HUMAN_UNITS = {
     "ECMWFSolarIrradiance": "W/m2",
     "ForecastSolarWatts": "W",
     "ForecastLoadWatts": "W",
-    "ForecastSOCMAERecent": "percentage points",
-    "ForecastSolarMAERecent": "W",
-    "ForecastLoadMAERecent": "W",
-    "ForecastLoadBiasRecent": "W",
-    "ForecastEvaluationSamples": "samples",
+    "BatterySOCForecast_Load100W": "%",
+    "BatterySOCForecast_Load200W": "%",
+    "BatterySOCForecast_Load300W": "%",
+    "BatterySOCForecast_Load400W": "%",
+    "BatterySOCForecast_Load500W": "%",
+    "BatterySOCForecast_Load600W": "%",
+    "ForecastVerificationSamples": "samples",
+    "ForecastIndependentCycles": "cycles",
+    "ForecastSOCMAE_0_6h_Verified": "percentage points",
+    "ForecastSOCMAE_6_24h_Verified": "percentage points",
+    "ForecastSOCMAE_24_48h_Verified": "percentage points",
+    "ForecastSOCMAE_48_96h_Verified": "percentage points",
+    "ForecastSOCBias_0_6h_Verified": "percentage points",
+    "ForecastSOCSkill_0_6h": "1",
+    "ForecastSolarMAE24h": "W",
+    "ForecastSolarBias24h": "W",
+    "ForecastSolarSkill24h": "1",
+    "ForecastLoadMAE24h": "W",
+    "ForecastLoadBias24h": "W",
+    "ForecastLoadSkill24h": "1",
+    "BatterySOCObservedHindcast": "%",
+    "BatterySOCHindcast_6h": "%",
+    "BatterySOCHindcast_24h": "%",
+    "BatterySOCHindcast_48h": "%",
+    "BatterySOCHindcast_72h": "%",
+    "BatterySOCForecastP10": "%",
+    "BatterySOCForecastP50": "%",
+    "BatterySOCForecastP90": "%",
+    "BatterySOCForecastMinimum": "%",
+    "BatterySOCForecastMaximum": "%",
+    SOC_BELOW_THRESHOLD_PROBABILITY_FIELD: "1",
+    "ForecastSOCCRPS_0_6h": "percentage points",
+    "ForecastSOCCRPS_6_24h": "percentage points",
+    "ForecastSOCCRPS_24_48h": "percentage points",
+    "ForecastSOCCRPS_48_96h": "percentage points",
+    "ForecastSOCIntervalCoverage80": "1",
+    SOC_BELOW_THRESHOLD_BRIER_FIELD: "1",
+    "ForecastEnsembleCycles": "cycles",
     "TempSensor1": "C",
     "TempSensor2": "C",
     "TempSensor3": "C",
@@ -853,14 +977,13 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     PDU_OUTLET_COLORS[(outlet - 1) % len(PDU_OUTLET_COLORS)],
                     valid_min=0.0,
                     valid_max=5000.0,
-                    skip_if_all_zero=True,
                 )
                 for outlet, field_name in enumerate(PDU_WATT_FIELDS, start=1)
             ),
         ),
         PanelSpec(
             "cumulative_power",
-            "Cumulative Power & State of Charge",
+            "Cumulative Energy & State of Charge",
             "SOC [%]",
             "Cumulative Energy [kWh]",
             (
@@ -897,46 +1020,65 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "soc_projection",
-            "SOC 24 h Forecast",
+            "soc_24h_forecast",
+            "SOC Next 24 h Forecast",
             "SOC [%]",
             None,
             (
-                TraceSpec("BatterySOC", "State of Charge", COLOR["green"], valid_min=0.0, valid_max=100.0),
                 TraceSpec(
-                    "BatterySOC",
-                    "30 min fit +24 h",
-                    COLOR["blue"],
-                    dash="dash",
+                    "BatterySOCForecast",
+                    "ECMWF SOC Forecast",
+                    COLOR["green"],
                     valid_min=0.0,
                     valid_max=100.0,
-                    projection_lookback_minutes=30.0,
-                ),
-                TraceSpec(
-                    "BatterySOC",
-                    "2 h fit +24 h",
-                    COLOR["purple"],
-                    dash="dot",
-                    valid_min=0.0,
-                    valid_max=100.0,
-                    projection_lookback_minutes=120.0,
+                    display_horizon_hours=24.0,
                 ),
             ),
         ),
         PanelSpec(
             "soc_ecmwf_forecast",
-            "SOC 48 h Forecast",
+            "SOC 96 h Forecast",
+            "SOC [%]",
+            f"Probability SOC Below {MINIMUM_OPERATIONAL_SOC_LABEL} [%]",
+            (
+                TraceSpec("BatterySOCForecastP10", "ECMWF Ensemble P10", COLOR["light_blue"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecastP90", "ECMWF Ensemble P90", COLOR["light_blue"], dash="dot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast", "ECMWF SOC Forecast", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec(SOC_BELOW_THRESHOLD_PROBABILITY_FIELD, f"Probability Below {MINIMUM_OPERATIONAL_SOC_LABEL}", COLOR["red"], axis="right", scale=100.0, valid_min=0.0, valid_max=1.0),
+            ),
+        ),
+        PanelSpec(
+            "soc_hindcast",
+            "SOC Hindcast: Forecasts vs Observed",
             "SOC [%]",
             None,
             (
-                TraceSpec("BatterySOCForecast", "ECMWF SOC Forecast", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCObservedHindcast", "Observed SOC", COLOR["green"], valid_min=0.0, valid_max=100.0, step=True),
+                TraceSpec("BatterySOCHindcast_6h", "Issued 6 h Earlier", COLOR["blue"], dash="dash", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCHindcast_24h", "Issued 24 h Earlier", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCHindcast_48h", "Issued 48 h Earlier", COLOR["purple"], dash="dashdot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCHindcast_72h", "Issued 72 h Earlier", COLOR["slate"], dash="longdash", valid_min=0.0, valid_max=100.0),
+            ),
+        ),
+        PanelSpec(
+            "soc_load_scenarios",
+            "SOC Load Scenarios",
+            "SOC [%]",
+            None,
+            (
+                TraceSpec("BatterySOCForecast_Load100W", "100 W Load", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast_Load200W", "200 W Load", COLOR["teal"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast_Load300W", "300 W Load", COLOR["blue"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast_Load400W", "400 W Load", COLOR["purple"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast_Load500W", "500 W Load", COLOR["magenta"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast_Load600W", "600 W Load", COLOR["red"], valid_min=0.0, valid_max=100.0),
             ),
         ),
         PanelSpec(
             "ecmwf_solar_forecast",
             "ECMWF Solar & Load Forecast",
-            "ECMWF Solar Power [W/m2]",
-            "Forecast Power [W]",
+            "ECMWF Solar [W/m2]",
+            "Forecast Charging / Load [W]",
             (
                 TraceSpec("ECMWFSolarIrradiance", "ECMWF Solar Power", COLOR["brown"], valid_min=0.0),
                 TraceSpec("ForecastSolarWatts", "Forecast Solar Charging", COLOR["green"], axis="right", dash="dot", valid_min=0.0),
@@ -945,15 +1087,41 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "soc_forecast_skill",
-            "SOC Forecast Skill",
-            "SOC MAE [percentage points] / Samples",
-            "Power Forecast Error [W]",
+            "SOC Forecast Verification",
+            "SOC MAE [percentage points]",
+            "Independent ECMWF Cycles [count]",
             (
-                TraceSpec("ForecastEvaluationSamples", "Evaluated Forecast Samples", COLOR["green"], valid_min=0.0),
-                TraceSpec("ForecastSOCMAERecent", "Recent SOC Forecast MAE", COLOR["blue"], valid_min=0.0),
-                TraceSpec("ForecastSolarMAERecent", "Recent Solar Forecast MAE", COLOR["brown"], axis="right", valid_min=0.0),
-                TraceSpec("ForecastLoadMAERecent", "Recent Load Forecast MAE", COLOR["red"], axis="right", dash="dash", valid_min=0.0),
-                TraceSpec("ForecastLoadBiasRecent", "Recent Load Forecast Bias", COLOR["purple"], axis="right", dash="dot"),
+                TraceSpec("ForecastSOCMAE_0_6h_Verified", "SOC MAE 0-6 h", COLOR["blue"], valid_min=0.0),
+                TraceSpec("ForecastSOCMAE_6_24h_Verified", "SOC MAE 6-24 h", COLOR["teal"], valid_min=0.0),
+                TraceSpec("ForecastSOCMAE_24_48h_Verified", "SOC MAE 24-48 h", COLOR["purple"], valid_min=0.0),
+                TraceSpec("ForecastSOCMAE_48_96h_Verified", "SOC MAE 48-96 h", COLOR["slate"], valid_min=0.0),
+                TraceSpec("ForecastIndependentCycles", "Independent ECMWF Cycles", COLOR["brown"], axis="right", dash="dot", valid_min=0.0),
+            ),
+        ),
+        PanelSpec(
+            "soc_ensemble_skill",
+            "SOC Ensemble Verification",
+            "SOC CRPS [percentage points]",
+            "Coverage / Brier [0-1]",
+            (
+                TraceSpec("ForecastSOCCRPS_0_6h", "SOC CRPS 0-6 h", COLOR["blue"], valid_min=0.0),
+                TraceSpec("ForecastSOCCRPS_6_24h", "SOC CRPS 6-24 h", COLOR["teal"], valid_min=0.0),
+                TraceSpec("ForecastSOCCRPS_24_48h", "SOC CRPS 24-48 h", COLOR["purple"], valid_min=0.0),
+                TraceSpec("ForecastSOCCRPS_48_96h", "SOC CRPS 48-96 h", COLOR["slate"], valid_min=0.0),
+                TraceSpec("ForecastSOCIntervalCoverage80", "P10-P90 Coverage", COLOR["olive"], axis="right", valid_min=0.0, valid_max=1.0),
+                TraceSpec(SOC_BELOW_THRESHOLD_BRIER_FIELD, f"Below {MINIMUM_OPERATIONAL_SOC_LABEL} Brier Score", COLOR["red"], axis="right", dash="dash", valid_min=0.0, valid_max=1.0),
+            ),
+        ),
+        PanelSpec(
+            "forecast_power_skill",
+            "Solar and Load Forecast Verification",
+            "Forecast Error [W]",
+            None,
+            (
+                TraceSpec("ForecastSolarMAE24h", "Solar MAE 24 h", COLOR["brown"], valid_min=0.0),
+                TraceSpec("ForecastSolarBias24h", "Solar Bias 24 h", COLOR["olive"]),
+                TraceSpec("ForecastLoadMAE24h", "Load MAE 24 h", COLOR["red"], dash="dash", valid_min=0.0),
+                TraceSpec("ForecastLoadBias24h", "Load Bias 24 h", COLOR["purple"], dash="dot"),
             ),
         ),
     ),
@@ -1779,6 +1947,10 @@ def build_power_display_summary_dataset(
     ass_power_ds: xr.Dataset | None = None,
     pdu_ds: xr.Dataset | None = None,
     forecast_ds: xr.Dataset | None = None,
+    forecast_skill_ds: xr.Dataset | None = None,
+    hindcast_ds: xr.Dataset | None = None,
+    ensemble_forecast_ds: xr.Dataset | None = None,
+    ensemble_skill_ds: xr.Dataset | None = None,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> xr.Dataset:
     """Build one-minute APS traces for fast dashboard plotting.
@@ -1827,6 +1999,32 @@ def build_power_display_summary_dataset(
         if not forecast_frame.empty:
             frames.append(forecast_frame)
 
+    if forecast_skill_ds is not None:
+        skill_frame = _time_frame_from_dataset(forecast_skill_ds.sortby("time"), POWER_SOC_FORECAST_SKILL_FIELDS)
+        skill_frame = _resample_display_frame(skill_frame, freq)
+        if not skill_frame.empty:
+            frames.append(skill_frame)
+
+    if hindcast_ds is not None:
+        hindcast_frame = _time_frame_from_dataset(hindcast_ds.sortby("time"), POWER_SOC_HINDCAST_FIELDS)
+        if not hindcast_frame.empty:
+            frames.append(hindcast_frame)
+
+    if ensemble_forecast_ds is not None:
+        ensemble_frame = _time_frame_from_dataset(
+            ensemble_forecast_ds.sortby("time"), POWER_SOC_ENSEMBLE_FORECAST_FIELDS
+        )
+        if not ensemble_frame.empty:
+            frames.append(ensemble_frame)
+
+    if ensemble_skill_ds is not None:
+        ensemble_skill_frame = _time_frame_from_dataset(
+            ensemble_skill_ds.sortby("time"), POWER_SOC_ENSEMBLE_SKILL_FIELDS
+        )
+        ensemble_skill_frame = _resample_display_frame(ensemble_skill_frame, freq)
+        if not ensemble_skill_frame.empty:
+            frames.append(ensemble_skill_frame)
+
     if not frames:
         return xr.Dataset()
 
@@ -1838,17 +2036,36 @@ def build_power_display_summary_dataset(
 
     start = pd.Timestamp(display_frame.index.min()).isoformat()
     end = pd.Timestamp(display_frame.index.max()).isoformat()
+    summary_attrs = {
+        POWER_DISPLAY_SUMMARY_ATTR: "true",
+        "source": "derived from power.zarr plus optional asfs_logger.zarr ASS 48 V power, pdu.zarr outlet power, power_soc_forecast.zarr, and power_soc_forecast_skill.zarr",
+        "frequency": freq,
+        "time_coverage_start": start,
+        "time_coverage_end": end,
+        "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
+        "description": "Display-only one-minute APS summary traces for fast dashboard plotting.",
+    }
+    if forecast_ds is not None:
+        for source_name, target_name in (
+            ("load_mode", "forecast_load_mode"),
+            ("load_model", "forecast_load_model"),
+            ("load_model_version", "forecast_load_model_version"),
+            ("load_mode_source", "forecast_load_mode_source"),
+            ("load_mode_active_kits", "forecast_load_mode_active_kits"),
+            ("load_mode_signature", "forecast_load_mode_signature"),
+            ("load_mode_learning_ready", "forecast_load_mode_learning_ready"),
+            ("load_mode_learning_reason", "forecast_load_mode_learning_reason"),
+            ("load_mode_learning_observations", "forecast_load_mode_learning_observations"),
+            ("load_mode_pdu_active_watts", "forecast_load_mode_pdu_active_watts"),
+            ("load_measurement", "forecast_load_measurement"),
+            ("load_balance_measurement", "forecast_load_balance_measurement"),
+        ):
+            if source_name in forecast_ds.attrs:
+                summary_attrs[target_name] = str(forecast_ds.attrs[source_name])
     out = xr.Dataset(
         {name: (("time",), display_frame[name].to_numpy(dtype=np.float32)) for name in display_frame.columns},
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
-        attrs={
-            POWER_DISPLAY_SUMMARY_ATTR: "true",
-            "source": "derived from power.zarr plus optional asfs_logger.zarr ASS 48 V power, pdu.zarr outlet power, and power_soc_forecast.zarr",
-            "frequency": freq,
-            "time_coverage_start": start,
-            "time_coverage_end": end,
-            "description": "Display-only one-minute APS summary traces for fast dashboard plotting.",
-        },
+        attrs=summary_attrs,
     )
     for name in out.data_vars:
         unit = human_unit(name)
@@ -1859,21 +2076,46 @@ def build_power_display_summary_dataset(
             out[name].attrs["units"] = "kWh"
     if "BatterySOCForecast" in out:
         out["BatterySOCForecast"].attrs["units"] = "%"
+    for name in (
+        "BatterySOCForecast_Load100W",
+        "BatterySOCForecast_Load200W",
+        "BatterySOCForecast_Load300W",
+        "BatterySOCForecast_Load400W",
+        "BatterySOCForecast_Load500W",
+        "BatterySOCForecast_Load600W",
+    ):
+        if name in out:
+            out[name].attrs["units"] = "%"
     if "ECMWFSolarIrradiance" in out:
         out["ECMWFSolarIrradiance"].attrs["units"] = "W m-2"
     for name in ("ForecastSolarWatts", "ForecastLoadWatts"):
         if name in out:
             out[name].attrs["units"] = "W"
-    if "ForecastSOCMAERecent" in out:
-        out["ForecastSOCMAERecent"].attrs["units"] = "percentage points"
-    if "ForecastSolarMAERecent" in out:
-        out["ForecastSolarMAERecent"].attrs["units"] = "W"
-    if "ForecastLoadMAERecent" in out:
-        out["ForecastLoadMAERecent"].attrs["units"] = "W"
-    if "ForecastLoadBiasRecent" in out:
-        out["ForecastLoadBiasRecent"].attrs["units"] = "W"
-    if "ForecastEvaluationSamples" in out:
-        out["ForecastEvaluationSamples"].attrs["units"] = "samples"
+    for name in (
+        "ForecastSOCMAE_0_6h_Verified",
+        "ForecastSOCMAE_6_24h_Verified",
+        "ForecastSOCMAE_24_48h_Verified",
+        "ForecastSOCMAE_48_96h_Verified",
+        "ForecastSOCBias_0_6h_Verified",
+    ):
+        if name in out:
+            out[name].attrs["units"] = "percentage points"
+    for name in ("ForecastSolarMAE24h", "ForecastSolarBias24h", "ForecastLoadMAE24h", "ForecastLoadBias24h"):
+        if name in out:
+            out[name].attrs["units"] = "W"
+    for name in ("ForecastSOCSkill_0_6h", "ForecastSolarSkill24h", "ForecastLoadSkill24h"):
+        if name in out:
+            out[name].attrs["units"] = "1"
+    if "ForecastVerificationSamples" in out:
+        out["ForecastVerificationSamples"].attrs["units"] = "samples"
+    if "ForecastIndependentCycles" in out:
+        out["ForecastIndependentCycles"].attrs["units"] = "cycles"
+    for name in POWER_SOC_HINDCAST_FIELDS:
+        if name in out:
+            out[name].attrs["units"] = "%"
+    for name in POWER_SOC_ENSEMBLE_FORECAST_FIELDS + POWER_SOC_ENSEMBLE_SKILL_FIELDS:
+        if name in out:
+            out[name].attrs["units"] = human_unit(name)
     return out
 
 
@@ -1906,7 +2148,7 @@ def _crop_to_summary_display_window(ds: xr.Dataset, times: pd.DatetimeIndex) -> 
         forecast_valid = np.zeros(len(times), dtype=bool)
         for name in forecast_names:
             forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
-        forecast_end = end + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
+        forecast_end = end + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "96")))
         forecast_mask = forecast_valid & (times <= forecast_end)
         if start is not None:
             forecast_mask &= times >= start
@@ -1945,7 +2187,7 @@ def _metek_wind_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
     }
 
 
-def _prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
+def prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if instrument not in {"power", "vaisalamet"} or "time" not in ds or ds.sizes.get("time", 0) == 0:
         return ds
 
@@ -2266,6 +2508,11 @@ def _trace_plot_values(
     if trace.projection_lookback_minutes is not None:
         return _projection_trace_values(times, values, trace, max_time_samples)
     trace_times, trace_values = _trace_time_values(times, values)
+    if trace.display_horizon_hours is not None and len(trace_times):
+        display_end = trace_times.min() + pd.Timedelta(hours=float(trace.display_horizon_hours))
+        display_mask = trace_times <= display_end
+        trace_times = trace_times[display_mask]
+        trace_values = trace_values[display_mask]
     trace_values = _smooth_trace_values(trace_times, trace_values, trace)
     trace_times, trace_values = _downsample_trace(trace_times, trace_values, max_time_samples)
     trace_times, trace_values = _insert_line_gap_breaks(trace_times, trace_values)
@@ -2278,15 +2525,25 @@ def _matplotlib_linestyle(dash: str | None) -> str:
     return "-"
 
 
-def _plotly_time_ticks(start: pd.Timestamp, end: pd.Timestamp) -> tuple[list[object], list[str]]:
-    tickvals: list[object] = []
-    ticktext: list[str] = []
+def _plotly_time_tick_options(start: pd.Timestamp, end: pd.Timestamp) -> dict[str, object]:
     duration = end - start
-    freq = "1h" if duration <= pd.Timedelta(hours=18) else "2h" if duration <= pd.Timedelta(hours=36) else "6h"
-    for stamp in pd.date_range(start=start.floor("h"), end=end.ceil("h"), freq=freq):
-        tickvals.append(stamp.to_pydatetime())
-        ticktext.append(stamp.strftime("%H:%M"))
-    return tickvals, ticktext
+    if duration <= pd.Timedelta(hours=12):
+        tick_hours = 1
+    elif duration <= pd.Timedelta(hours=30):
+        tick_hours = 3
+    elif duration <= pd.Timedelta(hours=72):
+        tick_hours = 6
+    elif duration <= pd.Timedelta(hours=120):
+        tick_hours = 12
+    else:
+        tick_hours = 24
+    tick0 = start.normalize() if tick_hours >= 24 else start.floor(f"{tick_hours}h")
+    return {
+        "tickmode": "linear",
+        "tick0": tick0.to_pydatetime(),
+        "dtick": tick_hours * 60 * 60 * 1000,
+        "tickformat": "%b %d<br>%H:%M",
+    }
 
 
 def _include_zero_in_limits(limits: tuple[float, float] | None) -> tuple[float, float] | None:
@@ -2496,7 +2753,7 @@ def save_summary_png(
     x_limits=None,
     max_time_ticks: int = MAX_TIME_TICKS,
 ) -> int:
-    ds = _prepare_summary_dataset(ds, instrument)
+    ds = prepare_summary_dataset(ds, instrument)
     ds = _slice_dataset_time_limits(ds, x_limits)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
@@ -2517,6 +2774,7 @@ def save_summary_png(
             trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
+            trace_label = _trace_display_label(ds, trace)
             target.plot(
                 trace_times,
                 trace_values,
@@ -2524,7 +2782,7 @@ def save_summary_png(
                 linewidth=1.25,
                 linestyle=_matplotlib_linestyle(trace.dash),
                 drawstyle=drawstyle,
-                label=trace.label,
+                label=trace_label,
             )
             if target is right_ax:
                 right_axis_values.append(trace_values)
@@ -2536,6 +2794,9 @@ def save_summary_png(
                 left_color = trace.color
 
         left_limits = _apply_matplotlib_axis_padding(ax, left_axis_values)
+        if panel.key in SOC_REFERENCE_PANEL_KEYS:
+            left_axis_values.append(np.array([MINIMUM_OPERATIONAL_SOC_PCT], dtype=np.float64))
+            left_limits = _apply_matplotlib_axis_padding(ax, left_axis_values)
         if right_ax is not None:
             right_limits = _apply_matplotlib_axis_padding(right_ax, right_axis_values)
             if panel.right_axis_label == panel.left_axis_label:
@@ -2556,6 +2817,14 @@ def save_summary_png(
 
         ax.set_facecolor("white")
         ax.grid(True, color=PLOT_GRID, linewidth=0.5)
+        if panel.key in SOC_REFERENCE_PANEL_KEYS:
+            ax.axhline(
+                MINIMUM_OPERATIONAL_SOC_PCT,
+                color=COLOR["black"],
+                linewidth=1.4,
+                linestyle="--",
+                label=MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
+            )
         ax.tick_params(axis="y", colors=left_color or COLOR["black"], labelsize=9)
         ax.set_ylabel(panel.left_axis_label, color=left_color or COLOR["black"], fontsize=11)
         if right_ax is not None:
@@ -2645,7 +2914,7 @@ def build_summary_plotly(
     max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
     x_limits=None,
 ) -> go.Figure:
-    ds = _prepare_summary_dataset(ds, instrument)
+    ds = prepare_summary_dataset(ds, instrument)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
     if len(times) == 0 or not panels:
@@ -2659,8 +2928,13 @@ def build_summary_plotly(
     if instrument == "power":
         per_panel_height = PLOTLY_SUMMARY_POWER_PANEL_HEIGHT
         max_height = PLOTLY_SUMMARY_POWER_MAX_HEIGHT
-        figure_height = max(520, min(max_height, per_panel_height * len(panels) + 90))
-        vertical_spacing = min(0.025, PLOTLY_SUMMARY_POWER_PANEL_GAP / figure_height)
+        requested_height = (
+            per_panel_height * len(panels)
+            + PLOTLY_SUMMARY_POWER_PANEL_GAP * max(0, len(panels) - 1)
+            + 90
+        )
+        figure_height = max(520, min(max_height, requested_height))
+        vertical_spacing = PLOTLY_SUMMARY_POWER_PANEL_GAP / figure_height if len(panels) > 1 else 0.0
     else:
         per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
         max_height = PLOTLY_SUMMARY_MAX_HEIGHT
@@ -2671,6 +2945,12 @@ def build_summary_plotly(
     )
     base_time_start = times.min()
     base_time_end = times.max()
+    if instrument == "power":
+        display_start = _summary_display_timestamp(ds.attrs.get(SUMMARY_DISPLAY_START_ATTR))
+        display_end = _summary_display_timestamp(ds.attrs.get(SUMMARY_DISPLAY_END_ATTR))
+        if display_start is not None and display_end is not None and display_end > display_start:
+            base_time_start = display_start
+            base_time_end = display_end
     if x_limits is not None:
         try:
             requested_start, requested_end = (pd.Timestamp(value) for value in x_limits)
@@ -2698,6 +2978,7 @@ def build_summary_plotly(
     plot_time_start = base_time_start
     plot_time_end = base_time_end
     panel_x_ranges: dict[int, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    axis_label_annotations: list[dict[str, object]] = []
     for row_index, (panel, rows) in enumerate(panels, start=1):
         legend_name = "legend" if row_index == 1 else f"legend{row_index}"
         panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
@@ -2745,15 +3026,16 @@ def build_summary_plotly(
                 right_axis_values.append(trace_values)
             else:
                 left_axis_values.append(trace_values)
+            trace_label = _trace_display_label(ds, trace)
             fig.add_trace(
                 go.Scatter(
                     x=trace_times,
                     y=trace_values,
                     mode="lines",
-                    name=trace.label,
+                    name=trace_label,
                     legend=legend_name,
                     line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
-                    hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.6g}}<extra></extra>",
+                    hovertemplate=f"Time=%{{x}}<br>{trace_label}=%{{y:.6g}}<extra></extra>",
                     connectgaps=False,
                     showlegend=True,
                 ),
@@ -2761,8 +3043,30 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=secondary,
             )
+        if panel.key in SOC_REFERENCE_PANEL_KEYS:
+            reference_start = panel_time_start or base_time_start
+            reference_end = panel_time_end or base_time_end
+            if pd.notna(reference_start) and pd.notna(reference_end) and reference_end > reference_start:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[reference_start, reference_end],
+                        y=[MINIMUM_OPERATIONAL_SOC_PCT, MINIMUM_OPERATIONAL_SOC_PCT],
+                        mode="lines",
+                        name=MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
+                        legend=legend_name,
+                        line=dict(color=COLOR["black"], width=2.0, dash="dash"),
+                        hovertemplate=f"{MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL}<extra></extra>",
+                        showlegend=True,
+                    ),
+                    row=row_index,
+                    col=1,
+                    secondary_y=False,
+                )
         left_range = _padded_axis_limits(left_axis_values, headroom=0.08, footroom=0.04)
         right_range = _padded_axis_limits(right_axis_values, headroom=0.08, footroom=0.04)
+        if panel.key in SOC_REFERENCE_PANEL_KEYS:
+            left_axis_values.append(np.array([MINIMUM_OPERATIONAL_SOC_PCT], dtype=np.float64))
+            left_range = _padded_axis_limits(left_axis_values, headroom=0.08, footroom=0.04)
         if panel.key == "cumulative_power":
             right_range = _include_zero_in_limits(right_range)
         if panel.right_axis_label == panel.left_axis_label:
@@ -2809,6 +3113,40 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=True,
             )
+        axis_label_y = panel_top - min(0.028, panel_height * 0.32)
+        axis_label_annotations.append(
+            dict(
+                x=0.0,
+                y=axis_label_y,
+                xref="paper",
+                yref="paper",
+                text=panel.left_axis_label,
+                showarrow=False,
+                xanchor="left",
+                yanchor="top",
+                align="left",
+                font=dict(color=left_color or COLOR["black"], size=10),
+                bgcolor="rgba(255,255,255,0.78)",
+                bordercolor="rgba(0,0,0,0)",
+            )
+        )
+        if panel.right_axis_label is not None:
+            axis_label_annotations.append(
+                dict(
+                    x=panel_domain_end,
+                    y=axis_label_y,
+                    xref="paper",
+                    yref="paper",
+                    text=panel.right_axis_label,
+                    showarrow=False,
+                    xanchor="right",
+                    yanchor="top",
+                    align="right",
+                    font=dict(color=right_color or COLOR["black"], size=10),
+                    bgcolor="rgba(255,255,255,0.78)",
+                    bordercolor="rgba(0,0,0,0)",
+                )
+            )
         if separate_time_axes and panel_time_group != "observed" and panel_time_start is not None and panel_time_end is not None:
             panel_x_ranges[row_index] = (panel_time_start, panel_time_end)
         else:
@@ -2829,12 +3167,9 @@ def build_summary_plotly(
         for row_index, (panel, _rows) in enumerate(panels, start=1):
             group_name = _power_panel_time_group(panel.key)
             start, end = group_ranges[group_name]
-            tickvals, ticktext = _plotly_time_ticks(start, end)
+            tick_options = _plotly_time_tick_options(start, end)
             fig.update_xaxes(
                 domain=[0.0, panel_domain_end],
-                tickmode="array",
-                tickvals=tickvals,
-                ticktext=ticktext,
                 showgrid=True,
                 gridcolor=PLOT_GRID,
                 linecolor=PLOT_LINE,
@@ -2843,6 +3178,7 @@ def build_summary_plotly(
                 showticklabels=True,
                 title_text=POWER_PANEL_TIME_AXIS_LABELS[group_name],
                 title_standoff=10,
+                **tick_options,
                 row=row_index,
                 col=1,
             )
@@ -2852,17 +3188,15 @@ def build_summary_plotly(
             else:
                 group_axis_roots[group_name] = axis_reference
     else:
-        tickvals, ticktext = _plotly_time_ticks(plot_time_start, plot_time_end)
+        tick_options = _plotly_time_tick_options(plot_time_start, plot_time_end)
         fig.update_xaxes(
             domain=[0.0, panel_domain_end],
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
             showgrid=True,
             gridcolor=PLOT_GRID,
             linecolor=PLOT_LINE,
             tickfont=dict(color=PLOT_TEXT, size=11),
             range=[plot_time_start, plot_time_end],
+            **tick_options,
         )
         fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
@@ -2885,4 +3219,6 @@ def build_summary_plotly(
             borderwidth=1,
             font=dict(size=12, color=PLOT_TEXT),
         )
+    for annotation in axis_label_annotations:
+        fig.add_annotation(**annotation)
     return fig

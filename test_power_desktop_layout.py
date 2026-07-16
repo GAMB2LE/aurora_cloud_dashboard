@@ -7,7 +7,11 @@ import pandas as pd
 import xarray as xr
 
 from grouped_timeseries import (
+    PLOTLY_SUMMARY_POWER_MAX_HEIGHT,
+    PLOTLY_SUMMARY_POWER_PANEL_GAP,
     PLOTLY_SUMMARY_POWER_PANEL_HEIGHT,
+    SUMMARY_DISPLAY_END_ATTR,
+    SUMMARY_DISPLAY_START_ATTR,
     SUMMARY_LAYOUTS,
     PanelSpec,
     TraceSpec,
@@ -74,7 +78,16 @@ def test_power_desktop_panels_are_tall_and_grouped_by_time_axis() -> None:
         "Solar and Load Forecast Verification",
     ]
     assert [annotation.text for annotation in figure.layout.annotations[: len(expected_titles)]] == expected_titles
-    assert figure.layout.height == PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * len(expected_titles) + 90
+    expected_height = min(
+        PLOTLY_SUMMARY_POWER_MAX_HEIGHT,
+        PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * len(expected_titles)
+        + PLOTLY_SUMMARY_POWER_PANEL_GAP * (len(expected_titles) - 1)
+        + 90,
+    )
+    assert figure.layout.height == expected_height
+    first_axis = figure.layout.yaxis.domain
+    second_axis = figure.layout.yaxis2.domain
+    assert (first_axis[0] - second_axis[1]) * figure.layout.height >= PLOTLY_SUMMARY_POWER_PANEL_GAP - 1
 
     xaxes = [
         getattr(figure.layout, "xaxis" if index == 1 else f"xaxis{index}")
@@ -103,3 +116,39 @@ def test_non_power_summary_height_is_unchanged() -> None:
     figure = build_summary_plotly(ds, "vaisalamet")
 
     assert figure.layout.height < PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * 4
+
+
+def test_power_prewarm_observed_axes_use_measured_display_window() -> None:
+    times = pd.date_range("2026-07-15T10:00:00", periods=41, freq="3h")
+    observed_end_index = 8
+    observed = np.full(len(times), np.nan)
+    observed[: observed_end_index + 1] = np.linspace(50.0, 60.0, observed_end_index + 1)
+    forecast = np.full(len(times), np.nan)
+    forecast[observed_end_index:] = np.linspace(60.0, 75.0, len(times) - observed_end_index)
+    ds = xr.Dataset(
+        {
+            "BatterySOC": (("time",), observed),
+            "BatterySOCForecast": (("time",), forecast),
+        },
+        coords={"time": times},
+        attrs={
+            SUMMARY_DISPLAY_START_ATTR: times[0].isoformat(),
+            SUMMARY_DISPLAY_END_ATTR: times[observed_end_index].isoformat(),
+        },
+    )
+    panels = (
+        PanelSpec("cumulative_power", "Observed SOC", "SOC [%]", None, (TraceSpec("BatterySOC", "Observed", "#468b61"),)),
+        PanelSpec(
+            "soc_ecmwf_forecast",
+            "SOC 96 h Forecast",
+            "SOC [%]",
+            None,
+            (TraceSpec("BatterySOCForecast", "Forecast", "#468b61"),),
+        ),
+    )
+
+    with patch.dict(SUMMARY_LAYOUTS, {"power": panels}):
+        figure = build_summary_plotly(ds, "power")
+
+    assert list(figure.layout.xaxis.range) == [times[0], times[observed_end_index]]
+    assert figure.layout.xaxis2.range[1] == times[-1]

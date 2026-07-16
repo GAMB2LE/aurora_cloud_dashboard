@@ -13,6 +13,9 @@
 !requirements-mobile-api.txt
 !systemd/
 !systemd/**
+!deployment/
+!deployment/systemd/
+!deployment/systemd/**
 !ios/
 !ios/**
 ios/**/.DS_Store

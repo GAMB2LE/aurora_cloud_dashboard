@@ -24,6 +24,18 @@ PDU_ZARR_PATH = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/powe
 POWER_SOC_FORECAST_ZARR_PATH = Path(
     os.environ.get("POWER_SOC_FORECAST_ZARR_PATH", "/data/aurora/products/power/power_soc_forecast.zarr")
 )
+POWER_SOC_FORECAST_SKILL_ZARR_PATH = Path(
+    os.environ.get("POWER_SOC_FORECAST_SKILL_ZARR_PATH", "/data/aurora/products/power/power_soc_forecast_skill.zarr")
+)
+POWER_SOC_HINDCAST_ZARR_PATH = Path(
+    os.environ.get("POWER_SOC_HINDCAST_ZARR_PATH", "/data/aurora/products/power/power_soc_hindcast.zarr")
+)
+POWER_SOC_ENSEMBLE_ZARR_PATH = Path(
+    os.environ.get("POWER_SOC_ENSEMBLE_ZARR_PATH", "/data/aurora/products/power/power_soc_ensemble_forecast.zarr")
+)
+POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH = Path(
+    os.environ.get("POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH", "/data/aurora/products/power/power_soc_ensemble_skill.zarr")
+)
 POWER_DISPLAY_SUMMARY_ZARR_PATH = Path(
     os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
 )
@@ -75,6 +87,10 @@ def generate(
     ass_logger_zarr: Path = ASFS_LOGGER_ZARR_PATH,
     pdu_zarr: Path = PDU_ZARR_PATH,
     forecast_zarr: Path = POWER_SOC_FORECAST_ZARR_PATH,
+    forecast_skill_zarr: Path = POWER_SOC_FORECAST_SKILL_ZARR_PATH,
+    hindcast_zarr: Path = POWER_SOC_HINDCAST_ZARR_PATH,
+    ensemble_forecast_zarr: Path = POWER_SOC_ENSEMBLE_ZARR_PATH,
+    ensemble_skill_zarr: Path = POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH,
     energy_output_zarr: Path | None = POWER_DISPLAY_ENERGY_ZARR_PATH,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> Path:
@@ -83,7 +99,21 @@ def generate(
     ass_logger = _open_optional_zarr(ass_logger_zarr, "ASFS logger")
     pdu = _open_optional_zarr(pdu_zarr, "ASS PDU")
     forecast = _open_optional_zarr(forecast_zarr, "Power SOC forecast")
-    display = build_power_display_summary_dataset(power, ass_logger, pdu, forecast, freq=freq)
+    forecast_skill = _open_optional_zarr(forecast_skill_zarr, "Power SOC forecast skill")
+    hindcast = _open_optional_zarr(hindcast_zarr, "Power SOC hindcast")
+    ensemble_forecast = _open_optional_zarr(ensemble_forecast_zarr, "Power SOC ensemble forecast")
+    ensemble_skill = _open_optional_zarr(ensemble_skill_zarr, "Power SOC ensemble skill")
+    display = build_power_display_summary_dataset(
+        power,
+        ass_logger,
+        pdu,
+        forecast,
+        forecast_skill,
+        hindcast,
+        ensemble_forecast,
+        ensemble_skill,
+        freq=freq,
+    )
     if display.sizes.get("time", 0) == 0:
         raise ValueError("No display-summary samples could be generated from the Power Zarr")
 
@@ -105,6 +135,10 @@ def main() -> None:
     parser.add_argument("--asfs-logger-zarr", type=Path, default=ASFS_LOGGER_ZARR_PATH)
     parser.add_argument("--pdu-zarr", type=Path, default=PDU_ZARR_PATH)
     parser.add_argument("--forecast-zarr", type=Path, default=POWER_SOC_FORECAST_ZARR_PATH)
+    parser.add_argument("--forecast-skill-zarr", type=Path, default=POWER_SOC_FORECAST_SKILL_ZARR_PATH)
+    parser.add_argument("--hindcast-zarr", type=Path, default=POWER_SOC_HINDCAST_ZARR_PATH)
+    parser.add_argument("--ensemble-forecast-zarr", type=Path, default=POWER_SOC_ENSEMBLE_ZARR_PATH)
+    parser.add_argument("--ensemble-skill-zarr", type=Path, default=POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH)
     parser.add_argument("--output-zarr", type=Path, default=POWER_DISPLAY_SUMMARY_ZARR_PATH)
     parser.add_argument("--energy-output-zarr", type=Path, default=POWER_DISPLAY_ENERGY_ZARR_PATH)
     parser.add_argument("--no-energy-output", action="store_true", help="Do not refresh the legacy cumulative-energy display Zarr")
@@ -116,6 +150,10 @@ def main() -> None:
         ass_logger_zarr=args.asfs_logger_zarr,
         pdu_zarr=args.pdu_zarr,
         forecast_zarr=args.forecast_zarr,
+        forecast_skill_zarr=args.forecast_skill_zarr,
+        hindcast_zarr=args.hindcast_zarr,
+        ensemble_forecast_zarr=args.ensemble_forecast_zarr,
+        ensemble_skill_zarr=args.ensemble_skill_zarr,
         energy_output_zarr=None if args.no_energy_output else args.energy_output_zarr,
         freq=args.freq,
     )

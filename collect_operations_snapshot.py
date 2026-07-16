@@ -47,6 +47,7 @@ AURORA_GUARD_STATUS_ROOT_DEFAULT = Path(os.environ.get("AURORA_GUARD_STATUS_ROOT
 BATCH_SLICE_UNIT = "aurora-batch.slice"
 GUARDED_HEAVY_UNITS = (
     "aurora-power-quicklooks.service",
+    "aurora-power-soc-ensemble.service",
     "aurora-radar-daily-quicklooks.service",
     "aurora-radar-quicklooks.service",
     "aurora-ops-monitor-quicklooks.service",
@@ -187,6 +188,12 @@ PROCESSING_UNITS = (
     "aurora-pdu-append.service",
     "aurora-power-quicklooks.timer",
     "aurora-power-quicklooks.service",
+    "aurora-power-soc-forecast.timer",
+    "aurora-power-soc-forecast.service",
+    "aurora-power-soc-forecast-learn.timer",
+    "aurora-power-soc-forecast-learn.service",
+    "aurora-power-soc-ensemble.timer",
+    "aurora-power-soc-ensemble.service",
     "aurora-wxcam-catalog.timer",
     "aurora-wxcam-catalog.service",
     "aurora-wxcam-append.timer",
