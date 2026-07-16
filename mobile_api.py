@@ -7,22 +7,32 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse, Response
 
 import mobile_catalog as catalog
 
 
 app = FastAPI(
     title="Aurora Dashboard Mobile API",
-    version="0.1.0",
+    version="0.2.0",
     root_path=os.environ.get("AURORA_MOBILE_API_ROOT_PATH", ""),
 )
 
 
 def _token() -> str | None:
     value = os.environ.get("AURORA_MOBILE_API_TOKEN")
-    return value.strip() if value else None
+    if value and value.strip():
+        return value.strip()
+    token_file = os.environ.get("AURORA_MOBILE_API_TOKEN_FILE")
+    if token_file:
+        try:
+            value = Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
+        if value:
+            return value
+    return None
 
 
 def _allow_public() -> bool:
@@ -44,7 +54,7 @@ def _not_found(message: str = "Resource not found") -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
 
 
-def _file_response(path: Path) -> FileResponse:
+def _file_response(path: Path, request: Request) -> Response:
     if not path.exists() or not path.is_file():
         raise _not_found()
     stat_result = path.stat()
@@ -54,6 +64,8 @@ def _file_response(path: Path) -> FileResponse:
         "ETag": f'W/"{stat_result.st_mtime_ns}-{stat_result.st_size}"',
         "Last-Modified": catalog.datetime.fromtimestamp(stat_result.st_mtime, catalog.UTC).strftime("%a, %d %b %Y %H:%M:%S GMT"),
     }
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
     return FileResponse(path, media_type=media_type, headers=headers)
 
 
@@ -75,6 +87,35 @@ def manifest() -> dict:
 @app.get("/operations", dependencies=[Depends(require_auth)])
 def operations() -> dict:
     return catalog.operations()
+
+
+@app.get("/overview", dependencies=[Depends(require_auth)])
+def overview() -> dict:
+    return catalog.overview()
+
+
+@app.get("/power", dependencies=[Depends(require_auth)])
+def power(
+    window: str = Query("24h", pattern="^(24h|96h)$"),
+    group: str = Query("observed", pattern="^(observed|forecast_24h|forecast_96h|verification)$"),
+) -> dict:
+    try:
+        return catalog.power(window=window, group=group)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@app.get("/auroracam", dependencies=[Depends(require_auth)])
+def auroracam(day: str = Query("latest"), time_utc: str | None = Query(None)) -> dict:
+    try:
+        return catalog.auroracam(day=day, time_utc=time_utc)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@app.get("/uas", dependencies=[Depends(require_auth)])
+def uas() -> dict:
+    return catalog.uas()
 
 
 @app.get("/instruments/{instrument_id}/summary", dependencies=[Depends(require_auth)])
@@ -102,18 +143,18 @@ def wxcam(stream: str = Query("fish_hdr"), day: str = Query("latest")) -> dict:
 
 
 @app.get("/media/quicklook/{kind}/{instrument_id}/{token}", dependencies=[Depends(require_auth)])
-def quicklook_media(kind: str, instrument_id: str, token: str) -> FileResponse:
+def quicklook_media(request: Request, kind: str, instrument_id: str, token: str) -> Response:
     try:
         path = catalog.resolve_quicklook_path(kind, instrument_id, token)
     except KeyError as exc:
         raise _not_found(str(exc)) from exc
     if not path:
         raise _not_found("Quicklook image not found")
-    return _file_response(path)
+    return _file_response(path, request)
 
 
 @app.get("/media/wxcam/video/{stream}/{day}", dependencies=[Depends(require_auth)])
-def wxcam_video(stream: str, day: str) -> FileResponse:
+def wxcam_video(request: Request, stream: str, day: str) -> Response:
     try:
         resolved = catalog.wxcam(stream, day)["selectedDay"]
         path = catalog.resolve_wxcam_video_path(stream, resolved)
@@ -121,12 +162,32 @@ def wxcam_video(stream: str, day: str) -> FileResponse:
         raise _not_found(str(exc)) from exc
     if not path:
         raise _not_found("WXcam video not found")
-    return _file_response(path)
+    return _file_response(path, request)
 
 
 @app.get("/media/wxcam/thumb/{stream}/{day_token}/{filename}", dependencies=[Depends(require_auth)])
-def wxcam_thumbnail(stream: str, day_token: str, filename: str) -> FileResponse:
+def wxcam_thumbnail(request: Request, stream: str, day_token: str, filename: str) -> Response:
     path = catalog.resolve_wxcam_thumbnail_path(stream, day_token, filename)
     if not path:
         raise _not_found("WXcam thumbnail not found")
-    return _file_response(path)
+    return _file_response(path, request)
+
+
+@app.get("/media/auroracam/original/{camera_id}/{day}/{filename}", dependencies=[Depends(require_auth)])
+def auroracam_original(request: Request, camera_id: str, day: str, filename: str) -> Response:
+    path = catalog.resolve_auroracam_image_path(camera_id, day, filename)
+    if not path:
+        raise _not_found("AURORACam image not found")
+    return _file_response(path, request)
+
+
+@app.get("/media/auroracam/preview/{camera_id}/{day}/{filename}", dependencies=[Depends(require_auth)])
+def auroracam_preview(request: Request, camera_id: str, day: str, filename: str) -> Response:
+    source = catalog.resolve_auroracam_image_path(camera_id, day, filename)
+    if not source:
+        raise _not_found("AURORACam image not found")
+    try:
+        preview = catalog.create_auroracam_preview(source)
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AURORACam preview unavailable: {exc}") from exc
+    return _file_response(preview, request)

@@ -23,12 +23,14 @@ The API is served by `mobile_api.py`:
 uvicorn mobile_api:app --host 127.0.0.1 --port 8010
 ```
 
-For production, install `systemd/aurora-mobile-api.service`, set
-`AURORA_MOBILE_API_TOKEN` in `/etc/aurora-dashboard.env`, and proxy the service
-under:
+For production, the Ansible dashboard release installs the service and proxies
+it under both public dashboard hostnames. The bearer token is generated once in
+the root-owned `/etc/aurora-mobile-api.token` file and referenced through
+`AURORA_MOBILE_API_TOKEN_FILE`; it is not committed to the dashboard or
+infrastructure repositories.
 
 ```text
-https://data-ocean.gamb2le.co.uk/mobile/v1
+https://data.gamb2le.co.uk/mobile/v1
 ```
 
 ## Authentication
@@ -49,6 +51,12 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 - `GET /manifest` - tabs, instruments, WXcam streams, and refresh defaults.
 - `GET /operations` - latest operations health, stream states, root-cause
   groups, active alerts, and compact trend cards.
+- `GET /overview` - the small first-load status cards and active alerts.
+- `GET /power?window=24h|96h&group=...` - bounded native-chart traces from the
+  existing Power display-summary Zarr product (at most 260 points per trace).
+- `GET /auroracam?day=latest|YYYY-MM-DD` - the latest four AURORACam records
+  with separate preview and original URLs.
+- `GET /uas` - latest UAS tier and recent UAS event records.
 - `GET /instruments/{id}/summary?window=24h|7d` - mobile instrument summary and
   latest generated quicklook references.
 - `GET /quicklooks?kind=science|housekeeping&instrument={id}` - available
@@ -56,7 +64,8 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 - `GET /wxcam?stream=fish_hdr|pano_hdr&day=latest|YYYY-MM-DD` - stitched MP4,
   day list, poster, and hourly thumbnails.
 - `GET /media/...` - authenticated image/video file responses with short cache
-  headers.
+  headers and ETag/304 revalidation. AURORACam previews are generated only on
+  demand, are capped at 960 pixels, and use a bounded 50 MB server cache.
 
 The API reads existing deployed products only. It does not restart services,
 write Zarr stores, mutate the WXcam catalog, or change Panel dashboard behavior.

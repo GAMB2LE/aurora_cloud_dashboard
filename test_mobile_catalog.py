@@ -14,7 +14,7 @@ class MobileCatalogTests(unittest.TestCase):
     def test_manifest_contains_native_sections_and_visible_instruments(self) -> None:
         manifest = mobile_catalog.manifest()
 
-        self.assertEqual([section["id"] for section in manifest["sections"]], ["operations", "interactive", "quicklooks", "wxcam", "settings"])
+        self.assertEqual([section["id"] for section in manifest["sections"]], ["overview", "power", "plots", "camera", "ops"])
         self.assertIn("power", {instrument["id"] for instrument in manifest["instruments"]})
         power = next(instrument for instrument in manifest["instruments"] if instrument["id"] == "power")
         self.assertTrue(power["supportsHousekeepingQuicklooks"])
@@ -68,6 +68,36 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(response["overallLevel"], "red")
         self.assertEqual(ceilometer["level"], "red")
         self.assertEqual(response["alerts"][0]["title"], "Storage high")
+
+    def test_operations_uses_current_soc_thresholds(self) -> None:
+        self.assertEqual(mobile_catalog._trend_level("battery-soc", 40), "red")
+        self.assertEqual(mobile_catalog._trend_level("battery-soc", 45), "amber")
+        self.assertEqual(mobile_catalog._trend_level("battery-soc", 50), "green")
+
+    def test_auroracam_latest_listing_and_media_resolver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "radar-cam" / "2026-07-05"
+            source.mkdir(parents=True)
+            image = source / "radar-cam_2026-07-05_12-30.jpg"
+            image.write_bytes(b"jpeg")
+
+            with patch.dict(os.environ, {"AURORACAM_RAW_ROOT": str(root)}):
+                response = mobile_catalog.auroracam()
+                resolved = mobile_catalog.resolve_auroracam_image_path("radar-cam", "2026-07-05", image.name)
+
+        self.assertEqual(response["selectedDay"], "2026-07-05")
+        self.assertEqual(response["frames"][0]["previewURL"], "/media/auroracam/preview/radar-cam/2026-07-05/radar-cam_2026-07-05_12-30.jpg")
+        self.assertEqual(resolved, image)
+
+    def test_power_returns_a_small_unavailable_payload_without_creating_products(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.zarr"
+            with patch.dict(os.environ, {"POWER_DISPLAY_SUMMARY_ZARR_PATH": str(missing)}):
+                response = mobile_catalog.power()
+
+        self.assertEqual(response["panels"], [])
+        self.assertIn("warning", response)
 
     def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

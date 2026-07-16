@@ -80,6 +80,47 @@ class MobileAPITests(unittest.TestCase):
         ceilometer = next(stream for stream in body["streamStates"] if stream["id"] == "ceilometer")
         self.assertEqual(ceilometer["level"], "red")
 
+    def test_overview_and_uas_endpoints_require_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "menapia_mqtt.log"
+            log.write_text("2026-07-05 07:30:00: 4 3\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"AURORA_MOBILE_API_TOKEN": "secret", "UAS_MQTT_LOG_PATH": str(log)},
+                clear=False,
+            ):
+                self.assertEqual(self.client.get("/overview").status_code, 401)
+                overview = self.client.get("/overview", headers={"Authorization": "Bearer secret"})
+                uas = self.client.get("/uas", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(overview.status_code, 200)
+        self.assertEqual(uas.status_code, 200)
+        self.assertEqual(uas.json()["latest"]["effectiveTier"], 3)
+
+    def test_auroracam_listing_and_original_media_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "radar-cam" / "2026-07-05"
+            source.mkdir(parents=True)
+            image = source / "radar-cam_2026-07-05_12-30.jpg"
+            image.write_bytes(b"jpeg")
+            with patch.dict(
+                os.environ,
+                {"AURORA_MOBILE_API_TOKEN": "secret", "AURORACAM_RAW_ROOT": str(root)},
+                clear=False,
+            ):
+                listing = self.client.get("/auroracam", headers={"Authorization": "Bearer secret"})
+                media = self.client.get(
+                    "/media/auroracam/original/radar-cam/2026-07-05/radar-cam_2026-07-05_12-30.jpg",
+                    headers={"Authorization": "Bearer secret"},
+                )
+
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["frames"][0]["cameraID"], "radar-cam")
+        self.assertEqual(media.status_code, 200)
+        self.assertEqual(media.content, b"jpeg")
+
     def test_quicklook_listing_and_media_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -103,12 +144,18 @@ class MobileAPITests(unittest.TestCase):
                     "/media/quicklook/science/power/latest",
                     headers={"Authorization": "Bearer secret"},
                 )
+                not_modified = self.client.get(
+                    "/media/quicklook/science/power/latest",
+                    headers={"Authorization": "Bearer secret", "If-None-Match": media.headers["ETag"]},
+                )
 
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["latest"]["imageURL"], "/media/quicklook/science/power/latest")
         self.assertEqual(media.status_code, 200)
         self.assertEqual(media.content, b"png")
         self.assertIn("ETag", media.headers)
+
+        self.assertEqual(not_modified.status_code, 304)
 
     def test_wxcam_listing_and_media_responses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

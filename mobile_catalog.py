@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -11,10 +11,14 @@ import re
 import sqlite3
 from typing import Any
 
+from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
+from uas_mqtt import load_uas_mqtt_log
+
 
 APP_DIR = Path(__file__).resolve().parent
 DATE_TOKEN_RE = re.compile(r"(20\d{6})")
 WXCAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
+AURORACAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,22 @@ def wxcam_catalog_path() -> Path:
     return env_path("WXCAM_CATALOG_PATH", "/data/aurora/products/wxcam/wxcam_catalog.sqlite")
 
 
+def auroracam_root() -> Path:
+    return env_path("AURORACAM_RAW_ROOT", os.environ.get("AURORACAM_ROOT", "/project/aurora/raw/auroracam"))
+
+
+def auroracam_preview_cache_root() -> Path:
+    return env_path("AURORA_MOBILE_PREVIEW_CACHE", "/var/cache/aurora-mobile-api/auroracam")
+
+
+def power_display_summary_path() -> Path:
+    return env_path("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
+
+
+def uas_mqtt_log_path() -> Path:
+    return env_path("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log")
+
+
 def operations_snapshot_path() -> Path:
     return env_path("OPS_MONITOR_LATEST_SNAPSHOT", "/project/aurora/raw/ops_monitor/latest.json")
 
@@ -187,11 +207,11 @@ def manifest() -> dict[str, Any]:
         "serverTime": utc_now_iso(),
         "minimumRefreshIntervalSeconds": 60,
         "sections": [
-            {"id": "operations", "title": "Operations", "systemImage": "gauge.with.dots.needle.bottom.50percent"},
-            {"id": "interactive", "title": "Interactive", "systemImage": "chart.xyaxis.line"},
-            {"id": "quicklooks", "title": "Quicklooks", "systemImage": "photo.on.rectangle.angled"},
-            {"id": "wxcam", "title": "WXcam", "systemImage": "video"},
-            {"id": "settings", "title": "Settings", "systemImage": "gearshape"},
+            {"id": "overview", "title": "Overview", "systemImage": "rectangle.3.group"},
+            {"id": "power", "title": "Power", "systemImage": "bolt.batteryblock"},
+            {"id": "plots", "title": "Plots", "systemImage": "chart.xyaxis.line"},
+            {"id": "camera", "title": "Camera", "systemImage": "camera"},
+            {"id": "ops", "title": "Ops", "systemImage": "gauge.with.dots.needle.bottom.50percent"},
         ],
         "instruments": [
             {
@@ -343,7 +363,7 @@ def _trend_level(card_id: str, value: Any) -> str:
     if card_id == "storage":
         return "red" if value >= 90 else "amber" if value >= 80 else "green"
     if card_id == "battery-soc":
-        return "red" if value < 25 else "amber" if value < 50 else "green"
+        return "red" if value <= 40 else "amber" if value < 50 else "green"
     if card_id == "battery-voltage":
         return "red" if value < 50 else "amber" if value < 52 else "green"
     return "red" if value >= 180 else "amber" if value >= 90 else "green"
@@ -369,6 +389,261 @@ def _active_alerts(alert_state: dict[str, Any]) -> list[dict[str, Any]]:
             detail = ""
         alerts.append({"id": str(key), "title": title, "level": level, "detail": detail})
     return alerts
+
+
+def overview() -> dict[str, Any]:
+    """Return the lightweight operational cards shown first in the native app."""
+    snapshot = read_json_file(operations_snapshot_path())
+    status = operations()
+    latest_cameras = auroracam("latest")
+    camera_times = [record.get("timeUTC") for record in latest_cameras["frames"] if record.get("timeUTC")]
+    latest_camera_time = max(camera_times) if camera_times else None
+    cards = [
+        _overview_card("operations", "Operations", status["summary"], status["overallLevel"], status.get("updatedAt")),
+        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), None),
+        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), None),
+        _overview_card("power", "Power Data", _metric_text(snapshot, ("power_latest_time_utc",), ""), "green" if snapshot else "unknown", None),
+        _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time),
+        _overview_card("alerts", "Active Alerts", str(len(status["alerts"])), "red" if status["alerts"] else "green", None),
+    ]
+    return {"serverTime": utc_now_iso(), "cards": cards, "activeAlerts": status["alerts"]}
+
+
+def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None) -> dict[str, Any]:
+    return {"id": card_id, "title": title, "value": value, "level": level, "updatedAt": updated_at}
+
+
+def _metric_value(snapshot: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = snapshot.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+    return None
+
+
+def _metric_text(snapshot: dict[str, Any], keys: tuple[str, ...], unit: str) -> str:
+    value = _metric_value(snapshot, keys)
+    if value is not None:
+        return f"{value:.1f}{unit}" if unit else f"{value:.1f}"
+    for key in keys:
+        value = snapshot.get(key)
+        if value:
+            return str(value)
+    return "Unavailable"
+
+
+def _age_level(value: str | None, green_minutes: float, amber_minutes: float) -> str:
+    moment = _parse_utc(value)
+    if moment is None:
+        return "unknown"
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return "green" if age_minutes < green_minutes else "amber" if age_minutes < amber_minutes else "red"
+
+
+def _age_text(value: str | None) -> str:
+    moment = _parse_utc(value)
+    if moment is None:
+        return "No image"
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return f"{age_minutes:.0f} min old"
+
+
+def _parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any]:
+    root = auroracam_root()
+    days = sorted(auroracam_available_days(root), reverse=True)
+    if day != "latest" and (not AURORACAM_DAY_RE.fullmatch(day) or day not in days):
+        raise KeyError(f"Unknown AURORACam day: {day}")
+
+    frames = []
+    if day == "latest":
+        selected_day = days[0] if days else None
+        records = auroracam_latest_records(root)
+    else:
+        selected_day = day
+        records = {}
+        for camera_id in AURORACAM_CAMERAS:
+            candidates = auroracam_day_records(root, camera_id, day)
+            if time_utc:
+                candidates = [record for record in candidates if record.time_utc == time_utc]
+            if candidates:
+                records[camera_id] = candidates[-1]
+
+    for camera_id in AURORACAM_CAMERAS:
+        record = records.get(camera_id)
+        if record is None:
+            continue
+        frames.append(
+            {
+                "id": record.camera_id,
+                "cameraID": record.camera_id,
+                "title": record.label,
+                "timeUTC": record.time_utc.replace(" ", "T") + "Z",
+                "dayUTC": record.day_utc,
+                "previewURL": media_url("auroracam", "preview", record.camera_id, record.day_utc, record.filename),
+                "originalURL": media_url("auroracam", "original", record.camera_id, record.day_utc, record.filename),
+                "sizeBytes": record.size_bytes,
+                "modifiedAt": datetime.fromtimestamp(record.mtime_ns / 1_000_000_000, UTC).isoformat().replace("+00:00", "Z"),
+            }
+        )
+    return {"serverTime": utc_now_iso(), "selectedDay": selected_day, "availableDays": days, "frames": frames}
+
+
+def resolve_auroracam_image_path(camera_id: str, day: str, filename: str) -> Path | None:
+    if camera_id not in AURORACAM_CAMERAS or AURORACAM_DAY_RE.fullmatch(day) is None or Path(filename).name != filename:
+        return None
+    path = auroracam_root() / camera_id / day / filename
+    return path if path.is_file() else None
+
+
+def create_auroracam_preview(source: Path, max_dimension: int = 960, quality: int = 80) -> Path:
+    """Create a bounded, on-demand preview; original camera JPEGs stay untouched."""
+    from PIL import Image
+
+    cache = auroracam_preview_cache_root()
+    relative = source.resolve().relative_to(auroracam_root().resolve())
+    target = cache / relative
+    if target.is_file() and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(source) as image:
+        image = image.convert("RGB")
+        image.thumbnail((max_dimension, max_dimension))
+        image.save(target, format="JPEG", quality=quality, optimize=True)
+    _prune_preview_cache(cache)
+    return target
+
+
+def _prune_preview_cache(cache: Path, max_bytes: int = 50 * 1024 * 1024) -> None:
+    try:
+        files = [path for path in cache.rglob("*.jpg") if path.is_file()]
+        total = sum(path.stat().st_size for path in files)
+        for path in sorted(files, key=lambda item: item.stat().st_mtime_ns):
+            if total <= max_bytes:
+                break
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+            total -= size
+    except OSError:
+        return
+
+
+def power(window: str = "24h", group: str = "observed") -> dict[str, Any]:
+    """Return compact chart points from the existing display-summary Zarr only."""
+    if window not in {"24h", "96h"} or group not in {"observed", "forecast_24h", "forecast_96h", "verification"}:
+        raise KeyError("Unsupported Power window or group")
+    path = power_display_summary_path()
+    payload: dict[str, Any] = {
+        "serverTime": utc_now_iso(),
+        "window": window,
+        "group": group,
+        "source": {**file_record(path), "path": str(path)},
+        "minimumOperationalSOCPct": 40,
+        "panels": [],
+    }
+    if not path.exists():
+        payload["warning"] = "Power display-summary product is unavailable"
+        return payload
+    try:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        from grouped_timeseries import POWER_PANEL_TIME_GROUPS, SUMMARY_LAYOUTS
+
+        dataset = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+        times = pd.DatetimeIndex(dataset["time"].values)
+        now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
+        start = now - pd.Timedelta(hours=24)
+        horizon = 24 if window == "24h" else 96
+        end = now + pd.Timedelta(hours=horizon)
+        panel_keys = set(POWER_PANEL_TIME_GROUPS[group])
+        include_future = group != "observed"
+        for panel in SUMMARY_LAYOUTS["power"]:
+            if panel.key not in panel_keys:
+                continue
+            traces = []
+            for trace in panel.traces:
+                if trace.var not in dataset or dataset[trace.var].dims != ("time",):
+                    continue
+                values = np.asarray(dataset[trace.var].values, dtype=np.float64)
+                mask = np.isfinite(values) & (times >= start) & (times <= end if include_future else times <= now)
+                if trace.valid_min is not None:
+                    mask &= values >= float(trace.valid_min)
+                if trace.valid_max is not None:
+                    mask &= values <= float(trace.valid_max)
+                selected_times = times[mask]
+                selected_values = values[mask] * float(trace.scale)
+                if len(selected_times) > 260:
+                    selected = np.linspace(0, len(selected_times) - 1, 260, dtype=int)
+                    selected_times = selected_times[selected]
+                    selected_values = selected_values[selected]
+                if not len(selected_times):
+                    continue
+                traces.append(
+                    {
+                        "id": trace.var,
+                        "label": trace.label,
+                        "color": trace.color,
+                        "axis": trace.axis,
+                        "dash": trace.dash,
+                        "unit": str(dataset[trace.var].attrs.get("units", "")),
+                        "points": [
+                            {"time": pd.Timestamp(moment).isoformat() + "Z", "value": round(float(value), 5)}
+                            for moment, value in zip(selected_times, selected_values, strict=True)
+                        ],
+                    }
+                )
+            if traces:
+                payload["panels"].append(
+                    {
+                        "id": panel.key,
+                        "title": panel.label,
+                        "leftAxisLabel": panel.left_axis_label,
+                        "rightAxisLabel": panel.right_axis_label,
+                        "traces": traces,
+                    }
+                )
+        dataset.close()
+    except Exception as exc:
+        payload["warning"] = f"Power display data unavailable: {exc}"
+    return payload
+
+
+def uas() -> dict[str, Any]:
+    result = load_uas_mqtt_log(uas_mqtt_log_path())
+    latest = result.records[-1] if result.records else None
+    age_seconds = (datetime.now(UTC) - latest.timestamp).total_seconds() if latest else None
+    level = "red" if result.missing or result.error else "amber" if age_seconds is None or age_seconds > 300 else "green"
+    records = result.records[-200:]
+    return {
+        "serverTime": utc_now_iso(),
+        "level": level,
+        "latest": None if latest is None else {
+            "timeUTC": latest.timestamp.isoformat().replace("+00:00", "Z"),
+            "reportedTier": latest.reported_tier,
+            "effectiveTier": latest.effective_tier,
+            "eventType": latest.event_type,
+        },
+        "source": {**file_record(result.path), "path": str(result.path)},
+        "malformedLineCount": len(result.malformed_lines),
+        "records": [
+            {
+                "timeUTC": record.timestamp.isoformat().replace("+00:00", "Z"),
+                "reportedTier": record.reported_tier,
+                "effectiveTier": record.effective_tier,
+                "eventType": record.event_type,
+            }
+            for record in records
+        ],
+    }
 
 
 def instrument_summary(instrument_id: str, window: str = "24h") -> dict[str, Any]:
