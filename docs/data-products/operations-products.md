@@ -27,8 +27,8 @@ These snapshots capture:
   in the power Zarr, scored green above `52 V`, amber from `50-52 V`, and red
   below `50 V`
 - Aurora Power Supply battery state of charge from the latest `BatterySOC`
-  sample in the power Zarr, scored green at or above `50 %`, amber from
-  `25-50 %`, and red below `25 %`
+  sample in the power Zarr, scored green at or above `50 %`, amber above `40 %`
+  and below `50 %`, and red at or below the `40 %` operational minimum
 - Aurora Power Supply depletion estimate from `BatterySOC`, `BatteryWatts`, and
   a `26 kWh` battery capacity. Negative `BatteryWatts` is treated as discharge;
   positive `BatteryWatts` is treated as charging rather than a countdown.
@@ -117,7 +117,7 @@ alerts to `gamb2le@ncas.ac.uk` when operational thresholds are crossed.
 Alert rules:
 
 - any monitored storage filesystem reaches `80 %` used
-- Aurora Power Supply battery state of charge is at or below `20 %`
+- Aurora Power Supply battery state of charge is at or below the `40 %` operational minimum
 - Aurora Power Supply internal temperature is at or above `45 C`
 - Aurora Power Supply battery voltage from `DCInverterVolts` is below `50 V`
 - any stream source is stale for at least `3 h`

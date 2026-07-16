@@ -18,6 +18,8 @@ import subprocess
 import sys
 from typing import Any
 
+from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+
 
 SNAPSHOT_DEFAULT = Path("/project/aurora/raw/ops_monitor/latest.json")
 STATE_DEFAULT = Path("/data/aurora/products/ops_monitor/alerts/state.json")
@@ -27,7 +29,7 @@ FROM_DEFAULT = f"aurora-ops@{socket.gethostname() or 'localhost'}"
 DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app?tab=operations"
 
 STORAGE_THRESHOLD_PCT = 80.0
-BATTERY_SOC_THRESHOLD_PCT = 20.0
+BATTERY_SOC_THRESHOLD_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 INTERNAL_TEMP_THRESHOLD_C = 45.0
 INTERNAL_TEMP_LOW_THRESHOLD_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_RED_C", "5"))
 INTERNAL_DEWPOINT_MARGIN_THRESHOLD_C = float(os.environ.get("APS_DEWPOINT_RED_MARGIN_C", "0"))

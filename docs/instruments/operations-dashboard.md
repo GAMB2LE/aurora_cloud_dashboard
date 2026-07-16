@@ -10,7 +10,8 @@ stack.
 - Aurora Power Supply battery voltage from `DCInverterVolts`, scored green
   above `52 V`, amber from `50-52 V`, and red below `50 V`
 - Aurora Power Supply battery state of charge from `BatterySOC`, scored green
-  at or above `50 %`, amber from `25-50 %`, and red below `25 %`
+  at or above `50 %`, amber above `40 %` and below `50 %`, and red at or below
+  the `40 %` operational minimum
 - Aurora Power Supply estimated time until depleted, calculated from
   `BatterySOC`, a `26 kWh` battery capacity, and `BatteryWatts`; negative
   `BatteryWatts` is treated as discharge, while positive power is reported as
@@ -105,7 +106,7 @@ These include:
 Operations alert email is handled by `send_ops_alerts.py`, normally from
 `aurora-ops-monitor-alerts.timer`. It evaluates the same latest snapshot used by
 the dashboard and emails `gamb2le@ncas.ac.uk` for storage pressure at `80 %`,
-battery SOC at or below `20 %`, APS internal temperature below `5 C` or at or
+battery SOC at or below the `40 %` operational minimum, APS internal temperature below `5 C` or at or
 above `45 C`, APS internal dew-point margin at or below `0 C` when internal
 humidity is available, battery voltage below `50 V`, and stream-health problems
 that persist for `3 h`.

@@ -17,6 +17,11 @@ def test_normal_internal_temperature_does_not_alert():
     assert "power:internal_temp" not in ids
 
 
+def test_battery_soc_alert_uses_40_percent_operational_minimum():
+    assert "power:battery_soc" in _ids({"aps_battery_soc_pct": 40.0})
+    assert "power:battery_soc" not in _ids({"aps_battery_soc_pct": 40.1})
+
+
 def test_dewpoint_alert_requires_internal_humidity_available():
     assert "power:internal_dewpoint" not in _ids(
         {
