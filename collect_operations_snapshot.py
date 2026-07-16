@@ -26,6 +26,8 @@ HEALTH_OUTPUT_ROOT_DEFAULT = Path("/data/aurora/products/ops_monitor/health")
 MANIFEST_ROOT_DEFAULT = Path("/data/aurora/internal/mirror_manifests")
 GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
+POWER_SOC_FORECAST_ZARR_DEFAULT = Path("/data/aurora/products/power/power_soc_forecast.zarr")
+ECMWF_SHADOW_REPORT_DEFAULT = Path("/data/aurora/products/power/ecmwf_provider_shadow.json")
 APS_BATTERY_CAPACITY_KWH = float(os.environ.get("APS_BATTERY_CAPACITY_KWH", "26"))
 APS_BATTERY_DEPLETION_DEADBAND_W = float(os.environ.get("APS_BATTERY_DEPLETION_DEADBAND_W", "50"))
 APS_INTERNAL_TEMP_LOW_AMBER_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_AMBER_C", "10"))
@@ -1080,6 +1082,46 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     for key, value in perf_log_stats.items():
         record[f"dashboard_perf_log_{key}"] = value
     _collect_dev_live_mirror_metrics(record, now_epoch)
+
+    forecast_path = _path_from_env("POWER_SOC_FORECAST_ZARR_PATH", POWER_SOC_FORECAST_ZARR_DEFAULT)
+    if forecast_path.exists():
+        try:
+            forecast = xr.open_zarr(forecast_path, chunks={})
+            for attr in (
+                "ecmwf_provider_requested",
+                "ecmwf_provider_effective",
+                "ecmwf_provider_fallback_reason",
+                "ecmwf_cycle_time",
+                "selected_grid_latitude",
+                "selected_grid_longitude",
+                "selected_grid_distance_km",
+            ):
+                record[f"power_forecast_{attr}"] = str(forecast.attrs.get(attr, ""))
+            forecast.close()
+        except Exception:
+            record["power_forecast_metadata_read_state"] = 0
+        else:
+            record["power_forecast_metadata_read_state"] = 1
+
+    shadow_path = _path_from_env("AURORA_ECMWF_SHADOW_REPORT_PATH", ECMWF_SHADOW_REPORT_DEFAULT)
+    shadow_stats = _file_freshness(shadow_path, now_epoch, recent_threshold_minutes=360.0)
+    for key, value in shadow_stats.items():
+        record[f"ecmwf_shadow_report_{key}"] = value
+    shadow = _read_summary(shadow_path)
+    for key in (
+        "requested_provider",
+        "effective_provider",
+        "shadow_status",
+        "fallback_reason",
+        "common_sample_count",
+        "ssrd_max_abs_difference_j_m2",
+        "valid_times_match",
+        "legacy_open_seconds",
+        "earthkit_open_seconds",
+        "peak_rss_mb",
+    ):
+        if key in shadow:
+            record[f"ecmwf_shadow_{key}"] = shadow[key]
 
     dashboard_probe = _probe_http(os.environ.get("AURORA_DASHBOARD_HEALTH_URL", DASHBOARD_HTTP_URL_DEFAULT))
     for key, value in dashboard_probe.items():

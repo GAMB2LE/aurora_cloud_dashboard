@@ -4,6 +4,8 @@ cftime==1.6.5
 dask==2025.10.0
 distributed==2025.10.0
 eccodes==2.47.0
+earthkit-data==1.0.2
+earthkit-meteo==1.0.0
 ecmwf-opendata==0.3.30
 h5netcdf==1.7.3
 h5py==3.15.1

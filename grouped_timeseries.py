@@ -2059,6 +2059,13 @@ def build_power_display_summary_dataset(
             ("load_mode_pdu_active_watts", "forecast_load_mode_pdu_active_watts"),
             ("load_measurement", "forecast_load_measurement"),
             ("load_balance_measurement", "forecast_load_balance_measurement"),
+            ("ecmwf_provider_requested", "forecast_ecmwf_provider_requested"),
+            ("ecmwf_provider_effective", "forecast_ecmwf_provider_effective"),
+            ("ecmwf_provider_fallback_reason", "forecast_ecmwf_provider_fallback_reason"),
+            ("ecmwf_cycle_time", "forecast_ecmwf_cycle_time"),
+            ("selected_grid_latitude", "forecast_ecmwf_grid_latitude"),
+            ("selected_grid_longitude", "forecast_ecmwf_grid_longitude"),
+            ("selected_grid_distance_km", "forecast_ecmwf_grid_distance_km"),
         ):
             if source_name in forecast_ds.attrs:
                 summary_attrs[target_name] = str(forecast_ds.attrs[source_name])

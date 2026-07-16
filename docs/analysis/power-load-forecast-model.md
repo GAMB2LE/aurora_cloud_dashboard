@@ -1,5 +1,27 @@
 # APS load forecast model
 
+## ECMWF data provider
+
+The deterministic solar forecast has a provider boundary controlled by
+`AURORA_ECMWF_PROVIDER` (or `--provider`):
+
+- `legacy` uses `ecmwf-opendata` for retrieval and `cfgrib` for decoding.
+- `earthkit` uses `earthkit-data` for retrieval and decoding, with an automatic
+  legacy fallback that preserves a usable forecast.
+- `shadow` publishes the legacy result and compares Earthkit against the same
+  input file. The comparison is written to
+  `/data/aurora/products/power/ecmwf_provider_shadow.json` by default.
+
+Both providers are normalized to the same site-level xarray contract before
+the calibrated solar, load, and SOC model runs. Forecast Zarr variables and
+paths therefore remain unchanged. Provider, cycle, selected grid point,
+timings, parity, and fallback details are stored as forecast metadata and
+propagated into the display summary metadata.
+
+The 50-member ensemble continues to use direct ecCodes nearest-point streaming.
+This avoids allocating the complete global member-by-step grid; it should only
+move to Earthkit after an equivalent bounded-memory benchmark passes.
+
 ## Decision
 
 The operational load model is `kit_mode_persistence_v4`. Its observed target is

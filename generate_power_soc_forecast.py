@@ -14,6 +14,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ecmwf_forecast_provider import (
+    DEFAULT_PROVIDER,
+    DEFAULT_SHADOW_REPORT_PATH,
+    open_solar_forecast as open_provider_solar_forecast,
+    retrieve_open_data_grib as retrieve_provider_open_data_grib,
+    validate_provider,
+)
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
@@ -226,33 +233,21 @@ def retrieve_open_data_grib(
 
 
 def open_solar_forecast(path: Path, *, latitude: float, longitude: float) -> xr.Dataset:
-    """Open a GRIB/NetCDF solar forecast and select the nearest site point."""
-    suffix = path.suffix.lower()
-    if suffix in {".grib", ".grb", ".grib2", ".grb2"}:
-        ds = xr.open_dataset(path, engine="cfgrib")
-    else:
-        ds = xr.open_dataset(path)
-
-    if "ssrd" not in ds and "surface_solar_radiation_downwards" in ds:
-        ds = ds.rename({"surface_solar_radiation_downwards": "ssrd"})
-    if "ssrd" not in ds:
-        raise KeyError("ECMWF solar file does not contain ssrd/surface_solar_radiation_downwards")
-
-    lat_name = "latitude" if "latitude" in ds.coords else "lat" if "lat" in ds.coords else None
-    lon_name = "longitude" if "longitude" in ds.coords else "lon" if "lon" in ds.coords else None
-    if lat_name is not None and lon_name is not None:
-        lon_values = ds[lon_name].values
-        select_lon = longitude
-        if np.nanmin(lon_values) >= 0.0 and select_lon < 0.0:
-            select_lon = select_lon % 360.0
-        ds = ds.sel({lat_name: latitude, lon_name: select_lon}, method="nearest")
-    return ds
+    """Backward-compatible legacy opener used by tests and external callers."""
+    return open_provider_solar_forecast(
+        path,
+        provider="legacy",
+        latitude=latitude,
+        longitude=longitude,
+        shadow_report_path=None,
+    ).dataset
 
 
 def _ecmwf_cycle_time(ds: xr.Dataset) -> pd.Timestamp | None:
-    if "time" not in ds.coords:
+    coord = "forecast_reference_time" if "forecast_reference_time" in ds.coords else "time"
+    if coord not in ds.coords:
         return None
-    values = np.asarray(ds["time"].values).reshape(-1)
+    values = np.asarray(ds[coord].values).reshape(-1)
     if values.size == 0:
         return None
     cycle = pd.Timestamp(values[0])
@@ -268,7 +263,9 @@ def solar_irradiance_from_ssrd(ds: xr.Dataset) -> pd.Series:
     da = ds["ssrd"]
     valid_time = ds["valid_time"] if "valid_time" in ds.coords else None
     if valid_time is None:
-        if "time" in da.coords and "step" in da.coords:
+        if "forecast_reference_time" in da.coords and "lead_time" in da.coords:
+            valid_time = da["forecast_reference_time"] + da["lead_time"]
+        elif "time" in da.coords and "step" in da.coords:
             valid_time = da["time"] + da["step"]
         elif "time" in da.coords:
             valid_time = da["time"]
@@ -1765,14 +1762,25 @@ def generate(
     longitude: float = DEFAULT_LONGITUDE,
     horizon_hours: int = DEFAULT_HORIZON_HOURS,
     refresh_from_cache: bool = False,
+    provider: str = DEFAULT_PROVIDER,
+    shadow_report_path: Path | None = DEFAULT_SHADOW_REPORT_PATH,
 ) -> Path:
+    provider = validate_provider(provider)
+    retrieval_diagnostics: dict[str, object] = {}
     if input_forecast is None:
         if refresh_from_cache:
             input_forecast = _latest_cached_forecast(cache_dir)
         else:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             input_forecast = cache_dir / f"ecmwf_ssrd_{stamp}.grib2"
-            retrieve_open_data_grib(input_forecast, horizon_hours=horizon_hours)
+            input_forecast, retrieval_diagnostics = retrieve_provider_open_data_grib(
+                input_forecast,
+                provider="earthkit" if provider == "earthkit" else "legacy",
+                horizon_hours=horizon_hours,
+                lookahead_buffer_hours=DEFAULT_ECMWF_LOOKAHEAD_BUFFER_HOURS,
+                param=ECMWF_PARAM,
+                source=DEFAULT_OPEN_DATA_SOURCE,
+            )
     power = xr.open_zarr(power_zarr, chunks={})
     pdu = None
     if pdu_zarr.exists():
@@ -1780,7 +1788,14 @@ def generate(
             pdu = xr.open_zarr(pdu_zarr, chunks={})
         except Exception:
             pdu = None
-    solar = open_solar_forecast(input_forecast, latitude=latitude, longitude=longitude)
+    provider_result = open_provider_solar_forecast(
+        input_forecast,
+        provider=provider,
+        latitude=latitude,
+        longitude=longitude,
+        shadow_report_path=shadow_report_path,
+    )
+    solar = provider_result.dataset
     previous_forecast = None
     if output_zarr.exists():
         try:
@@ -1807,6 +1822,15 @@ def generate(
     forecast.attrs["site_latitude"] = str(float(latitude))
     forecast.attrs["site_longitude"] = str(float(longitude))
     forecast.attrs["refresh_from_cache"] = str(bool(refresh_from_cache)).lower()
+    forecast.attrs["ecmwf_provider_requested"] = provider
+    forecast.attrs["ecmwf_provider_effective"] = str(provider_result.diagnostics["effective_provider"])
+    forecast.attrs["ecmwf_provider_fallback_reason"] = str(provider_result.diagnostics.get("fallback_reason", ""))
+    forecast.attrs["ecmwf_provider_diagnostics"] = json.dumps(
+        {**retrieval_diagnostics, **provider_result.diagnostics}, sort_keys=True
+    )
+    for name in ("selected_grid_latitude", "selected_grid_longitude", "selected_grid_distance_km"):
+        if name in solar.attrs:
+            forecast.attrs[name] = str(solar.attrs[name])
     cycle_time = _ecmwf_cycle_time(solar)
     if cycle_time is not None:
         forecast.attrs["ecmwf_cycle_time"] = cycle_time.isoformat()
@@ -1847,6 +1871,9 @@ def generate(
             "latest_metrics": json.loads(forecast.attrs["previous_forecast_metrics"]),
             "latest_ecmwf_input_file": str(input_forecast),
             "latest_refresh_from_cache": bool(refresh_from_cache),
+            "latest_ecmwf_provider_requested": provider,
+            "latest_ecmwf_provider_effective": provider_result.diagnostics["effective_provider"],
+            "latest_ecmwf_provider_fallback_reason": provider_result.diagnostics.get("fallback_reason", ""),
         }
     )
     _write_state(state_path, next_state)
@@ -1875,6 +1902,13 @@ def main() -> None:
         action="store_true",
         help="Reuse the latest cached ECMWF GRIB instead of downloading a new forecast",
     )
+    parser.add_argument(
+        "--provider",
+        choices=("legacy", "earthkit", "shadow"),
+        default=DEFAULT_PROVIDER,
+        help="ECMWF retrieval/decoding provider; shadow compares Earthkit while publishing legacy output",
+    )
+    parser.add_argument("--shadow-report", type=Path, default=DEFAULT_SHADOW_REPORT_PATH)
     args = parser.parse_args()
     generate(
         power_zarr=args.power_zarr,
@@ -1890,6 +1924,8 @@ def main() -> None:
         longitude=args.longitude,
         horizon_hours=args.horizon_hours,
         refresh_from_cache=args.refresh_from_cache,
+        provider=args.provider,
+        shadow_report_path=args.shadow_report,
     )
 
 
