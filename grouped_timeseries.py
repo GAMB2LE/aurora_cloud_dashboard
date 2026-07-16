@@ -37,9 +37,10 @@ PLOTLY_SUMMARY_PANEL_DOMAIN_END = 0.78
 PLOTLY_SUMMARY_LEGEND_X = 0.91
 PLOTLY_SUMMARY_RIGHT_MARGIN = 110
 PLOTLY_SUMMARY_PANEL_HEIGHT = 225
-PLOTLY_SUMMARY_POWER_PANEL_HEIGHT = 250
+PLOTLY_SUMMARY_POWER_PANEL_HEIGHT = 330
 PLOTLY_SUMMARY_MAX_HEIGHT = 1650
-PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 2350
+PLOTLY_SUMMARY_POWER_MAX_HEIGHT = 6400
+PLOTLY_SUMMARY_POWER_PANEL_GAP = 34
 MATPLOTLIB_Y_HEADROOM_FRACTION = 0.28
 MATPLOTLIB_Y_FOOTROOM_FRACTION = 0.04
 SUMMARY_DISPLAY_START_ATTR = "summary_display_start"
@@ -52,6 +53,52 @@ POWER_DISPLAY_SUMMARY_ATTR = "power_display_summary_product"
 POWER_SOC_PROJECTION_HOURS = float(os.environ.get("AURORA_POWER_SOC_PROJECTION_HOURS", "24"))
 POWER_SOC_PROJECTION_STEP_MINUTES = float(os.environ.get("AURORA_POWER_SOC_PROJECTION_STEP_MINUTES", "5"))
 POWER_SOC_PROJECTION_POLY_DEGREE = int(os.environ.get("AURORA_POWER_SOC_PROJECTION_POLY_DEGREE", "1"))
+POWER_PANEL_TIME_GROUPS = OrderedDict(
+    (
+        (
+            "observed",
+            (
+                "renewables",
+                "battery_charging",
+                "output_power",
+                "ass_dc_power",
+                "pdu_outlet_power",
+                "cumulative_power",
+                "output_voltage",
+                "thermal_state",
+            ),
+        ),
+        ("forecast_24h", ("soc_projection", "soc_24h_forecast")),
+        (
+            "forecast_96h",
+            (
+                "ecmwf_solar_forecast",
+                "soc_ecmwf_forecast",
+                "soc_load_scenarios",
+            ),
+        ),
+        (
+            "verification",
+            (
+                "soc_hindcast",
+                "soc_forecast_skill",
+                "soc_ensemble_skill",
+                "forecast_power_skill",
+            ),
+        ),
+    )
+)
+POWER_PANEL_TIME_GROUP_BY_KEY = {
+    panel_key: group_name
+    for group_name, panel_keys in POWER_PANEL_TIME_GROUPS.items()
+    for panel_key in panel_keys
+}
+POWER_PANEL_TIME_AXIS_LABELS = {
+    "observed": "Time (UTC)",
+    "forecast_24h": "Forecast Time (UTC)",
+    "forecast_96h": "Forecast Time (UTC)",
+    "verification": "Verification Time (UTC)",
+}
 PDU_OUTLET_COUNT = 8
 PDU_DISPLAY_SUMMARY_FIELDS = tuple(
     f"PDUOutlet{outlet}{metric}"
@@ -2047,6 +2094,30 @@ def _active_panels(ds: xr.Dataset, instrument: str) -> list[tuple[PanelSpec, lis
     return panels
 
 
+def _power_panel_time_group(panel_key: str) -> str:
+    return POWER_PANEL_TIME_GROUP_BY_KEY.get(panel_key, "observed")
+
+
+def _order_power_panels_by_time_group(
+    panels: list[tuple[PanelSpec, list[tuple[TraceSpec, np.ndarray]]]],
+) -> list[tuple[PanelSpec, list[tuple[TraceSpec, np.ndarray]]]]:
+    """Keep Power panels with compatible time axes together on desktop."""
+    group_rank = {name: index for index, name in enumerate(POWER_PANEL_TIME_GROUPS)}
+    panel_rank = {
+        panel_key: index
+        for panel_keys in POWER_PANEL_TIME_GROUPS.values()
+        for index, panel_key in enumerate(panel_keys)
+    }
+    original_rank = {panel.key: index for index, (panel, _rows) in enumerate(panels)}
+    return sorted(
+        panels,
+        key=lambda item: (
+            group_rank.get(_power_panel_time_group(item[0].key), 0),
+            panel_rank.get(item[0].key, original_rank[item[0].key]),
+        ),
+    )
+
+
 def _time_index(ds: xr.Dataset) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(ds["time"].values) if "time" in ds else pd.DatetimeIndex([])
 
@@ -2580,18 +2651,24 @@ def build_summary_plotly(
     if len(times) == 0 or not panels:
         raise ValueError(f"No summary time-series panels available for {instrument}")
 
-    vertical_spacing = 0.028 if len(panels) >= 6 else 0.04
+    if instrument == "power":
+        panels = _order_power_panels_by_time_group(panels)
     panel_domain_end = PLOTLY_SUMMARY_PANEL_DOMAIN_END
     legend_x = PLOTLY_SUMMARY_LEGEND_X
     right_margin = PLOTLY_SUMMARY_RIGHT_MARGIN
     if instrument == "power":
         per_panel_height = PLOTLY_SUMMARY_POWER_PANEL_HEIGHT
         max_height = PLOTLY_SUMMARY_POWER_MAX_HEIGHT
+        figure_height = max(520, min(max_height, per_panel_height * len(panels) + 90))
+        vertical_spacing = min(0.025, PLOTLY_SUMMARY_POWER_PANEL_GAP / figure_height)
     else:
         per_panel_height = PLOTLY_SUMMARY_PANEL_HEIGHT
         max_height = PLOTLY_SUMMARY_MAX_HEIGHT
-    forecast_panel_keys = {"soc_projection", "soc_ecmwf_forecast", "ecmwf_solar_forecast", "soc_forecast_skill"}
-    separate_projection_axis = instrument == "power" and any(panel.key in forecast_panel_keys for panel, _rows in panels)
+        figure_height = max(520, min(max_height, per_panel_height * len(panels) + 90))
+        vertical_spacing = 0.028 if len(panels) >= 6 else 0.04
+    separate_time_axes = instrument == "power" and any(
+        _power_panel_time_group(panel.key) != "observed" for panel, _rows in panels
+    )
     base_time_start = times.min()
     base_time_end = times.max()
     if x_limits is not None:
@@ -2610,7 +2687,7 @@ def build_summary_plotly(
     fig = make_subplots(
         rows=len(panels),
         cols=1,
-        shared_xaxes=not separate_projection_axis,
+        shared_xaxes=not separate_time_axes,
         vertical_spacing=vertical_spacing,
         specs=[[{"secondary_y": panel.right_axis_label is not None}] for panel, _rows in panels],
         subplot_titles=[panel.label for panel, _rows in panels],
@@ -2621,10 +2698,6 @@ def build_summary_plotly(
     plot_time_start = base_time_start
     plot_time_end = base_time_end
     panel_x_ranges: dict[int, tuple[pd.Timestamp, pd.Timestamp]] = {}
-    last_base_axis_row = max(
-        (idx for idx, (panel, _rows) in enumerate(panels, start=1) if panel.key not in forecast_panel_keys),
-        default=len(panels),
-    )
     for row_index, (panel, rows) in enumerate(panels, start=1):
         legend_name = "legend" if row_index == 1 else f"legend{row_index}"
         panel_top = 1.0 - (row_index - 1) * (panel_height + vertical_spacing)
@@ -2644,8 +2717,9 @@ def build_summary_plotly(
         right_color = None
         left_axis_values: list[np.ndarray] = []
         right_axis_values: list[np.ndarray] = []
-        projection_time_start: pd.Timestamp | None = None
-        projection_time_end: pd.Timestamp | None = None
+        panel_time_start: pd.Timestamp | None = None
+        panel_time_end: pd.Timestamp | None = None
+        panel_time_group = _power_panel_time_group(panel.key) if instrument == "power" else "observed"
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
             if secondary and right_color is None:
@@ -2657,15 +2731,12 @@ def build_summary_plotly(
                 continue
             trace_start = trace_times.min()
             trace_end = trace_times.max()
-            if separate_projection_axis and panel.key in forecast_panel_keys and (
-                trace.projection_lookback_minutes is not None
-                or panel.key in {"soc_ecmwf_forecast", "ecmwf_solar_forecast", "soc_forecast_skill"}
-            ):
-                if projection_time_start is None or trace_start < projection_time_start:
-                    projection_time_start = trace_start
-                if projection_time_end is None or trace_end > projection_time_end:
-                    projection_time_end = trace_end
-            elif not separate_projection_axis:
+            if separate_time_axes and panel_time_group != "observed":
+                if panel_time_start is None or trace_start < panel_time_start:
+                    panel_time_start = trace_start
+                if panel_time_end is None or trace_end > panel_time_end:
+                    panel_time_end = trace_end
+            elif not separate_time_axes:
                 if trace_start < plot_time_start:
                     plot_time_start = trace_start
                 if trace_end > plot_time_end:
@@ -2738,19 +2809,27 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=True,
             )
-        if separate_projection_axis and panel.key in forecast_panel_keys and projection_time_start is not None and projection_time_end is not None:
-            panel_x_ranges[row_index] = (projection_time_start, projection_time_end)
+        if separate_time_axes and panel_time_group != "observed" and panel_time_start is not None and panel_time_end is not None:
+            panel_x_ranges[row_index] = (panel_time_start, panel_time_end)
         else:
             panel_x_ranges[row_index] = (base_time_start, base_time_end)
 
-    if separate_projection_axis:
-        projection_rows = []
+    if separate_time_axes:
+        group_ranges: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
         for row_index, (panel, _rows) in enumerate(panels, start=1):
+            group_name = _power_panel_time_group(panel.key)
             start, end = panel_x_ranges[row_index]
+            if group_name in group_ranges:
+                group_start, group_end = group_ranges[group_name]
+                group_ranges[group_name] = (min(group_start, start), max(group_end, end))
+            else:
+                group_ranges[group_name] = (start, end)
+
+        group_axis_roots: dict[str, str] = {}
+        for row_index, (panel, _rows) in enumerate(panels, start=1):
+            group_name = _power_panel_time_group(panel.key)
+            start, end = group_ranges[group_name]
             tickvals, ticktext = _plotly_time_ticks(start, end)
-            is_projection_row = panel.key in forecast_panel_keys
-            if is_projection_row:
-                projection_rows.append(row_index)
             fig.update_xaxes(
                 domain=[0.0, panel_domain_end],
                 tickmode="array",
@@ -2761,15 +2840,17 @@ def build_summary_plotly(
                 linecolor=PLOT_LINE,
                 tickfont=dict(color=PLOT_TEXT, size=11),
                 range=[start, end],
-                showticklabels=is_projection_row or row_index == last_base_axis_row,
+                showticklabels=True,
+                title_text=POWER_PANEL_TIME_AXIS_LABELS[group_name],
+                title_standoff=10,
                 row=row_index,
                 col=1,
             )
-            if not is_projection_row and row_index != 1:
-                fig.update_xaxes(matches="x", row=row_index, col=1)
-        fig.update_xaxes(title_text="Time (UTC)", row=last_base_axis_row, col=1)
-        if projection_rows:
-            fig.update_xaxes(title_text="Forecast Time (UTC)", row=projection_rows[-1], col=1)
+            axis_reference = "x" if row_index == 1 else f"x{row_index}"
+            if group_name in group_axis_roots:
+                fig.update_xaxes(matches=group_axis_roots[group_name], row=row_index, col=1)
+            else:
+                group_axis_roots[group_name] = axis_reference
     else:
         tickvals, ticktext = _plotly_time_ticks(plot_time_start, plot_time_end)
         fig.update_xaxes(
@@ -2786,7 +2867,7 @@ def build_summary_plotly(
         fig.update_xaxes(title_text="Time (UTC)", row=len(panels), col=1)
     fig.update_layout(
         showlegend=True,
-        height=max(520, min(max_height, per_panel_height * len(panels) + 90)),
+        height=figure_height,
         margin=dict(l=80, r=right_margin, t=60, b=70),
         paper_bgcolor="white",
         plot_bgcolor="white",

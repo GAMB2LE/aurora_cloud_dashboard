@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+from grouped_timeseries import (
+    PLOTLY_SUMMARY_POWER_PANEL_HEIGHT,
+    SUMMARY_LAYOUTS,
+    PanelSpec,
+    TraceSpec,
+    build_summary_plotly,
+)
+
+
+def _power_layout_dataset() -> xr.Dataset:
+    times = pd.date_range("2026-07-15T00:00:00", periods=33, freq="3h")
+    values = np.linspace(1.0, 2.0, len(times))
+    return xr.Dataset(
+        {
+            "observed_1": (("time",), values * 100.0),
+            "observed_2": (("time",), values),
+            "forecast_24": (("time",), 70.0 - values),
+            "forecast_input": (("time",), values * 200.0),
+            "forecast_96": (("time",), 65.0 - values),
+            "forecast_load": (("time",), 60.0 - values),
+            "hindcast": (("time",), 68.0 - values),
+            "forecast_skill": (("time",), values),
+            "ensemble_skill": (("time",), values / 2.0),
+            "power_skill": (("time",), values * 10.0),
+        },
+        coords={"time": times},
+    )
+
+
+def _power_layout_panels() -> tuple[PanelSpec, ...]:
+    panel_specs = (
+        ("renewables", "Renewables", "observed_1"),
+        ("battery_charging", "Battery Charging", "observed_2"),
+        ("soc_24h_forecast", "SOC Next 24 h Forecast", "forecast_24"),
+        ("ecmwf_solar_forecast", "ECMWF Solar & Load Forecast", "forecast_input"),
+        ("soc_ecmwf_forecast", "SOC 96 h Forecast", "forecast_96"),
+        ("soc_load_scenarios", "SOC Load Scenarios", "forecast_load"),
+        ("soc_hindcast", "SOC Hindcast: Forecasts vs Observed", "hindcast"),
+        ("soc_forecast_skill", "SOC Forecast Verification", "forecast_skill"),
+        ("soc_ensemble_skill", "SOC Ensemble Verification", "ensemble_skill"),
+        ("forecast_power_skill", "Solar and Load Forecast Verification", "power_skill"),
+    )
+    return tuple(
+        PanelSpec(key, label, "Value", None, (TraceSpec(variable, label, "#0b7285"),))
+        for key, label, variable in panel_specs
+    )
+
+
+def test_power_desktop_panels_are_tall_and_grouped_by_time_axis() -> None:
+    ds = _power_layout_dataset()
+    times = pd.DatetimeIndex(ds["time"].values)
+
+    with patch.dict(SUMMARY_LAYOUTS, {"power": _power_layout_panels()}):
+        figure = build_summary_plotly(ds, "power", x_limits=(times[0], times[8]))
+
+    expected_titles = [
+        "Renewables",
+        "Battery Charging",
+        "SOC Next 24 h Forecast",
+        "ECMWF Solar & Load Forecast",
+        "SOC 96 h Forecast",
+        "SOC Load Scenarios",
+        "SOC Hindcast: Forecasts vs Observed",
+        "SOC Forecast Verification",
+        "SOC Ensemble Verification",
+        "Solar and Load Forecast Verification",
+    ]
+    assert [annotation.text for annotation in figure.layout.annotations[: len(expected_titles)]] == expected_titles
+    assert figure.layout.height == PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * len(expected_titles) + 90
+
+    xaxes = [
+        getattr(figure.layout, "xaxis" if index == 1 else f"xaxis{index}")
+        for index in range(1, len(expected_titles) + 1)
+    ]
+    assert all(axis.showticklabels for axis in xaxes)
+    assert [axis.title.text for axis in xaxes] == [
+        "Time (UTC)",
+        "Time (UTC)",
+        "Forecast Time (UTC)",
+        "Forecast Time (UTC)",
+        "Forecast Time (UTC)",
+        "Forecast Time (UTC)",
+        "Verification Time (UTC)",
+        "Verification Time (UTC)",
+        "Verification Time (UTC)",
+        "Verification Time (UTC)",
+    ]
+    assert [axis.matches for axis in xaxes] == [None, "x", None, None, "x4", "x4", None, "x7", "x7", "x7"]
+
+
+def test_non_power_summary_height_is_unchanged() -> None:
+    times = pd.date_range("2026-07-15T00:00:00", periods=5, freq="1h")
+    ds = xr.Dataset({"h1_t": (("time",), np.linspace(0.0, 1.0, len(times)))}, coords={"time": times})
+
+    figure = build_summary_plotly(ds, "vaisalamet")
+
+    assert figure.layout.height < PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * 4
