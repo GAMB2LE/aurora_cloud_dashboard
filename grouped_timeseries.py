@@ -3163,6 +3163,8 @@ def build_summary_plotly(
         right_color = None
         left_axis_values: list[np.ndarray] = []
         right_axis_values: list[np.ndarray] = []
+        left_axis_has_finite_data = False
+        right_axis_has_finite_data = False
         panel_time_start: pd.Timestamp | None = None
         panel_time_end: pd.Timestamp | None = None
         panel_time_group = _power_panel_time_group(panel.key) if instrument == "power" else "observed"
@@ -3189,8 +3191,10 @@ def build_summary_plotly(
                     plot_time_end = trace_end
             if secondary:
                 right_axis_values.append(trace_values)
+                right_axis_has_finite_data = right_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             else:
                 left_axis_values.append(trace_values)
+                left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             trace_label = _trace_display_label(ds, trace)
             fig.add_trace(
                 go.Scatter(
@@ -3227,6 +3231,26 @@ def build_summary_plotly(
                     col=1,
                     secondary_y=False,
                 )
+                left_axis_has_finite_data = True
+        if panel.right_axis_label is not None and right_axis_has_finite_data and not left_axis_has_finite_data:
+            anchor_start = panel_time_start or base_time_start
+            anchor_end = panel_time_end or base_time_end
+            fig.add_trace(
+                go.Scatter(
+                    x=[anchor_start, anchor_end],
+                    y=[0.0, 0.0],
+                    mode="lines",
+                    name="Primary axis anchor",
+                    line=dict(width=0),
+                    opacity=0.0,
+                    hoverinfo="skip",
+                    showlegend=False,
+                ),
+                row=row_index,
+                col=1,
+                secondary_y=False,
+            )
+            left_axis_values.append(np.array([0.0], dtype=np.float64))
         left_range = _padded_axis_limits(left_axis_values, headroom=0.08, footroom=0.04)
         right_range = _padded_axis_limits(right_axis_values, headroom=0.08, footroom=0.04)
         if panel.key in SOC_REFERENCE_PANEL_KEYS:

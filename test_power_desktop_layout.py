@@ -118,6 +118,32 @@ def test_non_power_summary_height_is_unchanged() -> None:
     assert figure.layout.height < PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * 4
 
 
+def test_right_axis_only_panel_retains_its_primary_subplot_anchor() -> None:
+    times = pd.date_range("2026-07-15T00:00:00", periods=5, freq="1h")
+    ds = xr.Dataset({"cycles": (("time",), np.arange(len(times), dtype=float))}, coords={"time": times})
+    panels = (
+        PanelSpec(
+            "soc_forecast_skill",
+            "SOC Forecast Verification",
+            "SOC MAE [percentage points]",
+            "Independent ECMWF Cycles [count]",
+            (TraceSpec("cycles", "Independent ECMWF Cycles", "#4f7d8d", axis="right"),),
+        ),
+    )
+
+    with patch.dict(SUMMARY_LAYOUTS, {"power": panels}):
+        figure = build_summary_plotly(ds, "power")
+
+    assert len(figure.data) == 2
+    right_trace, anchor_trace = figure.data
+    assert right_trace.yaxis == "y2"
+    assert anchor_trace.yaxis == "y"
+    assert anchor_trace.showlegend is False
+    assert anchor_trace.opacity == 0.0
+    assert figure.layout.yaxis.domain == (0.0, 1.0)
+    assert figure.layout.yaxis2.overlaying == "y"
+
+
 def test_power_prewarm_observed_axes_use_measured_display_window() -> None:
     times = pd.date_range("2026-07-15T10:00:00", periods=41, freq="3h")
     observed_end_index = 8
