@@ -19,13 +19,14 @@ class EcmwfForecastProviderTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.input_path = self.root / "solar.nc"
         cycle = pd.Timestamp("2026-07-16T00:00:00")
-        step = pd.to_timedelta([0, 3, 6], unit="h")
+        step_hours = np.array([0, 3, 6], dtype=np.int32)
+        step = pd.to_timedelta(step_hours, unit="h")
         values = np.arange(12, dtype=np.float64).reshape(3, 2, 2)
         xr.Dataset(
             {"surface_solar_radiation_downwards": (("step", "latitude", "longitude"), values)},
             coords={
                 "time": cycle.to_datetime64(),
-                "step": step,
+                "step": step_hours,
                 "valid_time": ("step", (cycle + step).to_numpy()),
                 "latitude": [65.0, 64.0],
                 "longitude": [336.0, 337.0],
