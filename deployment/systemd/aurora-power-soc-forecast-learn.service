@@ -1,0 +1,13 @@
+[Unit]
+Description=Aurora power SOC forecast learning update from cached ECMWF data
+After=aurora-power-append.service aurora-power-soc-forecast.service
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+EnvironmentFile=/etc/aurora-dashboard.env
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python generate_power_soc_forecast.py --power-zarr /data/aurora/products/power/power.zarr --output-zarr /data/aurora/products/power/power_soc_forecast.zarr --cache-dir /data/aurora/products/power/ecmwf_solar_forecast --state /data/aurora/products/power/power_soc_forecast_state.json --archive-zarr /data/aurora/products/power/power_soc_forecast_archive.zarr --skill-zarr /data/aurora/products/power/power_soc_forecast_skill.zarr --hindcast-zarr /data/aurora/products/power/power_soc_hindcast.zarr --horizon-hours 96 --refresh-from-cache
+Nice=10
+TimeoutStartSec=900
