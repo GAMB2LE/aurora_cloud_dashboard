@@ -4,8 +4,10 @@ The native iOS app uses a small read-only API instead of scraping the Panel
 dashboard or reading Zarr/SQLite files directly from the phone.
 
 The server-side API remains on the dashboard `main` branch. The native Swift
-client is maintained separately on the `codex/ios-app` branch so dashboard
-runtime changes and app UI changes can be reviewed independently.
+client is maintained as a separate iOS artifact/repository so dashboard
+runtime changes and app UI changes can be reviewed independently. Do not
+recreate an iOS feature branch in this repository; release the dashboard and
+native client independently.
 
 ## Service
 
