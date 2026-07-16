@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -13,6 +13,9 @@ from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
 from uas_mqtt import load_uas_mqtt_log
+
+
+UTC = timezone.utc
 
 
 APP_DIR = Path(__file__).resolve().parent
