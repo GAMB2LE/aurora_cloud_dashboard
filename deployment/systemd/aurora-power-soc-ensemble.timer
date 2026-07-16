@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a new ECMWF power SOC ensemble cycle hourly
+
+[Timer]
+OnCalendar=*:40:00
+RandomizedDelaySec=5min
+Persistent=true
+Unit=aurora-power-soc-ensemble.service
+
+[Install]
+WantedBy=timers.target

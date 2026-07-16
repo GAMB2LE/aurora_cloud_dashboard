@@ -1,0 +1,15 @@
+[Unit]
+Description=Aurora 50-member ECMWF power SOC ensemble forecast
+After=network-online.target aurora-power-soc-forecast.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+EnvironmentFile=/etc/aurora-dashboard.env
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python generate_power_soc_ensemble.py --power-zarr /data/aurora/products/power/power.zarr --deterministic-zarr /data/aurora/products/power/power_soc_forecast.zarr --output-zarr /data/aurora/products/power/power_soc_ensemble_forecast.zarr --archive-zarr /data/aurora/products/power/power_soc_ensemble_archive.zarr --skill-zarr /data/aurora/products/power/power_soc_ensemble_skill.zarr --horizon-hours 96
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=7200
