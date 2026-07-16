@@ -357,8 +357,9 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - each additional learned kit combination
 
 The optimized plan maximizes CL61 collection time over the first 96 hours while
-requiring P10 SOC to remain at or above 40%, a minimum 12-hour run, and no more
-than one start per UTC day. Hours 97-240 retain the base mode with CL61 off so
+requiring P10 SOC to remain at or above 40% across the complete 240-hour
+planning forecast, a minimum 12-hour run, and no more than one start per UTC
+day. Hours 97-240 retain the base mode with CL61 off so
 the full planning horizon still exposes later battery risk. Recommendations are
 advisory only; the forecast service does not issue PDU commands. The dashboard
 also evaluates a user-selected CL61 start and duration directly from the stored

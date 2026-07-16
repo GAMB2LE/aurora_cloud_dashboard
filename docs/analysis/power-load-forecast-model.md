@@ -108,11 +108,13 @@ UTC deterministic cycle twice daily and forecasts 240 hours. Its native cycle
 is reused by the faster state job, so a kit transition changes the load and SOC
 plans without redownloading ECMWF.
 
-The optimizer considers CL61 on/off schedules over the first 96 hours. It
-maximizes collection time subject to P10 SOC staying at or above 40%, a minimum
-12-hour run, and at most one start per UTC day. It is advisory only. A custom
-start/duration editor runs the same ensemble calculation immediately and marks
-the plan safe, marginal, or unsafe from its minimum P10 SOC.
+The optimizer considers CL61 on/off schedules over the first 96 hours, then
+propagates each candidate with CL61 off through the complete 240-hour planning
+forecast. It maximizes collection time only among candidates whose P10 SOC
+stays at or above 40% for all 240 hours, with a minimum 12-hour CL61 run and at
+most one start per UTC day. It is advisory only. A custom start/duration editor
+runs the same ensemble calculation immediately and marks the plan safe,
+marginal, or unsafe from its minimum P10 SOC.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
 skill only use rows from a matching model version, preventing retired model

@@ -694,16 +694,22 @@ def optimize_cl61_schedule(
     max_starts_per_day: int = MAX_STARTS_PER_UTC_DAY,
     beam_width: int = 300,
 ) -> ScheduleResult:
-    count = min(len(times), int(horizon_hours) + 1)
-    times = pd.DatetimeIndex(times[:count])
-    solar = np.asarray(solar_members_w[:, :count], dtype=np.float64)
+    full_times = pd.DatetimeIndex(times)
+    full_solar = np.asarray(solar_members_w, dtype=np.float64)
+    if len(full_times) == 0:
+        raise ValueError("CL61 optimization requires at least one forecast time")
+    if full_solar.ndim != 2 or full_solar.shape[1] < len(full_times):
+        raise ValueError("Solar members must be a member x time array covering the forecast")
+    full_solar = full_solar[:, : len(full_times)]
+    decision_count = min(len(full_times), int(horizon_hours) + 1)
+    decision_times = full_times[:decision_count]
     base_kits = set(mode_kits(base_mode))
     base_kits.discard("CL61")
     off_mode = mode_id(base_kits)
     on_mode = mode_id(base_kits | {"CL61"})
     off_load = _load_members_for_modes(component_members, [off_mode])[:, 0]
     on_load = _load_members_for_modes(component_members, [on_mode])[:, 0]
-    initial_members = np.full(solar.shape[0], float(initial_soc), dtype=np.float64)
+    initial_members = np.full(full_solar.shape[0], float(initial_soc), dtype=np.float64)
     candidates = [
         _Candidate(
             modes=(off_mode,),
@@ -717,9 +723,10 @@ def optimize_cl61_schedule(
             first_start_index=None,
         )
     ]
-    for index in range(1, count):
+    search_complete = decision_count == 1
+    for index in range(1, decision_count):
         next_candidates: list[_Candidate] = []
-        day = times[index].date()
+        day = decision_times[index].date()
         for candidate in candidates:
             choices = (True,) if candidate.on and candidate.run_hours < minimum_run_hours else (False, True)
             for turn_on in choices:
@@ -729,8 +736,16 @@ def optimize_cl61_schedule(
                 if is_start and max_starts_per_day <= 0:
                     continue
                 load = on_load if turn_on else off_load
-                hours = max(float((times[index] - times[index - 1]) / pd.Timedelta(hours=1)), 0.0)
-                soc = np.clip(candidate.soc + 100.0 * (solar[:, index] - load) * hours / (1000.0 * capacity_kwh), 0.0, 100.0)
+                hours = max(
+                    float((decision_times[index] - decision_times[index - 1]) / pd.Timedelta(hours=1)),
+                    0.0,
+                )
+                soc = np.clip(
+                    candidate.soc
+                    + 100.0 * (full_solar[:, index] - load) * hours / (1000.0 * capacity_kwh),
+                    0.0,
+                    100.0,
+                )
                 p10 = float(np.nanquantile(soc, 0.10))
                 if p10 < float(minimum_soc) - 1e-9:
                     continue
@@ -748,6 +763,7 @@ def optimize_cl61_schedule(
                     )
                 )
         if not next_candidates:
+            candidates = []
             break
         grouped: dict[tuple[bool, int, object | None, int], list[_Candidate]] = {}
         for candidate in next_candidates:
@@ -759,29 +775,86 @@ def optimize_cl61_schedule(
             )
             grouped.setdefault(key, []).append(candidate)
         reduced = [max(values, key=_candidate_score) for values in grouped.values()]
-        candidates = sorted(reduced, key=_candidate_score, reverse=True)[:beam_width]
+        ranked = sorted(reduced, key=_candidate_score, reverse=True)
+        baseline = next(
+            (candidate for candidate in next_candidates if candidate.starts == 0 and candidate.on_hours == 0),
+            None,
+        )
+        width = max(int(beam_width), 1)
+        candidates = ranked[:width]
+        if baseline is not None and not any(value.starts == 0 and value.on_hours == 0 for value in candidates):
+            candidates = ranked[: width - 1] + [baseline]
+        search_complete = index == decision_count - 1
 
-    valid = [candidate for candidate in candidates if not candidate.on or candidate.run_hours >= minimum_run_hours]
-    if not valid:
-        valid = candidates
-    if not valid:
-        modes = tuple(off_mode for _ in times)
-        return ScheduleResult(modes, 0.0, None, None, np.nan, np.nan, False, 0)
-    best = max(valid, key=_candidate_score)
-    modes = best.modes
+    valid = [] if not search_complete else [
+        candidate for candidate in candidates if not candidate.on or candidate.run_hours >= minimum_run_hours
+    ]
+
+    def extend_candidate(candidate: _Candidate) -> tuple[_Candidate, tuple[str, ...], float, float]:
+        modes = list(candidate.modes)
+        soc = candidate.soc.copy()
+        minimum_p10 = float(candidate.minimum_p10)
+        for index in range(decision_count, len(full_times)):
+            hours = max(float((full_times[index] - full_times[index - 1]) / pd.Timedelta(hours=1)), 0.0)
+            soc = np.clip(
+                soc + 100.0 * (full_solar[:, index] - off_load) * hours / (1000.0 * capacity_kwh),
+                0.0,
+                100.0,
+            )
+            minimum_p10 = min(minimum_p10, float(np.nanquantile(soc, 0.10)))
+            modes.append(off_mode)
+        return candidate, tuple(modes), minimum_p10, float(np.nanquantile(soc, 0.10))
+
+    evaluated = [extend_candidate(candidate) for candidate in valid]
+    safe_evaluated = [value for value in evaluated if value[2] >= float(minimum_soc) - 1e-9]
+    if safe_evaluated:
+        best, modes, minimum_p10, final_p10 = max(
+            safe_evaluated,
+            key=lambda value: (
+                float(value[0].on_hours),
+                float(-value[0].starts),
+                float(value[2]),
+                float(-(value[0].first_start_index if value[0].first_start_index is not None else 10**6)),
+            ),
+        )
+    else:
+        modes = tuple(off_mode for _ in full_times)
+        off_loads = np.repeat(off_load[:, np.newaxis], len(full_times), axis=1)
+        off_soc = integrate_soc_members(
+            initial_soc=initial_soc,
+            times=full_times,
+            solar_members_w=full_solar,
+            load_members_w=off_loads,
+            capacity_kwh=capacity_kwh,
+        )
+        off_p10 = np.nanquantile(off_soc, 0.10, axis=0)
+        minimum_p10 = float(np.nanmin(off_p10))
+        final_p10 = float(off_p10[-1])
+        best = _Candidate(
+            modes=modes[:decision_count],
+            soc=off_soc[:, decision_count - 1],
+            on=False,
+            run_hours=0,
+            last_start_day=None,
+            starts=0,
+            on_hours=0,
+            minimum_p10=minimum_p10,
+            first_start_index=None,
+        )
+
     on_indices = [index for index, value in enumerate(modes) if "CL61" in mode_kits(value)]
-    start_time = times[on_indices[0]] if on_indices else None
+    start_time = full_times[on_indices[0]] if on_indices else None
     stop_time = None
-    if on_indices and on_indices[-1] + 1 < len(times):
-        stop_time = times[on_indices[-1] + 1]
+    if on_indices and on_indices[-1] + 1 < len(full_times):
+        stop_time = full_times[on_indices[-1] + 1]
     return ScheduleResult(
         modes=modes,
         collection_hours=float(best.on_hours),
         start_time=start_time,
         stop_time=stop_time,
-        minimum_p10_soc=float(best.minimum_p10),
-        final_p10_soc=float(np.nanquantile(best.soc, 0.10)),
-        safe=bool(best.minimum_p10 >= minimum_soc),
+        minimum_p10_soc=float(minimum_p10),
+        final_p10_soc=float(final_p10),
+        safe=bool(minimum_p10 >= minimum_soc),
         starts=int(best.starts),
     )
 

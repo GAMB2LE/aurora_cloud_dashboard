@@ -169,6 +169,28 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(len(start_days), len(set(start_days)))
         self.assertGreaterEqual(result.minimum_p10_soc, 40.0)
 
+    def test_optimizer_protects_reserve_through_full_planning_horizon(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
+        solar = np.zeros((20, len(times)))
+        components = np.tile(np.array([40.0, 100.0, 0.0, 0.0, 0.0, 0.0]), (20, 1))
+
+        result = optimize_cl61_schedule(
+            times=times,
+            solar_members_w=solar,
+            component_members=components,
+            initial_soc=80.0,
+            capacity_kwh=26.0,
+            base_mode=MODE_DC_ONLY,
+            horizon_hours=96,
+        )
+
+        on = np.asarray(["CL61" in mode_kits(value) for value in result.modes], dtype=bool)
+        self.assertEqual(len(result.modes), len(times))
+        self.assertEqual(int(np.count_nonzero(on)), 0)
+        self.assertTrue(result.safe)
+        self.assertGreaterEqual(result.minimum_p10_soc, 40.0)
+        self.assertLess(result.minimum_p10_soc, 45.0)
+
     def test_custom_schedule_reacts_to_start_and_duration(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
