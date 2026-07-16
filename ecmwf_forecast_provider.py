@@ -69,10 +69,13 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _steps(horizon_hours: int, lookahead_buffer_hours: int) -> list[int]:
-    requested_horizon = int(horizon_hours) + max(int(lookahead_buffer_hours), 0)
-    values = list(range(0, requested_horizon + 1, 3))
-    if values[-1] != requested_horizon:
-        values.append(requested_horizon)
+    requested_horizon = min(max(int(horizon_hours) + max(int(lookahead_buffer_hours), 0), 0), 240)
+    if requested_horizon <= 144:
+        final_step = min(((requested_horizon + 2) // 3) * 3, 144)
+        return list(range(0, final_step + 1, 3))
+    values = list(range(0, 145, 3))
+    final_step = min(150 + ((requested_horizon - 150 + 5) // 6) * 6, 240)
+    values.extend(range(150, final_step + 1, 6))
     return values
 
 
@@ -84,6 +87,7 @@ def retrieve_open_data_grib(
     lookahead_buffer_hours: int,
     param: str,
     source: str,
+    cycle_hour: int | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Retrieve an ECMWF Open Data forecast with the selected client."""
     provider = validate_provider(provider)
@@ -96,6 +100,10 @@ def retrieve_open_data_grib(
         "param": param,
         "step": _steps(horizon_hours, lookahead_buffer_hours),
     }
+    if cycle_hour is not None:
+        if int(cycle_hour) not in {0, 12}:
+            raise ValueError("Long-range ECMWF deterministic cycles must be 00 or 12 UTC")
+        request["time"] = int(cycle_hour)
     started = time.perf_counter()
     fallback_reason = ""
     try:
@@ -124,6 +132,7 @@ def retrieve_open_data_grib(
         "retrieval_duration_seconds": round(time.perf_counter() - started, 6),
         "retrieval_source": source,
         "retrieval_step_count": len(request["step"]),
+        "retrieval_cycle_hour": "latest" if cycle_hour is None else int(cycle_hour),
     }
 
 

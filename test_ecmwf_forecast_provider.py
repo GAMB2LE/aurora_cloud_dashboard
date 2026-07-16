@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from ecmwf_forecast_provider import open_solar_forecast, validate_provider
+from ecmwf_forecast_provider import _steps, open_solar_forecast, validate_provider
 
 
 class EcmwfForecastProviderTests(unittest.TestCase):
@@ -40,6 +40,16 @@ class EcmwfForecastProviderTests(unittest.TestCase):
         self.assertEqual(validate_provider(" EarthKit "), "earthkit")
         with self.assertRaises(ValueError):
             validate_provider("automatic")
+
+    def test_open_data_steps_follow_the_valid_240_hour_oper_schedule(self) -> None:
+        self.assertEqual(_steps(96, 6)[-1], 102)
+        values = _steps(240, 24)
+        self.assertEqual(values[0], 0)
+        self.assertEqual(values[-1], 240)
+        self.assertEqual(values[48], 144)
+        self.assertEqual(values[49], 150)
+        self.assertTrue(all(b - a == 3 for a, b in zip(values[:48], values[1:49])))
+        self.assertTrue(all(b - a == 6 for a, b in zip(values[48:], values[49:])))
 
     def test_legacy_normalizes_site_and_time_coordinates(self) -> None:
         result = open_solar_forecast(

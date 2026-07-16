@@ -34,6 +34,7 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+from power_operating_scenarios import MIN_RUN_HOURS, evaluate_custom_schedule
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_PCT,
     MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
@@ -63,6 +64,7 @@ from grouped_timeseries import (
     POWER_CUMULATIVE_CONTEXT_DAYS,
     POWER_DISPLAY_SUMMARY_FIELDS,
     POWER_SOC_FORECAST_FIELDS,
+    POWER_FUTURE_DISPLAY_FIELDS,
     prepare_summary_dataset,
     widget_group_options,
 )
@@ -767,6 +769,8 @@ _POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
 _POWER_DISPLAY_SUMMARY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_SUMMARY_REFRESHED_AT: datetime | None = None
+_POWER_OPERATING_SCENARIOS_DS: xr.Dataset | None = None
+_POWER_OPERATING_SCENARIOS_REFRESHED_AT: datetime | None = None
 _OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
 
 
@@ -807,6 +811,15 @@ def _power_display_energy_path() -> Path:
 
 def _power_display_summary_path() -> Path:
     return Path(os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr"))
+
+
+def _power_operating_scenarios_path() -> Path:
+    return Path(
+        os.environ.get(
+            "POWER_OPERATING_SCENARIOS_ZARR_PATH",
+            "/data/aurora/products/power/power_operating_scenarios.zarr",
+        )
+    )
 
 
 def _prewarmed_interactive_dir() -> Path:
@@ -984,10 +997,33 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
     return ds
 
 
+def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
+    """Open the compact learned operating-plan product when available."""
+    global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
+    if _POWER_OPERATING_SCENARIOS_DS is not None:
+        return _POWER_OPERATING_SCENARIOS_DS
+    path = _power_operating_scenarios_path()
+    if not path.exists():
+        return None
+    with _timed_perf("power_operating_scenarios_open", instrument="power", zarr_path=str(path)) as perf:
+        try:
+            ds = xr.open_zarr(path, chunks={}, consolidated=True)
+        except Exception as exc:
+            perf["status"] = "unavailable"
+            perf["error"] = str(exc)
+            return None
+        perf["status"] = "ok"
+        perf["dims"] = dict(ds.sizes)
+    _POWER_OPERATING_SCENARIOS_DS = ds
+    _POWER_OPERATING_SCENARIOS_REFRESHED_AT = datetime.now(timezone.utc)
+    return ds
+
+
 def _refresh_power_display_energy_dataset() -> None:
     """Drop compact Power display-product handles so latest products reopen."""
     global _POWER_DISPLAY_ENERGY_DS, _POWER_DISPLAY_ENERGY_REFRESHED_AT
     global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
+    global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
     if _POWER_DISPLAY_ENERGY_DS is not None:
         try:
             _POWER_DISPLAY_ENERGY_DS.close()
@@ -1002,6 +1038,13 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_DISPLAY_SUMMARY_DS = None
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = None
+    if _POWER_OPERATING_SCENARIOS_DS is not None:
+        try:
+            _POWER_OPERATING_SCENARIOS_DS.close()
+        except Exception:
+            pass
+    _POWER_OPERATING_SCENARIOS_DS = None
+    _POWER_OPERATING_SCENARIOS_REFRESHED_AT = None
 
 
 def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
@@ -1036,7 +1079,7 @@ def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
     with _timed_perf("power_display_summary_window", instrument="power", start=start_dt, end=end_dt) as perf:
         times = pd.DatetimeIndex(ds["time"].values)
         mask = (times >= start_dt) & (times <= end_dt)
-        forecast_names = [name for name in POWER_SOC_FORECAST_FIELDS if name in ds]
+        forecast_names = [name for name in POWER_FUTURE_DISPLAY_FIELDS if name in ds]
         if forecast_names:
             forecast_valid = np.zeros(len(times), dtype=bool)
             for name in forecast_names:
@@ -3390,6 +3433,7 @@ def _on_instrument_change(event):
         _capture_current_instrument_state(event.old)
     sync_quicklooks = _instrument_change_origin != "interactive"
     _apply_instrument_defaults(event.new, reset_time=True, sync_quicklooks=sync_quicklooks)
+    power_plan_editor.visible = event.new == "power"
 
 
 instrument_select.param.watch(_on_instrument_change, "value")
@@ -8742,6 +8786,184 @@ body, .bk {
 }
 """
 
+_custom_cl61_start_default = (
+    pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).floor("h") + pd.Timedelta(hours=6)
+).to_pydatetime()
+custom_cl61_start = pn.widgets.DatetimePicker(
+    name="CL61 start (UTC)",
+    value=_custom_cl61_start_default,
+    sizing_mode="stretch_width",
+)
+custom_cl61_duration = pn.widgets.IntSlider(
+    name="CL61 run duration (hours)",
+    start=MIN_RUN_HOURS,
+    end=96,
+    step=1,
+    value=MIN_RUN_HOURS,
+    sizing_mode="stretch_width",
+)
+
+
+def _operating_plan_status(minimum_p10_soc: float) -> tuple[str, str]:
+    if minimum_p10_soc >= MINIMUM_OPERATIONAL_SOC_PCT:
+        return "Safe", "green"
+    if minimum_p10_soc >= MINIMUM_OPERATIONAL_SOC_PCT - 5.0:
+        return "Marginal", "amber"
+    return "Unsafe", "red"
+
+
+def _operating_plan_metric(label: str, value: str) -> str:
+    return (
+        "<div class='operating-plan-metric'>"
+        f"<div class='operating-plan-metric__label'>{escape(label)}</div>"
+        f"<div class='operating-plan-metric__value'>{escape(value)}</div>"
+        "</div>"
+    )
+
+
+def _build_custom_cl61_plan_view(start_value, duration_value):
+    scenarios = _get_power_operating_scenarios_dataset()
+    if scenarios is None:
+        return pn.pane.Alert("Operating-plan forecast is not available.", alert_type="warning")
+    try:
+        result = evaluate_custom_schedule(
+            scenarios,
+            start_time=pd.Timestamp(start_value),
+            duration_hours=max(int(duration_value), MIN_RUN_HOURS),
+        )
+    except Exception as exc:
+        return pn.pane.Alert(f"Could not calculate the custom operating plan: {exc}", alert_type="danger")
+
+    minimum_p10 = float(result["minimum_p10_soc"])
+    status_label, status_level = _operating_plan_status(minimum_p10)
+    current_mode = str(scenarios.attrs.get("current_mode_label", "Unknown"))
+    confidence = float(scenarios.attrs.get("current_mode_confidence", "nan"))
+    confidence_text = f"{confidence * 100:.0f}%" if np.isfinite(confidence) else "Unknown"
+    metrics = (
+        f"<div class='operating-plan-status operating-plan-status--{status_level}'>{status_label} | Advisory only</div>"
+        "<div class='operating-plan-metrics'>"
+        + _operating_plan_metric("Detected mode", current_mode)
+        + _operating_plan_metric("Mode confidence", confidence_text)
+        + _operating_plan_metric("CL61 collection", f"{float(result['collection_hours']):.0f} h")
+        + _operating_plan_metric("Minimum P10 SOC", f"{minimum_p10:.1f}%")
+        + _operating_plan_metric("Final P10 SOC", f"{float(result['final_p10_soc']):.1f}%")
+        + "</div>"
+    )
+
+    times = pd.DatetimeIndex(result["time"])
+    figure = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        row_heights=(0.68, 0.32),
+    )
+    for name, label, color, dash in (
+        ("soc_p10", "SOC P10", "#7fb6d6", "dot"),
+        ("soc_p50", "SOC Median", "#4f8c63", "solid"),
+        ("soc_p90", "SOC P90", "#7fb6d6", "dot"),
+    ):
+        figure.add_trace(
+            go.Scatter(x=times, y=result[name], mode="lines", name=label, line=dict(color=color, width=2, dash=dash)),
+            row=1,
+            col=1,
+        )
+    figure.add_trace(
+        go.Scatter(
+            x=[times.min(), times.max()],
+            y=[MINIMUM_OPERATIONAL_SOC_PCT, MINIMUM_OPERATIONAL_SOC_PCT],
+            mode="lines",
+            name=MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
+            line=dict(color=THEME_TEXT, width=1.5, dash="dash"),
+        ),
+        row=1,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(x=times, y=result["load_p50_w"], mode="lines", name="Forecast Load", line=dict(color="#c05647", width=2)),
+        row=2,
+        col=1,
+    )
+    figure.update_yaxes(title_text="State of Charge [%]", range=[0, 100], row=1, col=1)
+    figure.update_yaxes(title_text="Load [W]", rangemode="tozero", row=2, col=1)
+    figure.update_xaxes(title_text="Date and Time (UTC)", row=2, col=1)
+    figure.update_layout(
+        height=520,
+        margin=dict(l=70, r=30, t=20, b=55),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=THEME_TEXT, size=12),
+        hovermode="x unified",
+    )
+    figure.update_xaxes(showgrid=True, gridcolor=THEME_GRID)
+    figure.update_yaxes(showgrid=True, gridcolor=THEME_GRID)
+    return pn.Column(
+        pn.pane.HTML(metrics, sizing_mode="stretch_width", margin=0),
+        pn.pane.Plotly(figure, config={"responsive": True}, sizing_mode="stretch_width"),
+        sizing_mode="stretch_width",
+        margin=0,
+    )
+
+
+@pn.depends(custom_cl61_start.param.value, custom_cl61_duration.param.value, range_end.param.value)
+def _custom_cl61_plan_view(start_value, duration_value, _live_refresh_anchor):
+    return _build_custom_cl61_plan_view(start_value, duration_value)
+
+
+power_plan_editor = pn.Card(
+    pn.Row(custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+    _custom_cl61_plan_view,
+    title="Custom CL61 Operating Plan",
+    collapsible=True,
+    collapsed=False,
+    sizing_mode="stretch_width",
+    visible=CURRENT_INSTRUMENT == "power",
+    css_classes=["small-card", "operating-plan-card"],
+)
+
+mobile_custom_cl61_start = pn.widgets.DatetimePicker(
+    name="CL61 start (UTC)",
+    value=_custom_cl61_start_default,
+    sizing_mode="stretch_width",
+)
+mobile_custom_cl61_duration = pn.widgets.IntSlider(
+    name="CL61 run duration (hours)",
+    start=MIN_RUN_HOURS,
+    end=96,
+    step=1,
+    value=MIN_RUN_HOURS,
+    sizing_mode="stretch_width",
+)
+
+
+@pn.depends(mobile_custom_cl61_start.param.value, mobile_custom_cl61_duration.param.value, range_end.param.value)
+def _mobile_custom_cl61_plan_view(start_value, duration_value, _live_refresh_anchor):
+    return _build_custom_cl61_plan_view(start_value, duration_value)
+
+
+mobile_power_plan_editor = pn.Card(
+    pn.Column(mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
+    _mobile_custom_cl61_plan_view,
+    title="Custom CL61 Operating Plan",
+    collapsible=True,
+    collapsed=True,
+    sizing_mode="stretch_width",
+    css_classes=["operating-plan-card"],
+)
+
+POWER_PLAN_CSS = """
+.operating-plan-status { display:inline-flex; align-items:center; min-height:30px; padding:4px 10px; border:1px solid #d8e1e8; border-radius:6px; font-weight:700; margin-bottom:8px; }
+.operating-plan-status--green { color:#23623a; background:#edf7f0; border-color:#a9ceb4; }
+.operating-plan-status--amber { color:#765c11; background:#fff8df; border-color:#dcc77a; }
+.operating-plan-status--red { color:#8a2d24; background:#fff0ee; border-color:#dfafa9; }
+.operating-plan-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-bottom:8px; }
+.operating-plan-metric { min-width:0; padding:8px 10px; border-left:3px solid #0b7285; background:#f7f9fb; }
+.operating-plan-metric__label { color:#5f6c7b; font-size:12px; }
+.operating-plan-metric__value { color:#22313f; font-size:16px; font-weight:700; overflow-wrap:anywhere; }
+@media (max-width: 760px) { .operating-plan-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+"""
+
 # The desktop browser keeps the compact row layout used by the stable site.
 # Rows still wrap under the responsive CSS when a desktop link is forced on a
 # narrow screen, while the dedicated mobile shell uses its own controls.
@@ -8784,7 +9006,7 @@ controls = pn.Card(
     css_classes=["small-card", "controls-card"],
 )
 
-pn.extension(raw_css=[css])
+pn.extension(raw_css=[css, POWER_PLAN_CSS])
 
 # Template layout: header + tabs
 template = pn.template.MaterialTemplate(
@@ -8936,7 +9158,7 @@ uas_container = pn.Column(_lazy_tab_placeholder("UAS status"), sizing_mode="stre
 operations_container = pn.Column(_lazy_tab_placeholder("Operations dashboard"), sizing_mode="stretch_width")
 _LOADED_TABS: set[str] = set()
 
-interactive_tab = pn.Column(controls, interactive_content, interactive_footer, sizing_mode="stretch_width")
+interactive_tab = pn.Column(controls, interactive_content, power_plan_editor, interactive_footer, sizing_mode="stretch_width")
 science_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(science_instrument, science_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
@@ -9181,7 +9403,7 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
     forecast_panel_keys = {
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
-        "soc_load_scenarios",
+        "operating_plan_scenarios",
         "ecmwf_solar_forecast",
         "soc_forecast_skill",
     }
@@ -9292,6 +9514,7 @@ def _mobile_power_tab() -> pn.Column:
             sizing_mode="stretch_width",
             margin=0,
         ),
+        mobile_power_plan_editor,
         *cards,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell", "mobile-shell--power"],

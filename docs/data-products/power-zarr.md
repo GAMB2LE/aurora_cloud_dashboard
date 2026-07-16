@@ -158,6 +158,11 @@ display summary also includes the ECMWF-informed **SOC 96 h Forecast** traces:
 - `ForecastSolarWatts`
 - `ForecastLoadWatts`
 
+The fixed-load fields remain in the deterministic product for backwards
+compatibility, but the dashboard no longer presents them as operating plans.
+The visible scenario panel is populated from the learned operating-mode product
+described below.
+
 When `/data/aurora/products/power/power_soc_forecast_skill.zarr` is available,
 the display summary also includes past-facing forecast verification traces:
 
@@ -203,7 +208,8 @@ is `SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`, where
 positive battery power is charging and negative power is discharge. This
 captures the 48 V DC load that is absent from inverter idle power.
 
-`kit_mode_persistence_v4` recognises `DC-Only` when sustained AC output is
+The existing operational deterministic product uses
+`kit_mode_persistence_v4`. It recognises `DC-Only` when sustained AC output is
 below `25 W`. Its preferred level estimate is the median battery discharge
 `-BatteryWatts` from at least four 15-minute samples in the current mode during
 the latest 48 hours when summed solar production is at most `10 W`. This
@@ -225,11 +231,9 @@ used by later forecast runs. The full forecast job downloads ECMWF data every 3
 hours; the learning job can run every 15 minutes with `--refresh-from-cache` to
 reuse the newest cached ECMWF GRIB while re-anchoring to the latest actual SOC.
 
-The product also includes fixed-load what-if SOC scenarios from `100 W` through
-`600 W` in `100 W` steps. These use the same ECMWF solar forecast, latest SOC
-anchor, solar calibration factor, and battery capacity as the operational
-forecast, but replace the learned load model with the named fixed load.
-Scenario traces are excluded from archive scoring and adaptive learning.
+The product still contains legacy fixed-load what-if fields from `100 W` through
+`600 W` for API compatibility. They are excluded from archive scoring and
+adaptive learning and are not shown as operational dashboard scenarios.
 
 Variables:
 
@@ -312,6 +316,53 @@ include SOC P10, P50, P90, minimum, maximum, and probability below the 40%
 minimum operational SOC threshold.
 Verification includes CRPS by lead bucket, P10-P90 coverage, threshold Brier
 score, and verified ensemble-cycle count.
+
+## Learned operating-state and planning Zarrs
+
+Development paths:
+
+- `/data/aurora/dev-products/power/power_soc_planning_forecast.zarr`
+- `/data/aurora/dev-products/power/power_operating_state.zarr`
+- `/data/aurora/dev-products/power/power_operating_scenarios.zarr`
+
+The 240-hour planning forecast is refreshed from the ECMWF 00 and 12 UTC cycles.
+It retains native deterministic output through 240 hours and extends shorter
+native ensemble input against that deterministic solar curve rather than
+holding the final irradiance value constant.
+
+`generate_power_operating_scenarios.py` runs every five minutes. It re-anchors
+all scenarios to the latest finite `BatterySOC`, derives observed total load as
+summed APS solar power minus signed `BatteryWatts`, and classifies the current
+kit configuration from fresh PDU outlet evidence. Stale PDU evidence is treated
+as unknown rather than carried into a new mode. The state product contains:
+
+- `OperatingModeCode` and `OperatingModeProbability`
+- `OperatingModeConfidence`
+- `ObservedLoadWatts` and `EstimatedModeLoadWatts`
+- `LoadInnovationWatts` and `LoadObservationOutlier`
+
+The persisted `hybrid_state_space_v5` learner combines a finite set of named
+operating modes with a robust Kalman update for continuous component loads. Its
+components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
+increment. Existing observations are reclassified on each run, but component
+parameters are updated only from timestamps newer than the saved training
+cursor. Re-running unchanged data therefore does not double count evidence.
+
+The scenario product carries P10, P50, and P90 SOC and load for these plans:
+
+- current recognised mode
+- DC-Only
+- DC + CL61 continuously on
+- optimized CL61 schedule
+- each additional learned kit combination
+
+The optimized plan maximizes CL61 collection time over the first 96 hours while
+requiring P10 SOC to remain at or above 40%, a minimum 12-hour run, and no more
+than one start per UTC day. Hours 97-240 retain the base mode with CL61 off so
+the full planning horizon still exposes later battery risk. Recommendations are
+advisory only; the forecast service does not issue PDU commands. The dashboard
+also evaluates a user-selected CL61 start and duration directly from the stored
+solar and component ensembles, so edits react without another ECMWF download.
 
 The interactive APS summary presents `ACOutputWatts` and `DCInverterWatts` on
 separate left/right axes in the **Output Power** panel. The optional

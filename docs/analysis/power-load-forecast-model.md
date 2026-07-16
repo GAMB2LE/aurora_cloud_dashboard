@@ -24,7 +24,7 @@ move to Earthkit after an equivalent bounded-memory benchmark passes.
 
 ## Decision
 
-The operational load model is `kit_mode_persistence_v4`. Its observed target is
+The planning load model is `hybrid_state_space_v5`. Its observed target is
 the APS energy balance:
 
 `load = SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`
@@ -35,40 +35,32 @@ DC load. `ACOutputWatts + DCInverterWatts` is not used as the primary target:
 in `DC-Only` it reports about `9 W` of inverter idle while the battery balance
 shows about `220-226 W` of real consumption.
 
-For each uninterrupted operating mode, the preferred baseline is the median of
-`-BatteryWatts` during the latest 48 hours when summed measured solar is at most
-`10 W`. At least four 15-minute samples are required. With no solar input this
-is a direct battery-side measurement of total station consumption. If those
-dark samples are unavailable, the model uses the recent full power-balance
-median instead.
+The discrete part is an HMM-like finite-state classifier. Fresh PDU outlet watts
+provide direct evidence for CL61, Radar, HATPRO, UAS, and their combinations;
+the APS AC output and learned total-load level provide secondary evidence.
+Stale PDU data cannot assert that a kit remains on. A transition prior prevents
+single noisy observations from making the classification oscillate, while the
+posterior probability supplies a dashboard confidence value.
 
-The model reduces load and AC output to 15-minute medians. Fresh measured PDU
-power identifies a named AC mode before the slower AC-output median has fully
-changed state. Outlet power at or above `5 W` is active; relay state is used
-only when finite outlet watts are unavailable. Outlet 5 maps to `CL61`, so the
-current Ceilometer state is `DC-Only + CL61`. Sustained AC output below `25 W`
-with no powered PDU signature is named `DC-Only`. Known mappings also include
-UAS, Radar, and HATPRO, and multiple active items produce a combined name such
-as `DC-Only + Radar + HATPRO`.
+The continuous part is a robust Kalman learner over additive components: DC,
+CL61, Radar, HATPRO, UAS, and Unknown AC. Every observation supplies a total
+power-balance equation and fresh PDU outlet watts can additionally constrain an
+individual kit component. Innovation clipping prevents a transition spike or a
+bad sample from moving the learned level arbitrarily. The persisted mean and
+full covariance become the load ensemble used by the SOC forecast.
 
-Recognition and durable learning are separate. The forecast can switch to a
-powered PDU mode immediately, using its previously learned level or the clean
-DC baseline plus current PDU watts. A new training observation is retained only
-after the corresponding AC/DC state has been stable for at least 30 minutes and
-has at least two aggregated samples. One independent observation per hour is
-kept for each named mode, up to seven days. The median of those observations is
-the learned mode level used through the forecast horizon. A known AC mode can
-also be recognised by its learned power level when PDU data are temporarily
-stale.
+Recognition and durable learning remain separate. The latest state can change
+as soon as fresh PDU and APS data identify it, but saved component parameters
+advance only for timestamps newer than the previous training cursor. This makes
+the five-minute process incremental and idempotent. Zero-solar battery
+discharge remains the strongest evidence for the DC component because it
+measures the complete battery-side load.
 
-The `DC-Only` registry is independently checked against zero-solar,
-battery-discharge samples with AC output below `25 W`. Transition-level
-outliers are removed before the baseline is reused, preventing a newly started
-AC load from contaminating the minimum-power profile.
-
-The model deliberately does not predict when operators will switch equipment.
-The current mode persists until the measured AC/PDU state changes. Fixed
-`100-600 W` SOC scenarios remain the way to test hypothetical future loads.
+Future operator choices are represented explicitly instead of guessed. Named
+plans include current mode, DC-Only, DC + CL61 continuously on, an optimized
+CL61 schedule, a custom CL61 start/duration, and any other kit combinations the
+model has learned. The old `100-600 W` plot is retained only as a backwards-
+compatible data contract and is no longer the operating interface.
 
 ## Evidence
 
@@ -107,16 +99,28 @@ historical results, not a guarantee of future skill. Named PDU kit modes will
 separate those periods as they are observed; there are not yet enough repeated
 kit transitions to estimate operator switching times.
 
-## Learning and verification
+## Learning, planning, and verification
 
-Every 15-minute learning run re-anchors SOC to the latest actual observation,
-recognises the current mode, refreshes its robust load level, and updates the
-mode registry no more than once per independent hour. Archived load forecasts
-carry `LoadModelVersion`. Load MAE, bias, and skill only use rows from version
-`4`, preventing retired model errors from contaminating the improvement loop.
-Version 4 therefore starts a fresh load-skill series rather than mixing its
-errors with versions 0-3. Its transition safeguards need new archived cases
-before they can be compared independently with the version-3 backtest above.
+The operating-state job runs every five minutes, re-anchors SOC to the latest
+actual observation, and consumes only newly arrived samples for parameter
+learning. A separate planning job retrieves the latest eligible ECMWF 00 or 12
+UTC deterministic cycle twice daily and forecasts 240 hours. Its native cycle
+is reused by the faster state job, so a kit transition changes the load and SOC
+plans without redownloading ECMWF.
+
+The optimizer considers CL61 on/off schedules over the first 96 hours. It
+maximizes collection time subject to P10 SOC staying at or above 40%, a minimum
+12-hour run, and at most one start per UTC day. It is advisory only. A custom
+start/duration editor runs the same ensemble calculation immediately and marks
+the plan safe, marginal, or unsafe from its minimum P10 SOC.
+
+Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
+skill only use rows from a matching model version, preventing retired model
+errors from contaminating the improvement loop. Version 5 therefore starts a
+fresh verification series. SOC MAE is reported by lead bucket; solar and load
+MAE/bias diagnose the two principal error sources. Skill is measured against
+persistence, and the fixed-lead hindcast shows what the dashboard would have
+forecast 6, 24, 48, and 72 hours before each observation.
 
 The 50-member SOC ensemble also re-anchors when the deterministic forecast's
 SOC anchor, calibrated solar factor, learned load, model version, or named mode
@@ -126,6 +130,8 @@ site Zarr, so hourly re-anchoring does not redownload or reparse the global
 GRIB. This keeps the probabilistic forecast aligned with mode transitions such
 as `DC-Only` to `DC-Only + CL61`.
 
-When additional AC kit is switched on, the next sustained PDU signature creates
-or updates that named mode automatically. The dashboard forecast-load legend
-shows the recognised mode so operators can check that classification directly.
+When additional AC kit is switched on, its fresh PDU signature creates or
+updates that named mode automatically. The dashboard shows the recognised mode,
+confidence, component-aware plan curves, uncertainty, load axis, and the 40%
+minimum operational reference so operators can inspect the classification and
+risk directly.

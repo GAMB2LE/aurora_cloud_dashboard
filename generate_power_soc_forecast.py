@@ -85,6 +85,23 @@ PDU_OUTLET_KIT_NAMES = {
     6: "Radar",
     8: "HATPRO",
 }
+
+
+def resolve_ecmwf_cycle_hour(value: int | str | None, *, now: datetime | None = None) -> int | None:
+    if value is None or value == "":
+        return None
+    if str(value).lower() != "auto":
+        selected = int(value)
+        if selected not in {0, 12}:
+            raise ValueError("ECMWF long-cycle hour must be 0, 12, or auto")
+        return selected
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    hour = current.astimezone(timezone.utc).hour
+    return 0 if 8 <= hour < 20 else 12
+
+
 PDU_KIT_OUTLETS = {name: outlet for outlet, name in PDU_OUTLET_KIT_NAMES.items()}
 LEAD_BUCKETS: tuple[tuple[str, float, float], ...] = (
     ("0_6h", 0.0, 6.0),
@@ -208,28 +225,19 @@ def retrieve_open_data_grib(
     lookahead_buffer_hours: int = DEFAULT_ECMWF_LOOKAHEAD_BUFFER_HOURS,
     param: str = ECMWF_PARAM,
     source: str = DEFAULT_OPEN_DATA_SOURCE,
+    cycle_hour: int | None = None,
 ) -> Path:
     """Retrieve ECMWF open-data solar forecast GRIB for the requested horizon."""
-    try:
-        from ecmwf.opendata import Client
-    except Exception as exc:  # pragma: no cover - depends on deployment env
-        raise RuntimeError("Install ecmwf-opendata to retrieve ECMWF open-data forecasts") from exc
-
-    requested_horizon = int(horizon_hours) + max(int(lookahead_buffer_hours), 0)
-    steps = list(range(0, requested_horizon + 1, 3))
-    if steps[-1] != requested_horizon:
-        steps.append(requested_horizon)
-    output_grib.parent.mkdir(parents=True, exist_ok=True)
-    client = Client(source=source)
-    client.retrieve(
-        type="fc",
-        stream="oper",
-        levtype="sfc",
+    path, _diagnostics = retrieve_provider_open_data_grib(
+        output_grib,
+        provider="legacy",
+        horizon_hours=horizon_hours,
+        lookahead_buffer_hours=lookahead_buffer_hours,
         param=param,
-        step=steps,
-        target=str(output_grib),
+        source=source,
+        cycle_hour=cycle_hour,
     )
-    return output_grib
+    return path
 
 
 def open_solar_forecast(path: Path, *, latitude: float, longitude: float) -> xr.Dataset:
@@ -1527,6 +1535,33 @@ def integrate_soc_forecast(
     )
 
 
+def _extend_irradiance_with_diurnal_persistence(
+    irradiance: pd.Series,
+    horizon_end: pd.Timestamp,
+) -> tuple[pd.Series, float]:
+    """Extend the cycle-to-now tail with the preceding forecast day's shape."""
+    if irradiance.empty or irradiance.index[-1] >= horizon_end:
+        return irradiance, 0.0
+    native_end = pd.Timestamp(irradiance.index[-1])
+    differences = irradiance.index.to_series().diff().dropna()
+    step = differences.median() if not differences.empty else pd.Timedelta(hours=3)
+    if not isinstance(step, pd.Timedelta) or step <= pd.Timedelta(0):
+        step = pd.Timedelta(hours=3)
+    extension_times = list(pd.date_range(native_end + step, horizon_end, freq=step))
+    if not extension_times or extension_times[-1] != horizon_end:
+        extension_times.append(horizon_end)
+    extended = irradiance.copy().sort_index()
+    for target in extension_times:
+        source_time = pd.Timestamp(target) - pd.Timedelta(hours=24)
+        source_index = extended.index.union(pd.DatetimeIndex([source_time])).sort_values()
+        source = extended.reindex(source_index).interpolate("time").get(source_time, np.nan)
+        value = float(source) if np.isfinite(source) else float(extended.iloc[-1])
+        extended.loc[pd.Timestamp(target)] = max(value, 0.0)
+    extended = extended[~extended.index.duplicated(keep="last")].sort_index()
+    extension_hours = float((pd.Timestamp(extended.index[-1]) - native_end) / pd.Timedelta(hours=1))
+    return extended, max(extension_hours, 0.0)
+
+
 def build_forecast_dataset(
     power: xr.Dataset,
     solar: xr.Dataset,
@@ -1553,9 +1588,7 @@ def build_forecast_dataset(
         raise ValueError("No ECMWF solar forecast samples could be converted from ssrd")
     horizon_end = latest_time + pd.Timedelta(hours=horizon_hours)
     irradiance = irradiance[(irradiance.index >= latest_time) & (irradiance.index <= horizon_end)]
-    if not irradiance.empty and irradiance.index[-1] < horizon_end:
-        irradiance = pd.concat([irradiance, pd.Series([float(irradiance.iloc[-1])], index=pd.DatetimeIndex([horizon_end]))])
-        irradiance = irradiance[~irradiance.index.duplicated(keep="last")].sort_index()
+    irradiance, solar_tail_extension_hours = _extend_irradiance_with_diurnal_persistence(irradiance, horizon_end)
     if len(irradiance) < 2:
         raise ValueError("ECMWF solar forecast does not overlap the requested SOC forecast horizon")
 
@@ -1693,6 +1726,8 @@ def build_forecast_dataset(
             "initial_soc_pct": f"{latest_soc:.6g}",
             "initial_soc_time": latest_time.isoformat(),
             "forecast_horizon_hours": str(int(horizon_hours)),
+            "solar_tail_extension_hours": f"{solar_tail_extension_hours:.6g}",
+            "solar_tail_extension_method": "24h_diurnal_persistence" if solar_tail_extension_hours > 0 else "none",
             "calibration_days": str(float(calibration_days)),
             "solar_calibration_factor_w_per_wm2": f"{factor:.6g}",
             "raw_solar_calibration_factor_w_per_wm2": f"{factor_raw:.6g}",
@@ -1764,6 +1799,7 @@ def generate(
     refresh_from_cache: bool = False,
     provider: str = DEFAULT_PROVIDER,
     shadow_report_path: Path | None = DEFAULT_SHADOW_REPORT_PATH,
+    ecmwf_cycle_hour: int | str | None = None,
 ) -> Path:
     provider = validate_provider(provider)
     retrieval_diagnostics: dict[str, object] = {}
@@ -1773,6 +1809,7 @@ def generate(
         else:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             input_forecast = cache_dir / f"ecmwf_ssrd_{stamp}.grib2"
+            selected_cycle_hour = resolve_ecmwf_cycle_hour(ecmwf_cycle_hour)
             input_forecast, retrieval_diagnostics = retrieve_provider_open_data_grib(
                 input_forecast,
                 provider="earthkit" if provider == "earthkit" else "legacy",
@@ -1780,6 +1817,7 @@ def generate(
                 lookahead_buffer_hours=DEFAULT_ECMWF_LOOKAHEAD_BUFFER_HOURS,
                 param=ECMWF_PARAM,
                 source=DEFAULT_OPEN_DATA_SOURCE,
+                cycle_hour=selected_cycle_hour,
             )
     power = xr.open_zarr(power_zarr, chunks={})
     pdu = None
@@ -1898,6 +1936,11 @@ def main() -> None:
     parser.add_argument("--longitude", type=float, default=DEFAULT_LONGITUDE)
     parser.add_argument("--horizon-hours", type=int, default=DEFAULT_HORIZON_HOURS)
     parser.add_argument(
+        "--ecmwf-cycle-hour",
+        choices=("auto", "0", "12"),
+        help="Select a 00 or 12 UTC long-range deterministic cycle instead of the latest cycle",
+    )
+    parser.add_argument(
         "--refresh-from-cache",
         action="store_true",
         help="Reuse the latest cached ECMWF GRIB instead of downloading a new forecast",
@@ -1926,6 +1969,7 @@ def main() -> None:
         refresh_from_cache=args.refresh_from_cache,
         provider=args.provider,
         shadow_report_path=args.shadow_report,
+        ecmwf_cycle_hour=args.ecmwf_cycle_hour,
     )
 
 

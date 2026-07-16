@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,6 +11,7 @@ import xarray as xr
 
 from generate_power_soc_forecast import (
     _apply_soc_bias_corrections,
+    _extend_irradiance_with_diurnal_persistence,
     _load_mode_signature,
     _mode_learning_status,
     _pdu_active_kits,
@@ -21,6 +23,7 @@ from generate_power_soc_forecast import (
     build_historical_load_forecast,
     build_soc_hindcast_dataset,
     evaluate_forecast_archive,
+    resolve_ecmwf_cycle_hour,
     solar_irradiance_from_ssrd,
 )
 from generate_power_soc_ensemble import (
@@ -67,6 +70,26 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(list(irradiance.index), list(times[1:]))
         np.testing.assert_allclose(irradiance.to_numpy(), [100.0, 150.0, 150.0])
+
+    def test_auto_long_cycle_selects_the_latest_likely_complete_cycle(self) -> None:
+        self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 9, tzinfo=timezone.utc)), 0)
+        self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 21, tzinfo=timezone.utc)), 12)
+        self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 3, tzinfo=timezone.utc)), 12)
+
+    def test_long_forecast_tail_repeats_diurnal_shape_instead_of_flatlining(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=17, freq="3h")
+        values = np.tile([0.0, 20.0, 100.0, 300.0, 500.0, 250.0, 50.0, 0.0], 3)[: len(times)]
+        source = pd.Series(values, index=times)
+
+        extended, hours = _extend_irradiance_with_diurnal_persistence(
+            source,
+            times[-1] + pd.Timedelta(hours=6),
+        )
+
+        self.assertEqual(hours, 6.0)
+        self.assertEqual(float(extended.iloc[-2]), float(source.loc[times[-1] - pd.Timedelta(hours=21)]))
+        self.assertEqual(float(extended.iloc[-1]), float(source.loc[times[-1] - pd.Timedelta(hours=18)]))
+        self.assertNotEqual(float(extended.iloc[-2]), float(extended.iloc[-1]))
 
     def test_soc_bias_correction_preserves_actual_initial_anchor(self) -> None:
         issue = pd.Timestamp("2026-07-16T06:00:00")
@@ -835,6 +858,28 @@ class PowerSocForecastTests(unittest.TestCase):
             },
             coords={"time": forecast_times},
         )
+        operating = xr.Dataset(
+            {
+                "ScenarioSOCP10": (("scenario", "time"), [[67.0, 65.0, 63.0], [68.0, 67.0, 66.0], [66.0, 61.0, 56.0], [67.0, 66.0, 64.0], [66.0, 63.0, 60.0]]),
+                "ScenarioSOCP50": (("scenario", "time"), [[68.0, 66.0, 64.0], [69.0, 68.0, 67.0], [67.0, 62.0, 57.0], [68.0, 67.0, 65.0], [67.0, 64.0, 61.0]]),
+                "ScenarioSOCP90": (("scenario", "time"), [[69.0, 67.0, 65.0], [70.0, 69.0, 68.0], [68.0, 63.0, 58.0], [69.0, 68.0, 66.0], [68.0, 65.0, 62.0]]),
+                "ScenarioLoadP50Watts": (("scenario", "time"), np.full((5, 3), 220.0)),
+                "ScenarioBelow40Probability": (("scenario", "time"), np.zeros((5, 3))),
+                "SolarP50Watts": (("time",), [100.0, 200.0, 100.0]),
+                "scenario_label": (("scenario",), ["Current Mode", "DC-Only", "DC + CL61", "Optimized CL61", "DC + Radar"]),
+            },
+            coords={
+                "scenario": ["current_mode", "dc_only", "cl61_continuous", "optimized_cl61", "learned_dc_radar"],
+                "time": forecast_times,
+            },
+            attrs={
+                "current_mode": "dc_cl61",
+                "current_mode_label": "DC + CL61",
+                "current_mode_confidence": "0.98",
+                "model": "hybrid_state_space_v5",
+                "model_version": "5",
+            },
+        )
 
         summary = build_power_display_summary_dataset(
             power,
@@ -842,6 +887,7 @@ class PowerSocForecastTests(unittest.TestCase):
             forecast_skill_ds=skill,
             hindcast_ds=hindcast,
             ensemble_forecast_ds=ensemble,
+            operating_scenarios_ds=operating,
             freq="1h",
         )
 
@@ -855,6 +901,11 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertIn("BatterySOCHindcast_6h", summary)
         self.assertIn("BatterySOCForecastP10", summary)
         self.assertIn(SOC_BELOW_THRESHOLD_PROBABILITY_FIELD, summary)
+        self.assertIn("OperatingDCOnlySOCP50", summary)
+        self.assertIn("OperatingCL61OptimizedSOCP10", summary)
+        self.assertIn("OperatingLearned1SOCP50", summary)
+        self.assertEqual(summary.attrs["operating_learned_1_label"], "DC + Radar")
+        self.assertEqual(summary.attrs["operating_current_mode_label"], "DC + CL61")
         self.assertEqual(summary.attrs["forecast_load_mode"], "DC-Only")
         self.assertEqual(summary.attrs["forecast_load_model"], "kit_mode_persistence_v4")
         self.assertEqual(summary.attrs["forecast_load_mode_signature"], "ACOutputWatts<=25W")
@@ -874,8 +925,10 @@ class PowerSocForecastTests(unittest.TestCase):
                 SOC_BELOW_THRESHOLD_PROBABILITY_FIELD: (("time",), [0.0, 0.0, 0.0, 0.5]),
                 "BatterySOCObservedHindcast": (("time",), [65.0, 60.0, 55.0, 50.0]),
                 "BatterySOCHindcast_6h": (("time",), [64.0, 59.0, 54.0, 49.0]),
-                "BatterySOCForecast_Load100W": (("time",), [60.0, 58.0, 56.0, 54.0]),
-                "BatterySOCForecast_Load600W": (("time",), [60.0, 50.0, 40.0, 30.0]),
+                "OperatingDCOnlySOCP50": (("time",), [60.0, 58.0, 56.0, 54.0]),
+                "OperatingCL61ContinuousSOCP50": (("time",), [60.0, 50.0, 40.0, 30.0]),
+                "OperatingCL61OptimizedSOCP50": (("time",), [60.0, 57.0, 53.0, 48.0]),
+                "OperatingCL61OptimizedSOCP10": (("time",), [58.0, 54.0, 49.0, 42.0]),
             },
             coords={"time": times},
         )

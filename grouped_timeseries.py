@@ -82,7 +82,7 @@ POWER_PANEL_TIME_GROUPS = OrderedDict(
             (
                 "ecmwf_solar_forecast",
                 "soc_ecmwf_forecast",
-                "soc_load_scenarios",
+                "operating_plan_scenarios",
             ),
         ),
         (
@@ -201,6 +201,39 @@ POWER_SOC_ENSEMBLE_SKILL_FIELDS = (
     SOC_BELOW_THRESHOLD_BRIER_FIELD,
     "ForecastEnsembleCycles",
 )
+OPERATING_SCENARIO_PREFIXES = OrderedDict(
+    (
+        ("current_mode", "OperatingCurrent"),
+        ("dc_only", "OperatingDCOnly"),
+        ("cl61_continuous", "OperatingCL61Continuous"),
+        ("optimized_cl61", "OperatingCL61Optimized"),
+    )
+)
+MAX_OPERATING_LEARNED_SCENARIOS = 6
+OPERATING_LEARNED_PREFIXES = tuple(
+    f"OperatingLearned{index}" for index in range(1, MAX_OPERATING_LEARNED_SCENARIOS + 1)
+)
+OPERATING_SCENARIO_SOURCE_FIELDS = (
+    ("ScenarioSOCP10", "SOCP10"),
+    ("ScenarioSOCP50", "SOCP50"),
+    ("ScenarioSOCP90", "SOCP90"),
+    ("ScenarioLoadP10Watts", "LoadP10Watts"),
+    ("ScenarioLoadP50Watts", "LoadP50Watts"),
+    ("ScenarioLoadP90Watts", "LoadP90Watts"),
+    ("ScenarioBelow40Probability", "Below40Probability"),
+)
+OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
+    f"{prefix}{suffix}"
+    for prefix in tuple(OPERATING_SCENARIO_PREFIXES.values()) + OPERATING_LEARNED_PREFIXES
+    for _source, suffix in OPERATING_SCENARIO_SOURCE_FIELDS
+) + ("OperatingSolarP10Watts", "OperatingSolarP50Watts", "OperatingSolarP90Watts")
+POWER_FUTURE_DISPLAY_FIELDS = tuple(
+    dict.fromkeys(
+        POWER_SOC_FORECAST_FIELDS
+        + POWER_SOC_ENSEMBLE_FORECAST_FIELDS
+        + OPERATING_SCENARIO_DISPLAY_FIELDS
+    )
+)
 FAST_SONIC_TO_LOGGER_AVG = {
     "metek_x_out": "metek_x_out_Avg",
     "metek_y_out": "metek_y_out_Avg",
@@ -253,6 +286,15 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
         mode = str(ds.attrs.get("forecast_load_mode", ds.attrs.get("load_mode", ""))).strip()
         if mode:
             return f"Forecast Load ({mode})"
+    if trace.var == "OperatingCurrentSOCP50":
+        mode = str(ds.attrs.get("operating_current_mode_label", "")).strip()
+        if mode:
+            return f"Current Mode: {mode}"
+    for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
+        if trace.var == f"{prefix}SOCP50":
+            mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
+            if mode:
+                return mode
     return trace.label
 
 
@@ -1061,17 +1103,22 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
-            "soc_load_scenarios",
-            "SOC Load Scenarios",
+            "operating_plan_scenarios",
+            "Learned Operating-Mode SOC Plans",
             "SOC [%]",
             None,
             (
-                TraceSpec("BatterySOCForecast_Load100W", "100 W Load", COLOR["green"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast_Load200W", "200 W Load", COLOR["teal"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast_Load300W", "300 W Load", COLOR["blue"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast_Load400W", "400 W Load", COLOR["purple"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast_Load500W", "500 W Load", COLOR["magenta"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast_Load600W", "600 W Load", COLOR["red"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingCurrentSOCP50", "Current Mode", COLOR["slate"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingDCOnlySOCP50", "DC-Only", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingCL61ContinuousSOCP50", "CL61 Continuously On", COLOR["red"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingCL61OptimizedSOCP50", "Optimized CL61", COLOR["teal"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingCL61OptimizedSOCP10", "Optimized CL61 P10", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingLearned1SOCP50", "Learned Mode 1", COLOR["blue"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingLearned2SOCP50", "Learned Mode 2", COLOR["purple"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingLearned3SOCP50", "Learned Mode 3", COLOR["magenta"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingLearned4SOCP50", "Learned Mode 4", COLOR["brown"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingLearned5SOCP50", "Learned Mode 5", COLOR["olive"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingLearned6SOCP50", "Learned Mode 6", COLOR["black"], valid_min=0.0, valid_max=100.0),
             ),
         ),
         PanelSpec(
@@ -1936,6 +1983,45 @@ def _time_frame_from_dataset(ds: xr.Dataset, fields: tuple[str, ...]) -> pd.Data
     return frame[~frame.index.duplicated(keep="last")]
 
 
+def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
+    """Flatten named scenario/time fields into display-summary time series."""
+    if ds is None or "time" not in ds or "scenario" not in ds or ds.sizes.get("time", 0) == 0:
+        return pd.DataFrame()
+    scenario_ids = [str(value) for value in ds["scenario"].values]
+    times = pd.DatetimeIndex(ds["time"].values)
+    values: dict[str, np.ndarray] = {}
+    for scenario_id, prefix in OPERATING_SCENARIO_PREFIXES.items():
+        if scenario_id not in scenario_ids:
+            continue
+        index = scenario_ids.index(scenario_id)
+        for source_name, suffix in OPERATING_SCENARIO_SOURCE_FIELDS:
+            if source_name not in ds or ds[source_name].dims != ("scenario", "time"):
+                continue
+            values[f"{prefix}{suffix}"] = np.asarray(ds[source_name].isel(scenario=index).values, dtype=np.float64)
+    current_mode = str(ds.attrs.get("current_mode", ""))
+    learned_ids = [
+        value
+        for value in scenario_ids
+        if value.startswith("learned_") and value != f"learned_{current_mode}"
+    ][:MAX_OPERATING_LEARNED_SCENARIOS]
+    for slot, scenario_id in enumerate(learned_ids, start=1):
+        index = scenario_ids.index(scenario_id)
+        prefix = f"OperatingLearned{slot}"
+        for source_name, suffix in OPERATING_SCENARIO_SOURCE_FIELDS:
+            if source_name not in ds or ds[source_name].dims != ("scenario", "time"):
+                continue
+            values[f"{prefix}{suffix}"] = np.asarray(ds[source_name].isel(scenario=index).values, dtype=np.float64)
+    for quantile in ("P10", "P50", "P90"):
+        source_name = f"Solar{quantile}Watts"
+        if source_name in ds and ds[source_name].dims == ("time",):
+            values[f"OperatingSolar{quantile}Watts"] = np.asarray(ds[source_name].values, dtype=np.float64)
+    if not values:
+        return pd.DataFrame()
+    frame = pd.DataFrame(values, index=times)
+    frame = frame[~frame.index.isna()].sort_index()
+    return frame[~frame.index.duplicated(keep="last")]
+
+
 def _resample_display_frame(frame: pd.DataFrame, freq: str) -> pd.DataFrame:
     if frame.empty:
         return frame
@@ -1951,6 +2037,7 @@ def build_power_display_summary_dataset(
     hindcast_ds: xr.Dataset | None = None,
     ensemble_forecast_ds: xr.Dataset | None = None,
     ensemble_skill_ds: xr.Dataset | None = None,
+    operating_scenarios_ds: xr.Dataset | None = None,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> xr.Dataset:
     """Build one-minute APS traces for fast dashboard plotting.
@@ -2025,6 +2112,10 @@ def build_power_display_summary_dataset(
         if not ensemble_skill_frame.empty:
             frames.append(ensemble_skill_frame)
 
+    operating_frame = _operating_scenario_frame(operating_scenarios_ds)
+    if not operating_frame.empty:
+        frames.append(operating_frame)
+
     if not frames:
         return xr.Dataset()
 
@@ -2038,7 +2129,7 @@ def build_power_display_summary_dataset(
     end = pd.Timestamp(display_frame.index.max()).isoformat()
     summary_attrs = {
         POWER_DISPLAY_SUMMARY_ATTR: "true",
-        "source": "derived from power.zarr plus optional asfs_logger.zarr ASS 48 V power, pdu.zarr outlet power, power_soc_forecast.zarr, and power_soc_forecast_skill.zarr",
+        "source": "derived from power.zarr plus optional ASS/PDU, SOC forecast verification, ensemble, and learned operating-scenario products",
         "frequency": freq,
         "time_coverage_start": start,
         "time_coverage_end": end,
@@ -2069,6 +2160,35 @@ def build_power_display_summary_dataset(
         ):
             if source_name in forecast_ds.attrs:
                 summary_attrs[target_name] = str(forecast_ds.attrs[source_name])
+    if operating_scenarios_ds is not None:
+        for source_name, target_name in (
+            ("current_mode", "operating_current_mode"),
+            ("current_mode_label", "operating_current_mode_label"),
+            ("current_mode_confidence", "operating_current_mode_confidence"),
+            ("model", "operating_model"),
+            ("model_version", "operating_model_version"),
+            ("forecast_horizon_hours", "operating_forecast_horizon_hours"),
+            ("optimization_horizon_hours", "operating_optimization_horizon_hours"),
+            ("control_authority", "operating_control_authority"),
+            ("solar_member_source", "operating_solar_member_source"),
+            ("native_ensemble_end_time", "operating_native_ensemble_end_time"),
+        ):
+            if source_name in operating_scenarios_ds.attrs:
+                summary_attrs[target_name] = str(operating_scenarios_ds.attrs[source_name])
+        scenario_ids = [str(value) for value in operating_scenarios_ds["scenario"].values]
+        current_mode = str(operating_scenarios_ds.attrs.get("current_mode", ""))
+        learned_ids = [
+            value
+            for value in scenario_ids
+            if value.startswith("learned_") and value != f"learned_{current_mode}"
+        ][:MAX_OPERATING_LEARNED_SCENARIOS]
+        labels = (
+            [str(value) for value in operating_scenarios_ds["scenario_label"].values]
+            if "scenario_label" in operating_scenarios_ds
+            else scenario_ids
+        )
+        for slot, scenario_id in enumerate(learned_ids, start=1):
+            summary_attrs[f"operating_learned_{slot}_label"] = labels[scenario_ids.index(scenario_id)]
     out = xr.Dataset(
         {name: (("time",), display_frame[name].to_numpy(dtype=np.float32)) for name in display_frame.columns},
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
@@ -2083,6 +2203,15 @@ def build_power_display_summary_dataset(
             out[name].attrs["units"] = "kWh"
     if "BatterySOCForecast" in out:
         out["BatterySOCForecast"].attrs["units"] = "%"
+    for name in OPERATING_SCENARIO_DISPLAY_FIELDS:
+        if name not in out:
+            continue
+        if "SOC" in name:
+            out[name].attrs["units"] = "%"
+        elif "Probability" in name:
+            out[name].attrs["units"] = "1"
+        elif "Watts" in name:
+            out[name].attrs["units"] = "W"
     for name in (
         "BatterySOCForecast_Load100W",
         "BatterySOCForecast_Load200W",
@@ -2150,7 +2279,7 @@ def _crop_to_summary_display_window(ds: xr.Dataset, times: pd.DatetimeIndex) -> 
         mask &= times >= start
     if end is not None:
         mask &= times <= end
-    forecast_names = [name for name in POWER_SOC_FORECAST_FIELDS if name in ds]
+    forecast_names = [name for name in POWER_FUTURE_DISPLAY_FIELDS if name in ds]
     if end is not None and forecast_names:
         forecast_valid = np.zeros(len(times), dtype=bool)
         for name in forecast_names:

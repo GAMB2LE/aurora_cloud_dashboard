@@ -36,6 +36,12 @@ POWER_SOC_ENSEMBLE_ZARR_PATH = Path(
 POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH = Path(
     os.environ.get("POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH", "/data/aurora/products/power/power_soc_ensemble_skill.zarr")
 )
+POWER_OPERATING_SCENARIOS_ZARR_PATH = Path(
+    os.environ.get(
+        "POWER_OPERATING_SCENARIOS_ZARR_PATH",
+        "/data/aurora/products/power/power_operating_scenarios.zarr",
+    )
+)
 POWER_DISPLAY_SUMMARY_ZARR_PATH = Path(
     os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
 )
@@ -91,6 +97,7 @@ def generate(
     hindcast_zarr: Path = POWER_SOC_HINDCAST_ZARR_PATH,
     ensemble_forecast_zarr: Path = POWER_SOC_ENSEMBLE_ZARR_PATH,
     ensemble_skill_zarr: Path = POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH,
+    operating_scenarios_zarr: Path = POWER_OPERATING_SCENARIOS_ZARR_PATH,
     energy_output_zarr: Path | None = POWER_DISPLAY_ENERGY_ZARR_PATH,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> Path:
@@ -103,6 +110,7 @@ def generate(
     hindcast = _open_optional_zarr(hindcast_zarr, "Power SOC hindcast")
     ensemble_forecast = _open_optional_zarr(ensemble_forecast_zarr, "Power SOC ensemble forecast")
     ensemble_skill = _open_optional_zarr(ensemble_skill_zarr, "Power SOC ensemble skill")
+    operating_scenarios = _open_optional_zarr(operating_scenarios_zarr, "Power operating scenarios")
     display = build_power_display_summary_dataset(
         power,
         ass_logger,
@@ -112,6 +120,7 @@ def generate(
         hindcast,
         ensemble_forecast,
         ensemble_skill,
+        operating_scenarios,
         freq=freq,
     )
     if display.sizes.get("time", 0) == 0:
@@ -139,6 +148,7 @@ def main() -> None:
     parser.add_argument("--hindcast-zarr", type=Path, default=POWER_SOC_HINDCAST_ZARR_PATH)
     parser.add_argument("--ensemble-forecast-zarr", type=Path, default=POWER_SOC_ENSEMBLE_ZARR_PATH)
     parser.add_argument("--ensemble-skill-zarr", type=Path, default=POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH)
+    parser.add_argument("--operating-scenarios-zarr", type=Path, default=POWER_OPERATING_SCENARIOS_ZARR_PATH)
     parser.add_argument("--output-zarr", type=Path, default=POWER_DISPLAY_SUMMARY_ZARR_PATH)
     parser.add_argument("--energy-output-zarr", type=Path, default=POWER_DISPLAY_ENERGY_ZARR_PATH)
     parser.add_argument("--no-energy-output", action="store_true", help="Do not refresh the legacy cumulative-energy display Zarr")
@@ -154,6 +164,7 @@ def main() -> None:
         hindcast_zarr=args.hindcast_zarr,
         ensemble_forecast_zarr=args.ensemble_forecast_zarr,
         ensemble_skill_zarr=args.ensemble_skill_zarr,
+        operating_scenarios_zarr=args.operating_scenarios_zarr,
         energy_output_zarr=None if args.no_energy_output else args.energy_output_zarr,
         freq=args.freq,
     )

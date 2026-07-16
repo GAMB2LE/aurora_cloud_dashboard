@@ -158,6 +158,8 @@ quicklooks for LI-COR continuity. It does not contain radiation variables.
 - `aurora-power-soc-forecast.timer`
 - `aurora-power-soc-forecast-learn.timer`
 - `aurora-power-soc-ensemble.timer`
+- `aurora-power-soc-planning-forecast.timer` (development only)
+- `aurora-power-operating-scenarios.timer` (development only)
 - `aurora-power-quicklooks.timer`
 
 `aurora-power-quicklooks.service` regenerates the compact APS display summary
@@ -172,6 +174,13 @@ ensemble cycle. New cycles retrieve all 50 perturbed `ssrd` members, write the
 compact site ensemble and probabilistic verification products, then remove the
 temporary global GRIB. It uses idle I/O scheduling and a two-hour timeout so it
 does not block deterministic SOC learning.
+`aurora-power-soc-planning-forecast.service` retrieves the eligible ECMWF 00/12
+UTC deterministic cycle twice daily and writes a 240-hour forecast under
+`/data/aurora/dev-products/power`.
+`aurora-power-operating-scenarios.service` runs every five minutes. It learns
+new mode/component evidence, regenerates named and optimized plans from current
+SOC, and rebuilds the development display summary. These two timers are enabled
+only on `data-ocean`; their production units remain disabled.
 
 ## ASS PDU
 
