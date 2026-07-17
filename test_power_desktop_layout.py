@@ -16,6 +16,7 @@ from grouped_timeseries import (
     PanelSpec,
     TraceSpec,
     build_summary_plotly,
+    operating_mode_intervals,
 )
 
 
@@ -116,6 +117,17 @@ def test_non_power_summary_height_is_unchanged() -> None:
     figure = build_summary_plotly(ds, "vaisalamet")
 
     assert figure.layout.height < PLOTLY_SUMMARY_POWER_PANEL_HEIGHT * 4
+
+
+def test_operating_mode_intervals_identify_each_planned_instrument() -> None:
+    times = pd.date_range("2026-07-15T00:00:00", periods=5, freq="1h")
+
+    intervals = operating_mode_intervals(times, np.array([0, 1, 1, 2, 0]))
+
+    assert [(label, start, end) for start, end, label, _color in intervals] == [
+        ("CL61", times[1], times[3]),
+        ("Radar", times[3], times[4]),
+    ]
 
 
 def test_right_axis_only_panel_retains_its_primary_subplot_anchor() -> None:

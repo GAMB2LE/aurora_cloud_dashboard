@@ -34,7 +34,7 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
-from power_operating_scenarios import MIN_RUN_HOURS, evaluate_custom_schedule
+from power_operating_scenarios import KIT_ORDER, MIN_RUN_HOURS, evaluate_custom_schedule
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_PCT,
     MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
@@ -57,6 +57,7 @@ from grouped_timeseries import (
     housekeeping_latest_png,
     is_summary_instrument,
     merge_operating_scenarios_into_display_summary,
+    operating_mode_intervals,
     summary_daily_png,
     summary_latest_png,
     summary_source_instruments,
@@ -8817,16 +8818,22 @@ _custom_cl61_start_default = (
     pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).floor("h") + pd.Timedelta(hours=6)
 ).to_pydatetime()
 custom_cl61_start = pn.widgets.DatetimePicker(
-    name="CL61 start (UTC)",
+    name="Instrument start (UTC)",
     value=_custom_cl61_start_default,
     sizing_mode="stretch_width",
 )
 custom_cl61_duration = pn.widgets.IntSlider(
-    name="CL61 run duration (hours)",
-    start=MIN_RUN_HOURS,
+    name="Instrument run duration (hours)",
+    start=1,
     end=96,
     step=1,
     value=MIN_RUN_HOURS,
+    sizing_mode="stretch_width",
+)
+custom_plan_instrument = pn.widgets.Select(
+    name="Instrument",
+    options=list(KIT_ORDER),
+    value="CL61",
     sizing_mode="stretch_width",
 )
 
@@ -8848,7 +8855,28 @@ def _operating_plan_metric(label: str, value: str) -> str:
     )
 
 
-def _build_custom_cl61_plan_view(start_value, duration_value):
+def _add_custom_schedule_bands(figure: go.Figure, result: dict) -> None:
+    for start, end, label, color in operating_mode_intervals(
+        pd.DatetimeIndex(result["time"]),
+        np.asarray(result["mode_codes"]),
+    ):
+        figure.add_vrect(
+            x0=start,
+            x1=end,
+            fillcolor=color,
+            opacity=1.0,
+            line_width=0,
+            layer="below",
+            annotation_text=f"{label} on",
+            annotation_position="top left",
+            annotation_font_size=9,
+            annotation_font_color=THEME_TEXT,
+            row="all",
+            col=1,
+        )
+
+
+def _build_custom_cl61_plan_view(start_value, duration_value, kit_value):
     scenarios = _get_power_operating_scenarios_dataset()
     if scenarios is None:
         return pn.pane.Alert("Operating-plan forecast is not available.", alert_type="warning")
@@ -8856,7 +8884,8 @@ def _build_custom_cl61_plan_view(start_value, duration_value):
         result = evaluate_custom_schedule(
             scenarios,
             start_time=pd.Timestamp(start_value),
-            duration_hours=max(int(duration_value), MIN_RUN_HOURS),
+            duration_hours=max(int(duration_value), MIN_RUN_HOURS if str(kit_value) == "CL61" else 1),
+            kit=str(kit_value),
         )
     except Exception as exc:
         return pn.pane.Alert(f"Could not calculate the custom operating plan: {exc}", alert_type="danger")
@@ -8871,7 +8900,7 @@ def _build_custom_cl61_plan_view(start_value, duration_value):
         "<div class='operating-plan-metrics'>"
         + _operating_plan_metric("Detected mode", current_mode)
         + _operating_plan_metric("Mode confidence", confidence_text)
-        + _operating_plan_metric("CL61 collection", f"{float(result['collection_hours']):.0f} h")
+        + _operating_plan_metric(f"{result['kit']} collection", f"{float(result['collection_hours']):.0f} h")
         + _operating_plan_metric("Minimum P10 SOC", f"{minimum_p10:.1f}%")
         + _operating_plan_metric("Final P10 SOC", f"{float(result['final_p10_soc']):.1f}%")
         + "</div>"
@@ -8906,6 +8935,7 @@ def _build_custom_cl61_plan_view(start_value, duration_value):
         row=1,
         col=1,
     )
+    _add_custom_schedule_bands(figure, result)
     figure.add_trace(
         go.Scatter(x=times, y=result["load_p50_w"], mode="lines", name="Forecast Load", line=dict(color="#c05647", width=2)),
         row=2,
@@ -8933,15 +8963,20 @@ def _build_custom_cl61_plan_view(start_value, duration_value):
     )
 
 
-@pn.depends(custom_cl61_start.param.value, custom_cl61_duration.param.value, range_end.param.value)
-def _custom_cl61_plan_view(start_value, duration_value, _live_refresh_anchor):
-    return _build_custom_cl61_plan_view(start_value, duration_value)
+@pn.depends(
+    custom_cl61_start.param.value,
+    custom_cl61_duration.param.value,
+    custom_plan_instrument.param.value,
+    range_end.param.value,
+)
+def _custom_cl61_plan_view(start_value, duration_value, kit_value, _live_refresh_anchor):
+    return _build_custom_cl61_plan_view(start_value, duration_value, kit_value)
 
 
 power_plan_editor = pn.Card(
-    pn.Row(custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+    pn.Row(custom_plan_instrument, custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
     _custom_cl61_plan_view,
-    title="Custom CL61 Operating Plan",
+    title="Custom Instrument Operating Plan",
     collapsible=True,
     collapsed=False,
     sizing_mode="stretch_width",
@@ -8950,29 +8985,40 @@ power_plan_editor = pn.Card(
 )
 
 mobile_custom_cl61_start = pn.widgets.DatetimePicker(
-    name="CL61 start (UTC)",
+    name="Instrument start (UTC)",
     value=_custom_cl61_start_default,
     sizing_mode="stretch_width",
 )
 mobile_custom_cl61_duration = pn.widgets.IntSlider(
-    name="CL61 run duration (hours)",
-    start=MIN_RUN_HOURS,
+    name="Instrument run duration (hours)",
+    start=1,
     end=96,
     step=1,
     value=MIN_RUN_HOURS,
     sizing_mode="stretch_width",
 )
+mobile_custom_plan_instrument = pn.widgets.Select(
+    name="Instrument",
+    options=list(KIT_ORDER),
+    value="CL61",
+    sizing_mode="stretch_width",
+)
 
 
-@pn.depends(mobile_custom_cl61_start.param.value, mobile_custom_cl61_duration.param.value, range_end.param.value)
-def _mobile_custom_cl61_plan_view(start_value, duration_value, _live_refresh_anchor):
-    return _build_custom_cl61_plan_view(start_value, duration_value)
+@pn.depends(
+    mobile_custom_cl61_start.param.value,
+    mobile_custom_cl61_duration.param.value,
+    mobile_custom_plan_instrument.param.value,
+    range_end.param.value,
+)
+def _mobile_custom_cl61_plan_view(start_value, duration_value, kit_value, _live_refresh_anchor):
+    return _build_custom_cl61_plan_view(start_value, duration_value, kit_value)
 
 
 mobile_power_plan_editor = pn.Card(
-    pn.Column(mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
+    pn.Column(mobile_custom_plan_instrument, mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
     _mobile_custom_cl61_plan_view,
-    title="Custom CL61 Operating Plan",
+    title="Custom Instrument Operating Plan",
     collapsible=True,
     collapsed=True,
     sizing_mode="stretch_width",
@@ -9469,6 +9515,24 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
                 connectgaps=False,
             )
         )
+    if panel.key in {"operating_plan_scenarios", "ecmwf_solar_forecast"} and "OperatingCL61OptimizedModeCode" in ds:
+        schedule_times = pd.DatetimeIndex(ds["time"].values)
+        for start, end, label, color in operating_mode_intervals(
+            schedule_times,
+            np.asarray(ds["OperatingCL61OptimizedModeCode"].values),
+        ):
+            fig.add_vrect(
+                x0=start,
+                x1=end,
+                fillcolor=color,
+                opacity=1.0,
+                line_width=0,
+                layer="below",
+                annotation_text=f"{label} on",
+                annotation_position="top left",
+                annotation_font_size=7,
+                annotation_font_color=THEME_TEXT,
+            )
     if panel.key in SOC_REFERENCE_PANEL_KEYS and fig.data:
         all_times = [pd.Timestamp(value) for trace in fig.data for value in trace.x]
         if all_times:

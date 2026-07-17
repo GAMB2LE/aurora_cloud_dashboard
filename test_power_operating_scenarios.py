@@ -231,6 +231,25 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(long["collection_hours"], 24.0)
         self.assertLessEqual(long["final_p10_soc"], short["final_p10_soc"] + 1e-6)
 
+    def test_custom_schedule_supports_each_learned_instrument_load(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        scenarios = build_operating_scenarios(power, deterministic, model, ensemble=ensemble, horizon_hours=96)
+
+        radar = evaluate_custom_schedule(
+            scenarios,
+            start_time=issue + pd.Timedelta(hours=6),
+            duration_hours=12,
+            kit="Radar",
+        )
+
+        self.assertEqual(radar["kit"], "Radar")
+        self.assertEqual(radar["collection_hours"], 12.0)
+        self.assertTrue(any("Radar" in mode_kits(mode) for mode in radar["modes"]))
+        self.assertGreater(float(np.nanmax(radar["load_p50_w"])), 0.0)
+
     def test_planning_horizon_extends_short_ensemble_with_deterministic_shape(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)

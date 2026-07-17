@@ -221,6 +221,7 @@ OPERATING_SCENARIO_SOURCE_FIELDS = (
     ("ScenarioLoadP50Watts", "LoadP50Watts"),
     ("ScenarioLoadP90Watts", "LoadP90Watts"),
     ("ScenarioBelow40Probability", "Below40Probability"),
+    ("ScenarioModeCode", "ModeCode"),
 )
 OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     f"{prefix}{suffix}"
@@ -234,6 +235,13 @@ POWER_FUTURE_DISPLAY_FIELDS = tuple(
         + OPERATING_SCENARIO_DISPLAY_FIELDS
     )
 )
+OPERATING_MODE_BITS = (
+    ("CL61", 1, "rgba(192, 86, 71, 0.16)"),
+    ("Radar", 2, "rgba(63, 109, 181, 0.16)"),
+    ("HATPRO", 4, "rgba(134, 91, 170, 0.16)"),
+    ("UAS", 8, "rgba(211, 138, 55, 0.16)"),
+)
+OPERATING_SCHEDULE_SHADE_PANELS = {"operating_plan_scenarios", "ecmwf_solar_forecast"}
 FAST_SONIC_TO_LOGGER_AVG = {
     "metek_x_out": "metek_x_out_Avg",
     "metek_y_out": "metek_y_out_Avg",
@@ -1129,7 +1137,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("ECMWFSolarIrradiance", "ECMWF Solar Power", COLOR["brown"], valid_min=0.0),
                 TraceSpec("ForecastSolarWatts", "Forecast Solar Charging", COLOR["green"], axis="right", dash="dot", valid_min=0.0),
-                TraceSpec("ForecastLoadWatts", "Forecast Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0),
+                TraceSpec("OperatingCurrentLoadP50Watts", "Current Instrument Load", COLOR["slate"], axis="right", dash="dot", valid_min=0.0),
+                TraceSpec("OperatingCL61OptimizedLoadP50Watts", "Planned Instrument Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0),
             ),
         ),
         PanelSpec(
@@ -2020,6 +2029,57 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     frame = pd.DataFrame(values, index=times)
     frame = frame[~frame.index.isna()].sort_index()
     return frame[~frame.index.duplicated(keep="last")]
+
+
+def operating_mode_intervals(times: pd.DatetimeIndex, codes: np.ndarray) -> list[tuple[pd.Timestamp, pd.Timestamp, str, str]]:
+    """Return contiguous planned-instrument intervals for forecast plot bands."""
+    values = np.asarray(codes, dtype=np.float64)
+    if len(times) != len(values) or len(times) == 0:
+        return []
+    valid = np.isfinite(values)
+    if not valid.any():
+        return []
+    positive_steps = np.diff(times.view("i8"))
+    positive_steps = positive_steps[positive_steps > 0]
+    step = pd.Timedelta(int(np.median(positive_steps)), unit="ns") if positive_steps.size else pd.Timedelta(hours=1)
+    intervals: list[tuple[pd.Timestamp, pd.Timestamp, str, str]] = []
+    start = 0
+    integer_codes = np.where(valid, values, -1).astype(np.int64)
+    for index in range(1, len(times) + 1):
+        if index < len(times) and integer_codes[index] == integer_codes[start]:
+            continue
+        code = int(integer_codes[start])
+        if code >= 0:
+            active = [(name, color) for name, bit, color in OPERATING_MODE_BITS if code & bit]
+            if active:
+                end = pd.Timestamp(times[index]) if index < len(times) else pd.Timestamp(times[-1]) + step
+                label = " + ".join(name for name, _color in active)
+                intervals.append((pd.Timestamp(times[start]), end, label, active[0][1]))
+        start = index
+    return intervals
+
+
+def _add_operating_schedule_bands(fig: go.Figure, ds: xr.Dataset, *, row: int) -> None:
+    """Shade the optimised planned-instrument periods behind related forecast plots."""
+    field = "OperatingCL61OptimizedModeCode"
+    if field not in ds or "time" not in ds:
+        return
+    times = pd.DatetimeIndex(ds["time"].values)
+    for start, end, label, color in operating_mode_intervals(times, np.asarray(ds[field].values)):
+        fig.add_vrect(
+            x0=start,
+            x1=end,
+            fillcolor=color,
+            opacity=1.0,
+            line_width=0,
+            layer="below",
+            annotation_text=f"{label} on",
+            annotation_position="top left",
+            annotation_font_size=9,
+            annotation_font_color=PLOT_TEXT,
+            row=row,
+            col=1,
+        )
 
 
 def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
@@ -3212,6 +3272,8 @@ def build_summary_plotly(
                 col=1,
                 secondary_y=secondary,
             )
+        if instrument == "power" and panel.key in OPERATING_SCHEDULE_SHADE_PANELS:
+            _add_operating_schedule_bands(fig, ds, row=row_index)
         if panel.key in SOC_REFERENCE_PANEL_KEYS:
             reference_start = panel_time_start or base_time_start
             reference_end = panel_time_end or base_time_end

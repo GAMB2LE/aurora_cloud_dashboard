@@ -889,6 +889,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "ScenarioSOCP90": (("scenario", "time"), [[69.0, 67.0, 65.0], [70.0, 69.0, 68.0], [68.0, 63.0, 58.0], [69.0, 68.0, 66.0], [68.0, 65.0, 62.0]]),
                 "ScenarioLoadP50Watts": (("scenario", "time"), np.full((5, 3), 220.0)),
                 "ScenarioBelow40Probability": (("scenario", "time"), np.zeros((5, 3))),
+                "ScenarioModeCode": (("scenario", "time"), [[1, 1, 1], [0, 0, 0], [1, 1, 1], [0, 1, 1], [2, 2, 2]]),
                 "SolarP50Watts": (("time",), [100.0, 200.0, 100.0]),
                 "scenario_label": (("scenario",), ["Current Mode", "DC-Only", "DC + CL61", "Optimized CL61", "DC + Radar"]),
             },
@@ -927,6 +928,7 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertIn(SOC_BELOW_THRESHOLD_PROBABILITY_FIELD, summary)
         self.assertIn("OperatingDCOnlySOCP50", summary)
         self.assertIn("OperatingCL61OptimizedSOCP10", summary)
+        self.assertIn("OperatingCL61OptimizedModeCode", summary)
         self.assertIn("OperatingLearned1SOCP50", summary)
         self.assertEqual(summary.attrs["operating_learned_1_label"], "DC + Radar")
         self.assertEqual(summary.attrs["operating_current_mode_label"], "DC + CL61")

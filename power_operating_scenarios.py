@@ -859,11 +859,19 @@ def optimize_cl61_schedule(
     )
 
 
-def _schedule_modes(times: pd.DatetimeIndex, base_mode: str, start: pd.Timestamp, duration_hours: int) -> tuple[str, ...]:
+def _schedule_modes(
+    times: pd.DatetimeIndex,
+    base_mode: str,
+    start: pd.Timestamp,
+    duration_hours: int,
+    kit: str,
+) -> tuple[str, ...]:
+    if kit not in KIT_ORDER:
+        raise ValueError(f"Unknown instrument: {kit}")
     base_kits = set(mode_kits(base_mode))
-    base_kits.discard("CL61")
+    base_kits.discard(kit)
     off_mode = mode_id(base_kits)
-    on_mode = mode_id(base_kits | {"CL61"})
+    on_mode = mode_id(base_kits | {kit})
     stop = pd.Timestamp(start) + pd.Timedelta(hours=int(duration_hours))
     return tuple(on_mode if pd.Timestamp(start) <= value < stop else off_mode for value in times)
 
@@ -1073,6 +1081,7 @@ def evaluate_custom_schedule(
     *,
     start_time: pd.Timestamp,
     duration_hours: int,
+    kit: str = "CL61",
 ) -> dict[str, Any]:
     times = pd.DatetimeIndex(scenarios["time"].values)
     components = tuple(str(value) for value in scenarios["component"].values)
@@ -1081,7 +1090,7 @@ def evaluate_custom_schedule(
     solar = np.asarray(scenarios["SolarEnsembleWatts"].values, dtype=np.float64)
     component_members = np.asarray(scenarios["ComponentLoadWatts"].values, dtype=np.float64)
     base_mode = str(scenarios.attrs.get("scenario_base_mode", scenarios.attrs.get("current_mode", MODE_DC_ONLY)))
-    modes = _schedule_modes(times, base_mode, pd.Timestamp(start_time), int(duration_hours))
+    modes = _schedule_modes(times, base_mode, pd.Timestamp(start_time), int(duration_hours), kit)
     loads = _load_members_for_modes(component_members, modes)
     soc = integrate_soc_members(
         initial_soc=float(scenarios.attrs["initial_soc_pct"]),
@@ -1094,12 +1103,14 @@ def evaluate_custom_schedule(
     return {
         "time": times,
         "modes": modes,
+        "kit": kit,
+        "mode_codes": np.asarray([mode_code(value) for value in modes], dtype=np.int16),
         "load_p50_w": np.nanquantile(loads, 0.50, axis=0),
         "soc_p10": p10,
         "soc_p50": np.nanquantile(soc, 0.50, axis=0),
         "soc_p90": np.nanquantile(soc, 0.90, axis=0),
         "below_40_probability": np.mean(soc < MINIMUM_OPERATIONAL_SOC_PCT, axis=0),
-        "collection_hours": float(np.count_nonzero(["CL61" in mode_kits(value) for value in modes[1:]])),
+        "collection_hours": float(np.count_nonzero([kit in mode_kits(value) for value in modes[1:]])),
         "minimum_p10_soc": float(np.nanmin(p10)),
         "final_p10_soc": float(p10[-1]),
         "safe": bool(np.nanmin(p10) >= MINIMUM_OPERATIONAL_SOC_PCT),
