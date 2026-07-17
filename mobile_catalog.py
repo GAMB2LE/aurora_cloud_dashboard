@@ -416,6 +416,11 @@ def _active_alerts(alert_state: dict[str, Any]) -> list[dict[str, Any]]:
     alerts = []
     for key, value in iterator:
         if isinstance(value, dict):
+            # The alert sender keeps recovered entries in state.json for
+            # notification history.  Only entries that are still active
+            # belong in the mobile operations payload.
+            if value.get("active") is False:
+                continue
             title = str(value.get("title") or value.get("kind") or key)
             level = normalize_level(value.get("level") or value.get("severity") or "red")
             detail = str(value.get("message") or value.get("detail") or "")
@@ -856,10 +861,10 @@ def quicklooks(kind: str, instrument_id: str) -> dict[str, Any]:
     }
 
 
-def _quicklook_entries(instrument: Instrument, kind: str, prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
+def _quicklook_paths(instrument: Instrument, kind: str, prefixes: tuple[str, ...]) -> dict[str, Path]:
     directory = quicklook_root() / instrument.quicklook_subdir
     if not prefixes or not directory.exists():
-        return []
+        return {}
     paths: dict[str, Path] = {}
     for path in sorted(directory.glob("*")):
         if path.suffix.lower() not in {".png", ".jpg", ".jpeg"} or not path.is_file():
@@ -882,17 +887,37 @@ def _quicklook_entries(instrument: Instrument, kind: str, prefixes: tuple[str, .
         elif token_match:
             paths.setdefault(token_match.group(1), path)
 
+    # The legacy ``latest.png`` aliases are maintained by separate jobs. If a
+    # newer dated science quicklook exists, serve that data rather than an old
+    # alias that still calls itself "Last 24 hours".
+    if kind == "science":
+        dated_paths = [path for token, path in paths.items() if token != "latest"]
+        newest_dated = max(dated_paths, key=lambda path: path.name) if dated_paths else None
+        latest = paths.get("latest")
+        if newest_dated is not None and (latest is None or newest_dated.stat().st_mtime_ns > latest.stat().st_mtime_ns):
+            paths["latest"] = newest_dated
+    return paths
+
+
+def _quicklook_entries(instrument: Instrument, kind: str, prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
+    paths = _quicklook_paths(instrument, kind, prefixes)
+
     def sort_key(item: tuple[str, Path]) -> tuple[int, str]:
         token, _path = item
         return (1 if token == "latest" else 0, token)
 
     entries = []
     for token, path in sorted(paths.items(), key=sort_key, reverse=True):
+        dated_latest = token == "latest" and DATE_TOKEN_RE.search(path.name)
         entries.append(
             {
                 "id": f"{instrument.id}-{kind}-{token}",
                 "token": token,
-                "title": "Latest" if token == "latest" else _format_date_token(token),
+                "title": (
+                    f"Latest available ({_format_date_token(DATE_TOKEN_RE.search(path.name).group(1))})"
+                    if dated_latest
+                    else "Latest" if token == "latest" else _format_date_token(token)
+                ),
                 "imageURL": media_url("quicklook", kind, instrument.id, token),
                 **file_record(path),
             }
@@ -902,15 +927,12 @@ def _quicklook_entries(instrument: Instrument, kind: str, prefixes: tuple[str, .
 
 def resolve_quicklook_path(kind: str, instrument_id: str, token: str) -> Path | None:
     instrument = _instrument_or_raise(instrument_id)
-    entries = _quicklook_entries(
+    paths = _quicklook_paths(
         instrument,
         kind,
         instrument.science_prefixes if kind == "science" else instrument.housekeeping_prefixes,
     )
-    match = next((entry for entry in entries if entry["token"] == token), None)
-    if not match:
-        return None
-    return _find_quicklook_path_by_record(instrument, kind, token)
+    return paths.get(token)
 
 
 def _find_quicklook_path_by_record(instrument: Instrument, kind: str, token: str) -> Path | None:

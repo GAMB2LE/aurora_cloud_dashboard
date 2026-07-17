@@ -70,6 +70,25 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(response["latest"]["token"], "latest")
         self.assertEqual(resolved, science)
 
+    def test_science_latest_uses_newer_dated_product_when_alias_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quicklook_dir = root / "ceilometer"
+            quicklook_dir.mkdir()
+            stale_latest = quicklook_dir / "latest.png"
+            fresh_daily = quicklook_dir / "ceilometer_20260716.png"
+            stale_latest.write_bytes(b"stale")
+            fresh_daily.write_bytes(b"fresh")
+            os.utime(stale_latest, (1, 1))
+            os.utime(fresh_daily, (2, 2))
+
+            with patch.dict(os.environ, {"AURORA_QUICKLOOK_ROOT": str(root)}):
+                response = mobile_catalog.quicklooks("science", "ceilometer")
+                resolved = mobile_catalog.resolve_quicklook_path("science", "ceilometer", "latest")
+
+        self.assertEqual(resolved, fresh_daily)
+        self.assertEqual(response["latest"]["title"], "Latest available (2026-07-16)")
+
     def test_operations_derives_stream_levels_from_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -109,6 +128,18 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(mobile_catalog._trend_level("battery-soc", 40), "red")
         self.assertEqual(mobile_catalog._trend_level("battery-soc", 45), "amber")
         self.assertEqual(mobile_catalog._trend_level("battery-soc", 50), "green")
+
+    def test_operations_excludes_recovered_alert_history(self) -> None:
+        alerts = mobile_catalog._active_alerts(
+            {
+                "alerts": {
+                    "active": {"active": True, "title": "Current condition"},
+                    "recovered": {"active": False, "title": "Old condition"},
+                }
+            }
+        )
+
+        self.assertEqual([alert["title"] for alert in alerts], ["Current condition"])
 
     def test_auroracam_latest_listing_and_media_resolver(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
