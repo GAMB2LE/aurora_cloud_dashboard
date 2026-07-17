@@ -62,6 +62,13 @@ PDU_INSTRUMENTS = (
 )
 PDU_STATE_FRESHNESS_MINUTES = 30.0
 
+# These Science-tab products have no individual PDU outlet state. Their mobile
+# status is therefore collection freshness, never an inferred power state.
+SCIENCE_DC_INSTRUMENTS = (
+    ("vaisalamet", "Meteorology", "cloud.sun", "vaisalamet"),
+    ("asfs-logger", "Radiation", "sun.max", "asfs_logger"),
+)
+
 OPERATIONS_STREAMS = (
     {
         "id": "ceilometer",
@@ -460,13 +467,13 @@ def overview() -> dict[str, Any]:
     return {
         "serverTime": utc_now_iso(),
         "cards": cards,
-        "instrumentPower": _instrument_power_states(),
+        "instrumentPower": _instrument_power_states(snapshot),
         "activeAlerts": status["alerts"],
     }
 
 
-def _instrument_power_states() -> list[dict[str, Any]]:
-    """Return PDU-controlled instrument status without inferring from data age."""
+def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return PDU power states plus collection states for DC science streams."""
     path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
     try:
         import pandas as pd
@@ -494,7 +501,7 @@ def _instrument_power_states() -> list[dict[str, Any]]:
         states = {}
         detail = "PDU status unavailable"
 
-    return [
+    pdu_rows = [
         {
             "id": instrument_id,
             "title": title,
@@ -505,6 +512,32 @@ def _instrument_power_states() -> list[dict[str, Any]]:
         }
         for instrument_id, title, icon, outlet in PDU_INSTRUMENTS
     ]
+    science_rows = []
+    for instrument_id, title, icon, prefix in SCIENCE_DC_INSTRUMENTS:
+        source_age = _metric_value(snapshot, (f"{prefix}_source_age_min",))
+        recent = snapshot.get(f"{prefix}_source_recent_state")
+        if recent == 1:
+            state, level = "Collecting", "green"
+        elif recent == 0:
+            state, level = "No recent data", "red"
+        else:
+            state, level = "Unknown", "amber"
+        detail = (
+            f"Source sample {_duration_text(source_age / 60)} old"
+            if source_age is not None
+            else "Source freshness unavailable"
+        )
+        science_rows.append(
+            {
+                "id": instrument_id,
+                "title": title,
+                "systemImage": icon,
+                "state": state,
+                "level": level,
+                "detail": detail,
+            }
+        )
+    return [*pdu_rows, *science_rows]
 
 
 def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None, detail: str = "") -> dict[str, Any]:

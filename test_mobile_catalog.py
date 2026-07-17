@@ -208,6 +208,21 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(depletion["value"], "10d 15h")
         self.assertIn("14.6 kWh remaining", depletion["detail"])
 
+    def test_overview_includes_meteorology_and_radiation_collection_states(self) -> None:
+        rows = mobile_catalog._instrument_power_states(
+            {
+                "vaisalamet_source_age_min": 5,
+                "vaisalamet_source_recent_state": 1,
+                "asfs_logger_source_age_min": 185,
+                "asfs_logger_source_recent_state": 0,
+            }
+        )
+
+        meteorology = next(row for row in rows if row["id"] == "vaisalamet")
+        radiation = next(row for row in rows if row["id"] == "asfs-logger")
+        self.assertEqual((meteorology["state"], meteorology["level"]), ("Collecting", "green"))
+        self.assertEqual((radiation["state"], radiation["level"]), ("No recent data", "red"))
+
     def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
