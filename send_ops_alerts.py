@@ -37,6 +37,8 @@ INTERNAL_DEWPOINT_MARGIN_THRESHOLD_C = float(os.environ.get("APS_DEWPOINT_RED_MA
 BATTERY_VOLTAGE_THRESHOLD_V = 50.0
 STREAM_HOLD_MINUTES = 180.0
 REPEAT_AFTER_HOURS = 12.0
+PDU_STATE_MAX_AGE_MINUTES = 30.0
+PDU_ZARR_DEFAULT = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
 
 STREAM_PREFIXES = {
     "CL61": "cl61",
@@ -69,6 +71,15 @@ STREAM_SERVICE_KEYS = {
         "wxcam_append_service_healthy_state",
         "wxcam_daily_videos_service_healthy_state",
     ),
+}
+
+# These outlets were verified against the ASS PDU labelling. An instrument
+# deliberately switched off at its PDU cannot produce source data, so its
+# normal freshness alarms must not be treated as a fault.
+STREAM_PDU_OUTLETS = {
+    "CL61": 5,
+    "Cloud Radar": 6,
+    "Scanning Microwave Radiometer": 8,
 }
 
 STORAGE_LABELS = {
@@ -181,7 +192,7 @@ def _service_label(key: str) -> str:
     return label.replace("_", " ")
 
 
-def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
+def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bool] | None = None) -> list[AlertRule]:
     alerts: list[AlertRule] = []
 
     storage_alerts: dict[tuple[str, ...], AlertRule] = {}
@@ -299,8 +310,10 @@ def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
         )
 
     for stream_label, prefix in STREAM_PREFIXES.items():
+        outlet = STREAM_PDU_OUTLETS.get(stream_label)
+        expected_off = outlet is not None and pdu_outlet_states is not None and pdu_outlet_states.get(outlet) is False
         source_age = _float(snapshot.get(f"{prefix}_source_age_min"))
-        if manifest_recent is not False and source_age is not None and source_age >= STREAM_HOLD_MINUTES:
+        if not expected_off and manifest_recent is not False and source_age is not None and source_age >= STREAM_HOLD_MINUTES:
             alerts.append(
                 AlertRule(
                     id=f"stream:{prefix}:source_stale",
@@ -313,7 +326,7 @@ def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
 
         for key in STREAM_SERVICE_KEYS.get(stream_label, ()):
             state = _bool_state(snapshot.get(key))
-            if state is False:
+            if not expected_off and state is False:
                 alerts.append(
                     AlertRule(
                         id=f"stream:{prefix}:{key}",
@@ -326,6 +339,38 @@ def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
                 )
 
     return alerts
+
+
+def _recent_pdu_outlet_states(now: datetime, path: Path = PDU_ZARR_DEFAULT) -> dict[int, bool] | None:
+    """Return current PDU switch states only when the evidence is fresh.
+
+    Alert suppression is deliberately fail-safe: an unreadable or stale PDU
+    product returns ``None`` and leaves ordinary stream monitoring enabled.
+    """
+    try:
+        import pandas as pd
+        import xarray as xr
+
+        dataset = xr.open_zarr(path, consolidated=False)
+        try:
+            if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
+                return None
+            sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
+            if sample_time.tzinfo is None:
+                sample_time = sample_time.replace(tzinfo=timezone.utc)
+            if now - sample_time.astimezone(timezone.utc) > timedelta(minutes=PDU_STATE_MAX_AGE_MINUTES):
+                return None
+            states: dict[int, bool] = {}
+            for outlet in set(STREAM_PDU_OUTLETS.values()):
+                field = f"PDUOutlet{outlet}State"
+                value = _float(dataset[field].values[-1]) if field in dataset else None
+                if value is not None:
+                    states[outlet] = value >= 0.5
+            return states
+        finally:
+            dataset.close()
+    except Exception:
+        return None
 
 
 def _recipient_list(raw: str) -> list[str]:
@@ -474,7 +519,8 @@ def process_alerts(
     repeat_after: timedelta = timedelta(hours=REPEAT_AFTER_HOURS),
 ) -> dict[str, Any]:
     now = _parse_time(snapshot.get("time_utc")) or _utc_now()
-    active_rules = {rule.id: rule for rule in evaluate_alerts(snapshot)}
+    pdu_outlet_states = _recent_pdu_outlet_states(now)
+    active_rules = {rule.id: rule for rule in evaluate_alerts(snapshot, pdu_outlet_states=pdu_outlet_states)}
     state = _load_json(state_path, {"alerts": {}})
     state_alerts = state.setdefault("alerts", {})
     recipients = _recipient_list(os.environ.get("OPS_ALERT_RECIPIENTS", RECIPIENT_DEFAULT))

@@ -71,6 +71,32 @@ def test_recent_manifest_preserves_real_stream_staleness():
     assert "stream:cl61:source_stale" in ids
 
 
+def test_pdu_power_off_suppresses_expected_instrument_staleness():
+    alerts = evaluate_alerts(
+        {
+            "mirror_summary_recent_state": 1,
+            "cl61_source_age_min": 447,
+            "hatpro_source_age_min": 451,
+            "radar_source_age_min": 451,
+        },
+        pdu_outlet_states={5: False, 6: True, 8: False},
+    )
+    ids = {alert.id for alert in alerts}
+
+    assert "stream:cl61:source_stale" not in ids
+    assert "stream:hatpro:source_stale" not in ids
+    assert "stream:radar:source_stale" in ids
+
+
+def test_missing_pdu_evidence_does_not_suppress_staleness():
+    alerts = evaluate_alerts(
+        {"mirror_summary_recent_state": 1, "cl61_source_age_min": 447},
+        pdu_outlet_states=None,
+    )
+
+    assert "stream:cl61:source_stale" in {alert.id for alert in alerts}
+
+
 def test_storage_alerts_deduplicate_shared_remote_filesystem():
     alerts = evaluate_alerts(
         {
