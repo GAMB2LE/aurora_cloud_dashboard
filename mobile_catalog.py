@@ -868,7 +868,14 @@ def _quicklook_entries(instrument: Instrument, kind: str, prefixes: tuple[str, .
         is_latest = "latest" in name.lower()
         token_match = DATE_TOKEN_RE.search(name)
         matches_prefix = any(name.startswith(prefix) for prefix in prefixes)
-        if not matches_prefix and not (instrument.id in {"ceilometer", "cloud-radar", "hatpro", "wxcam"} and kind == "science"):
+        # ``latest.png`` is the legacy science alias. It has no instrument
+        # prefix but is still a valid science quicklook inside this directory.
+        is_science_latest_alias = kind == "science" and name.lower() == "latest.png"
+        # Science product names may share a base prefix with their housekeeping
+        # counterpart (for example ``cloud_radar`` and ``cloud_radar__hk_radar``).
+        # Always reject the latter before accepting a science image.
+        is_housekeeping_image = any(name.startswith(prefix) for prefix in instrument.housekeeping_prefixes)
+        if not (matches_prefix or is_science_latest_alias) or (kind == "science" and is_housekeeping_image):
             continue
         if is_latest:
             paths.setdefault("latest", path)
@@ -918,7 +925,9 @@ def _find_quicklook_path_by_record(instrument: Instrument, kind: str, token: str
             continue
         if token != "latest" and token not in path.name:
             continue
-        if any(path.name.startswith(prefix) for prefix in prefixes) or kind == "science":
+        is_housekeeping_image = any(path.name.startswith(prefix) for prefix in instrument.housekeeping_prefixes)
+        is_science_latest_alias = kind == "science" and path.name.lower() == "latest.png"
+        if (any(path.name.startswith(prefix) for prefix in prefixes) or is_science_latest_alias) and not (kind == "science" and is_housekeeping_image):
             return path
     return None
 

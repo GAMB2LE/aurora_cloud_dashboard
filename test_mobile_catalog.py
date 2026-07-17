@@ -53,6 +53,23 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(response["latest"]["token"], "latest")
         self.assertEqual([entry["token"] for entry in response["entries"]], ["latest", "20260705"])
 
+    def test_science_radar_quicklooks_exclude_housekeeping_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quicklook_dir = root / "cloud_radar"
+            quicklook_dir.mkdir()
+            science = quicklook_dir / "latest.png"
+            housekeeping = quicklook_dir / "cloud_radar__hk_radar__latest.png"
+            science.write_bytes(b"science")
+            housekeeping.write_bytes(b"housekeeping")
+
+            with patch.dict(os.environ, {"AURORA_QUICKLOOK_ROOT": str(root)}):
+                response = mobile_catalog.quicklooks("science", "cloud-radar")
+                resolved = mobile_catalog.resolve_quicklook_path("science", "cloud-radar", "latest")
+
+        self.assertEqual(response["latest"]["token"], "latest")
+        self.assertEqual(resolved, science)
+
     def test_operations_derives_stream_levels_from_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
