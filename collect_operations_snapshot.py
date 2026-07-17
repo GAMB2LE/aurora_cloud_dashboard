@@ -223,6 +223,9 @@ TRANSFER_UNITS = (
     "aurora-mirror-verify.service",
 )
 SOURCE_RECENT_THRESHOLD_MINUTES = 90.0
+MIRROR_SUMMARY_RECENT_THRESHOLD_MINUTES = float(
+    os.environ.get("MIRROR_SUMMARY_RECENT_THRESHOLD_MINUTES", "30")
+)
 SOURCE_RECENT_THRESHOLD_OVERRIDES_MINUTES = {
     # HATPRO publishes as hourly batches. Wait for two missed batches before
     # marking the source stale so normal batch/manifest timing does not alert.
@@ -370,7 +373,7 @@ def _local_df(path: str | Path) -> dict[str, Any]:
     return metrics
 
 
-def _parse_df_lines(space_line: str, inode_line: str) -> dict[str, float]:
+def _parse_df_lines(space_line: str, inode_line: str) -> dict[str, float | str]:
     fields = space_line.split()
     inode_fields = inode_line.split()
     if len(fields) < 6 or len(inode_fields) < 6:
@@ -381,6 +384,7 @@ def _parse_df_lines(space_line: str, inode_line: str) -> dict[str, float]:
     inode_total = float(inode_fields[1]) if inode_fields[1].isdigit() else math.nan
     inode_used = float(inode_fields[2]) if inode_fields[2].isdigit() else math.nan
     return {
+        "filesystem": fields[0],
         "total_gb": total / (1024.0 ** 3),
         "used_gb": used / (1024.0 ** 3),
         "free_gb": available / (1024.0 ** 3),
@@ -1035,9 +1039,18 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     if summary_generated:
         try:
             summary_time = datetime.fromisoformat(summary_generated)
-            record["mirror_summary_age_min"] = max((now - summary_time).total_seconds(), 0.0) / 60.0
+            if summary_time.tzinfo is None:
+                summary_time = summary_time.replace(tzinfo=timezone.utc)
+            mirror_summary_age_min = max((now - summary_time).total_seconds(), 0.0) / 60.0
+            record["mirror_summary_age_min"] = mirror_summary_age_min
+            record["mirror_summary_recent_state"] = _recent_state(
+                mirror_summary_age_min,
+                MIRROR_SUMMARY_RECENT_THRESHOLD_MINUTES,
+            )
         except Exception:
-            pass
+            record["mirror_summary_recent_state"] = 0
+    else:
+        record["mirror_summary_recent_state"] = 0
 
     host_reachability: dict[str, bool] = {}
     for prefix, cfg in SOURCE_HOSTS.items():
@@ -1051,6 +1064,7 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
             continue
         base_cmd = _cl61_ssh_base() if cfg["auth"] == "cl61" else _tailscale_ssh_base()
         target = f"{user}@{host}"
+        record[f"{prefix}_probe_target"] = target
         try:
             metrics = _remote_df(base_cmd, target, path)
             record[f"{prefix}_probe_ok_state"] = 1
@@ -1264,13 +1278,18 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         record[f"{prefix}_local_lag_min"] = _lag_minutes(source_stats["latest_mtime"], local_stats["latest_mtime"])
         if gws_count is not None:
             record[f"{prefix}_gws_lag_min"] = _lag_minutes(source_stats["latest_mtime"], gws_stats["latest_mtime"])
-        source_age_min = _age_minutes(now_epoch, source_stats["latest_mtime"])
-        source_recent_state = _recent_state(source_age_min, _source_recent_threshold_minutes(stream_name))
+        manifest_recent = bool(record.get("mirror_summary_recent_state"))
+        source_age_min = _age_minutes(now_epoch, source_stats["latest_mtime"]) if manifest_recent else None
+        source_recent_state = (
+            _recent_state(source_age_min, _source_recent_threshold_minutes(stream_name))
+            if manifest_recent
+            else None
+        )
         record[f"{prefix}_source_age_min"] = source_age_min
         record[f"{prefix}_source_recent_state"] = source_recent_state
-        if source_recent_state:
+        if source_recent_state == 1:
             source_recent_count += 1
-        else:
+        elif source_recent_state == 0:
             source_stale_count += 1
 
         local_missing = stream_summary.get("local_missing_count")

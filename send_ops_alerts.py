@@ -29,6 +29,7 @@ FROM_DEFAULT = f"aurora-ops@{socket.gethostname() or 'localhost'}"
 DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app?tab=operations"
 
 STORAGE_THRESHOLD_PCT = 80.0
+MIRROR_SUMMARY_THRESHOLD_MINUTES = 30.0
 BATTERY_SOC_THRESHOLD_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 INTERNAL_TEMP_THRESHOLD_C = 45.0
 INTERNAL_TEMP_LOW_THRESHOLD_C = float(os.environ.get("APS_INTERNAL_TEMP_LOW_RED_C", "5"))
@@ -74,7 +75,7 @@ STORAGE_LABELS = {
     "host_celine_source": "CL61 root disk",
     "host_celine_data": "CL61 data disk",
     "host_ass_root": "ASS root disk",
-    "host_ass_data": "ASS data disk",
+    "host_ass_data": "ASS shared data disk",
     "host_aps_root": "APS root disk",
     "host_aps_data": "APS data disk",
     "aurora_project": "Aurora raw mirror disk",
@@ -183,6 +184,7 @@ def _service_label(key: str) -> str:
 def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
     alerts: list[AlertRule] = []
 
+    storage_alerts: dict[tuple[str, ...], AlertRule] = {}
     for key, raw_value in sorted(snapshot.items()):
         if not key.endswith("_used_pct") or key.endswith("_inode_used_pct"):
             continue
@@ -194,13 +196,36 @@ def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
         path = snapshot.get(f"{prefix}_resolved_path", "")
         free_gb = _float(snapshot.get(f"{prefix}_free_gb"))
         free_detail = f", free={_fmt_value(free_gb, ' GB')}" if free_gb is not None else ""
+        target = str(snapshot.get(f"{prefix}_probe_target") or "")
+        filesystem = str(snapshot.get(f"{prefix}_filesystem") or "")
+        if target and filesystem:
+            storage_key = ("remote", target, filesystem)
+        else:
+            storage_key = ("metric", prefix)
+        rule = AlertRule(
+            id=f"storage:{prefix}",
+            title=f"{label} storage at {_fmt_value(value, '%')}",
+            message=f"{label} is using {_fmt_value(value, '%')} of capacity{free_detail}. Path: {path or 'unknown'}.",
+            value=value,
+            threshold=f">= {STORAGE_THRESHOLD_PCT:.0f}%",
+        )
+        current = storage_alerts.get(storage_key)
+        if current is None or prefix == "host_ass_data":
+            storage_alerts[storage_key] = rule
+    alerts.extend(storage_alerts.values())
+
+    manifest_age = _float(snapshot.get("mirror_summary_age_min"))
+    manifest_recent = _bool_state(snapshot.get("mirror_summary_recent_state"))
+    if manifest_recent is False:
+        age_detail = _fmt_value(manifest_age, " min") if manifest_age is not None else "unknown age"
         alerts.append(
             AlertRule(
-                id=f"storage:{prefix}",
-                title=f"{label} storage at {_fmt_value(value, '%')}",
-                message=f"{label} is using {_fmt_value(value, '%')} of capacity{free_detail}. Path: {path or 'unknown'}.",
-                value=value,
-                threshold=f">= {STORAGE_THRESHOLD_PCT:.0f}%",
+                id="transfer:mirror_manifest_stale",
+                title=f"Mirror verification stale for {age_detail}",
+                message="Mirror verification telemetry is stale; stream source ages are unavailable until verification runs again.",
+                value=manifest_age if manifest_age is not None else "unknown",
+                threshold=f"> {MIRROR_SUMMARY_THRESHOLD_MINUTES:.0f} min",
+                hold_minutes=STREAM_HOLD_MINUTES,
             )
         )
 
@@ -275,7 +300,7 @@ def evaluate_alerts(snapshot: dict[str, Any]) -> list[AlertRule]:
 
     for stream_label, prefix in STREAM_PREFIXES.items():
         source_age = _float(snapshot.get(f"{prefix}_source_age_min"))
-        if source_age is not None and source_age >= STREAM_HOLD_MINUTES:
+        if manifest_recent is not False and source_age is not None and source_age >= STREAM_HOLD_MINUTES:
             alerts.append(
                 AlertRule(
                     id=f"stream:{prefix}:source_stale",
