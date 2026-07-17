@@ -24,8 +24,8 @@ class PowerDisplaySummaryMetadataTests(unittest.TestCase):
 
         self.assertEqual(payload["time_count"], 2)
         self.assertEqual(payload["variable_count"], 1)
-        self.assertEqual(payload["time_start_utc"], "2026-07-17T00:00:00.000000000")
-        self.assertEqual(payload["time_end_utc"], "2026-07-17T00:01:00.000000000")
+        self.assertEqual(str(np.datetime64(payload["time_start_utc"])), "2026-07-17T00:00:00")
+        self.assertEqual(str(np.datetime64(payload["time_end_utc"])), "2026-07-17T00:01:00")
 
 
 if __name__ == "__main__":
