@@ -138,11 +138,13 @@ class OperatingScenarioTests(unittest.TestCase):
                 now=issue + pd.Timedelta(minutes=21),
             )
 
-        with self.assertRaisesRegex(ValueError, "expired planning forecast"):
+        short_forecast, _ = _forecast_inputs(issue, horizon_hours=90)
+        with self.assertRaisesRegex(ValueError, "minimum decision horizon"):
             _validate_operating_inputs(
                 power,
-                deterministic,
+                short_forecast,
                 planning_hours=240,
+                minimum_horizon_hours=96,
                 max_power_age_minutes=None,
                 now=issue,
             )

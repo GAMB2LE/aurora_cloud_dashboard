@@ -143,6 +143,7 @@ def _validate_operating_inputs(
     *,
     planning_hours: int,
     max_power_age_minutes: float | None,
+    minimum_horizon_hours: int = 96,
     now: pd.Timestamp | None = None,
 ) -> tuple[pd.Timestamp, float, float]:
     """Require a fresh physical anchor and enough ECMWF solar coverage to plan."""
@@ -171,12 +172,13 @@ def _validate_operating_inputs(
     if "time" not in forecast or forecast.sizes.get("time", 0) == 0:
         raise ValueError("Operating scenarios require an ECMWF planning forecast with time coverage")
     forecast_times = pd.DatetimeIndex(forecast["time"].values)
-    required_end = anchor_time + pd.Timedelta(hours=int(planning_hours))
+    required_hours = min(int(planning_hours), max(int(minimum_horizon_hours), 1))
+    required_end = anchor_time + pd.Timedelta(hours=required_hours)
     if forecast_times.max() < required_end:
         raise ValueError(
-            "Refusing to publish operating scenarios from an expired planning forecast: "
+            "Refusing to publish operating scenarios without the minimum decision horizon: "
             f"coverage ends at {forecast_times.max().isoformat()}, "
-            f"but {required_end.isoformat()} is required"
+            f"but {required_end.isoformat()} is required for {required_hours} h planning"
         )
     return anchor_time, anchor_soc, max(power_age_minutes, 0.0)
 
@@ -209,6 +211,7 @@ def generate(
             power,
             forecast,
             planning_hours=planning_hours,
+            minimum_horizon_hours=optimization_hours,
             max_power_age_minutes=max_power_age_minutes,
         )
         model = fit_operating_model(power, pdu, raw_state=state, lookback_days=lookback_days)
