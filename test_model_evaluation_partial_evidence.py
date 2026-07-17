@@ -213,3 +213,105 @@ def test_goal_progress_panel_shows_v1_tracks(tmp_path) -> None:
     assert "blocked_missing_input" in html
     assert "blocked_regime_mismatch" in html
     assert "Do not claim production completion yet." in html
+
+
+def test_hogan_cloud_fraction_row_and_svg_gallery(tmp_path) -> None:
+    module = _load_model_evaluation_module()
+    day = "2026-07-06"
+    day_root = tmp_path / "2026" / "07" / "06"
+    scorecard_root = day_root / "scorecards"
+    plot_root = day_root / "plots"
+    scorecard_root.mkdir(parents=True)
+    plot_root.mkdir(parents=True)
+    plot_path = plot_root / "cloud_fraction_hogan_20260706.svg"
+    plot_path.write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'></svg>",
+        encoding="utf-8",
+    )
+    (scorecard_root / "cloud_fraction_hogan.json").write_text(
+        json.dumps(
+            {
+                "status": "scored_with_qc_caveat",
+                "primary_comparison_id": "model_cf_cirrus__vs__cf_V_adv",
+                "plot_file": str(plot_path),
+                "qc_caveats": [
+                    "High-rain exclusion is pending collocated surface rain rate."
+                ],
+                "comparisons": [
+                    {
+                        "comparison_id": "model_cf_cirrus__vs__cf_V_adv",
+                        "score": {
+                            "status": "scored",
+                            "sample_qc": {"valid_pair_count": 88},
+                            "support_compliance": {
+                                "headline_eligibility": {
+                                    "status": (
+                                        "method_support_ready_with_high_rain_qc_caveat"
+                                    ),
+                                    "ranking_policy": "blocked_pending_high_rain_qc",
+                                }
+                            },
+                            "primary_threshold_score": {
+                                "probability_of_detection": 0.8667,
+                                "false_alarm_ratio": 0.8194,
+                                "critical_success_index": 0.1757,
+                                "heidke_skill_score_height_aware": {
+                                    "status": "scored",
+                                    "value": 0.01168,
+                                },
+                                "log_odds_ratio_climatology_corrected": {
+                                    "status": "scored",
+                                    "value": 0.226,
+                                    "standard_error": 0.8157,
+                                },
+                                "symmetric_extreme_dependency_score": {
+                                    "status": "scored",
+                                    "value": 0.0147,
+                                    "standard_error": 0.0537,
+                                },
+                            },
+                            "continuous_skill": {
+                                "mean_absolute_error_skill_score": {
+                                    "status": "scored",
+                                    "value": -0.00512,
+                                }
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+    module._direct_model_variable_readiness = lambda _day: {
+        "status": "partial_review_ready",
+        "production_ready": False,
+        "current_work": {
+            "can_review_now": True,
+            "can_rank_all_models_now": False,
+        },
+        "usable_models": ["era5"],
+        "missing_models": ["carra2"],
+    }
+    rows = module.build_instrument_catalog([day])
+    row = next(
+        item
+        for item in rows
+        if item["scorecard"] == "cloud_fraction_hogan"
+    )
+
+    assert row["valid"] == 88
+    assert row["hss"] == "0.0117"
+    assert row["log_odds"] == "0.226 (SE 0.816)"
+    assert row["seds"] == "0.0147 (SE 0.0537)"
+    assert row["maess"] == "-0.00512"
+    assert row["path_review_ready"] is True
+    assert row["path_model_ranking_ready"] is False
+    assert row["caveat"] == "diagnostic_only_high_rain_qc"
+    assert "blocked_pending_high_rain_qc" in row["note"]
+
+    gallery = module.render_scorecard_gallery(day, "Cloudnet CF")
+    assert "Hogan CF verification: ERA5" in gallery
+    assert "data:image/svg+xml;base64," in gallery

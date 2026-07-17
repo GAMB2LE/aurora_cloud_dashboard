@@ -862,12 +862,10 @@ DEFAULT_RUN_IDS = (
 INSTRUMENT_COMPARISON_SPECS = (
     {
         "instrument": "Cloudnet CF",
-        "model": "ERA5",
+        "model": "ERA5 / CloudnetPy L3",
         "model_group": "era5",
-        "scorecard": "era5_cloud_fraction",
-        "comparison": "cf_V",
-        "basis": "Cloudnet L3 CF cf_V",
-        "occurrence": "contingency",
+        "scorecard": "cloud_fraction_hogan",
+        "basis": "official CloudnetPy L3-CF: model_cf_cirrus vs cf_V_adv",
         "metric_family": "occurrence",
         "caveat": "ready",
     },
@@ -1030,7 +1028,10 @@ INSTRUMENT_COMPARISON_SPECS = (
 )
 
 INSTRUMENT_GALLERY_SCORECARDS = {
-    "Cloudnet CF": (("Cloudnet CF: ERA5", "era5_cloud_fraction"), ("Cloudnet CF: CM1 full LES", "cloud_fraction")),
+    "Cloudnet CF": (
+        ("Hogan CF verification: ERA5", "cloud_fraction_hogan"),
+        ("Cloudnet CF: CM1 full LES", "cloud_fraction"),
+    ),
     "Cloudnet LWC": (("Cloudnet LWC: ERA5", "era5_lwc"), ("Cloudnet LWC: CM1 full LES", "cm1_lwc")),
     "HATPRO/LWP": (("LWP context: ERA5", "era5_lwc"), ("LWP context: CM1 full LES", "cm1_lwc")),
     "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: CM1 full LES", "cm1_iwc")),
@@ -4027,7 +4028,13 @@ def _badge(value: object) -> str:
         css = "badge-diagnostic"
     elif "blocked" in lower or "missing" in lower:
         css = "badge-blocked"
-    elif "waiting" in lower or "partial" in lower or "colocated" in lower:
+    elif (
+        "waiting" in lower
+        or "partial" in lower
+        or "colocated" in lower
+        or "caveat" in lower
+        or "_qc" in lower
+    ):
         css = "badge-warning"
     return f"<span class='status-badge {css}'>{escape(text)}</span>"
 
@@ -4118,6 +4125,10 @@ def _cloud_seb_process_instrument_row(
             "critical_success_index",
             metrics.get("critical_success_index", "n/a"),
         ),
+        "hss": "n/a",
+        "log_odds": "n/a",
+        "seds": "n/a",
+        "maess": "n/a",
         "bias": "n/a",
         "rmse": "n/a",
         "correlation": "n/a",
@@ -4127,11 +4138,158 @@ def _cloud_seb_process_instrument_row(
     }
 
 
+def _hogan_primary_score(
+    scorecard: dict[str, object],
+) -> tuple[str, dict[str, object]]:
+    primary_id = str(scorecard.get("primary_comparison_id", "") or "")
+    comparisons = scorecard.get("comparisons")
+    if not isinstance(comparisons, list):
+        return primary_id, {}
+    for comparison in comparisons:
+        if not isinstance(comparison, dict):
+            continue
+        comparison_id = str(comparison.get("comparison_id", "") or "")
+        if comparison_id != primary_id:
+            continue
+        score = comparison.get("score")
+        return primary_id, score if isinstance(score, dict) else {}
+    return primary_id, {}
+
+
+def _metric_with_standard_error(metric: object) -> object:
+    if not isinstance(metric, dict):
+        return "n/a"
+    value = _metric_from(metric, ("value",))
+    standard_error = _metric_from(metric, ("standard_error",))
+    if value == "n/a" or standard_error == "n/a":
+        return value
+    return f"{value} (SE {standard_error})"
+
+
+def _hogan_cloud_fraction_row(
+    day: str,
+    spec: dict[str, object],
+    scorecard: dict[str, object] | None,
+) -> dict[str, object]:
+    runtime = _bundle_runtime_summary(day)
+    if not isinstance(scorecard, dict):
+        overlay = _instrument_path_overlay(
+            day=day,
+            spec=spec,
+            caveat="blocked_missing_input",
+            note="Hogan cloud-fraction scorecard is missing.",
+        )
+        return {
+            "day": day,
+            "instrument": spec.get("instrument", ""),
+            "model": spec.get("model", ""),
+            "evaluation_path": overlay["evaluation_path"],
+            "path_readiness": overlay["path_readiness"],
+            "path_review_ready": overlay["path_review_ready"],
+            "path_production_ready": False,
+            "path_model_ranking_ready": False,
+            "model_group": spec.get("model_group", "era5"),
+            "metric_family": spec.get("metric_family", "occurrence"),
+            "basis": spec.get("basis", ""),
+            "scorecard": "cloud_fraction_hogan",
+            "cm1_runtime_h": runtime["run_hours"],
+            "cm1_eval_h": runtime["evaluation_hours"],
+            "cm1_recipe_class": runtime["recipe_class"],
+            "status": "missing",
+            "caveat": overlay["caveat"],
+            "valid": "n/a",
+            "pod": "n/a",
+            "far": "n/a",
+            "csi": "n/a",
+            "hss": "n/a",
+            "log_odds": "n/a",
+            "seds": "n/a",
+            "maess": "n/a",
+            "bias": "n/a",
+            "rmse": "n/a",
+            "correlation": "n/a",
+            "base_bias_m": "n/a",
+            "top_bias_m": "n/a",
+            "note": overlay["note"],
+        }
+
+    primary_id, score = _hogan_primary_score(scorecard)
+    threshold = score.get("primary_threshold_score")
+    threshold = threshold if isinstance(threshold, dict) else {}
+    sample_qc = score.get("sample_qc")
+    sample_qc = sample_qc if isinstance(sample_qc, dict) else {}
+    continuous = score.get("continuous_skill")
+    continuous = continuous if isinstance(continuous, dict) else {}
+    support = score.get("support_compliance")
+    support = support if isinstance(support, dict) else {}
+    eligibility = support.get("headline_eligibility")
+    eligibility = eligibility if isinstance(eligibility, dict) else {}
+    support_status = str(
+        eligibility.get("status", scorecard.get("status", "available"))
+    )
+    ranking_policy = str(eligibility.get("ranking_policy", "blocked"))
+    ranking_ready = ranking_policy in {"ready", "included", "eligible"}
+    qc_caveats = scorecard.get("qc_caveats")
+    qc_caveats = qc_caveats if isinstance(qc_caveats, list) else []
+    caveat = "ready" if ranking_ready else "diagnostic_only_high_rain_qc"
+    note = _join_notes(
+        f"Hogan primary comparison: {primary_id or 'not identified'}",
+        *(str(item) for item in qc_caveats),
+        f"model ranking: {ranking_policy}",
+    )
+    overlay = _instrument_path_overlay(
+        day=day,
+        spec=spec,
+        caveat=caveat,
+        note=note,
+    )
+    hss = threshold.get("heidke_skill_score_height_aware")
+    log_odds = threshold.get("log_odds_ratio_climatology_corrected")
+    seds = threshold.get("symmetric_extreme_dependency_score")
+    maess = continuous.get("mean_absolute_error_skill_score")
+
+    return {
+        "day": day,
+        "instrument": spec.get("instrument", ""),
+        "model": spec.get("model", ""),
+        "evaluation_path": overlay["evaluation_path"],
+        "path_readiness": support_status,
+        "path_review_ready": bool(score),
+        "path_production_ready": ranking_ready,
+        "path_model_ranking_ready": ranking_ready,
+        "model_group": spec.get("model_group", "era5"),
+        "metric_family": spec.get("metric_family", "occurrence"),
+        "basis": spec.get("basis", ""),
+        "scorecard": "cloud_fraction_hogan",
+        "cm1_runtime_h": runtime["run_hours"],
+        "cm1_eval_h": runtime["evaluation_hours"],
+        "cm1_recipe_class": runtime["recipe_class"],
+        "status": scorecard.get("status", score.get("status", "available")),
+        "caveat": caveat,
+        "valid": sample_qc.get("valid_pair_count", "n/a"),
+        "pod": _metric_from(threshold, ("probability_of_detection",)),
+        "far": _metric_from(threshold, ("false_alarm_ratio",)),
+        "csi": _metric_from(threshold, ("critical_success_index",)),
+        "hss": _metric_from(hss, ("value",)),
+        "log_odds": _metric_with_standard_error(log_odds),
+        "seds": _metric_with_standard_error(seds),
+        "maess": _metric_from(maess, ("value",)),
+        "bias": "n/a",
+        "rmse": "n/a",
+        "correlation": "n/a",
+        "base_bias_m": "n/a",
+        "top_bias_m": "n/a",
+        "note": overlay["note"],
+    }
+
+
 def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, object]:
     scorecard_name = str(spec["scorecard"])
     if scorecard_name == "cloud_seb_model_observation_review":
         return _cloud_seb_process_instrument_row(day, spec)
     scorecard = load_scorecard(day, scorecard_name)
+    if scorecard_name == "cloud_fraction_hogan":
+        return _hogan_cloud_fraction_row(day, spec, scorecard)
     payload = _comparison_payload(scorecard, spec)
     occurrence_key = spec.get("occurrence")
     occurrence = {}
@@ -4209,6 +4367,10 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         "pod": _metric_from(occurrence, ("probability_of_detection",)),
         "far": _metric_from(occurrence, ("false_alarm_ratio",)),
         "csi": _metric_from(occurrence, ("critical_success_index",)),
+        "hss": "n/a",
+        "log_odds": "n/a",
+        "seds": "n/a",
+        "maess": "n/a",
         "bias": _metric_from(
             metrics,
             (
@@ -4314,19 +4476,22 @@ def _instrument_metric_cards(rows: list[dict[str, object]]) -> str:
     partial = sum(1 for row in rows if "partial" in str(row.get("caveat", "")))
     diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
     blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
-    csi_values = [
-        float(row["csi"])
+    hss_values = [
+        float(row["hss"])
         for row in rows
-        if isinstance(row.get("csi"), str) and _is_float_string(str(row.get("csi")))
+        if isinstance(row.get("hss"), str) and _is_float_string(str(row.get("hss")))
     ]
-    csi_mean = sum(csi_values) / len(csi_values) if csi_values else None
+    hss_mean = sum(hss_values) / len(hss_values) if hss_values else None
     cards = [
         _card("selected products", len(rows)),
         _card("ready", ready),
         _card("partial", partial),
         _card("diagnostic", diagnostic),
         _card("blocked", blocked),
-        _card("mean CSI", _compact_float(csi_mean) if csi_mean is not None else "n/a"),
+        _card(
+            "mean equitable HSS",
+            _compact_float(hss_mean) if hss_mean is not None else "n/a",
+        ),
     ]
     return f"<div class='model-grid'>{''.join(cards)}</div>"
 
@@ -4361,6 +4526,10 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['pod']))}</td>"
             f"<td>{escape(str(row['far']))}</td>"
             f"<td>{escape(str(row['csi']))}</td>"
+            f"<td>{escape(str(row['hss']))}</td>"
+            f"<td>{escape(str(row['log_odds']))}</td>"
+            f"<td>{escape(str(row['seds']))}</td>"
+            f"<td>{escape(str(row['maess']))}</td>"
             f"<td>{escape(str(row['bias']))}</td>"
             f"<td>{escape(str(row['rmse']))}</td>"
             f"<td>{escape(str(row['correlation']))}</td>"
@@ -4377,7 +4546,8 @@ def _instrument_comparison_table(rows: list[dict[str, object]]) -> str:
         "<th>path</th><th>path readiness</th><th>caveat</th>"
         "<th>CM1 h</th><th>eval h</th><th>recipe</th>"
         "<th>status</th><th>comparison</th><th>valid</th><th>POD</th><th>FAR</th>"
-        "<th>CSI</th><th>bias</th><th>RMSE</th><th>corr</th><th>base bias m</th>"
+        "<th>CSI</th><th>HSS</th><th>log odds (SE)</th><th>SEDS (SE)</th>"
+        "<th>MAESS</th><th>bias</th><th>RMSE</th><th>corr</th><th>base bias m</th>"
         "<th>top bias m</th><th>scorecard</th><th>note</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -4389,13 +4559,28 @@ def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
     scorecard = load_scorecard(day, scorecard_name)
     if not isinstance(scorecard, dict):
         return None
-    value = scorecard.get("output_png")
-    if isinstance(value, str) and value:
+    for key in ("output_png", "plot_file", "output_svg"):
+        value = scorecard.get(key)
+        if not isinstance(value, str) or not value:
+            continue
         path = Path(value)
-        if path.exists():
-            return path
-    fallback = _day_file(day, "scorecards", f"{scorecard_name}.png")
-    return fallback if fallback.exists() else None
+        for candidate in (
+            path,
+            _day_file(day, "plots", path.name),
+            _day_file(day, "scorecards", path.name),
+        ):
+            if candidate.exists():
+                return candidate
+    day_token = day.replace("-", "")
+    for candidate in (
+        _day_file(day, "scorecards", f"{scorecard_name}.png"),
+        _day_file(day, "scorecards", f"{scorecard_name}.svg"),
+        _day_file(day, "plots", f"{scorecard_name}_{day_token}.png"),
+        _day_file(day, "plots", f"{scorecard_name}_{day_token}.svg"),
+    ):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def render_scorecard_gallery(day: str | None, instrument: str = "all") -> str:
