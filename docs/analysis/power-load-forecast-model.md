@@ -10,7 +10,11 @@ The deterministic solar forecast has a provider boundary controlled by
   legacy fallback that preserves a usable forecast.
 - `shadow` publishes the legacy result and compares Earthkit against the same
   input file. The comparison is written to
-  `/data/aurora/products/power/ecmwf_provider_shadow.json` by default.
+  `/data/aurora/products/power/ecmwf_provider_shadow.json` by default. Each
+  shadow run also appends an immutable JSONL observation. The development
+  promotion gate requires seven days, at least 50 successful comparisons,
+  matching valid times, and SSRD differences below `0.001 J m-2` before it can
+  report `eligible_for_operator_review`. It never changes the active provider.
 
 Both providers are normalized to the same site-level xarray contract before
 the calibrated solar, load, and SOC model runs. Forecast Zarr variables and

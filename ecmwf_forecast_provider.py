@@ -30,6 +30,12 @@ DEFAULT_SHADOW_REPORT_PATH = Path(
         "/data/aurora/products/power/ecmwf_provider_shadow.json",
     )
 )
+DEFAULT_SHADOW_HISTORY_PATH = Path(
+    os.environ.get(
+        "AURORA_ECMWF_SHADOW_HISTORY_PATH",
+        "/data/aurora/products/power/ecmwf_provider_shadow_history.jsonl",
+    )
+)
 
 
 @dataclass
@@ -66,6 +72,13 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_suffix(f"{path.suffix}.tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    """Append one immutable shadow observation for the promotion gate."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _steps(horizon_hours: int, lookahead_buffer_hours: int) -> list[int]:
@@ -312,6 +325,7 @@ def open_solar_forecast(
     latitude: float,
     longitude: float,
     shadow_report_path: Path | None = DEFAULT_SHADOW_REPORT_PATH,
+    shadow_history_path: Path | None = None,
 ) -> ForecastProviderResult:
     """Open and normalize a solar forecast, optionally comparing Earthkit in shadow mode."""
     requested_provider = validate_provider(provider)
@@ -370,6 +384,8 @@ def open_solar_forecast(
     if shadow_report_path is not None:
         diagnostics["peak_rss_mb"] = round(_peak_rss_mb(), 3)
         _atomic_write_json(shadow_report_path, diagnostics)
+    if shadow_history_path is not None:
+        _append_jsonl(shadow_history_path, diagnostics)
     return ForecastProviderResult(legacy, diagnostics)
 
 
@@ -387,6 +403,7 @@ def main() -> None:
     parser.add_argument("--input-forecast", type=Path)
     parser.add_argument("--cache-dir", type=Path, default=Path("/data/aurora/products/power/ecmwf_solar_forecast"))
     parser.add_argument("--report", type=Path, default=DEFAULT_SHADOW_REPORT_PATH)
+    parser.add_argument("--history", type=Path, default=DEFAULT_SHADOW_HISTORY_PATH)
     parser.add_argument("--latitude", type=float, default=64.829694)
     parser.add_argument("--longitude", type=float, default=-23.248139)
     args = parser.parse_args()
@@ -397,6 +414,7 @@ def main() -> None:
         latitude=args.latitude,
         longitude=args.longitude,
         shadow_report_path=args.report,
+        shadow_history_path=args.history,
     )
     result.dataset.close()
     print(f"Wrote {args.report}: {result.diagnostics.get('shadow_status', 'unknown')}")

@@ -90,19 +90,24 @@ class EcmwfForecastProviderTests(unittest.TestCase):
 
     def test_shadow_publishes_legacy_and_records_comparison(self) -> None:
         report_path = self.root / "shadow.json"
+        history_path = self.root / "shadow-history.jsonl"
         result = open_solar_forecast(
             self.input_path,
             provider="shadow",
             latitude=64.8,
             longitude=-23.2,
             shadow_report_path=report_path,
+            shadow_history_path=history_path,
         )
 
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        history = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(result.diagnostics["effective_provider"], "legacy")
         self.assertEqual(report["shadow_status"], "compared")
         self.assertEqual(report["ssrd_max_abs_difference_j_m2"], 0.0)
         self.assertTrue(report["valid_times_match"])
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["shadow_status"], "compared")
 
     def test_earthkit_failure_falls_back_without_losing_forecast(self) -> None:
         with patch("ecmwf_forecast_provider._open_earthkit", side_effect=RuntimeError("decoder unavailable")):
