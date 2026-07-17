@@ -215,6 +215,99 @@ def test_goal_progress_panel_shows_v1_tracks(tmp_path) -> None:
     assert "Do not claim production completion yet." in html
 
 
+def test_surface_met_row_uses_full_day_virtual_instrument_scorecard(
+    tmp_path,
+) -> None:
+    module = _load_model_evaluation_module()
+    day = "2026-07-06"
+    day_root = tmp_path / "2026" / "07" / "06"
+    scorecard_root = day_root / "scorecards"
+    plot_root = day_root / "plots"
+    dashboard_root = day_root / "dashboard"
+    scorecard_root.mkdir(parents=True)
+    plot_root.mkdir(parents=True)
+    dashboard_root.mkdir(parents=True)
+    plot = plot_root / "surface_met_cm1_era5_full_day_20260706.svg"
+    plot.write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'></svg>",
+        encoding="utf-8",
+    )
+    (scorecard_root / "surface_met_cm1_era5_full_day.json").write_text(
+        json.dumps(
+            {
+                "status": "scored_diagnostic_vertical_support_mismatch",
+                "scorecard": {
+                    "status": "scored_diagnostic_vertical_support_mismatch",
+                    "comparison_readiness": (
+                        "diagnostic_vertical_support_mismatch"
+                    ),
+                    "output_plot": str(plot),
+                    "variables": {
+                        "temperature": {
+                            "status": (
+                                "scored_diagnostic_vertical_support_mismatch"
+                            ),
+                            "score": {
+                                "sample_count": 89,
+                                "bias": -0.405,
+                                "rmse": 1.35,
+                                "correlation": -0.708,
+                            },
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (dashboard_root / "day_review_index.json").write_text(
+        json.dumps(
+            {
+                "readiness": {
+                    "review_tracks": {
+                        "tracks": {
+                            "full_les_virtual_observatory": {
+                                "status": (
+                                    "diagnostic_full_day_virtual_observatory_ready"
+                                ),
+                                "diagnostic_ready": True,
+                                "can_review_now": True,
+                                "production_ready": False,
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+    spec = next(
+        item
+        for item in module.INSTRUMENT_COMPARISON_SPECS
+        if item["instrument"] == "Surface met"
+    )
+    row = module._instrument_comparison_row(day, spec)
+    gallery = module.render_scorecard_gallery(day, "Surface met")
+
+    assert row["scorecard"] == "surface_met_cm1_era5_full_day"
+    assert row["model"] == "CM1 full LES virtual instrument"
+    assert row["status"] == "scored_diagnostic_vertical_support_mismatch"
+    assert row["caveat"] == "diagnostic_only"
+    assert row["path_readiness"] == (
+        "diagnostic_full_day_virtual_observatory_ready"
+    )
+    assert row["path_review_ready"] is True
+    assert row["path_production_ready"] is False
+    assert row["valid"] == 89
+    assert row["bias"] == "-0.405"
+    assert row["rmse"] == "1.35"
+    assert row["correlation"] == "-0.708"
+    assert "CM1 full LES surface meteorology" in gallery
+    assert "data:image/svg+xml;base64," in gallery
+
+
 def test_hogan_cloud_fraction_row_and_svg_gallery(tmp_path) -> None:
     module = _load_model_evaluation_module()
     day = "2026-07-06"

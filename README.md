@@ -36,7 +36,9 @@ Additional housekeeping products now exist for:
 - `app.py` - main Panel application.
 - `model-evaluation.py` - standalone AURORA-LASSO science-review dashboard for
   active daily bundles, instrument comparisons, scorecards, runtime/evaluation
-  windows, and provenance outside the main tab set.
+  windows, and provenance outside the main tab set. The Surface met view reads
+  the CM1 full-day virtual-instrument scorecard and plot directly, including
+  its explicit 50 m versus station-height diagnostic caveat.
 - `dart.py` - standalone DART compatibility inventory for the virtual
   observatory, mapping Aurora observations to DART model families,
   observation-converter paths, forward-operator needs, and runtime checks.

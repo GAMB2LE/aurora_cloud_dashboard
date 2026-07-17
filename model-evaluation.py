@@ -973,14 +973,14 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "Surface met",
-        "model": "CM1/ERA5 surface",
+        "model": "CM1 full LES virtual instrument",
         "model_group": "surface",
-        "scorecard": "surface_met",
-        "comparison": "air_temperature",
-        "basis": "met station air temperature",
-        "metrics": "metrics",
+        "scorecard": "surface_met_cm1_era5_full_day",
+        "comparison": "temperature",
+        "basis": "CM1 50 m sample vs Vaisala 5-minute support-window means",
+        "metrics": "score",
         "metric_family": "continuous",
-        "caveat": "ready",
+        "caveat": "diagnostic_only",
     },
     {
         "instrument": "ASFS radiation",
@@ -1037,7 +1037,9 @@ INSTRUMENT_GALLERY_SCORECARDS = {
     "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: CM1 full LES", "cm1_iwc")),
     "W-band radar": (("W-band radar", "wband_radar"),),
     "CL61 lidar": (("CL61 lidar diagnostic", "cl61_diagnostic"),),
-    "Surface met": (("Surface met", "surface_met"),),
+    "Surface met": (
+        ("CM1 full LES surface meteorology", "surface_met_cm1_era5_full_day"),
+    ),
     "ASFS radiation": (("ASFS radiation", "asfs_logger_radiation_surface"),),
     "ASFS sonic": (("ASFS sonic/turbulence", "asfs_sonic_turbulence"),),
     "ASFS gas": (("ASFS gas", "asfs_gas"),),
@@ -2909,6 +2911,19 @@ def _virtual_observatory_readiness(day: str) -> dict[str, object]:
     return readiness if isinstance(readiness, dict) else {}
 
 
+def _full_les_review_track(day: str) -> dict[str, object]:
+    review = _day_review_index(day)
+    readiness = review.get("readiness") if isinstance(review, dict) else None
+    tracks = readiness.get("review_tracks") if isinstance(readiness, dict) else None
+    track_values = tracks.get("tracks") if isinstance(tracks, dict) else None
+    track = (
+        track_values.get("full_les_virtual_observatory")
+        if isinstance(track_values, dict)
+        else None
+    )
+    return track if isinstance(track, dict) else {}
+
+
 def _model_input_wait_audit(day: str) -> dict[str, object]:
     status = _day_status(day)
     if isinstance(status, dict):
@@ -3844,6 +3859,10 @@ def _comparison_payload(
     if isinstance(comparisons, dict) and isinstance(comparison_name, str):
         value = comparisons.get(comparison_name)
         return value if isinstance(value, dict) else {}
+    variables = scorecard.get("variables")
+    if isinstance(variables, dict) and isinstance(comparison_name, str):
+        value = variables.get(comparison_name)
+        return value if isinstance(value, dict) else {}
     return scorecard
 
 
@@ -3930,10 +3949,21 @@ def _instrument_path_overlay(
         or "CM1 " in model_label
     ):
         readiness = _virtual_observatory_readiness(day)
+        diagnostic_track = _full_les_review_track(day)
         gate = readiness.get("external_gate")
         gate = gate if isinstance(gate, dict) else {}
-        review_ready = bool(readiness.get("review_ready", False))
-        status = str(readiness.get("status", gate.get("status", "unknown")) or "unknown")
+        production_ready = bool(readiness.get("review_ready", False))
+        diagnostic_ready = bool(
+            diagnostic_track.get("diagnostic_ready")
+            or diagnostic_track.get("can_review_now")
+        )
+        review_ready = production_ready or diagnostic_ready
+        status = str(
+            diagnostic_track.get("status")
+            if diagnostic_ready and not production_ready
+            else readiness.get("status", gate.get("status", "unknown"))
+            or "unknown"
+        )
         path_caveat = caveat
         if not review_ready and (
             status.startswith("blocked")
@@ -3948,14 +3978,19 @@ def _instrument_path_overlay(
                 "run and operator products are ready."
             )
             if path_caveat.startswith("blocked")
+            else (
+                "ERA5-forced full-day LES evidence is reviewable as diagnostic; "
+                "production CM1/CARRA2 remains blocked."
+            )
+            if diagnostic_ready and not production_ready
             else "Full LES virtual-observatory evidence is reviewable.",
         )
         return {
             "evaluation_path": "full LES virtual observatory",
             "path_readiness": status,
             "path_review_ready": review_ready,
-            "path_production_ready": review_ready,
-            "path_model_ranking_ready": review_ready,
+            "path_production_ready": production_ready,
+            "path_model_ranking_ready": production_ready,
             "caveat": path_caveat,
             "note": path_note,
         }
@@ -4321,7 +4356,10 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
             status = str(scorecard.get("scoring_status", "diagnostic_only"))
     valid = occurrence.get("valid_points")
     if valid is None:
-        valid = metrics.get("valid_points", metrics.get("valid_times", "n/a"))
+        valid = metrics.get(
+            "valid_points",
+            metrics.get("valid_times", metrics.get("sample_count", "n/a")),
+        )
 
     note = ""
     if isinstance(scorecard, dict):
@@ -4375,6 +4413,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
             metrics,
             (
                 "bias_mean",
+                "bias",
                 "mean_bias_db",
                 "lwp_bias_mean_kg_m2",
                 "iwp_bias_mean_kg_m2",
@@ -4384,6 +4423,7 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
             metrics,
             (
                 "root_mean_square_error",
+                "rmse",
                 "root_mean_square_error_db",
                 "lwp_root_mean_square_error_kg_m2",
                 "iwp_root_mean_square_error_kg_m2",
@@ -4391,7 +4431,12 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         ),
         "correlation": _metric_from(
             metrics,
-            ("pearson_correlation", "lwp_pearson_correlation", "iwp_pearson_correlation"),
+            (
+                "pearson_correlation",
+                "correlation",
+                "lwp_pearson_correlation",
+                "iwp_pearson_correlation",
+            ),
         ),
         "base_bias_m": _metric_from(base_top, ("cloud_base_bias_mean_m", "model_cloud_base_bias_mean_m")),
         "top_bias_m": _metric_from(base_top, ("cloud_top_bias_mean_m", "model_cloud_top_bias_mean_m")),
@@ -4559,7 +4604,7 @@ def _scorecard_png_path(day: str, scorecard_name: str) -> Path | None:
     scorecard = load_scorecard(day, scorecard_name)
     if not isinstance(scorecard, dict):
         return None
-    for key in ("output_png", "plot_file", "output_svg"):
+    for key in ("output_png", "plot_file", "output_svg", "output_plot"):
         value = scorecard.get(key)
         if not isinstance(value, str) or not value:
             continue

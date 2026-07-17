@@ -14,6 +14,11 @@ every historic sensitivity test.
   archive/provenance material, not active review products
 - W-band radar rows should expose the active PAMTRA descriptor family when the
   product metadata are available
+- Surface met should use
+  `scorecards/surface_met_cm1_era5_full_day.json` and its rendered plot for the
+  CM1 virtual-instrument comparison. Keep the 50 m model support and missing
+  Vaisala sensor-height metadata visible as a diagnostic caveat; do not present
+  it as a validated 2 m score.
 - CL61 is diagnostic for the Leeds replay, but can become production-valid for
   Iceland when the site metadata audit and scorecard both report a coincident
   comparison policy
