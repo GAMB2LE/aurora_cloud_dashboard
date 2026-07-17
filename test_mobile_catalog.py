@@ -12,13 +12,32 @@ import mobile_catalog
 
 class MobileCatalogTests(unittest.TestCase):
     def test_manifest_contains_native_sections_and_visible_instruments(self) -> None:
-        manifest = mobile_catalog.manifest()
+        with patch.dict(
+            os.environ,
+            {
+                "AURORA_SITE_ENV": "development",
+                "AURORA_DOMAIN": "data-ocean.gamb2le.co.uk",
+                "AURORA_DASHBOARD_REVISION": "abc123def456",
+            },
+        ):
+            manifest = mobile_catalog.manifest()
 
         self.assertEqual([section["id"] for section in manifest["sections"]], ["overview", "power", "plots", "camera", "ops"])
         self.assertIn("power", {instrument["id"] for instrument in manifest["instruments"]})
         power = next(instrument for instrument in manifest["instruments"] if instrument["id"] == "power")
         self.assertTrue(power["supportsHousekeepingQuicklooks"])
         self.assertIn("fish_hdr", {stream["id"] for stream in manifest["wxcamStreams"]})
+        self.assertEqual(manifest["schemaVersion"], 2)
+        self.assertEqual(
+            manifest["deployment"],
+            {
+                "environment": "development",
+                "domain": "data-ocean.gamb2le.co.uk",
+                "dashboardURL": "https://data-ocean.gamb2le.co.uk/app",
+                "dataRole": "live-mirror",
+                "revision": "abc123def456",
+            },
+        )
 
     def test_quicklooks_find_latest_and_dated_summary_images(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

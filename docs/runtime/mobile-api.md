@@ -48,7 +48,9 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 ## Endpoints
 
 - `GET /health` - service reachability and auth configuration.
-- `GET /manifest` - tabs, instruments, WXcam streams, and refresh defaults.
+- `GET /manifest` - deployment identity, tabs, instruments, WXcam streams, and
+  refresh defaults. Deployment identity reports the current site environment,
+  public domain, data role, dashboard URL, and checked-out revision.
 - `GET /operations` - latest operations health, stream states, root-cause
   groups, active alerts, and compact trend cards.
 - `GET /overview` - the small first-load status cards and active alerts.
@@ -69,3 +71,5 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 
 The API reads existing deployed products only. It does not restart services,
 write Zarr stores, mutate the WXcam catalog, or change Panel dashboard behavior.
+The deployment fields in the manifest are derived from the existing service
+environment and Git checkout; they do not create or refresh a data product.

@@ -15,7 +15,7 @@ import mobile_catalog as catalog
 
 app = FastAPI(
     title="Aurora Dashboard Mobile API",
-    version="0.2.0",
+    version="0.3.0",
     root_path=os.environ.get("AURORA_MOBILE_API_ROOT_PATH", ""),
 )
 

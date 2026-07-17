@@ -40,6 +40,7 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(authorized.status_code, 200)
         self.assertIn("power", {instrument["id"] for instrument in authorized.json()["instruments"]})
+        self.assertIn("deployment", authorized.json())
 
     def test_operations_endpoint_reads_fixture_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

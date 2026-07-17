@@ -205,10 +205,43 @@ def media_url(*parts: str) -> str:
     return "/media/" + "/".join(part.strip("/") for part in parts)
 
 
+def dashboard_revision() -> str | None:
+    configured = os.environ.get("AURORA_DASHBOARD_REVISION", "").strip()
+    if configured:
+        return configured
+
+    head_path = APP_DIR / ".git" / "HEAD"
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref_path = APP_DIR / ".git" / head.removeprefix("ref: ")
+            head = ref_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return head[:12] if head else None
+
+
+def deployment_descriptor() -> dict[str, Any]:
+    domain = os.environ.get("AURORA_DOMAIN", "").strip() or "data-ocean.gamb2le.co.uk"
+    environment = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
+    if not environment:
+        environment = "development" if "data-ocean" in domain else "production"
+    data_role = "live-mirror" if environment == "development" else "authoritative"
+    return {
+        "environment": environment,
+        "domain": domain,
+        "dashboardURL": f"https://{domain}/app",
+        "dataRole": data_role,
+        "revision": dashboard_revision(),
+    }
+
+
 def manifest() -> dict[str, Any]:
     return {
         "serverTime": utc_now_iso(),
+        "schemaVersion": 2,
         "minimumRefreshIntervalSeconds": 60,
+        "deployment": deployment_descriptor(),
         "sections": [
             {"id": "overview", "title": "Overview", "systemImage": "rectangle.3.group"},
             {"id": "power", "title": "Power", "systemImage": "bolt.batteryblock"},
