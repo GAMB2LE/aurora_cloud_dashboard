@@ -54,6 +54,14 @@ WXCAM_STREAMS = {
     "pano_hdr": {"title": "PANO HDR", "systemImage": "photo"},
 }
 
+PDU_INSTRUMENTS = (
+    ("uas", "UAS", "airplane", 4),
+    ("ceilometer", "CL61", "laser.burst", 5),
+    ("cloud-radar", "Cloud Radar", "dot.radiowaves.left.and.right", 6),
+    ("hatpro", "HATPRO", "antenna.radiowaves.left.and.right", 8),
+)
+PDU_STATE_FRESHNESS_MINUTES = 30.0
+
 OPERATIONS_STREAMS = (
     {
         "id": "ceilometer",
@@ -449,7 +457,54 @@ def overview() -> dict[str, Any]:
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
     ]
-    return {"serverTime": utc_now_iso(), "cards": cards, "activeAlerts": status["alerts"]}
+    return {
+        "serverTime": utc_now_iso(),
+        "cards": cards,
+        "instrumentPower": _instrument_power_states(),
+        "activeAlerts": status["alerts"],
+    }
+
+
+def _instrument_power_states() -> list[dict[str, Any]]:
+    """Return PDU-controlled instrument status without inferring from data age."""
+    path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
+    try:
+        import pandas as pd
+        import xarray as xr
+
+        dataset = xr.open_zarr(path, consolidated=False)
+        try:
+            if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
+                raise ValueError("no PDU samples")
+            sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
+            if sample_time.tzinfo is None:
+                sample_time = sample_time.replace(tzinfo=UTC)
+            age_minutes = max((datetime.now(UTC) - sample_time.astimezone(UTC)).total_seconds() / 60, 0)
+            if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
+                raise ValueError("stale PDU sample")
+            states = {
+                outlet: float(dataset[f"PDUOutlet{outlet}State"].values[-1]) >= 0.5
+                for _id, _title, _icon, outlet in PDU_INSTRUMENTS
+                if f"PDUOutlet{outlet}State" in dataset
+            }
+            detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
+        finally:
+            dataset.close()
+    except Exception:
+        states = {}
+        detail = "PDU status unavailable"
+
+    return [
+        {
+            "id": instrument_id,
+            "title": title,
+            "systemImage": icon,
+            "state": "On" if states.get(outlet) is True else "Off" if states.get(outlet) is False else "Unknown",
+            "level": "green" if states.get(outlet) is True else "unknown" if states.get(outlet) is False else "amber",
+            "detail": detail,
+        }
+        for instrument_id, title, icon, outlet in PDU_INSTRUMENTS
+    ]
 
 
 def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None, detail: str = "") -> dict[str, Any]:
