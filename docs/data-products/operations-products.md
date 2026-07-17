@@ -117,6 +117,8 @@ alerts to `gamb2le@ncas.ac.uk` when operational thresholds are crossed.
 Alert rules:
 
 - any monitored storage filesystem reaches `80 %` used
+- mirror-verification telemetry is more than `30 minutes` old; stream source
+  ages are withheld while that telemetry is stale
 - Aurora Power Supply battery state of charge is at or below the `40 %` operational minimum
 - Aurora Power Supply internal temperature is at or above `45 C`
 - Aurora Power Supply battery voltage from `DCInverterVolts` is below `50 V`

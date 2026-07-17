@@ -43,3 +43,50 @@ def test_dewpoint_alerts_when_margin_is_at_or_below_zero():
     )
 
     assert "power:internal_dewpoint" in ids
+
+
+def test_stale_manifest_replaces_false_stream_staleness():
+    ids = _ids(
+        {
+            "mirror_summary_age_min": 20_000,
+            "mirror_summary_recent_state": 0,
+            "cl61_source_age_min": 20_000,
+        }
+    )
+
+    assert "transfer:mirror_manifest_stale" in ids
+    assert "stream:cl61:source_stale" not in ids
+
+
+def test_recent_manifest_preserves_real_stream_staleness():
+    ids = _ids(
+        {
+            "mirror_summary_age_min": 5,
+            "mirror_summary_recent_state": 1,
+            "cl61_source_age_min": 181,
+        }
+    )
+
+    assert "transfer:mirror_manifest_stale" not in ids
+    assert "stream:cl61:source_stale" in ids
+
+
+def test_storage_alerts_deduplicate_shared_remote_filesystem():
+    alerts = evaluate_alerts(
+        {
+            "host_celine_data_used_pct": 86,
+            "host_celine_data_free_gb": 420,
+            "host_celine_data_resolved_path": "/home/aurora/data",
+            "host_celine_data_probe_target": "aurora@100.124.55.22",
+            "host_celine_data_filesystem": "/dev/sdb1",
+            "host_ass_data_used_pct": 86,
+            "host_ass_data_free_gb": 420,
+            "host_ass_data_resolved_path": "/home/aurora/data",
+            "host_ass_data_probe_target": "aurora@100.124.55.22",
+            "host_ass_data_filesystem": "/dev/sdb1",
+        }
+    )
+    storage = [alert for alert in alerts if alert.id.startswith("storage:")]
+
+    assert [alert.id for alert in storage] == ["storage:host_ass_data"]
+    assert storage[0].title == "ASS shared data disk storage at 86.0%"
