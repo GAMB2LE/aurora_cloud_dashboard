@@ -118,6 +118,9 @@ ARCHIVE_FORECAST_FIELDS = (
 SCENARIO_LOADS_W = (100, 200, 300, 400, 500, 600)
 HINDCAST_LEAD_HOURS = (6, 24, 48, 72)
 DEFAULT_HINDCAST_RETENTION_DAYS = float(os.environ.get("AURORA_POWER_SOC_HINDCAST_RETENTION_DAYS", "7"))
+DEFAULT_MAX_POWER_INPUT_AGE_MINUTES = float(
+    os.environ.get("AURORA_POWER_SOC_FORECAST_MAX_POWER_INPUT_AGE_MINUTES", "20")
+)
 
 
 def _utc_now() -> str:
@@ -322,6 +325,34 @@ def latest_finite(series: pd.Series) -> tuple[pd.Timestamp, float]:
     if finite.empty:
         raise ValueError(f"No finite samples available for {series.name or 'series'}")
     return pd.Timestamp(finite.index[-1]), float(finite.iloc[-1])
+
+
+def validate_power_input_freshness(
+    power: xr.Dataset,
+    *,
+    max_age_minutes: float | None,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp, float]:
+    """Return the latest SOC anchor and reject an operationally stale input."""
+    frame = _power_frame(power)
+    if frame.empty or "BatterySOC" not in frame:
+        raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
+    latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    if max_age_minutes is None:
+        return latest_time, latest_soc
+    reference = pd.Timestamp(now if now is not None else datetime.now(timezone.utc))
+    if reference.tzinfo is not None:
+        reference = reference.tz_convert("UTC").tz_localize(None)
+    if latest_time.tzinfo is not None:
+        latest_time = latest_time.tz_convert("UTC").tz_localize(None)
+    age_minutes = float((reference - latest_time) / pd.Timedelta(minutes=1))
+    if age_minutes > float(max_age_minutes):
+        raise ValueError(
+            "Refusing to publish a forecast from stale SOC/load input: "
+            f"latest BatterySOC is {age_minutes:.1f} minutes old "
+            f"(limit {float(max_age_minutes):.1f} minutes)"
+        )
+    return latest_time, latest_soc
 
 
 def estimate_load_w(frame: pd.DataFrame, *, end: pd.Timestamp, calibration_days: float) -> float:
@@ -1800,6 +1831,8 @@ def generate(
     provider: str = DEFAULT_PROVIDER,
     shadow_report_path: Path | None = DEFAULT_SHADOW_REPORT_PATH,
     ecmwf_cycle_hour: int | str | None = None,
+    max_power_age_minutes: float | None = DEFAULT_MAX_POWER_INPUT_AGE_MINUTES,
+    archive_forecast: bool | None = None,
 ) -> Path:
     provider = validate_provider(provider)
     retrieval_diagnostics: dict[str, object] = {}
@@ -1820,6 +1853,10 @@ def generate(
                 cycle_hour=selected_cycle_hour,
             )
     power = xr.open_zarr(power_zarr, chunks={})
+    latest_power_time, _ = validate_power_input_freshness(
+        power,
+        max_age_minutes=max_power_age_minutes,
+    )
     pdu = None
     if pdu_zarr.exists():
         try:
@@ -1860,6 +1897,18 @@ def generate(
     forecast.attrs["site_latitude"] = str(float(latitude))
     forecast.attrs["site_longitude"] = str(float(longitude))
     forecast.attrs["refresh_from_cache"] = str(bool(refresh_from_cache)).lower()
+    # Cached ECMWF refreshes deliberately re-anchor the live SOC and learned
+    # load after a mode transition. They are not independent ECMWF forecast
+    # issues and must not create duplicate archive/skill samples.
+    if archive_forecast is None:
+        archive_forecast = not refresh_from_cache
+    input_age_minutes = float(
+        (pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None) - latest_power_time)
+        / pd.Timedelta(minutes=1)
+    )
+    forecast.attrs["forecast_refresh_kind"] = "ecmwf_cycle" if archive_forecast else "cached_reanchor"
+    forecast.attrs["forecast_verification_eligible"] = str(bool(archive_forecast)).lower()
+    forecast.attrs["input_power_age_minutes"] = f"{max(input_age_minutes, 0.0):.6g}"
     forecast.attrs["ecmwf_provider_requested"] = provider
     forecast.attrs["ecmwf_provider_effective"] = str(provider_result.diagnostics["effective_provider"])
     forecast.attrs["ecmwf_provider_fallback_reason"] = str(provider_result.diagnostics.get("fallback_reason", ""))
@@ -1873,13 +1922,14 @@ def generate(
     if cycle_time is not None:
         forecast.attrs["ecmwf_cycle_time"] = cycle_time.isoformat()
     _atomic_write_zarr(forecast, output_zarr)
-    updated_archive = append_forecast_archive(forecast, archive_zarr)
-    if skill_zarr is not None:
-        skill = build_forecast_skill_dataset(updated_archive, power)
-        _atomic_write_skill(skill, skill_zarr)
-    if hindcast_zarr is not None:
-        hindcast = build_soc_hindcast_dataset(updated_archive, power)
-        _atomic_write_time_product(hindcast, hindcast_zarr)
+    if archive_forecast:
+        updated_archive = append_forecast_archive(forecast, archive_zarr)
+        if skill_zarr is not None:
+            skill = build_forecast_skill_dataset(updated_archive, power)
+            _atomic_write_skill(skill, skill_zarr)
+        if hindcast_zarr is not None:
+            hindcast = build_soc_hindcast_dataset(updated_archive, power)
+            _atomic_write_time_product(hindcast, hindcast_zarr)
     next_state = dict(state)
     next_state.update(
         {
@@ -1909,6 +1959,10 @@ def generate(
             "latest_metrics": json.loads(forecast.attrs["previous_forecast_metrics"]),
             "latest_ecmwf_input_file": str(input_forecast),
             "latest_refresh_from_cache": bool(refresh_from_cache),
+            "latest_forecast_refresh_kind": forecast.attrs["forecast_refresh_kind"],
+            "latest_forecast_verification_eligible": bool(archive_forecast),
+            "latest_input_power_time": latest_power_time.isoformat(),
+            "latest_input_power_age_minutes": max(input_age_minutes, 0.0),
             "latest_ecmwf_provider_requested": provider,
             "latest_ecmwf_provider_effective": provider_result.diagnostics["effective_provider"],
             "latest_ecmwf_provider_fallback_reason": provider_result.diagnostics.get("fallback_reason", ""),
@@ -1946,6 +2000,17 @@ def main() -> None:
         help="Reuse the latest cached ECMWF GRIB instead of downloading a new forecast",
     )
     parser.add_argument(
+        "--no-archive-forecast",
+        action="store_true",
+        help="Publish a re-anchored forecast without adding a verification archive issue",
+    )
+    parser.add_argument(
+        "--max-power-age-minutes",
+        type=float,
+        default=DEFAULT_MAX_POWER_INPUT_AGE_MINUTES,
+        help="Reject publication when the latest BatterySOC/load sample is older than this limit",
+    )
+    parser.add_argument(
         "--provider",
         choices=("legacy", "earthkit", "shadow"),
         default=DEFAULT_PROVIDER,
@@ -1970,6 +2035,8 @@ def main() -> None:
         provider=args.provider,
         shadow_report_path=args.shadow_report,
         ecmwf_cycle_hour=args.ecmwf_cycle_hour,
+        max_power_age_minutes=args.max_power_age_minutes,
+        archive_forecast=False if args.no_archive_forecast else None,
     )
 
 

@@ -25,6 +25,7 @@ from generate_power_soc_forecast import (
     evaluate_forecast_archive,
     resolve_ecmwf_cycle_hour,
     solar_irradiance_from_ssrd,
+    validate_power_input_freshness,
 )
 from generate_power_soc_ensemble import (
     _ensemble_refresh_reasons,
@@ -76,6 +77,28 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 9, tzinfo=timezone.utc)), 0)
         self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 21, tzinfo=timezone.utc)), 12)
         self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 3, tzinfo=timezone.utc)), 12)
+
+    def test_stale_power_input_is_rejected_before_forecast_publication(self) -> None:
+        latest = pd.Timestamp("2026-07-16T12:00:00")
+        power = xr.Dataset(
+            {"BatterySOC": (("time",), [65.0])},
+            coords={"time": [latest]},
+        )
+
+        anchor_time, anchor_soc = validate_power_input_freshness(
+            power,
+            max_age_minutes=20,
+            now=latest + pd.Timedelta(minutes=19),
+        )
+        self.assertEqual(anchor_time, latest)
+        self.assertEqual(anchor_soc, 65.0)
+
+        with self.assertRaisesRegex(ValueError, "stale SOC/load input"):
+            validate_power_input_freshness(
+                power,
+                max_age_minutes=20,
+                now=latest + pd.Timedelta(minutes=21),
+            )
 
     def test_long_forecast_tail_repeats_diurnal_shape_instead_of_flatlining(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=17, freq="3h")

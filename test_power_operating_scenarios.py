@@ -22,7 +22,10 @@ from power_operating_scenarios import (
     mode_kits,
     optimize_cl61_schedule,
 )
-from generate_power_operating_scenarios import generate as generate_operating_products
+from generate_power_operating_scenarios import (
+    _validate_operating_inputs,
+    generate as generate_operating_products,
+)
 
 
 def _training_data() -> tuple[xr.Dataset, xr.Dataset]:
@@ -120,6 +123,29 @@ class OperatingScenarioTests(unittest.TestCase):
         result = fit_operating_model(extended, pdu, lookback_days=2)
 
         self.assertEqual(result.current_mode, "unknown_ac")
+
+    def test_operating_scenarios_reject_stale_power_or_expired_solar(self) -> None:
+        power, _ = _training_data()
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, _ = _forecast_inputs(issue, horizon_hours=96)
+
+        with self.assertRaisesRegex(ValueError, "stale SOC/load input"):
+            _validate_operating_inputs(
+                power,
+                deterministic,
+                planning_hours=96,
+                max_power_age_minutes=20,
+                now=issue + pd.Timedelta(minutes=21),
+            )
+
+        with self.assertRaisesRegex(ValueError, "expired planning forecast"):
+            _validate_operating_inputs(
+                power,
+                deterministic,
+                planning_hours=240,
+                max_power_age_minutes=None,
+                now=issue,
+            )
 
     def test_named_scenarios_replace_fixed_watt_curves(self) -> None:
         power, pdu = _training_data()

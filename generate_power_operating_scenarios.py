@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import xarray as xr
 
 from power_operating_scenarios import build_operating_scenarios, fit_operating_model
@@ -135,6 +137,50 @@ def _archive_recommendation(path: Path, scenarios: xr.Dataset, *, retention: int
     )
 
 
+def _validate_operating_inputs(
+    power: xr.Dataset,
+    forecast: xr.Dataset,
+    *,
+    planning_hours: int,
+    max_power_age_minutes: float | None,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp, float, float]:
+    """Require a fresh physical anchor and enough ECMWF solar coverage to plan."""
+    if "time" not in power or "BatterySOC" not in power:
+        raise ValueError("Operating scenarios require power time and BatterySOC inputs")
+    times = pd.DatetimeIndex(power["time"].values)
+    values = np.asarray(power["BatterySOC"].values, dtype=np.float64)
+    valid = np.flatnonzero((~times.isna()) & np.isfinite(values))
+    if not valid.size:
+        raise ValueError("Operating scenarios require a finite BatterySOC anchor")
+    latest_index = int(valid[-1])
+    anchor_time = pd.Timestamp(times[latest_index])
+    anchor_soc = float(values[latest_index])
+    reference = pd.Timestamp(now if now is not None else datetime.now(timezone.utc))
+    if reference.tzinfo is not None:
+        reference = reference.tz_convert("UTC").tz_localize(None)
+    if anchor_time.tzinfo is not None:
+        anchor_time = anchor_time.tz_convert("UTC").tz_localize(None)
+    power_age_minutes = float((reference - anchor_time) / pd.Timedelta(minutes=1))
+    if max_power_age_minutes is not None and power_age_minutes > float(max_power_age_minutes):
+        raise ValueError(
+            "Refusing to publish operating scenarios from stale SOC/load input: "
+            f"latest BatterySOC is {power_age_minutes:.1f} minutes old "
+            f"(limit {float(max_power_age_minutes):.1f} minutes)"
+        )
+    if "time" not in forecast or forecast.sizes.get("time", 0) == 0:
+        raise ValueError("Operating scenarios require an ECMWF planning forecast with time coverage")
+    forecast_times = pd.DatetimeIndex(forecast["time"].values)
+    required_end = anchor_time + pd.Timedelta(hours=int(planning_hours))
+    if forecast_times.max() < required_end:
+        raise ValueError(
+            "Refusing to publish operating scenarios from an expired planning forecast: "
+            f"coverage ends at {forecast_times.max().isoformat()}, "
+            f"but {required_end.isoformat()} is required"
+        )
+    return anchor_time, anchor_soc, max(power_age_minutes, 0.0)
+
+
 def generate(
     *,
     power_zarr: Path = POWER_ZARR_PATH,
@@ -149,6 +195,7 @@ def generate(
     planning_hours: int = 240,
     optimization_hours: int = 96,
     lookback_days: float = 7.0,
+    max_power_age_minutes: float | None = None,
 ) -> tuple[Path, Path]:
     state = _read_json(model_state)
     if not state and bootstrap_state is not None:
@@ -158,6 +205,12 @@ def generate(
     forecast = xr.open_zarr(forecast_zarr, chunks={})
     ensemble = xr.open_zarr(ensemble_zarr, chunks={}) if ensemble_zarr is not None and ensemble_zarr.exists() else None
     try:
+        input_time, input_soc, input_age_minutes = _validate_operating_inputs(
+            power,
+            forecast,
+            planning_hours=planning_hours,
+            max_power_age_minutes=max_power_age_minutes,
+        )
         model = fit_operating_model(power, pdu, raw_state=state, lookback_days=lookback_days)
         scenarios = build_operating_scenarios(
             power,
@@ -166,6 +219,16 @@ def generate(
             ensemble=ensemble,
             horizon_hours=planning_hours,
             optimization_hours=optimization_hours,
+        )
+        scenarios.attrs.update(
+            {
+                "input_power_time": input_time.isoformat(),
+                "input_power_soc_pct": f"{input_soc:.6g}",
+                "input_power_age_minutes": f"{input_age_minutes:.6g}",
+                "input_validation": "fresh_power_anchor_and_complete_solar_coverage",
+                "planning_forecast_generated_at_utc": str(forecast.attrs.get("generated_at_utc", "")),
+                "planning_forecast_refresh_kind": str(forecast.attrs.get("forecast_refresh_kind", "")),
+            }
         )
         _write_zarr_atomic(model.state_dataset, state_output)
         _write_zarr_atomic(scenarios, scenario_output)
@@ -200,6 +263,12 @@ def main() -> None:
     parser.add_argument("--planning-hours", type=int, default=240)
     parser.add_argument("--optimization-hours", type=int, default=96)
     parser.add_argument("--lookback-days", type=float, default=7.0)
+    parser.add_argument(
+        "--max-power-age-minutes",
+        type=float,
+        default=20.0,
+        help="Reject scenarios when the latest SOC/load observation is older than this limit",
+    )
     args = parser.parse_args()
     generate(
         power_zarr=args.power_zarr,
@@ -214,6 +283,7 @@ def main() -> None:
         planning_hours=args.planning_hours,
         optimization_hours=args.optimization_hours,
         lookback_days=args.lookback_days,
+        max_power_age_minutes=args.max_power_age_minutes,
     )
 
 
