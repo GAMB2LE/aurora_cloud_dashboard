@@ -814,6 +814,25 @@ def _power_display_summary_path() -> Path:
     return Path(os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr"))
 
 
+def _power_display_summary_metadata_path() -> Path:
+    configured = os.environ.get("POWER_DISPLAY_SUMMARY_METADATA_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return _power_display_summary_path().with_name("power_display_summary_metadata.json")
+
+
+def _power_display_summary_time_bounds_metadata() -> tuple[datetime | None, datetime | None]:
+    """Read initial Power bounds without opening the 147-variable display Zarr."""
+    path = _power_display_summary_metadata_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        lower = pd.Timestamp(payload.get("time_start_utc")).to_pydatetime(warn=False)
+        upper = pd.Timestamp(payload.get("time_end_utc")).to_pydatetime(warn=False)
+    except (OSError, TypeError, ValueError, KeyError):
+        return None, None
+    return _ensure_utc(lower), _ensure_utc(upper)
+
+
 def _power_operating_scenarios_path() -> Path:
     return Path(
         os.environ.get(
@@ -1181,6 +1200,12 @@ def _dataset_time_bounds(inst: str | None = None):
             perf["time_end"] = upper
             return _remember_time_bounds(inst, lower, upper)
         if inst == "power":
+            lower, upper = _power_display_summary_time_bounds_metadata()
+            if lower is not None and upper is not None:
+                perf["source"] = "power_display_summary_metadata"
+                perf["time_start"] = lower
+                perf["time_end"] = upper
+                return _remember_time_bounds(inst, lower, upper)
             for source_name, getter in (
                 ("power_display_summary", _get_power_display_summary_dataset),
                 ("power_display_energy", _get_power_display_energy_dataset),

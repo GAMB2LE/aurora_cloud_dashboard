@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import xarray as xr
@@ -48,6 +50,28 @@ POWER_DISPLAY_SUMMARY_ZARR_PATH = Path(
 POWER_DISPLAY_ENERGY_ZARR_PATH = Path(
     os.environ.get("POWER_DISPLAY_ENERGY_ZARR_PATH", "/data/aurora/products/power/power_display_energy.zarr")
 )
+
+
+def _metadata_path(output_zarr: Path) -> Path:
+    return output_zarr.with_name("power_display_summary_metadata.json")
+
+
+def _write_metadata(output_zarr: Path, display: xr.Dataset) -> Path:
+    """Write the tiny initial-dashboard metadata sidecar atomically."""
+    times = display["time"].values if "time" in display.coords else []
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "source_zarr": str(output_zarr),
+        "time_count": int(display.sizes.get("time", 0)),
+        "variable_count": len(display.data_vars),
+        "time_start_utc": str(times[0]) if len(times) else "",
+        "time_end_utc": str(times[-1]) if len(times) else "",
+    }
+    path = _metadata_path(output_zarr)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
 
 
 def _write_zarr_atomic(ds: xr.Dataset, output_zarr: Path, chunk_time: int = 1440) -> None:
@@ -128,7 +152,9 @@ def generate(
 
     display.attrs[POWER_DISPLAY_SUMMARY_ATTR] = "true"
     _write_zarr_atomic(display, output_zarr)
+    metadata_path = _write_metadata(output_zarr, display)
     print(f"Wrote {output_zarr} with {display.sizes.get('time', 0)} samples and {len(display.data_vars)} variables")
+    print(f"Wrote {metadata_path}")
 
     if energy_output_zarr is not None:
         energy = _energy_subset(display, freq)
@@ -136,6 +162,15 @@ def generate(
             _write_zarr_atomic(energy, energy_output_zarr)
             print(f"Wrote {energy_output_zarr} with {energy.sizes.get('time', 0)} samples")
     return output_zarr
+
+
+def write_metadata_only(output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH) -> Path:
+    """Backfill initial-dashboard metadata without rebuilding the Zarr product."""
+    display = xr.open_zarr(output_zarr, chunks={}, consolidated=True)
+    try:
+        return _write_metadata(output_zarr, display)
+    finally:
+        display.close()
 
 
 def main() -> None:
@@ -153,7 +188,11 @@ def main() -> None:
     parser.add_argument("--energy-output-zarr", type=Path, default=POWER_DISPLAY_ENERGY_ZARR_PATH)
     parser.add_argument("--no-energy-output", action="store_true", help="Do not refresh the legacy cumulative-energy display Zarr")
     parser.add_argument("--freq", default=POWER_DISPLAY_SUMMARY_FREQ)
+    parser.add_argument("--write-metadata-only", action="store_true")
     args = parser.parse_args()
+    if args.write_metadata_only:
+        print(f"Wrote {write_metadata_only(args.output_zarr)}")
+        return
     generate(
         power_zarr=args.power_zarr,
         output_zarr=args.output_zarr,
