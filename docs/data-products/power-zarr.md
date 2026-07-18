@@ -345,8 +345,8 @@ as unknown rather than carried into a new mode. The state product contains:
 - `ObservedLoadWatts` and `EstimatedModeLoadWatts`
 - `LoadInnovationWatts` and `LoadObservationOutlier`
 
-The persisted `hybrid_state_space_v5` learner combines a finite set of named
-operating modes with a robust Kalman update for continuous component loads. Its
+The persisted `hybrid_state_space_v6` learner combines a finite set of named
+operating modes with robust component-regime learning for continuous loads. Its
 components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
 increment. Existing observations are reclassified on each run, but component
 parameters are updated only from timestamps newer than the saved training
@@ -368,6 +368,16 @@ the full planning horizon still exposes later battery risk. Recommendations are
 advisory only; the forecast service does not issue PDU commands. The dashboard
 also evaluates a user-selected CL61 start and duration directly from the stored
 solar and component ensembles, so edits react without another ECMWF download.
+
+Every hourly advisory cycle is also written to
+`power_operating_recommendations.json`. A decision record includes the first
+96-hour proposed operating-mode windows; hourly P10, P50, and P90 SOC and load
+traces; the forecast/model provenance; collection objective; and the 40% P10
+safety constraint. As later telemetry arrives, the same record accumulates a
+hindcast comparison against actual SOC and PDU-detected mode: SOC MAE and bias,
+minimum actual SOC, 40% breaches, mode adherence, and coverage. These records
+are evidence for trusting future PDU control; they do not themselves actuate a
+PDU.
 
 The interactive APS summary presents `ACOutputWatts` and `DCInverterWatts` on
 separate left/right axes in the **Output Power** panel. The optional

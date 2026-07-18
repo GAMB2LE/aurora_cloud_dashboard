@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -91,7 +92,100 @@ def _write_zarr_atomic(dataset: xr.Dataset, path: Path) -> None:
     temporary.replace(path)
 
 
-def _archive_recommendation(path: Path, scenarios: xr.Dataset, *, retention: int = 256) -> None:
+def _json_float(value: object) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None
+
+
+def _schedule_windows(times: pd.DatetimeIndex, mode_codes: np.ndarray) -> list[dict[str, object]]:
+    """Store compact, human-auditable operating-mode windows for a decision."""
+    if len(times) == 0:
+        return []
+    windows: list[dict[str, object]] = []
+    start = 0
+    for index in range(1, len(times) + 1):
+        if index < len(times) and int(mode_codes[index]) == int(mode_codes[start]):
+            continue
+        end = index
+        stop = times[end] if end < len(times) else times[-1] + pd.Timedelta(hours=1)
+        windows.append(
+            {
+                "start_time_utc": times[start].isoformat(),
+                "stop_time_utc": stop.isoformat(),
+                "mode_code": int(mode_codes[start]),
+            }
+        )
+        start = index
+    return windows
+
+
+def _verification_for_record(
+    record: dict[str, Any],
+    *,
+    power: xr.Dataset,
+    operating_state: xr.Dataset,
+) -> dict[str, object] | None:
+    """Compare an archived advisory plan with the subsequent physical record."""
+    trace = record.get("forecast_trace")
+    if not isinstance(trace, dict):
+        return None
+    forecast_times = pd.to_datetime(trace.get("time_utc", []), errors="coerce")
+    expected_soc = np.asarray(trace.get("soc_p50_pct", []), dtype=np.float64)
+    expected_modes = np.asarray(trace.get("mode_code", []), dtype=np.float64)
+    if len(forecast_times) == 0 or len(expected_soc) != len(forecast_times):
+        return None
+    actual_times = pd.DatetimeIndex(power["time"].values)
+    actual_soc = np.asarray(power["BatterySOC"].values, dtype=np.float64)
+    actual = pd.Series(actual_soc, index=actual_times).reindex(
+        forecast_times,
+        method="nearest",
+        tolerance=pd.Timedelta(minutes=45),
+    )
+    usable = np.isfinite(actual.to_numpy(dtype=np.float64)) & np.isfinite(expected_soc)
+    if not np.any(usable):
+        return None
+    observed_modes = np.full(len(forecast_times), np.nan, dtype=np.float64)
+    if "time" in operating_state and "OperatingModeCode" in operating_state:
+        state_times = pd.DatetimeIndex(operating_state["time"].values)
+        state_codes = np.asarray(operating_state["OperatingModeCode"].values, dtype=np.float64)
+        observed_modes = pd.Series(state_codes, index=state_times).reindex(
+            forecast_times,
+            method="nearest",
+            tolerance=pd.Timedelta(minutes=45),
+        ).to_numpy(dtype=np.float64)
+    mode_usable = usable & np.isfinite(expected_modes) & np.isfinite(observed_modes)
+    errors = actual.to_numpy(dtype=np.float64)[usable] - expected_soc[usable]
+    completed = forecast_times[usable]
+    latest_actual = pd.Timestamp(actual_times[np.flatnonzero(np.isfinite(actual_soc))[-1]])
+    return {
+        "status": "complete" if completed.max() >= forecast_times[-1] else "partial",
+        "verified_at_utc": _utc_now(),
+        "actual_coverage_end_utc": completed.max().isoformat(),
+        "coverage_hours": float((completed.max() - forecast_times[0]) / pd.Timedelta(hours=1)),
+        "soc_mae_pct": float(np.mean(np.abs(errors))),
+        "soc_bias_pct": float(np.mean(errors)),
+        "minimum_actual_soc_pct": float(np.nanmin(actual.to_numpy(dtype=np.float64)[usable])),
+        "actual_below_40": bool(np.nanmin(actual.to_numpy(dtype=np.float64)[usable]) < 40.0),
+        "mode_adherence_fraction": (
+            float(np.mean(observed_modes[mode_usable] == expected_modes[mode_usable])) if np.any(mode_usable) else None
+        ),
+        "mode_samples": int(np.count_nonzero(mode_usable)),
+        "latest_actual_soc_time_utc": latest_actual.isoformat(),
+    }
+
+
+def _archive_recommendation(
+    path: Path,
+    scenarios: xr.Dataset,
+    *,
+    power: xr.Dataset,
+    operating_state: xr.Dataset,
+    retention: int = 4096,
+) -> None:
+    """Persist 96-hour advisory decisions and verify them as measurements arrive."""
     current = _read_json(path)
     records = current.get("recommendations", [])
     if not isinstance(records, list):
@@ -102,8 +196,22 @@ def _archive_recommendation(path: Path, scenarios: xr.Dataset, *, retention: int
     index = scenario_ids.index("optimized_cl61")
     start = scenarios["ScenarioStartTime"].values[index]
     stop = scenarios["ScenarioStopTime"].values[index]
+    decision_hours = min(int(scenarios.attrs.get("optimization_horizon_hours", 96)), len(scenarios["time"]))
+    decision_times = pd.DatetimeIndex(scenarios["time"].values[:decision_hours])
+    mode_codes = np.asarray(scenarios["ScenarioModeCode"].values[index, :decision_hours], dtype=np.int16)
+    decision_key = "|".join(
+        (
+            pd.Timestamp(decision_times[0]).floor("h").isoformat(),
+            str(scenarios.attrs.get("model_version", "")),
+            str(scenarios.attrs.get("current_mode", "")),
+        )
+    )
     record = {
+        "decision_id": hashlib.sha256(decision_key.encode("utf-8")).hexdigest()[:16],
         "issued_at_utc": _utc_now(),
+        "decision_horizon_hours": decision_hours,
+        "safety_constraint": "P10 SOC must remain at or above 40%",
+        "optimization_objective": "maximize CL61 collection hours subject to the safety constraint",
         "initial_soc_time": str(scenarios.attrs.get("initial_soc_time", "")),
         "initial_soc_pct": float(scenarios.attrs.get("initial_soc_pct", "nan")),
         "model": str(scenarios.attrs.get("model", "")),
@@ -117,11 +225,34 @@ def _archive_recommendation(path: Path, scenarios: xr.Dataset, *, retention: int
         "starts": int(scenarios["ScenarioStarts"].values[index]),
         "safe": bool(scenarios["ScenarioSafe"].values[index] >= 0.5),
         "control_authority": "advisory_only",
+        "recommended_mode_windows": _schedule_windows(decision_times, mode_codes),
+        "forecast_trace": {
+            "time_utc": [value.isoformat() for value in decision_times],
+            "mode_code": [int(value) for value in mode_codes],
+            "load_p10_w": [
+                _json_float(value) for value in scenarios["ScenarioLoadP10Watts"].values[index, :decision_hours]
+            ],
+            "load_p50_w": [
+                _json_float(value) for value in scenarios["ScenarioLoadP50Watts"].values[index, :decision_hours]
+            ],
+            "load_p90_w": [
+                _json_float(value) for value in scenarios["ScenarioLoadP90Watts"].values[index, :decision_hours]
+            ],
+            "soc_p10_pct": [
+                _json_float(value) for value in scenarios["ScenarioSOCP10"].values[index, :decision_hours]
+            ],
+            "soc_p50_pct": [
+                _json_float(value) for value in scenarios["ScenarioSOCP50"].values[index, :decision_hours]
+            ],
+            "soc_p90_pct": [
+                _json_float(value) for value in scenarios["ScenarioSOCP90"].values[index, :decision_hours]
+            ],
+        },
     }
+    record["verification"] = _verification_for_record(record, power=power, operating_state=operating_state)
     if records:
         latest = records[-1]
-        comparable = ("initial_soc_time", "current_mode", "start_time", "stop_time", "collection_hours", "safe")
-        if isinstance(latest, dict) and all(latest.get(name) == record.get(name) for name in comparable):
+        if isinstance(latest, dict) and latest.get("decision_id") == record["decision_id"]:
             records[-1] = record
         else:
             records.append(record)
@@ -130,7 +261,9 @@ def _archive_recommendation(path: Path, scenarios: xr.Dataset, *, retention: int
     _write_json_atomic(
         path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
+            "verification_method": "archived forecast versus later BatterySOC and PDU-detected operating mode",
+            "control_authority": "advisory_only",
             "updated_at_utc": _utc_now(),
             "recommendations": records[-max(int(retention), 1) :],
         },
@@ -253,7 +386,12 @@ def generate(
         _write_zarr_atomic(scenarios, scenario_output)
         _write_json_atomic(model_state, model.state)
         if recommendation_archive is not None:
-            _archive_recommendation(recommendation_archive, scenarios)
+            _archive_recommendation(
+                recommendation_archive,
+                scenarios,
+                power=power,
+                operating_state=model.state_dataset,
+            )
     finally:
         power.close()
         forecast.close()

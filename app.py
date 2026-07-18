@@ -843,6 +843,13 @@ def _power_operating_scenarios_path() -> Path:
     )
 
 
+def _power_operating_recommendations_path() -> Path:
+    configured = os.environ.get("POWER_OPERATING_RECOMMENDATION_ARCHIVE_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return _power_operating_scenarios_path().with_name("power_operating_recommendations.json")
+
+
 def _prewarmed_interactive_dir() -> Path:
     return Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm"))
 
@@ -8972,6 +8979,65 @@ def _build_custom_cl61_plan_view(start_value, duration_value, kit_value):
     )
 
 
+def _operating_decision_audit_view():
+    """Show the latest auditable advisory plan and its accumulating hindcast."""
+    path = _power_operating_recommendations_path()
+    try:
+        archive = json.loads(path.read_text(encoding="utf-8"))
+        records = archive.get("recommendations", [])
+        record = records[-1] if isinstance(records, list) and records else None
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        record = None
+    if not isinstance(record, dict):
+        return pn.pane.Alert("No archived 96 h operating decision is available yet.", alert_type="warning")
+
+    verification = record.get("verification") if isinstance(record.get("verification"), dict) else {}
+    status = str(verification.get("status", "awaiting measurements")).replace("_", " ").title()
+    minimum_actual = verification.get("minimum_actual_soc_pct")
+    mode_adherence = verification.get("mode_adherence_fraction")
+    metrics = (
+        "<div class='operating-plan-metrics'>"
+        + _operating_plan_metric("Decision window", f"{int(record.get('decision_horizon_hours', 96))} h")
+        + _operating_plan_metric("Planned CL61 collection", f"{float(record.get('collection_hours', 0.0)):.0f} h")
+        + _operating_plan_metric("Forecast min P10 SOC", f"{float(record.get('minimum_p10_soc', float('nan'))):.1f}%")
+        + _operating_plan_metric("Verification", status)
+        + _operating_plan_metric(
+            "SOC MAE so far",
+            "Pending" if verification.get("soc_mae_pct") is None else f"{float(verification['soc_mae_pct']):.1f}%",
+        )
+        + _operating_plan_metric(
+            "Actual min SOC",
+            "Pending" if minimum_actual is None else f"{float(minimum_actual):.1f}%",
+        )
+        + _operating_plan_metric(
+            "Mode adherence",
+            "Pending" if mode_adherence is None else f"{100.0 * float(mode_adherence):.0f}%",
+        )
+        + "</div>"
+    )
+    windows = record.get("recommended_mode_windows", [])
+    if isinstance(windows, list) and windows:
+        schedule = " · ".join(
+            f"{item.get('start_time_utc', '')[:13]}Z code {item.get('mode_code', '?')}"
+            for item in windows[:4]
+            if isinstance(item, dict)
+        )
+    else:
+        schedule = "No scheduled mode windows recorded"
+    note = (
+        "<div class='operating-plan-audit-note'>"
+        f"Issued {escape(str(record.get('issued_at_utc', 'unknown')))}. {escape(schedule)}. "
+        "The archive stores the hourly mode, load and SOC P10/P50/P90 trace for later comparison. Advisory only."
+        "</div>"
+    )
+    return pn.Column(pn.pane.HTML(metrics + note, sizing_mode="stretch_width"), sizing_mode="stretch_width", margin=0)
+
+
+@pn.depends(range_end.param.value)
+def _operating_decision_audit_view_reactive(_live_refresh_anchor):
+    return _operating_decision_audit_view()
+
+
 @pn.depends(
     custom_cl61_start.param.value,
     custom_cl61_duration.param.value,
@@ -8983,6 +9049,7 @@ def _custom_cl61_plan_view(start_value, duration_value, kit_value, _live_refresh
 
 
 power_plan_editor = pn.Card(
+    _operating_decision_audit_view_reactive,
     pn.Row(custom_plan_instrument, custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
     _custom_cl61_plan_view,
     title="Custom Instrument Operating Plan",
@@ -9025,6 +9092,7 @@ def _mobile_custom_cl61_plan_view(start_value, duration_value, kit_value, _live_
 
 
 mobile_power_plan_editor = pn.Card(
+    _operating_decision_audit_view_reactive,
     pn.Column(mobile_custom_plan_instrument, mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
     _mobile_custom_cl61_plan_view,
     title="Custom Instrument Operating Plan",
@@ -9043,6 +9111,7 @@ POWER_PLAN_CSS = """
 .operating-plan-metric { min-width:0; padding:8px 10px; border-left:3px solid #0b7285; background:#f7f9fb; }
 .operating-plan-metric__label { color:#5f6c7b; font-size:12px; }
 .operating-plan-metric__value { color:#22313f; font-size:16px; font-weight:700; overflow-wrap:anywhere; }
+.operating-plan-audit-note { color:#5f6c7b; font-size:12px; margin:0 0 10px; }
 @media (max-width: 760px) { .operating-plan-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 """
 

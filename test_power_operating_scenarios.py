@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,6 +25,7 @@ from power_operating_scenarios import (
     optimize_cl61_schedule,
 )
 from generate_power_operating_scenarios import (
+    _verification_for_record,
     _planning_forecast_provenance,
     _validate_operating_inputs,
     generate as generate_operating_products,
@@ -74,6 +76,31 @@ def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.D
 
 
 class OperatingScenarioTests(unittest.TestCase):
+    def test_archived_decision_verifies_against_actual_soc_and_mode(self) -> None:
+        times = pd.date_range("2026-07-18T00:00:00", periods=3, freq="1h")
+        record = {
+            "forecast_trace": {
+                "time_utc": [value.isoformat() for value in times],
+                "soc_p50_pct": [80.0, 79.0, 78.0],
+                "mode_code": [0, 0, 1],
+            }
+        }
+        power = xr.Dataset(
+            {"BatterySOC": (("time",), [80.0, 78.0, 77.0])},
+            coords={"time": times},
+        )
+        state = xr.Dataset(
+            {"OperatingModeCode": (("time",), [0, 0, 1])},
+            coords={"time": times},
+        )
+
+        verification = _verification_for_record(record, power=power, operating_state=state)
+
+        self.assertIsNotNone(verification)
+        self.assertEqual(verification["status"], "complete")
+        self.assertAlmostEqual(verification["soc_mae_pct"], 2.0 / 3.0)
+        self.assertEqual(verification["mode_adherence_fraction"], 1.0)
+
     def test_planning_provenance_preserves_cached_cycle_identity(self) -> None:
         times = pd.date_range("2026-07-18T00:00:00", periods=3, freq="1h")
         forecast = xr.Dataset(
@@ -388,6 +415,18 @@ class OperatingScenarioTests(unittest.TestCase):
                 scenarios.close()
             self.assertTrue(paths["model"].exists())
             self.assertTrue(paths["recommendations"].exists())
+            archive = json.loads(paths["recommendations"].read_text(encoding="utf-8"))
+            self.assertEqual(archive["schema_version"], 2)
+            record = archive["recommendations"][-1]
+            self.assertEqual(record["decision_horizon_hours"], 96)
+            self.assertEqual(record["safety_constraint"], "P10 SOC must remain at or above 40%")
+            self.assertEqual(len(record["forecast_trace"]["time_utc"]), 96)
+            self.assertEqual(len(record["forecast_trace"]["soc_p50_pct"]), 96)
+            self.assertTrue(record["recommended_mode_windows"])
+            verification = record["verification"]
+            self.assertIsNotNone(verification)
+            self.assertGreaterEqual(verification["coverage_hours"], 0.0)
+            self.assertIn("soc_mae_pct", verification)
 
 
 if __name__ == "__main__":
