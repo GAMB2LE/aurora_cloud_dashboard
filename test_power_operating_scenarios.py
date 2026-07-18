@@ -23,6 +23,7 @@ from power_operating_scenarios import (
     optimize_cl61_schedule,
 )
 from generate_power_operating_scenarios import (
+    _planning_forecast_provenance,
     _validate_operating_inputs,
     generate as generate_operating_products,
 )
@@ -72,6 +73,26 @@ def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.D
 
 
 class OperatingScenarioTests(unittest.TestCase):
+    def test_planning_provenance_preserves_cached_cycle_identity(self) -> None:
+        times = pd.date_range("2026-07-18T00:00:00", periods=3, freq="1h")
+        forecast = xr.Dataset(
+            {"ForecastSolarWatts": (("time",), [10.0, 20.0, 30.0])},
+            coords={"time": times},
+            attrs={
+                "generated_at_utc": "2026-07-18T00:05:00+00:00",
+                "initial_soc_time": "2026-07-18T00:00:00",
+                "forecast_refresh_kind": "cached_reanchor",
+                "forecast_verification_eligible": "false",
+            },
+        )
+
+        provenance = _planning_forecast_provenance(forecast)
+
+        self.assertEqual(provenance["planning_forecast_refresh_kind"], "cached_reanchor")
+        self.assertEqual(provenance["planning_forecast_initial_soc_time"], "2026-07-18T00:00:00")
+        self.assertEqual(provenance["planning_forecast_time_coverage_start"], "2026-07-18T00:00:00")
+        self.assertEqual(provenance["planning_forecast_time_coverage_end"], "2026-07-18T02:00:00")
+
     def test_mode_code_round_trip_supports_combinations(self) -> None:
         value = mode_id(("CL61", "Radar"))
         code = 0

@@ -183,6 +183,19 @@ def _validate_operating_inputs(
     return anchor_time, anchor_soc, max(power_age_minutes, 0.0)
 
 
+def _planning_forecast_provenance(forecast: xr.Dataset) -> dict[str, str]:
+    """Capture the exact planning-cycle identity used for a scenario product."""
+    times = pd.DatetimeIndex(forecast["time"].values)
+    return {
+        "planning_forecast_generated_at_utc": str(forecast.attrs.get("generated_at_utc", "")),
+        "planning_forecast_initial_soc_time": str(forecast.attrs.get("initial_soc_time", "")),
+        "planning_forecast_refresh_kind": str(forecast.attrs.get("forecast_refresh_kind", "")),
+        "planning_forecast_verification_eligible": str(forecast.attrs.get("forecast_verification_eligible", "")),
+        "planning_forecast_time_coverage_start": times.min().isoformat() if len(times) else "",
+        "planning_forecast_time_coverage_end": times.max().isoformat() if len(times) else "",
+    }
+
+
 def generate(
     *,
     power_zarr: Path = POWER_ZARR_PATH,
@@ -229,8 +242,7 @@ def generate(
                 "input_power_soc_pct": f"{input_soc:.6g}",
                 "input_power_age_minutes": f"{input_age_minutes:.6g}",
                 "input_validation": "fresh_power_anchor_and_complete_solar_coverage",
-                "planning_forecast_generated_at_utc": str(forecast.attrs.get("generated_at_utc", "")),
-                "planning_forecast_refresh_kind": str(forecast.attrs.get("forecast_refresh_kind", "")),
+                **_planning_forecast_provenance(forecast),
             }
         )
         _write_zarr_atomic(model.state_dataset, state_output)

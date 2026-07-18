@@ -83,6 +83,7 @@ POWER_PANEL_TIME_GROUPS = OrderedDict(
                 "ecmwf_solar_forecast",
                 "soc_ecmwf_forecast",
                 "operating_plan_scenarios",
+                "operating_plan_schedule",
             ),
         ),
         (
@@ -227,7 +228,12 @@ OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     f"{prefix}{suffix}"
     for prefix in tuple(OPERATING_SCENARIO_PREFIXES.values()) + OPERATING_LEARNED_PREFIXES
     for _source, suffix in OPERATING_SCENARIO_SOURCE_FIELDS
-) + ("OperatingSolarP10Watts", "OperatingSolarP50Watts", "OperatingSolarP90Watts")
+) + (
+    "OperatingCL61OptimizedCL61On",
+    "OperatingSolarP10Watts",
+    "OperatingSolarP50Watts",
+    "OperatingSolarP90Watts",
+)
 POWER_FUTURE_DISPLAY_FIELDS = tuple(
     dict.fromkeys(
         POWER_SOC_FORECAST_FIELDS
@@ -278,6 +284,8 @@ class TraceSpec:
     projection_horizon_hours: float = POWER_SOC_PROJECTION_HOURS
     projection_degree: int = POWER_SOC_PROJECTION_POLY_DEGREE
     display_horizon_hours: float | None = None
+    line_width: float = 2.0
+    opacity: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -302,7 +310,7 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
             if mode:
-                return mode
+                return f"Comparison: {mode}"
     return trace.label
 
 
@@ -1116,17 +1124,26 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "SOC [%]",
             None,
             (
-                TraceSpec("OperatingCurrentSOCP50", "Current Mode", COLOR["slate"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingDCOnlySOCP50", "DC-Only", COLOR["green"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingCL61ContinuousSOCP50", "CL61 Continuously On", COLOR["red"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingCL61OptimizedSOCP50", "Optimized CL61", COLOR["teal"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingCL61OptimizedSOCP10", "Optimized CL61 P10", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingLearned1SOCP50", "Learned Mode 1", COLOR["blue"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingLearned2SOCP50", "Learned Mode 2", COLOR["purple"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingLearned3SOCP50", "Learned Mode 3", COLOR["magenta"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingLearned4SOCP50", "Learned Mode 4", COLOR["brown"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingLearned5SOCP50", "Learned Mode 5", COLOR["olive"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("OperatingLearned6SOCP50", "Learned Mode 6", COLOR["black"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("OperatingCurrentSOCP50", "Current Mode", COLOR["slate"], valid_min=0.0, valid_max=100.0, line_width=1.5, opacity=0.65),
+                TraceSpec("OperatingDCOnlySOCP50", "Comparison: DC-Only", COLOR["green"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=1.3, opacity=0.45),
+                TraceSpec("OperatingCL61ContinuousSOCP50", "Stress test: CL61 continuously on", COLOR["red"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=1.5, opacity=0.6),
+                TraceSpec("OperatingCL61OptimizedSOCP50", "Recommended CL61 plan", COLOR["teal"], valid_min=0.0, valid_max=100.0, line_width=3.2),
+                TraceSpec("OperatingCL61OptimizedSOCP10", "Recommended CL61 P10", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0, line_width=2.0),
+                TraceSpec("OperatingLearned1SOCP50", "Learned Mode 1", COLOR["blue"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+                TraceSpec("OperatingLearned2SOCP50", "Learned Mode 2", COLOR["purple"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+                TraceSpec("OperatingLearned3SOCP50", "Learned Mode 3", COLOR["magenta"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+                TraceSpec("OperatingLearned4SOCP50", "Learned Mode 4", COLOR["brown"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+                TraceSpec("OperatingLearned5SOCP50", "Learned Mode 5", COLOR["olive"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+                TraceSpec("OperatingLearned6SOCP50", "Learned Mode 6", COLOR["black"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+            ),
+        ),
+        PanelSpec(
+            "operating_plan_schedule",
+            "Recommended CL61 Collection Schedule",
+            "CL61 state (0 off, 1 on)",
+            None,
+            (
+                TraceSpec("OperatingCL61OptimizedCL61On", "Recommended CL61 schedule", COLOR["teal"], step=True, valid_min=0.0, valid_max=1.0, line_width=3.0),
             ),
         ),
         PanelSpec(
@@ -1138,7 +1155,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("ECMWFSolarIrradiance", "ECMWF Solar Power", COLOR["brown"], valid_min=0.0),
                 TraceSpec("ForecastSolarWatts", "Forecast Solar Charging", COLOR["green"], axis="right", dash="dot", valid_min=0.0),
                 TraceSpec("OperatingCurrentLoadP50Watts", "Current Instrument Load", COLOR["slate"], axis="right", dash="dot", valid_min=0.0),
-                TraceSpec("OperatingCL61OptimizedLoadP50Watts", "Planned Instrument Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0),
+                TraceSpec("OperatingCL61OptimizedLoadP50Watts", "Recommended CL61 Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0, line_width=3.0),
             ),
         ),
         PanelSpec(
@@ -2007,6 +2024,9 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
             if source_name not in ds or ds[source_name].dims != ("scenario", "time"):
                 continue
             values[f"{prefix}{suffix}"] = np.asarray(ds[source_name].isel(scenario=index).values, dtype=np.float64)
+        if scenario_id == "optimized_cl61" and "ScenarioModeCode" in ds:
+            codes = np.asarray(ds["ScenarioModeCode"].isel(scenario=index).values, dtype=np.int64)
+            values["OperatingCL61OptimizedCL61On"] = ((codes & 1) > 0).astype(np.float64)
     current_mode = str(ds.attrs.get("current_mode", ""))
     learned_ids = [
         value
@@ -2082,6 +2102,15 @@ def _add_operating_schedule_bands(fig: go.Figure, ds: xr.Dataset, *, row: int) -
         )
 
 
+def _power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
+    """Mark forecast plots that are using a re-anchored cached ECMWF cycle."""
+    if panel.key not in {"ecmwf_solar_forecast", "soc_ecmwf_forecast", "operating_plan_scenarios", "operating_plan_schedule"}:
+        return panel.label
+    if str(ds.attrs.get("operating_planning_forecast_refresh_kind", "")).strip() == "cached_reanchor":
+        return f"{panel.label} [Cached forecast - reduced confidence]"
+    return panel.label
+
+
 def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
     if ds is None or "scenario" not in ds:
         return {}
@@ -2097,6 +2126,12 @@ def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
         ("control_authority", "operating_control_authority"),
         ("solar_member_source", "operating_solar_member_source"),
         ("native_ensemble_end_time", "operating_native_ensemble_end_time"),
+        ("planning_forecast_generated_at_utc", "operating_planning_forecast_generated_at_utc"),
+        ("planning_forecast_initial_soc_time", "operating_planning_forecast_initial_soc_time"),
+        ("planning_forecast_refresh_kind", "operating_planning_forecast_refresh_kind"),
+        ("planning_forecast_verification_eligible", "operating_planning_forecast_verification_eligible"),
+        ("planning_forecast_time_coverage_start", "operating_planning_forecast_time_coverage_start"),
+        ("planning_forecast_time_coverage_end", "operating_planning_forecast_time_coverage_end"),
     ):
         if source_name in ds.attrs:
             attrs[target_name] = str(ds.attrs[source_name])
@@ -3195,7 +3230,7 @@ def build_summary_plotly(
         shared_xaxes=not separate_time_axes,
         vertical_spacing=vertical_spacing,
         specs=[[{"secondary_y": panel.right_axis_label is not None}] for panel, _rows in panels],
-        subplot_titles=[panel.label for panel, _rows in panels],
+        subplot_titles=[_power_panel_label(ds, panel) if instrument == "power" else panel.label for panel, _rows in panels],
     )
 
     panel_height = (1.0 - vertical_spacing * (len(panels) - 1)) / len(panels)
@@ -3263,7 +3298,8 @@ def build_summary_plotly(
                     mode="lines",
                     name=trace_label,
                     legend=legend_name,
-                    line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                    line=dict(color=trace.color, width=trace.line_width, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                    opacity=trace.opacity,
                     hovertemplate=f"Time=%{{x}}<br>{trace_label}=%{{y:.6g}}<extra></extra>",
                     connectgaps=False,
                     showlegend=True,
@@ -3274,6 +3310,20 @@ def build_summary_plotly(
             )
         if instrument == "power" and panel.key in OPERATING_SCHEDULE_SHADE_PANELS:
             _add_operating_schedule_bands(fig, ds, row=row_index)
+        if instrument == "power" and panel.key == "operating_plan_schedule":
+            schedule_codes = np.asarray(ds["OperatingCL61OptimizedCL61On"].values, dtype=np.float64) if "OperatingCL61OptimizedCL61On" in ds else np.asarray([])
+            if not np.any(np.isfinite(schedule_codes) & (schedule_codes > 0)):
+                fig.add_annotation(
+                    text="No recommended CL61 collection window",
+                    xref=f"x{row_index}" if row_index > 1 else "x",
+                    yref=f"y{row_index}" if row_index > 1 else "y",
+                    x=panel_time_start + (panel_time_end - panel_time_start) / 2 if panel_time_start is not None and panel_time_end is not None else base_time_start + (base_time_end - base_time_start) / 2,
+                    y=0.5,
+                    xanchor="center",
+                    yanchor="middle",
+                    showarrow=False,
+                    font=dict(color=COLOR["slate"], size=12),
+                )
         if panel.key in SOC_REFERENCE_PANEL_KEYS:
             reference_start = panel_time_start or base_time_start
             reference_end = panel_time_end or base_time_end

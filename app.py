@@ -9510,7 +9510,8 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
                 mode="lines",
                 name=trace.label,
                 yaxis="y2" if use_right else "y",
-                line=dict(color=trace.color, width=2.0, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                line=dict(color=trace.color, width=trace.line_width, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
+                opacity=trace.opacity,
                 hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.4g}}<extra></extra>",
                 connectgaps=False,
             )
@@ -9586,6 +9587,21 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
     )
 
 
+def _power_forecast_status_markup(ds: xr.Dataset) -> str:
+    """Expose forecast provenance without hiding a usable cached planning cycle."""
+    kind = str(ds.attrs.get("operating_planning_forecast_refresh_kind", "")).strip()
+    anchor = str(ds.attrs.get("operating_planning_forecast_initial_soc_time", "")).strip()
+    issued = str(ds.attrs.get("operating_planning_forecast_generated_at_utc", "")).strip()
+    if not kind:
+        return "<div class='mobile-section-note'>Operating forecast is unavailable.</div>"
+    if kind == "cached_reanchor":
+        state = "Cached forecast - reduced confidence"
+    else:
+        state = "Fresh ECMWF forecast"
+    detail = " | ".join(part for part in (f"Anchor {anchor}" if anchor else "", f"Issued {issued}" if issued else "") if part)
+    return f"<div class='mobile-section-note'>{escape(state)}{': ' + escape(detail) if detail else ''}</div>"
+
+
 def _mobile_power_tab() -> pn.Column:
     ds = _mobile_power_window()
     if ds is None or "time" not in ds:
@@ -9605,6 +9621,7 @@ def _mobile_power_tab() -> pn.Column:
             sizing_mode="stretch_width",
             margin=0,
         ),
+        pn.pane.HTML(_power_forecast_status_markup(ds), sizing_mode="stretch_width", margin=0),
         mobile_power_plan_editor,
         *cards,
         sizing_mode="stretch_width",
