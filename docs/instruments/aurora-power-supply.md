@@ -209,7 +209,11 @@ change starts a new, comparable verification record.
 The Power summary also includes a seven-day fixed-lead SOC hindcast, comparing
 observations with forecasts issued 6, 24, 48, and 72 hours earlier. A separate
 50-member ECMWF IFS ensemble supplies P10-P90 SOC uncertainty and the forecast
-probability of crossing below the 40% minimum operational threshold. Ensemble CRPS,
+probability of crossing below the 40% minimum operational threshold. In this
+operational panel every member holds the detected current PDU/APS system mode
+and load fixed, so P10-P90 represent ECMWF solar uncertainty only. Deliberate
+instrument-on schedules are evaluated solely in the separate operating-mode
+plans. Ensemble CRPS,
 interval coverage, and threshold Brier score remain pending until verifying
 observations have arrived.
 

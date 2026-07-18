@@ -1099,9 +1099,9 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "SOC [%]",
             f"Probability SOC Below {MINIMUM_OPERATIONAL_SOC_LABEL} [%]",
             (
-                TraceSpec("BatterySOCForecastP10", "ECMWF Ensemble P10", COLOR["light_blue"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecastP90", "ECMWF Ensemble P90", COLOR["light_blue"], dash="dot", valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast", "ECMWF SOC Forecast", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecastP10", "System as-is - ECMWF P10", COLOR["light_blue"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecastP90", "System as-is - ECMWF P90", COLOR["light_blue"], dash="dot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCForecast", "System as-is - ECMWF central", COLOR["green"], valid_min=0.0, valid_max=100.0),
                 TraceSpec(SOC_BELOW_THRESHOLD_PROBABILITY_FIELD, f"Probability Below {MINIMUM_OPERATIONAL_SOC_LABEL}", COLOR["red"], axis="right", scale=100.0, valid_min=0.0, valid_max=1.0),
             ),
         ),

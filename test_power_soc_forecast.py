@@ -715,6 +715,11 @@ class PowerSocForecastTests(unittest.TestCase):
         ensemble = build_ensemble_dataset(power, deterministic, solar, horizon_hours=15)
 
         np.testing.assert_allclose(ensemble["BatterySOCForecastEnsemble"].values[:, 0], 66.0)
+        ensemble_loads = ensemble["ForecastLoadWattsEnsemble"].values
+        np.testing.assert_allclose(
+            ensemble_loads,
+            np.repeat(ensemble_loads[[0], :], ensemble_loads.shape[0], axis=0),
+        )
         self.assertTrue(np.all(ensemble["BatterySOCForecastP10"] <= ensemble["BatterySOCForecastP50"]))
         self.assertTrue(np.all(ensemble["BatterySOCForecastP50"] <= ensemble["BatterySOCForecastP90"]))
         self.assertTrue(
@@ -732,6 +737,11 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(ensemble.attrs["load_mode"], "DC-Only + CL61")
         self.assertEqual(ensemble.attrs["load_mode_signature"], "PDUOutlet5Watts>=5W")
         self.assertEqual(float(ensemble.attrs["forecast_load_w"]), 455.15)
+        self.assertEqual(ensemble.attrs["scenario_scope"], "current_system_only")
+        self.assertEqual(
+            ensemble.attrs["load_uncertainty"],
+            "fixed current-system load; ECMWF solar ensemble only",
+        )
 
     def test_ensemble_reanchors_when_soc_or_load_mode_changes_within_same_cycle(self) -> None:
         deterministic_attrs = {

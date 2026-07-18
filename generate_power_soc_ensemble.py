@@ -304,22 +304,24 @@ def build_ensemble_dataset(
     else:
         raw_load = build_historical_load_forecast(frame, common_times, end=latest_time, calibration_days=7)
         central_load, _ = _bounded_load_profile(raw_load, correction_w)
-    offsets = _load_residual_offsets(frame, end=latest_time, members=len(member_irradiance))
+    # This operational ensemble represents the detected system as it is now.
+    # Planned instrument schedules are evaluated by the separate operating-plan
+    # product; only the ECMWF solar members may vary here.
+    current_system_load = central_load.reindex(common_times).ffill().bfill().clip(lower=0.0)
 
     soc_rows = []
     irr_rows = []
     solar_rows = []
     load_rows = []
     output_times: pd.DatetimeIndex | None = None
-    for index, irradiance in enumerate(member_irradiance):
+    for irradiance in member_irradiance:
         irradiance = irradiance.reindex(common_times).interpolate().ffill().bfill()
-        load = (central_load.reindex(common_times).ffill().bfill() + offsets[index]).clip(lower=0.0)
         result = integrate_soc_forecast(
             initial_soc=latest_soc,
             initial_time=latest_time,
             irradiance=irradiance,
             solar_factor=solar_factor,
-            load_w=load,
+            load_w=current_system_load,
             capacity_kwh=capacity_kwh,
         )
         output_times = pd.DatetimeIndex(result.index)
@@ -359,7 +361,8 @@ def build_ensemble_dataset(
             "load_mode_source": str(deterministic.attrs.get("load_mode_source", "unknown")),
             "load_mode_active_kits": str(deterministic.attrs.get("load_mode_active_kits", "")),
             "load_mode_signature": str(deterministic.attrs.get("load_mode_signature", "")),
-            "load_uncertainty": "recent same-regime residual quantiles",
+            "load_uncertainty": "fixed current-system load; ECMWF solar ensemble only",
+            "scenario_scope": "current_system_only",
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
             "source": "ECMWF IFS perturbed ssrd members plus APS power history",
         },

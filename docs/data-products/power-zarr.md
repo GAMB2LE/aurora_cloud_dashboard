@@ -163,6 +163,10 @@ compatibility, but the dashboard no longer presents them as operating plans.
 The visible scenario panel is populated from the learned operating-mode product
 described below.
 
+The **SOC 96 h Forecast** P10/P90 traces hold the detected current system mode
+and load fixed for every member. They vary only the ECMWF solar member, so
+planned instrument schedules cannot widen this operational uncertainty range.
+
 When `/data/aurora/products/power/power_soc_forecast_skill.zarr` is available,
 the display summary also includes past-facing forecast verification traces:
 
