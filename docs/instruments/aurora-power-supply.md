@@ -21,9 +21,9 @@ Typical panels include:
 - **ASS 48 V DC Power**
   - ASS 48 V DC power from `watts_on_48vdc_Avg`, when available
 - **ASS PDU Outlet Power**
-  - outlet watt traces from `PDUOutlet1Watts` through `PDUOutlet8Watts`, when available
-  - known assignments are `PDUOutlet4Watts` = UAS, `PDUOutlet5Watts` = CL61,
+  - assigned outlet watt traces: `PDUOutlet4Watts` = UAS, `PDUOutlet5Watts` = CL61,
     `PDUOutlet6Watts` = Radar, and `PDUOutlet8Watts` = HATPRO
+  - unassigned physical outlets are retained in the data product but are not plotted
   - remains visible when every outlet reports `0 W`, so powered-off kit is an
     explicit operational state rather than a missing panel
 - **Cumulative Power & State of Charge**

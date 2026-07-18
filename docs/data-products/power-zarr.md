@@ -374,9 +374,11 @@ separate left/right axes in the **Output Power** panel. The optional
 `watts_on_48vdc_Avg` context trace is presented as its own **ASS 48 V DC
 Power** panel when ASFS logger data are available.
 The optional PDU outlet watt traces are presented as their own **ASS PDU Outlet
-Power** panel when `pdu.zarr` is available. All eight traces remain visible when
-every outlet reports `0 W`, so powered-off kit is distinguishable from missing
-PDU data.
+Power** panel when `pdu.zarr` is available. It shows only the assigned UAS,
+CL61, Radar, and HATPRO outlets; unassigned outlets remain available in the
+underlying product but do not add noise to the dashboard legend. The panel
+remains visible when every assigned outlet reports `0 W`, so powered-off kit is
+distinguishable from missing PDU data.
 
 ## Derived display-energy Zarr
 

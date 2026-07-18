@@ -121,6 +121,9 @@ PDU_OUTLET_LABELS = {
     6: "Radar",
     8: "HATPRO",
 }
+# The PDU records all eight physical outlets, but only these outlets are
+# assigned to station equipment and belong in the operator-facing plot.
+PDU_DISPLAY_OUTLETS = tuple(PDU_OUTLET_LABELS)
 POWER_DISPLAY_ENERGY_MAP = {
     "SolarYield_East": "PowerDisplaySolarYield_East",
     "SolarYield_South": "PowerDisplaySolarYield_South",
@@ -1036,7 +1039,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     valid_min=0.0,
                     valid_max=5000.0,
                 )
-                for outlet, field_name in enumerate(PDU_WATT_FIELDS, start=1)
+                for outlet in PDU_DISPLAY_OUTLETS
+                for field_name in (f"PDUOutlet{outlet}Watts",)
             ),
         ),
         PanelSpec(

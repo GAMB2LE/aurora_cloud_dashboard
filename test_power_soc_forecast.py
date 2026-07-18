@@ -981,7 +981,7 @@ class PowerSocForecastTests(unittest.TestCase):
         for trace in references:
             np.testing.assert_allclose(trace.y, MINIMUM_OPERATIONAL_SOC_PCT)
 
-    def test_zero_pdu_outlet_loads_remain_visible(self) -> None:
+    def test_only_assigned_pdu_outlet_loads_are_displayed(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=4, freq="15min")
         ds = xr.Dataset(
             {field: (("time",), np.zeros(len(times))) for field in PDU_WATT_FIELDS},
@@ -992,14 +992,11 @@ class PowerSocForecastTests(unittest.TestCase):
         pdu_rows = next(rows for panel, rows in panels if panel.key == "pdu_outlet_power")
         figure = build_summary_plotly(ds, "power")
 
-        self.assertEqual(len(pdu_rows), 8)
+        self.assertEqual(len(pdu_rows), 4)
         self.assertTrue(all(np.allclose(values, 0.0) for _trace, values in pdu_rows))
         outlet_names = {trace.name for trace in figure.data}
-        self.assertTrue(
-            {"Outlet 1", "Outlet 2", "Outlet 3", "UAS", "CL61", "Radar", "Outlet 7", "HATPRO"}.issubset(
-                outlet_names
-            )
-        )
+        self.assertEqual({"UAS", "CL61", "Radar", "HATPRO"} & outlet_names, {"UAS", "CL61", "Radar", "HATPRO"})
+        self.assertFalse({"Outlet 1", "Outlet 2", "Outlet 3", "Outlet 7"} & outlet_names)
 
 
 if __name__ == "__main__":
