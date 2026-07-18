@@ -308,7 +308,9 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
     if trace.var == "OperatingCurrentSOCP50":
         mode = str(ds.attrs.get("operating_current_mode_label", "")).strip()
         if mode:
-            return f"Current Mode: {mode}"
+            maturity = str(ds.attrs.get("operating_current_mode_maturity", "")).strip()
+            suffix = f" ({maturity})" if maturity else ""
+            return f"Current Mode: {mode}{suffix}"
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -2123,8 +2125,12 @@ def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
         ("current_mode", "operating_current_mode"),
         ("current_mode_label", "operating_current_mode_label"),
         ("current_mode_confidence", "operating_current_mode_confidence"),
+        ("current_mode_maturity", "operating_current_mode_maturity"),
         ("model", "operating_model"),
         ("model_version", "operating_model_version"),
+        ("observed_modes", "operating_observed_modes"),
+        ("mode_maturity", "operating_mode_maturity"),
+        ("operating_event_count", "operating_event_count"),
         ("forecast_horizon_hours", "operating_forecast_horizon_hours"),
         ("optimization_horizon_hours", "operating_optimization_horizon_hours"),
         ("control_authority", "operating_control_authority"),

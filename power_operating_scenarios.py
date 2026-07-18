@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import csv
 import json
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
@@ -14,10 +16,10 @@ import xarray as xr
 
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
 
-MODEL_NAME = "hybrid_state_space_v5"
-MODEL_VERSION = 5
-STATE_SCHEMA_VERSION = 1
-SCENARIO_SCHEMA_VERSION = 1
+MODEL_NAME = "hybrid_state_space_v6"
+MODEL_VERSION = 6
+STATE_SCHEMA_VERSION = 2
+SCENARIO_SCHEMA_VERSION = 2
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -31,7 +33,9 @@ PDU_ACTIVE_W = 5.0
 AC_ACTIVE_W = 25.0
 PDU_FRESHNESS_MINUTES = 60.0
 OBSERVATION_FREQUENCY = "15min"
-MIN_LEARNED_SAMPLES = 4
+MIN_CALIBRATED_SAMPLES = 4
+MIN_RELIABLE_SAMPLES = 12
+MIN_REGIME_SAMPLES = 4
 MIN_RUN_HOURS = 12
 MAX_STARTS_PER_UTC_DAY = 1
 
@@ -40,10 +44,47 @@ SCENARIO_DC_ONLY = "dc_only"
 SCENARIO_CL61 = "cl61_continuous"
 SCENARIO_OPTIMIZED = "optimized_cl61"
 CORE_SCENARIOS = (SCENARIO_CURRENT, SCENARIO_DC_ONLY, SCENARIO_CL61, SCENARIO_OPTIMIZED)
+DEFAULT_EVENTS_PATH = Path(__file__).with_name("config") / "power_operating_events.csv"
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+@dataclass(frozen=True)
+class OperatingEvent:
+    time: pd.Timestamp
+    kit: str
+    active: bool
+    note: str = ""
+
+
+def load_operating_events(path: Path | None = DEFAULT_EVENTS_PATH) -> tuple[OperatingEvent, ...]:
+    """Load operator intent annotations; PDU telemetry remains electrical truth."""
+    if path is None or not Path(path).exists():
+        return ()
+    events: list[OperatingEvent] = []
+    with Path(path).open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            kit = str(row.get("kit", "")).strip()
+            action = str(row.get("action", "")).strip().lower()
+            timestamp = pd.to_datetime(row.get("time_utc"), errors="coerce", utc=True)
+            if kit not in KIT_ORDER or action not in {"on", "off"} or pd.isna(timestamp):
+                continue
+            events.append(
+                OperatingEvent(
+                    time=pd.Timestamp(timestamp).tz_convert("UTC").tz_localize(None),
+                    kit=kit,
+                    active=action == "on",
+                    note=str(row.get("note", "")).strip(),
+                )
+            )
+    return tuple(sorted(events, key=lambda value: value.time))
+
+
+def _mode_catalog() -> tuple[str, ...]:
+    combinations = [mode_from_code(value) for value in range(1 << len(KIT_ORDER))]
+    return tuple(combinations + [MODE_UNKNOWN_AC])
 
 
 def mode_id(active_kits: Iterable[str], *, unknown_ac: bool = False) -> str:
@@ -164,6 +205,7 @@ def build_observation_frame(
     end: pd.Timestamp | None = None,
     lookback_days: float = 7.0,
     frequency: str = OBSERVATION_FREQUENCY,
+    events: Sequence[OperatingEvent] = (),
 ) -> pd.DataFrame:
     if "time" not in power or power.sizes.get("time", 0) == 0:
         return pd.DataFrame()
@@ -226,6 +268,23 @@ def build_observation_frame(
     observed["direct_mode"] = mode_values
     observed["mode_evidence"] = evidence_values
     observed["direct_confidence"] = confidence_values
+    observed["operator_event"] = ""
+    observed["operator_event_agreement"] = np.nan
+    tolerance = pd.Timedelta(minutes=5)
+    for event in events:
+        if event.time < observed.index.min() - tolerance or event.time > observed.index.max() + tolerance:
+            continue
+        nearest = observed.index.get_indexer([event.time], method="nearest", tolerance=tolerance)
+        if nearest.size == 0 or nearest[0] < 0:
+            continue
+        index = int(nearest[0])
+        raw_window = pdu_frame.loc[event.time - tolerance : event.time + tolerance] if not pdu_frame.empty else pd.DataFrame()
+        watts = raw_window.get(f"{event.kit}_watts", pd.Series(dtype=float)).to_numpy(dtype=np.float64)
+        states = raw_window.get(f"{event.kit}_state", pd.Series(dtype=float)).to_numpy(dtype=np.float64)
+        active = np.where(np.isfinite(watts), watts >= PDU_ACTIVE_W, states >= 0.5)
+        actual = bool(np.any(active == event.active)) if active.size else False
+        observed.iloc[index, observed.columns.get_loc("operator_event")] = f"{event.kit} {'on' if event.active else 'off'}"
+        observed.iloc[index, observed.columns.get_loc("operator_event_agreement")] = float(actual == event.active)
     subset = [name for name in ("load_w", "BatterySOC", "ACOutputWatts") if name in observed]
     return observed.dropna(how="all", subset=subset) if subset else observed
 
@@ -250,7 +309,7 @@ def _bootstrap_components(raw_state: Mapping[str, Any] | None, observations: pd.
     means = _default_component_means(observations)
     covariance = np.diag(np.array([60.0, 100.0, 150.0, 120.0, 100.0, 150.0]) ** 2)
     counts = np.zeros(len(COMPONENTS), dtype=np.int64)
-    if not isinstance(raw_state, Mapping):
+    if not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
         return means, covariance, counts
     component_state = raw_state.get("components")
     if isinstance(component_state, Mapping):
@@ -327,6 +386,73 @@ def _kalman_update(
     return updated_mean, updated_covariance, innovation, clipped
 
 
+def _robust_location_scale(values: np.ndarray) -> tuple[float, float, np.ndarray]:
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return 0.0, 1.0, finite
+    median = float(np.nanmedian(finite))
+    mad = float(np.nanmedian(np.abs(finite - median)))
+    scale = max(1.4826 * mad, 3.0)
+    retained = finite[np.abs(finite - median) <= max(5.0 * scale, 20.0)]
+    if not retained.size:
+        retained = finite
+    return float(np.nanmedian(retained)), max(float(1.4826 * np.nanmedian(np.abs(retained - np.nanmedian(retained)))), 3.0), retained
+
+
+def _component_regimes(observations: pd.DataFrame) -> dict[str, list[dict[str, float]]]:
+    """Derive robust one/two-regime component distributions from direct evidence.
+
+    A large isolated gap is retained only when both sides contain repeated samples.
+    That preserves the CL61 high/low regimes while rejecting the single UAS spike.
+    """
+    regimes: dict[str, list[dict[str, float]]] = {}
+    dc_values = observations.loc[observations["direct_mode"] == MODE_DC_ONLY, "load_w"].to_numpy(dtype=np.float64)
+    for component in COMPONENTS:
+        if component == "DC":
+            values = dc_values
+        elif component == "UnknownAC":
+            values = observations.loc[observations["direct_mode"] == MODE_UNKNOWN_AC, "load_w"].to_numpy(dtype=np.float64)
+        else:
+            field = f"{component}_watts"
+            values = observations.loc[observations.get(field, pd.Series(index=observations.index, dtype=float)) >= PDU_ACTIVE_W, field].to_numpy(dtype=np.float64) if field in observations else np.empty(0)
+        values = values[np.isfinite(values)]
+        if not values.size:
+            regimes[component] = []
+            continue
+        ordered = np.sort(values)
+        split = int(np.argmax(np.diff(ordered))) + 1 if ordered.size >= 2 else 0
+        left, right = ordered[:split], ordered[split:]
+        gap = float(ordered[split] - ordered[split - 1]) if 0 < split < ordered.size else 0.0
+        _, left_scale, _ = _robust_location_scale(left) if left.size else (0.0, 3.0, left)
+        _, right_scale, _ = _robust_location_scale(right) if right.size else (0.0, 3.0, right)
+        separated = gap >= max(20.0, 3.0 * np.sqrt(left_scale * left_scale + right_scale * right_scale))
+        if left.size >= MIN_REGIME_SAMPLES and right.size >= MIN_REGIME_SAMPLES and separated:
+            groups = (left, right)
+        else:
+            _, _, retained = _robust_location_scale(values)
+            groups = (retained,)
+        component_regimes: list[dict[str, float]] = []
+        total = float(sum(len(group) for group in groups))
+        for group in groups:
+            mean, scale, retained = _robust_location_scale(group)
+            component_regimes.append({"mean_w": mean, "std_w": scale, "weight": len(retained) / total, "sample_count": float(len(retained))})
+        regimes[component] = component_regimes
+    return regimes
+
+
+def _regime_component_moments(regimes: Mapping[str, Sequence[Mapping[str, float]]], component: str) -> tuple[float, float] | None:
+    values = list(regimes.get(component, ()))
+    if not values:
+        return None
+    weights = np.asarray([float(value["weight"]) for value in values], dtype=np.float64)
+    weights /= weights.sum()
+    means = np.asarray([float(value["mean_w"]) for value in values], dtype=np.float64)
+    variances = np.asarray([float(value["std_w"]) ** 2 for value in values], dtype=np.float64)
+    mean = float(weights @ means)
+    return mean, float(weights @ (variances + (means - mean) ** 2))
+
+
 @dataclass
 class OperatingModelResult:
     state_dataset: xr.Dataset
@@ -334,6 +460,9 @@ class OperatingModelResult:
     component_mean: np.ndarray
     component_covariance: np.ndarray
     learned_modes: tuple[str, ...]
+    observed_modes: tuple[str, ...]
+    mode_maturity: dict[str, str]
+    component_regimes: dict[str, list[dict[str, float]]]
     current_mode: str
     current_confidence: float
 
@@ -345,8 +474,9 @@ def fit_operating_model(
     raw_state: Mapping[str, Any] | None = None,
     end: pd.Timestamp | None = None,
     lookback_days: float = 7.0,
+    events: Sequence[OperatingEvent] = (),
 ) -> OperatingModelResult:
-    observations = build_observation_frame(power, pdu, end=end, lookback_days=lookback_days)
+    observations = build_observation_frame(power, pdu, end=end, lookback_days=lookback_days, events=events)
     if observations.empty:
         raise ValueError("No APS/PDU observations are available for operating-state learning")
     mean, covariance, counts = _bootstrap_components(raw_state, observations)
@@ -360,9 +490,7 @@ def fit_operating_model(
                 last_trained = last_trained.tz_convert("UTC").tz_localize(None)
     train_mask = np.ones(len(observations), dtype=bool) if pd.isna(last_trained) else observations.index > last_trained
 
-    known_modes = {MODE_DC_ONLY, MODE_UNKNOWN_AC, mode_id(("CL61",))}
-    known_modes.update(str(value) for value in observations["direct_mode"].dropna().unique())
-    mode_names = tuple(sorted(known_modes, key=lambda value: (mode_code(value), value)))
+    mode_names = _mode_catalog()
     posterior = np.full(len(mode_names), 1.0 / len(mode_names), dtype=np.float64)
     previous_mode = str(raw_state.get("current_mode", MODE_DC_ONLY)) if isinstance(raw_state, Mapping) else MODE_DC_ONLY
     if previous_mode in mode_names:
@@ -440,14 +568,38 @@ def fit_operating_model(
         outliers.append(float(clipped))
 
     mode_counts = pd.Series(selected_modes).value_counts()
-    learned_modes = tuple(
+    observed_modes = tuple(
         value
         for value in mode_names
-        if value != MODE_UNKNOWN_AC and int(mode_counts.get(value, 0)) >= MIN_LEARNED_SAMPLES
+        if value != MODE_UNKNOWN_AC and int(mode_counts.get(value, 0)) > 0
     )
+    mode_maturity = {
+        value: (
+            "reliable" if int(mode_counts.get(value, 0)) >= MIN_RELIABLE_SAMPLES
+            else "calibrated" if int(mode_counts.get(value, 0)) >= MIN_CALIBRATED_SAMPLES
+            else "observed"
+        )
+        for value in observed_modes
+    }
+    learned_modes = tuple(value for value in observed_modes if mode_maturity[value] in {"calibrated", "reliable"})
+    new_observation_count = int(np.count_nonzero(train_mask))
+    saved_regimes = raw_state.get("component_regimes") if isinstance(raw_state, Mapping) else None
+    component_regimes = (
+        {str(name): list(values) for name, values in saved_regimes.items()}
+        if new_observation_count == 0 and isinstance(saved_regimes, Mapping)
+        else _component_regimes(observations)
+    )
+    if new_observation_count > 0 or not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
+        for name, index in COMPONENT_INDEX.items():
+            moment = _regime_component_moments(component_regimes, name)
+            if moment is None:
+                continue
+            mean[index], variance = moment
+            covariance[index, index] = max(variance, 9.0)
+        eigenvalues, eigenvectors = np.linalg.eigh((covariance + covariance.T) / 2.0)
+        covariance = eigenvectors @ np.diag(np.clip(eigenvalues, 1e-6, None)) @ eigenvectors.T
     current_mode = selected_modes[-1]
     current_confidence = confidences[-1]
-    new_observation_count = int(np.count_nonzero(train_mask))
     latest_observation_time = pd.Timestamp(observations.index[-1])
     if not pd.isna(last_trained) and new_observation_count == 0:
         latest_observation_time = last_trained
@@ -459,11 +611,30 @@ def fit_operating_model(
             "EstimatedModeLoadWatts": (("time",), np.asarray(estimated_loads, dtype=np.float32)),
             "LoadInnovationWatts": (("time",), np.asarray(innovations, dtype=np.float32)),
             "LoadObservationOutlier": (("time",), np.asarray(outliers, dtype=np.float32)),
+            "OperatingEventAgreement": (("time",), observations["operator_event_agreement"].to_numpy(dtype=np.float32)),
             "OperatingModeProbability": (("time", "mode"), probabilities.astype(np.float32)),
+            "ComponentRegimeMeanWatts": (("component", "regime"), np.asarray([
+                [component_regimes.get(component, [{}] * 2)[index].get("mean_w", np.nan) if index < len(component_regimes.get(component, ())) else np.nan for index in range(2)]
+                for component in COMPONENTS
+            ], dtype=np.float32)),
+            "ComponentRegimeStdWatts": (("component", "regime"), np.asarray([
+                [component_regimes.get(component, [{}] * 2)[index].get("std_w", np.nan) if index < len(component_regimes.get(component, ())) else np.nan for index in range(2)]
+                for component in COMPONENTS
+            ], dtype=np.float32)),
+            "ComponentRegimeWeight": (("component", "regime"), np.asarray([
+                [component_regimes.get(component, [{}] * 2)[index].get("weight", np.nan) if index < len(component_regimes.get(component, ())) else np.nan for index in range(2)]
+                for component in COMPONENTS
+            ], dtype=np.float32)),
+            "ComponentRegimeSampleCount": (("component", "regime"), np.asarray([
+                [component_regimes.get(component, [{}] * 2)[index].get("sample_count", np.nan) if index < len(component_regimes.get(component, ())) else np.nan for index in range(2)]
+                for component in COMPONENTS
+            ], dtype=np.float32)),
         },
         coords={
             "time": observations.index.to_numpy(dtype="datetime64[ns]"),
             "mode": np.asarray(mode_names, dtype=str),
+            "component": np.asarray(COMPONENTS, dtype=str),
+            "regime": np.asarray(("low", "high"), dtype=str),
         },
         attrs={
             "power_operating_state_product": "true",
@@ -475,6 +646,10 @@ def fit_operating_model(
             "current_mode_label": mode_label(current_mode),
             "current_mode_confidence": f"{current_confidence:.6g}",
             "learned_modes": json.dumps(list(learned_modes)),
+            "observed_modes": json.dumps(list(observed_modes)),
+            "mode_maturity": json.dumps(mode_maturity, sort_keys=True),
+            "operator_event_count": str(len(events)),
+            "operator_event_agreements": str(int(np.nansum(observations["operator_event_agreement"].to_numpy(dtype=np.float64)))),
             "component_names": json.dumps(list(COMPONENTS)),
             "component_mean_w": json.dumps({name: float(mean[index]) for index, name in enumerate(COMPONENTS)}),
             "component_std_w": json.dumps(
@@ -502,6 +677,9 @@ def fit_operating_model(
         "last_observation_time_utc": latest_observation_time.isoformat(),
         "new_observation_count": new_observation_count,
         "learned_modes": list(learned_modes),
+        "observed_modes": list(observed_modes),
+        "mode_maturity": mode_maturity,
+        "component_regimes": component_regimes,
         "components": {
             name: {
                 "mean_w": float(mean[index]),
@@ -519,6 +697,9 @@ def fit_operating_model(
         component_mean=mean,
         component_covariance=covariance,
         learned_modes=learned_modes,
+        observed_modes=observed_modes,
+        mode_maturity=mode_maturity,
+        component_regimes=component_regimes,
         current_mode=current_mode,
         current_confidence=current_confidence,
     )
@@ -604,7 +785,14 @@ def _hourly_solar_members(
     }
 
 
-def _component_members(mean: np.ndarray, covariance: np.ndarray, count: int, *, seed: int) -> np.ndarray:
+def _component_members(
+    mean: np.ndarray,
+    covariance: np.ndarray,
+    count: int,
+    *,
+    seed: int,
+    regimes: Mapping[str, Sequence[Mapping[str, float]]] | None = None,
+) -> np.ndarray:
     count = max(int(count), 1)
     if count == 1:
         return mean[None, :]
@@ -612,7 +800,19 @@ def _component_members(mean: np.ndarray, covariance: np.ndarray, count: int, *, 
     safe_covariance = (safe_covariance + safe_covariance.T) / 2.0
     eigenvalues, eigenvectors = np.linalg.eigh(safe_covariance)
     safe_covariance = eigenvectors @ np.diag(np.clip(eigenvalues, 1e-6, None)) @ eigenvectors.T
-    values = np.random.default_rng(seed).multivariate_normal(mean, safe_covariance, size=count)
+    rng = np.random.default_rng(seed)
+    values = rng.multivariate_normal(mean, safe_covariance, size=count)
+    for name, index in COMPONENT_INDEX.items():
+        entries = list((regimes or {}).get(name, ()))
+        if not entries:
+            continue
+        weights = np.asarray([float(entry["weight"]) for entry in entries], dtype=np.float64)
+        weights /= weights.sum()
+        choices = rng.choice(len(entries), size=count, p=weights)
+        values[:, index] = np.asarray(
+            [rng.normal(float(entries[choice]["mean_w"]), max(float(entries[choice]["std_w"]), 3.0)) for choice in choices],
+            dtype=np.float64,
+        )
     return np.clip(values, 0.0, None)
 
 
@@ -919,7 +1119,13 @@ def build_operating_scenarios(
     )
     member_count = solar_members.shape[0]
     seed = int(issue_time.value % (2**32 - 1))
-    component_members = _component_members(model.component_mean, model.component_covariance, member_count, seed=seed)
+    component_members = _component_members(
+        model.component_mean,
+        model.component_covariance,
+        member_count,
+        seed=seed,
+        regimes=model.component_regimes,
+    )
     base_mode = model.current_mode if model.current_mode != MODE_UNKNOWN_AC else MODE_DC_ONLY
     optimized = optimize_cl61_schedule(
         times=times,
@@ -943,10 +1149,10 @@ def build_operating_scenarios(
         SCENARIO_CL61: tuple(mode_id(("CL61",)) for _ in times),
         SCENARIO_OPTIMIZED: tuple(optimized_modes),
     }
-    for learned_mode in model.learned_modes:
-        if learned_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
+    for observed_mode in model.observed_modes:
+        if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
-        scenario_modes.setdefault(f"learned_{learned_mode}", tuple(learned_mode for _ in times))
+        scenario_modes.setdefault(f"learned_{observed_mode}", tuple(observed_mode for _ in times))
 
     scenario_ids = tuple(scenario_modes)
     labels = {
@@ -1026,6 +1232,10 @@ def build_operating_scenarios(
         coords={
             "scenario": np.asarray(scenario_ids, dtype=str),
             "scenario_label": (("scenario",), np.asarray([labels[value] for value in scenario_ids], dtype=str)),
+            "scenario_mode_maturity": (("scenario",), np.asarray([
+                "core" if value in CORE_SCENARIOS else model.mode_maturity.get(value.removeprefix("learned_"), "observed")
+                for value in scenario_ids
+            ], dtype=str)),
             "time": times.to_numpy(dtype="datetime64[ns]"),
             "member": np.arange(1, member_count + 1, dtype=np.int16),
             "component": np.asarray(COMPONENTS, dtype=str),
@@ -1042,6 +1252,9 @@ def build_operating_scenarios(
             "current_mode": model.current_mode,
             "current_mode_label": mode_label(model.current_mode),
             "current_mode_confidence": f"{model.current_confidence:.6g}",
+            "current_mode_maturity": model.mode_maturity.get(model.current_mode, "observed"),
+            "observed_modes": json.dumps(list(model.observed_modes)),
+            "mode_maturity": json.dumps(model.mode_maturity, sort_keys=True),
             "scenario_base_mode": base_mode,
             "forecast_horizon_hours": str(actual_horizon),
             "optimization_horizon_hours": str(min(optimization_hours, actual_horizon)),

@@ -20,6 +20,7 @@ from power_operating_scenarios import (
     mode_from_code,
     mode_id,
     mode_kits,
+    load_operating_events,
     optimize_cl61_schedule,
 )
 from generate_power_operating_scenarios import (
@@ -123,6 +124,41 @@ class OperatingScenarioTests(unittest.TestCase):
         np.testing.assert_allclose(second.component_mean, first.component_mean, atol=1e-9)
         np.testing.assert_allclose(second.component_covariance, first.component_covariance, atol=1e-9)
         self.assertEqual(second.state["new_observation_count"], 0)
+
+    def test_repeated_cl61_load_levels_become_two_regimes(self) -> None:
+        power, pdu = _training_data()
+        active = np.asarray(pdu["PDUOutlet5Watts"].values) >= 5.0
+        cl61 = np.where(active, np.where(np.arange(len(active)) % 2 == 0, 39.0, 222.0), 0.0)
+        pdu["PDUOutlet5Watts"] = (("time",), cl61)
+        result = fit_operating_model(power, pdu, lookback_days=2)
+
+        regimes = result.component_regimes["CL61"]
+        self.assertEqual(len(regimes), 2)
+        self.assertLess(regimes[0]["mean_w"], 50.0)
+        self.assertGreater(regimes[1]["mean_w"], 200.0)
+        self.assertGreater(result.component_covariance[COMPONENT_INDEX["CL61"], COMPONENT_INDEX["CL61"]], 1000.0)
+
+    def test_short_pdu_combination_is_visible_with_observed_maturity(self) -> None:
+        power, pdu = _training_data()
+        radar = np.zeros(power.sizes["time"], dtype=float)
+        radar[-3:] = 285.0
+        pdu["PDUOutlet6Watts"] = (("time",), radar)
+        pdu["PDUOutlet6State"] = (("time",), (radar > 0).astype(float))
+        result = fit_operating_model(power, pdu, lookback_days=2)
+        mode = mode_id(("CL61", "Radar"))
+
+        self.assertIn(mode, result.observed_modes)
+        self.assertEqual(result.mode_maturity[mode], "observed")
+        self.assertNotIn(mode, result.learned_modes)
+
+    def test_operator_event_file_is_loaded_without_overriding_pdu_mode(self) -> None:
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.csv"
+            path.write_text("time_utc,action,kit,note\n2026-07-15T06:00:00Z,on,CL61,test\n", encoding="utf-8")
+            events = load_operating_events(path)
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0].active)
+        self.assertEqual(events[0].kit, "CL61")
 
     def test_stale_pdu_evidence_does_not_keep_cl61_active(self) -> None:
         power, pdu = _training_data()
@@ -344,7 +380,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "5")
+                self.assertEqual(state.attrs["model_version"], "6")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
             finally:

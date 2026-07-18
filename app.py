@@ -8900,12 +8900,14 @@ def _build_custom_cl61_plan_view(start_value, duration_value, kit_value):
     minimum_p10 = float(result["minimum_p10_soc"])
     status_label, status_level = _operating_plan_status(minimum_p10)
     current_mode = str(scenarios.attrs.get("current_mode_label", "Unknown"))
+    mode_maturity = str(scenarios.attrs.get("current_mode_maturity", "observed")).replace("_", " ").title()
     confidence = float(scenarios.attrs.get("current_mode_confidence", "nan"))
     confidence_text = f"{confidence * 100:.0f}%" if np.isfinite(confidence) else "Unknown"
     metrics = (
         f"<div class='operating-plan-status operating-plan-status--{status_level}'>{status_label} | Advisory only</div>"
         "<div class='operating-plan-metrics'>"
         + _operating_plan_metric("Detected mode", current_mode)
+        + _operating_plan_metric("Mode evidence", mode_maturity)
         + _operating_plan_metric("Mode confidence", confidence_text)
         + _operating_plan_metric(f"{result['kit']} collection", f"{float(result['collection_hours']):.0f} h")
         + _operating_plan_metric("Minimum P10 SOC", f"{minimum_p10:.1f}%")

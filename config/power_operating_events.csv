@@ -1,0 +1,9 @@
+time_utc,action,kit,note
+2026-07-17T08:57:00Z,on,CL61,Operator note: Ceilometer on
+2026-07-17T10:00:00Z,on,Radar,Operator note: Radar on
+2026-07-17T10:54:00Z,on,HATPRO,Operator note: HATPRO powered; acquisition startup followed
+2026-07-17T12:47:00Z,on,UAS,Operator note: Drone AC on
+2026-07-17T15:09:00Z,off,CL61,Operator note: Ceilometer off
+2026-07-17T15:18:00Z,off,UAS,Operator note: Drones off
+2026-07-17T15:32:00Z,off,Radar,Operator note: Radar soft shutdown started
+2026-07-17T15:57:00Z,off,HATPRO,Operator note: HATPRO soft shutdown started

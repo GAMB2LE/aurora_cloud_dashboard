@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from power_operating_scenarios import build_operating_scenarios, fit_operating_model
+from power_operating_scenarios import DEFAULT_EVENTS_PATH, build_operating_scenarios, fit_operating_model, load_operating_events
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 PDU_ZARR_PATH = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
@@ -209,7 +209,8 @@ def generate(
     recommendation_archive: Path | None = RECOMMENDATION_ARCHIVE_PATH,
     planning_hours: int = 240,
     optimization_hours: int = 96,
-    lookback_days: float = 7.0,
+    lookback_days: float = 30.0,
+    events_path: Path | None = DEFAULT_EVENTS_PATH,
     max_power_age_minutes: float | None = None,
 ) -> tuple[Path, Path]:
     state = _read_json(model_state)
@@ -227,7 +228,8 @@ def generate(
             minimum_horizon_hours=optimization_hours,
             max_power_age_minutes=max_power_age_minutes,
         )
-        model = fit_operating_model(power, pdu, raw_state=state, lookback_days=lookback_days)
+        events = load_operating_events(events_path)
+        model = fit_operating_model(power, pdu, raw_state=state, lookback_days=lookback_days, events=events)
         scenarios = build_operating_scenarios(
             power,
             forecast,
@@ -242,6 +244,8 @@ def generate(
                 "input_power_soc_pct": f"{input_soc:.6g}",
                 "input_power_age_minutes": f"{input_age_minutes:.6g}",
                 "input_validation": "fresh_power_anchor_and_complete_solar_coverage",
+                "operating_events_path": str(events_path or ""),
+                "operating_event_count": str(len(events)),
                 **_planning_forecast_provenance(forecast),
             }
         )
@@ -277,7 +281,8 @@ def main() -> None:
     parser.add_argument("--recommendation-archive", type=Path, default=RECOMMENDATION_ARCHIVE_PATH)
     parser.add_argument("--planning-hours", type=int, default=240)
     parser.add_argument("--optimization-hours", type=int, default=96)
-    parser.add_argument("--lookback-days", type=float, default=7.0)
+    parser.add_argument("--lookback-days", type=float, default=30.0)
+    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
     parser.add_argument(
         "--max-power-age-minutes",
         type=float,
@@ -298,6 +303,7 @@ def main() -> None:
         planning_hours=args.planning_hours,
         optimization_hours=args.optimization_hours,
         lookback_days=args.lookback_days,
+        events_path=args.events,
         max_power_age_minutes=args.max_power_age_minutes,
     )
 
