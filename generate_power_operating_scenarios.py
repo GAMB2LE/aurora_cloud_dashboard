@@ -16,7 +16,14 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from power_operating_scenarios import DEFAULT_EVENTS_PATH, build_operating_scenarios, fit_operating_model, load_operating_events
+from power_operating_scenarios import (
+    DEFAULT_EVENTS_PATH,
+    build_operating_scenarios,
+    fit_operating_model,
+    load_operating_events,
+    mode_from_code,
+    mode_label,
+)
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 PDU_ZARR_PATH = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
@@ -116,6 +123,8 @@ def _schedule_windows(times: pd.DatetimeIndex, mode_codes: np.ndarray) -> list[d
                 "start_time_utc": times[start].isoformat(),
                 "stop_time_utc": stop.isoformat(),
                 "mode_code": int(mode_codes[start]),
+                "mode": mode_from_code(int(mode_codes[start])),
+                "mode_label": mode_label(mode_from_code(int(mode_codes[start]))),
             }
         )
         start = index
@@ -229,6 +238,7 @@ def _archive_recommendation(
         "forecast_trace": {
             "time_utc": [value.isoformat() for value in decision_times],
             "mode_code": [int(value) for value in mode_codes],
+            "mode_label": [mode_label(mode_from_code(int(value))) for value in mode_codes],
             "load_p10_w": [
                 _json_float(value) for value in scenarios["ScenarioLoadP10Watts"].values[index, :decision_hours]
             ],

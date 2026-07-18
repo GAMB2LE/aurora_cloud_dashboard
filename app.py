@@ -9018,7 +9018,7 @@ def _operating_decision_audit_view():
     windows = record.get("recommended_mode_windows", [])
     if isinstance(windows, list) and windows:
         schedule = " · ".join(
-            f"{item.get('start_time_utc', '')[:13]}Z code {item.get('mode_code', '?')}"
+            f"{item.get('start_time_utc', '')[:13]}Z {item.get('mode_label', item.get('mode', 'code ' + str(item.get('mode_code', '?'))))}"
             for item in windows[:4]
             if isinstance(item, dict)
         )
