@@ -3462,6 +3462,12 @@ def _on_instrument_change(event):
     sync_quicklooks = _instrument_change_origin != "interactive"
     _apply_instrument_defaults(event.new, reset_time=True, sync_quicklooks=sync_quicklooks)
     power_plan_editor.visible = event.new == "power"
+    if not _browser_tab_syncing and "desktop_tabs" in globals():
+        active = _active_tab_slug()
+        if event.new == "power" and active == "interactive":
+            _set_active_tab("power")
+        elif event.new != "power" and active == "power":
+            _set_active_tab("interactive")
 
 
 instrument_select.param.watch(_on_instrument_change, "value")
@@ -7116,7 +7122,7 @@ def _view_query_params(tab_slug: str) -> dict[str, str]:
         "tab": tab_slug,
         "instrument": instrument_select.value,
     }
-    if tab_slug == "interactive":
+    if tab_slug in {"interactive", "power"}:
         params["start"] = range_start.value.isoformat() if range_start.value else ""
         params["end"] = range_end.value.isoformat() if range_end.value else ""
         params["live"] = "1" if live_toggle.value else "0"
@@ -7169,7 +7175,8 @@ def _update_browser_location() -> None:
 
 
 def _refresh_share_and_download_state(*_events) -> None:
-    interactive_share_url.value = _build_share_url("interactive")
+    browser_tab = "power" if _active_tab_slug() == "power" else "interactive"
+    interactive_share_url.value = _build_share_url(browser_tab)
     science_share_url.value = _build_share_url("science")
     hk_share_url.value = _build_share_url("housekeeping")
     auroracam_share_url.value = _build_share_url("auroracam")
@@ -9802,6 +9809,7 @@ def _build_mobile_layout() -> pn.Column:
 
 DESKTOP_TAB_SPECS = (
     ("Interactive Data Browser", "interactive", interactive_tab),
+    ("Power", "power", interactive_tab),
     ("Science Quicklooks", "science", science_quicklooks_tab),
     ("House Keeping Quicklooks", "housekeeping", housekeeping_quicklooks_tab),
     ("AURORACam", "auroracam", auroracam_tab),
@@ -9818,6 +9826,7 @@ TAB_SLUG_BY_INDEX = {
     index: slug for slug, index in TAB_INDEX_BY_SLUG.items()
 }
 ACTIVE_TAB_SLUG = "interactive"
+_browser_tab_syncing = False
 desktop_tabs = pn.Tabs(
     *((label, panel) for label, _slug, panel in DESKTOP_TAB_SPECS),
     dynamic=True,
@@ -9831,9 +9840,30 @@ def _normalize_tab_slug(slug: str | None) -> str:
     return slug if slug in TAB_PANEL_BY_SLUG else "interactive"
 
 
+def _sync_browser_tab_instrument(active: str) -> None:
+    """Keep the shared browser component aligned with its top-level tab."""
+    global _browser_tab_syncing
+    if _browser_tab_syncing:
+        return
+    _browser_tab_syncing = True
+    try:
+        if active == "power":
+            instrument_select.visible = False
+            if instrument_select.value != "power":
+                instrument_select.value = "power"
+        elif active == "interactive":
+            instrument_select.visible = True
+            if instrument_select.value == "power":
+                instrument_select.value = "Ceilometer"
+    finally:
+        _browser_tab_syncing = False
+
+
 def _ensure_active_tab_loaded(slug: str | None = None) -> None:
     active = _normalize_tab_slug(slug or ACTIVE_TAB_SLUG)
-    if active == "science" and "science" not in _LOADED_TABS:
+    if active in {"interactive", "power"}:
+        _sync_browser_tab_instrument(active)
+    elif active == "science" and "science" not in _LOADED_TABS:
         science_quicklook_container[:] = [_science_quicklook_image]
         science_status_container[:] = [science_status]
         science_availability_container[:] = [science_availability]
@@ -9925,7 +9955,12 @@ if _MOBILE_LAYOUT_ACTIVE:
     main_layout = _build_mobile_layout()
 else:
     main_layout = pn.Column(desktop_tabs, sizing_mode="stretch_width", margin=0)
-    requested_tab = _request_query_args().get("tab")
+    requested_args = _request_query_args()
+    requested_tab = requested_args.get("tab")
+    # Preserve existing Power share links while moving the desktop Power view
+    # out of the generic instrument browser.
+    if requested_tab == "interactive" and requested_args.get("instrument") == "power":
+        requested_tab = "power"
     _set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
     _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
