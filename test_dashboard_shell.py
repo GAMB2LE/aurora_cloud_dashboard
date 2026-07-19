@@ -47,6 +47,29 @@ def test_phone_shell_keeps_operational_groups() -> None:
     assert list(app.MOBILE_TAB_OPTIONS) == ["Overview", "Power", "Plots", "Camera", "Ops"]
 
 
+def test_browser_overview_uses_shared_instrument_state_groups(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app.mobile_catalog,
+        "overview",
+        lambda: {
+            "instrumentPower": [
+                {"title": "UAS", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
+                {"title": "CL61", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
+                {"title": "Cloud Radar", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
+                {"title": "HATPRO", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
+                {"title": "Meteorology", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
+            ]
+        },
+    )
+
+    markup = app._browser_overview_instrument_markup()
+
+    assert "PDU-controlled instruments" in markup
+    assert "Collection-only instruments" in markup
+    assert "Cloud Radar" in markup
+    assert "Meteorology" in markup
+
+
 def test_live_query_uses_current_window_instead_of_stale_url_dates(monkeypatch) -> None:
     current_start = datetime(2026, 7, 15, 10, 30)
     current_end = datetime(2026, 7, 16, 10, 30)

@@ -92,6 +92,7 @@ from wxcam_catalog import (
     representative_hourly_records,
 )
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
+import mobile_catalog
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
@@ -8508,6 +8509,68 @@ body, .bk {
     color: #647283;
     line-height: 1.35;
 }
+.desktop-overview-heading {
+    font-size: 18px;
+    font-weight: 700;
+    color: #22313f;
+    padding: 4px 0;
+}
+.overview-instrument-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+    width: 100%;
+}
+.overview-instrument-group {
+    border: 1px solid #d8e1e8;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow: hidden;
+}
+.overview-instrument-group__title {
+    padding: 10px 12px 4px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #22313f;
+}
+.overview-instrument-group__note {
+    padding: 0 12px 8px;
+    font-size: 11px;
+    color: #647283;
+}
+.overview-instrument-row {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border-top: 1px solid #edf1f4;
+}
+.overview-instrument-row__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #94a3b8;
+}
+.overview-instrument-row--green .overview-instrument-row__dot { background: #1c9b6c; }
+.overview-instrument-row--amber .overview-instrument-row__dot { background: #c97a17; }
+.overview-instrument-row--red .overview-instrument-row__dot { background: #c84b42; }
+.overview-instrument-row__title {
+    font-size: 13px;
+    font-weight: 650;
+    color: #22313f;
+}
+.overview-instrument-row__detail {
+    margin-top: 2px;
+    font-size: 11px;
+    color: #647283;
+}
+.overview-instrument-row__state {
+    font-size: 12px;
+    font-weight: 650;
+    color: #344154;
+    text-align: right;
+}
 .mobile-plot-card {
     padding: 6px;
 }
@@ -9413,6 +9476,50 @@ def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: st
     )
 
 
+def _browser_overview_instrument_markup() -> str:
+    """Render browser instrument groups from the read-only mobile contract."""
+    try:
+        rows = mobile_catalog.overview().get("instrumentPower", [])
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not load browser overview instrument states: %s", exc)
+        rows = []
+
+    if not rows:
+        return "<div class='mobile-section-note'>Instrument-state snapshot unavailable.</div>"
+
+    groups = (
+        ("PDU-controlled instruments", "Power state from the latest PDU sample", rows[:4]),
+        ("Collection-only instruments", "Collection freshness; no individual PDU outlet", rows[4:]),
+    )
+    rendered_groups = []
+    for title, note, group_rows in groups:
+        if not group_rows:
+            continue
+        rendered_rows = []
+        for row in group_rows:
+            level = _mobile_level(row.get("level"))
+            rendered_rows.append(
+                "<div class='overview-instrument-row overview-instrument-row--{level}'>"
+                "<span class='overview-instrument-row__dot'></span>"
+                "<div><div class='overview-instrument-row__title'>{title}</div>"
+                "<div class='overview-instrument-row__detail'>{detail}</div></div>"
+                "<div class='overview-instrument-row__state'>{state}</div>"
+                "</div>".format(
+                    level=escape(level),
+                    title=escape(str(row.get("title", "Instrument"))),
+                    detail=escape(str(row.get("detail", "Status unavailable"))),
+                    state=escape(str(row.get("state", "Unknown"))),
+                )
+            )
+        rendered_groups.append(
+            "<section class='overview-instrument-group'>"
+            f"<div class='overview-instrument-group__title'>{escape(title)}</div>"
+            f"<div class='overview-instrument-group__note'>{escape(note)}</div>"
+            f"{''.join(rendered_rows)}</section>"
+        )
+    return "<div class='overview-instrument-groups'>" + "".join(rendered_groups) + "</div>"
+
+
 def _mobile_auroracam_freshness() -> tuple[str, str, str]:
     latest_time: datetime | None = None
     latest_label = "No camera"
@@ -9513,7 +9620,10 @@ browser_overview_refresh = pn.widgets.Button(name="Refresh station snapshot", bu
 
 
 def _refresh_browser_overview(_event=None) -> None:
-    browser_overview_container[:] = [_mobile_overview()]
+    browser_overview_container[:] = [
+        _mobile_overview(),
+        pn.pane.HTML(_browser_overview_instrument_markup(), sizing_mode="stretch_width", margin=(8, 0, 0, 0)),
+    ]
 
 
 browser_overview_refresh.on_click(_refresh_browser_overview)
