@@ -2139,10 +2139,17 @@ def _ops_combined_series(ds: xr.Dataset, names: tuple[str, ...], mode: str = "ma
     if not arrays:
         return None
     stack = np.vstack(arrays)
-    with np.errstate(all="ignore"):
-        if mode == "min":
-            return np.nanmin(stack, axis=0)
-        return np.nanmax(stack, axis=0)
+    finite = np.isfinite(stack)
+    valid_columns = np.any(finite, axis=0)
+    combined = np.full(stack.shape[1], np.nan, dtype=np.float64)
+    if not np.any(valid_columns):
+        return combined
+    selected = stack[:, valid_columns]
+    if mode == "min":
+        combined[valid_columns] = np.min(np.where(np.isfinite(selected), selected, np.inf), axis=0)
+    else:
+        combined[valid_columns] = np.max(np.where(np.isfinite(selected), selected, -np.inf), axis=0)
+    return combined
 
 
 def _ops_sparkline_svg(values: np.ndarray | None, level: str, width: int = 150, height: int = 34) -> str:

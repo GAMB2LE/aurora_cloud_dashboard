@@ -132,6 +132,13 @@ class DashboardShellTests(TestCase):
         self.assertEqual((recent, stale, paused_count), (5, 1, 2))
         self.assertIn("Paused - PDU outlet off", app._ops_source_freshness_text(snapshot, "cl61", intentionally_paused=True))
 
+    def test_combined_operations_series_allows_all_missing_columns(self) -> None:
+        dataset = xr.Dataset({"source_age": (("time",), np.array([np.nan, np.nan]))})
+
+        combined = app._ops_combined_series(dataset, ("source_age",))
+
+        self.assertTrue(np.isnan(combined).all())
+
     def test_live_query_uses_current_window_instead_of_stale_url_dates(self) -> None:
         current_start = datetime(2026, 7, 15, 10, 30)
         current_end = datetime(2026, 7, 16, 10, 30)
