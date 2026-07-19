@@ -2818,7 +2818,7 @@ def _plotly_time_tick_options(start: pd.Timestamp, end: pd.Timestamp) -> dict[st
         "tickmode": "linear",
         "tick0": tick0.to_pydatetime(),
         "dtick": tick_hours * 60 * 60 * 1000,
-        "tickformat": "%b %d<br>%H:%M",
+        "tickformat": "%a %d %b<br>%H:%M UTC",
     }
 
 

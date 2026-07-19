@@ -15,9 +15,16 @@ from grouped_timeseries import (
     SUMMARY_LAYOUTS,
     PanelSpec,
     TraceSpec,
+    _plotly_time_tick_options,
     build_summary_plotly,
     operating_mode_intervals,
 )
+
+
+def test_power_time_ticks_include_date_time_and_utc() -> None:
+    options = _plotly_time_tick_options(pd.Timestamp("2026-07-19T00:00:00"), pd.Timestamp("2026-07-20T00:00:00"))
+
+    assert options["tickformat"] == "%a %d %b<br>%H:%M UTC"
 
 
 def _power_layout_dataset() -> xr.Dataset:

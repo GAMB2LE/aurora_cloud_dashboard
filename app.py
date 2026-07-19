@@ -9649,7 +9649,14 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         paper_bgcolor="white",
         plot_bgcolor="white",
         font=dict(size=8, color=THEME_TEXT),
-        xaxis=dict(showgrid=True, gridcolor=THEME_GRID, tickfont=dict(size=7), title=None, nticks=4),
+        xaxis=dict(
+            showgrid=True,
+            gridcolor=THEME_GRID,
+            tickfont=dict(size=7),
+            tickformat="%d %b<br>%H:%M UTC",
+            title=None,
+            nticks=4,
+        ),
         yaxis=dict(title=None, tickfont=dict(size=7), showgrid=True, gridcolor=THEME_GRID, nticks=4),
     )
     if has_right_axis:
