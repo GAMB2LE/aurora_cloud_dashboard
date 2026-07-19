@@ -9722,7 +9722,14 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
 
 
 def _power_forecast_status_markup(ds: xr.Dataset) -> str:
-    """Expose forecast provenance without hiding a usable cached planning cycle."""
+    """Expose planner provenance and prevent stale plans looking actionable."""
+    planning_status = str(ds.attrs.get("operating_planning_status", "")).strip()
+    planning_reason = str(ds.attrs.get("operating_planning_status_reason", "")).strip()
+    if planning_status == "unavailable":
+        detail = "Awaiting a planning forecast aligned with the current SOC measurement."
+        if planning_reason:
+            detail = f"{detail} {planning_reason}"
+        return f"<div class='mobile-section-note'>{escape(detail)}</div>"
     kind = str(ds.attrs.get("operating_planning_forecast_refresh_kind", "")).strip()
     anchor = str(ds.attrs.get("operating_planning_forecast_initial_soc_time", "")).strip()
     issued = str(ds.attrs.get("operating_planning_forecast_generated_at_utc", "")).strip()

@@ -2023,7 +2023,13 @@ def _time_frame_from_dataset(ds: xr.Dataset, fields: tuple[str, ...]) -> pd.Data
 
 def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     """Flatten named scenario/time fields into display-summary time series."""
-    if ds is None or "time" not in ds or "scenario" not in ds or ds.sizes.get("time", 0) == 0:
+    if (
+        ds is None
+        or str(ds.attrs.get("planning_status", "ready")).strip() != "ready"
+        or "time" not in ds
+        or "scenario" not in ds
+        or ds.sizes.get("time", 0) == 0
+    ):
         return pd.DataFrame()
     scenario_ids = [str(value) for value in ds["scenario"].values]
     times = pd.DatetimeIndex(ds["time"].values)
@@ -2124,9 +2130,16 @@ def _power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
 
 
 def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
-    if ds is None or "scenario" not in ds:
+    if ds is None:
         return {}
     attrs: dict[str, str] = {}
+    status = str(ds.attrs.get("planning_status", "ready")).strip() or "ready"
+    attrs["operating_planning_status"] = status
+    reason = str(ds.attrs.get("planning_status_reason", "")).strip()
+    if reason:
+        attrs["operating_planning_status_reason"] = reason
+    if "scenario" not in ds or status != "ready":
+        return attrs
     for source_name, target_name in (
         ("current_mode", "operating_current_mode"),
         ("current_mode_label", "operating_current_mode_label"),
@@ -2169,9 +2182,17 @@ def merge_operating_scenarios_into_display_summary(
     operating_scenarios_ds: xr.Dataset | None,
 ) -> xr.Dataset:
     """Merge the compact scenario contract into an existing display summary."""
+    # Display summaries may contain an older pre-merged operating plan. The
+    # standalone scenario product is authoritative, including its unavailable
+    # state, so never retain those stale traces.
+    stale_fields = [name for name in display_ds.data_vars if name.startswith("Operating")]
+    base_ds = display_ds.drop_vars(stale_fields) if stale_fields else display_ds
     frame = _operating_scenario_frame(operating_scenarios_ds)
     if frame.empty:
-        return display_ds
+        base_ds = base_ds.copy()
+        base_ds.attrs = dict(display_ds.attrs)
+        base_ds.attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
+        return base_ds
     scenario_ds = xr.Dataset(
         {name: (("time",), frame[name].to_numpy(dtype=np.float32)) for name in frame.columns},
         coords={"time": frame.index.to_numpy(dtype="datetime64[ns]")},
@@ -2183,7 +2204,7 @@ def merge_operating_scenarios_into_display_summary(
             scenario_ds[name].attrs["units"] = "1"
         elif "Watts" in name:
             scenario_ds[name].attrs["units"] = "W"
-    merged = xr.merge((display_ds, scenario_ds), join="outer", compat="override", combine_attrs="override").sortby("time")
+    merged = xr.merge((base_ds, scenario_ds), join="outer", compat="override", combine_attrs="override").sortby("time")
     merged.attrs = dict(display_ds.attrs)
     merged.attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
     merged.attrs["time_coverage_end"] = pd.Timestamp(merged["time"].values[-1]).isoformat()

@@ -981,6 +981,23 @@ class PowerSocForecastTests(unittest.TestCase):
         for trace in references:
             np.testing.assert_allclose(trace.y, MINIMUM_OPERATIONAL_SOC_PCT)
 
+    def test_unavailable_operating_product_removes_baked_stale_recommendations(self) -> None:
+        times = pd.date_range("2026-07-10T00:00:00", periods=3, freq="1h")
+        display = xr.Dataset(
+            {"OperatingCL61OptimizedSOCP50": (("time",), [80.0, 70.0, 60.0]), "BatterySOC": (("time",), [90.0, 89.0, 88.0])},
+            coords={"time": times},
+        )
+        unavailable = xr.Dataset(
+            coords={"scenario": np.asarray([], dtype=str), "time": np.asarray([], dtype="datetime64[ns]")},
+            attrs={"planning_status": "unavailable", "planning_status_reason": "SOC anchor mismatch"},
+        )
+
+        merged = merge_operating_scenarios_into_display_summary(display, unavailable)
+
+        self.assertNotIn("OperatingCL61OptimizedSOCP50", merged)
+        self.assertEqual(merged.attrs["operating_planning_status"], "unavailable")
+        self.assertEqual(merged.attrs["operating_planning_status_reason"], "SOC anchor mismatch")
+
     def test_only_assigned_pdu_outlet_loads_are_displayed(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=4, freq="15min")
         ds = xr.Dataset(

@@ -289,7 +289,7 @@ def _validate_operating_inputs(
     minimum_horizon_hours: int = 96,
     now: pd.Timestamp | None = None,
 ) -> tuple[pd.Timestamp, float, float]:
-    """Require a fresh physical anchor and enough ECMWF solar coverage to plan."""
+    """Require a fresh physical anchor and an aligned planning forecast."""
     if "time" not in power or "BatterySOC" not in power:
         raise ValueError("Operating scenarios require power time and BatterySOC inputs")
     times = pd.DatetimeIndex(power["time"].values)
@@ -323,6 +323,26 @@ def _validate_operating_inputs(
             f"coverage ends at {forecast_times.max().isoformat()}, "
             f"but {required_end.isoformat()} is required for {required_hours} h planning"
         )
+
+    # A planning product may be retained after an upstream ECMWF refresh fails.
+    # Its time coordinate can still extend into the future, but it cannot be
+    # compared with today's system-as-is forecast unless it was anchored to the
+    # same recent physical SOC measurement.
+    forecast_anchor = pd.to_datetime(forecast.attrs.get("initial_soc_time"), errors="coerce")
+    if pd.isna(forecast_anchor):
+        raise ValueError("Operating scenarios require a planning forecast SOC anchor")
+    forecast_anchor = pd.Timestamp(forecast_anchor)
+    if forecast_anchor.tzinfo is not None:
+        forecast_anchor = forecast_anchor.tz_convert("UTC").tz_localize(None)
+    anchor_difference = abs(float((forecast_anchor - anchor_time) / pd.Timedelta(minutes=1)))
+    allowed_difference = max(float(max_power_age_minutes or 0.0), 20.0)
+    if anchor_difference > allowed_difference:
+        raise ValueError(
+            "Refusing to publish an operating plan from a mismatched planning forecast: "
+            f"forecast SOC anchor is {forecast_anchor.isoformat()} but current SOC anchor is "
+            f"{anchor_time.isoformat()} ({anchor_difference:.1f} minutes apart; "
+            f"limit {allowed_difference:.1f} minutes)"
+        )
     return anchor_time, anchor_soc, max(power_age_minutes, 0.0)
 
 
@@ -337,6 +357,31 @@ def _planning_forecast_provenance(forecast: xr.Dataset) -> dict[str, str]:
         "planning_forecast_time_coverage_start": times.min().isoformat() if len(times) else "",
         "planning_forecast_time_coverage_end": times.max().isoformat() if len(times) else "",
     }
+
+
+def _write_unavailable_scenarios(
+    path: Path,
+    *,
+    reason: str,
+    power: xr.Dataset,
+) -> None:
+    """Replace stale recommendations with a small, explicit unavailable contract."""
+    times = pd.DatetimeIndex(power["time"].values) if "time" in power else pd.DatetimeIndex([])
+    anchor = times.max().isoformat() if len(times) else ""
+    unavailable = xr.Dataset(
+        coords={
+            "scenario": np.asarray([], dtype=str),
+            "time": np.asarray([], dtype="datetime64[ns]"),
+        },
+        attrs={
+            "power_operating_scenarios_product": "true",
+            "planning_status": "unavailable",
+            "planning_status_reason": reason,
+            "generated_at_utc": _utc_now(),
+            "input_power_time": anchor,
+        },
+    )
+    _write_zarr_atomic(unavailable, path)
 
 
 def generate(
@@ -371,6 +416,21 @@ def generate(
             minimum_horizon_hours=optimization_hours,
             max_power_age_minutes=max_power_age_minutes,
         )
+    except ValueError as exc:
+        # Do not retain a recommendation that no longer shares the current
+        # system forecast and physical SOC anchor. This remains a successful
+        # advisory run so expected ECMWF outages do not create a failed timer.
+        _write_unavailable_scenarios(scenario_output, reason=str(exc), power=power)
+        print(f"Operating scenarios unavailable: {exc}")
+        power.close()
+        forecast.close()
+        if pdu is not None:
+            pdu.close()
+        if ensemble is not None:
+            ensemble.close()
+        return state_output, scenario_output
+
+    try:
         events = load_operating_events(events_path)
         model = fit_operating_model(power, pdu, raw_state=state, lookback_days=lookback_days, events=events)
         scenarios = build_operating_scenarios(
@@ -387,6 +447,7 @@ def generate(
                 "input_power_soc_pct": f"{input_soc:.6g}",
                 "input_power_age_minutes": f"{input_age_minutes:.6g}",
                 "input_validation": "fresh_power_anchor_and_complete_solar_coverage",
+                "planning_status": "ready",
                 "operating_events_path": str(events_path or ""),
                 "operating_event_count": str(len(events)),
                 **_planning_forecast_provenance(forecast),
