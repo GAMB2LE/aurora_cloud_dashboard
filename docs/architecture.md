@@ -26,6 +26,11 @@ API contract. `aurora-cloud-infra` owns host configuration, systemd units,
 reverse-proxy configuration, and deployment roles. `aurora-dashboard-ios` owns
 the native client and never reads dashboard files directly.
 
+`requirements-runtime.txt` is the single pinned Python environment for the
+browser dashboard and mobile API. The legacy component requirement filenames
+include that file for compatibility; CI and deployment install the runtime file
+directly.
+
 This separation is deliberate. Do not copy deployment overrides into the
 dashboard source tree, and do not add source-writer logic to the native app.
 
@@ -39,6 +44,8 @@ the same instrument policy in each client:
 - `presentation_models.py` decides how operational states such as intentional
   power-off and empty data windows are described.
 - `request_context.py` contains defensive access to the current Panel request.
+- `data_services.py` owns typed time-window requests, bounded xarray slicing,
+  height filtering, and adaptive coarsening without importing Panel.
 - `mobile_catalog.py` reads bounded products and presents the mobile API
   contract; it imports instrument policy from the shared registry.
 - `app.py` owns Panel widgets, callbacks, routing, and view composition.
@@ -63,7 +70,9 @@ Plotly JSON and generated quicklooks are preferred for common latest views.
 The mobile API returns bounded summaries so the native app does not download
 full Zarr datasets or media unless the user asks for them.
 
-The development mirror is also part of this performance boundary. Raw,
-products, internal metadata, and service state use independent timers and
-locks. Only a successful product mirror updates the public development
-freshness stamp, because that stamp describes what the dashboard can render.
+The development mirror is also part of this performance boundary. Each raw
+instrument and product family has an independent timer, lock, and metric file,
+so a large radar or camera archive cannot delay power or dashboard summaries.
+Only a successful dashboard-summary product mirror updates the public
+development freshness stamp, because that stamp describes the common dashboard
+view rather than the slowest historical archive.

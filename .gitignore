@@ -12,6 +12,7 @@
 !requirements-docs.txt
 !requirements-dashboard.txt
 !requirements-mobile-api.txt
+!requirements-runtime.txt
 !systemd/
 !systemd/**
 !deployment/

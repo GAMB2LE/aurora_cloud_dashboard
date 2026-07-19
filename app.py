@@ -70,6 +70,11 @@ from grouped_timeseries import (
     prepare_summary_dataset,
     widget_group_options,
 )
+from data_services import (
+    WindowRequest,
+    coarsen_targets as _coarsen_targets,
+    prepare_dataset_window,
+)
 from extra_housekeeping import (
     extra_housekeeping_daily_png,
     extra_housekeeping_label,
@@ -2868,32 +2873,8 @@ def _selected_token_window(selected: str | None) -> tuple[datetime | None, datet
     return start, end, day_token
 
 
-def _coarsen_targets(duration: timedelta | None, height_span: float | None):
-    """Return subsample/target counts that scale up for zoomed-in windows."""
-    time_subsample = TIME_SUBSAMPLE
-    time_target = TIME_TARGET
-    height_target = HEIGHT_TARGET
-    if duration is not None:
-        hours = duration.total_seconds() / 3600.0
-        if hours <= 2:
-            time_subsample = 1
-            time_target = 1200
-        elif hours <= 6:
-            time_subsample = 1
-            time_target = 800
-        elif hours <= 24:
-            time_subsample = 1
-            time_target = 400
-    if height_span is not None:
-        if height_span <= 1000:
-            height_target = 400
-        elif height_span <= 3000:
-            height_target = 300
-    return time_subsample, time_target, height_target
-
-
 def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None, render_quality: str = "full"):
-    """Slice the base dataset, adapt coarsening to window span, and filter height."""
+    """Prepare a bounded dataset while retaining the historical app interface."""
     instrument = instrument or CURRENT_INSTRUMENT
     cfg = _cfg(instrument)
     t0 = _ensure_utc(t0)
@@ -2907,84 +2888,22 @@ def open_window(t0, t1, bottom_m=None, top_m=None, instrument: str | None = None
         top_m=top_m,
         render_quality=render_quality,
     ) as perf:
-        if t0 is None or t1 is None or t0 >= t1:
+        if t0 is None or t1 is None:
             perf["status"] = "invalid_window"
             return xr.Dataset()
-        duration = t1 - t0
-        perf["window_hours"] = round(duration.total_seconds() / 3600.0, 3)
-        height_span = None
-        if bottom_m is not None or top_m is not None:
-            b = max(bottom_m or 0.0, 0.0)
-            t = top_m if top_m is not None else cfg["height_load_max"]
-            height_span = max(t - b, 0.0)
-        time_subsample, time_target, height_target = _coarsen_targets(duration, height_span)
-        if render_quality == "coarse":
-            time_subsample = max(time_subsample, 2)
-            time_target = max(96, time_target // 3)
-            height_target = max(72, height_target // 2)
-        preserve_time_detail = render_quality == "summary_full_time"
-        perf["time_subsample"] = int(time_subsample)
-        perf["time_target"] = int(time_target)
-        perf["height_target"] = int(height_target)
-        perf["preserve_time_detail"] = bool(preserve_time_detail)
-        base = _get_base_dataset(instrument)
-        if base is None:
-            perf["status"] = "no_dataset"
-            return xr.Dataset()
-        perf["base_time_count"] = int(base.sizes.get("time", 0))
-        perf["base_range_count"] = int(base.sizes.get("range", 0))
-
-        phase_start = perf_counter()
-        try:
-            tvals = base["time"].values
-            mask = _valid_time_mask(tvals) & (tvals >= np.datetime64(t0)) & (tvals <= np.datetime64(t1))
-            perf["matched_time_count"] = int(np.count_nonzero(mask))
-            if not np.any(mask):
-                perf["status"] = "no_match"
-                perf["select_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
-                return xr.Dataset()
-            idx = np.nonzero(mask)[0]
-            ds = base.isel(time=idx)
-        except Exception as exc:
-            ds = base
-            perf["time_select_error"] = str(exc)
-        perf["select_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
-
-        has_range = "range" in ds.coords or "range" in ds.dims
-        phase_start = perf_counter()
-        if has_range:
-            try:
-                ds = ds.sel({"range": slice(0, cfg["height_load_max"])})
-            except Exception:
-                ds = ds.where(ds["range"] <= cfg["height_load_max"], drop=True)
-        if has_range and (bottom_m is not None or top_m is not None):
-            low = max(bottom_m or 0.0, 0.0)
-            high = min(top_m or cfg["height_load_max"], cfg["height_load_max"])
-            try:
-                ds = ds.sel({"range": slice(low, high)})
-            except Exception:
-                ds = ds.where((ds["range"] >= low) & (ds["range"] <= high), drop=True)
-        perf["range_filter_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
-
-        phase_start = perf_counter()
-        if not preserve_time_detail and time_subsample > 1:
-            ds = ds.isel(time=slice(None, None, time_subsample))
-        try:
-            if ds.sizes.get("range", 0) > height_target:
-                fh = max(int(np.ceil(ds.sizes["range"] / height_target)), 1)
-                perf["range_coarsen_factor"] = int(fh)
-                ds = ds.coarsen({"range": fh}, boundary="trim").mean()
-            if not preserve_time_detail and ds.sizes.get("time", 0) > time_target:
-                ft = max(int(np.ceil(ds.sizes["time"] / time_target)), 1)
-                perf["time_coarsen_factor"] = int(ft)
-                ds = ds.coarsen({"time": ft}, boundary="trim").mean()
-        except Exception as exc:
-            perf["coarsen_error"] = str(exc)
-        perf["coarsen_ms"] = round((perf_counter() - phase_start) * 1000.0, 3)
-        perf["output_time_count"] = int(ds.sizes.get("time", 0))
-        perf["output_range_count"] = int(ds.sizes.get("range", 0))
-        perf["status"] = "ok"
-        return ds
+        return prepare_dataset_window(
+            _get_base_dataset(instrument),
+            WindowRequest(
+                start=t0,
+                end=t1,
+                bottom_m=bottom_m,
+                top_m=top_m,
+                height_load_max=cfg["height_load_max"],
+                render_quality=render_quality,
+            ),
+            valid_time_mask=_valid_time_mask,
+            perf=perf,
+        )
 
 
 def _make_plot(ds, var, clim, logz, coloraxis):
