@@ -60,30 +60,34 @@ class DashboardShellTests(TestCase):
     def test_phone_shell_keeps_operational_groups(self) -> None:
         self.assertEqual(list(app.MOBILE_TAB_OPTIONS), ["Overview", "Power", "Plots", "Camera", "Ops"])
 
-    def test_browser_overview_uses_shared_instrument_state_groups(self) -> None:
+    def test_browser_overview_uses_one_icon_led_instrument_status_list(self) -> None:
         overview = {
             "instrumentPower": [
-                {"id": "vaisalamet", "title": "Meteorology", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
-                {"id": "asfs-logger", "title": "Radiation", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
-                {"id": "uas", "title": "UAS", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
-                {"id": "ceilometer", "title": "CL61", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
-                {"id": "cloud-radar", "title": "Cloud Radar", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
-                {"id": "hatpro", "title": "HATPRO", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
+                {"id": "vaisalamet", "title": "Meteorology", "systemImage": "cloud.sun", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
+                {"id": "asfs-logger", "title": "Radiation", "systemImage": "sun.max", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
+                {"id": "uas", "title": "UAS", "systemImage": "airplane", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
+                {"id": "ceilometer", "title": "CL61", "systemImage": "laser.burst", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
+                {"id": "cloud-radar", "title": "Cloud Radar", "systemImage": "dot.radiowaves.left.and.right", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
+                {"id": "hatpro", "title": "HATPRO", "systemImage": "antenna.radiowaves.left.and.right", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
             ]
         }
         with patch.object(app.mobile_catalog, "overview", return_value=overview):
             markup = app._browser_overview_instrument_markup()
 
-        self.assertIn("PDU-controlled instruments", markup)
-        self.assertIn("Collection-only instruments", markup)
-        self.assertIn("Cloud Radar", markup)
-        self.assertIn("HATPRO", markup)
-        self.assertIn("Meteorology", markup)
-        pdu_group, collection_group = markup.split("Collection-only instruments", maxsplit=1)
-        self.assertIn("Cloud Radar", pdu_group)
-        self.assertIn("HATPRO", pdu_group)
-        self.assertNotIn("Cloud Radar", collection_group)
-        self.assertNotIn("HATPRO", collection_group)
+        self.assertIn("Instrument status", markup)
+        self.assertNotIn("PDU-controlled instruments", markup)
+        self.assertNotIn("Collection-only instruments", markup)
+        self.assertEqual(markup.count("data-instrument-id="), 6)
+        for instrument_id, system_image in (
+            ("vaisalamet", "cloud.sun"),
+            ("asfs-logger", "sun.max"),
+            ("uas", "airplane"),
+            ("ceilometer", "laser.burst"),
+            ("cloud-radar", "dot.radiowaves.left.and.right"),
+            ("hatpro", "antenna.radiowaves.left.and.right"),
+        ):
+            self.assertIn(f"data-instrument-id='{instrument_id}'", markup)
+            self.assertIn(f"data-instrument-icon='{system_image}'", markup)
 
     def test_overview_refreshes_when_selected(self) -> None:
         with patch.object(app, "_refresh_browser_overview") as refresh:

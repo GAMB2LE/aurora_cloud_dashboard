@@ -98,7 +98,8 @@ from wxcam_catalog import (
 )
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 import mobile_catalog
-from instrument_registry import PDU_INSTRUMENTS as REGISTERED_PDU_INSTRUMENTS, browser_options
+from browser_icons import instrument_icon_svg
+from instrument_registry import browser_options
 from presentation_models import empty_data_state
 from request_context import (
     client_ip as _client_ip,
@@ -8354,46 +8355,44 @@ body, .bk {
     color: #22313f;
     padding: 4px 0;
 }
-.overview-instrument-groups {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 12px;
-    width: 100%;
-}
-.overview-instrument-group {
+.overview-instrument-status {
     border: 1px solid #d8e1e8;
     border-radius: 8px;
     background: #ffffff;
     overflow: hidden;
 }
-.overview-instrument-group__title {
+.overview-instrument-status__title {
     padding: 10px 12px 4px;
     font-size: 13px;
     font-weight: 700;
     color: #22313f;
 }
-.overview-instrument-group__note {
+.overview-instrument-status__note {
     padding: 0 12px 8px;
     font-size: 11px;
     color: #647283;
 }
 .overview-instrument-row {
     display: grid;
-    grid-template-columns: 10px minmax(0, 1fr) auto;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     padding: 9px 12px;
     border-top: 1px solid #edf1f4;
 }
-.overview-instrument-row__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #94a3b8;
+.overview-instrument-row__icon {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    border-radius: 6px;
+    color: #64748b;
+    background: rgba(100, 116, 139, 0.1);
 }
-.overview-instrument-row--green .overview-instrument-row__dot { background: #1c9b6c; }
-.overview-instrument-row--amber .overview-instrument-row__dot { background: #c97a17; }
-.overview-instrument-row--red .overview-instrument-row__dot { background: #c84b42; }
+.overview-instrument-row__icon-svg { width: 19px; height: 19px; }
+.overview-instrument-row--green .overview-instrument-row__icon { color: #1c9b6c; background: rgba(28, 155, 108, 0.1); }
+.overview-instrument-row--amber .overview-instrument-row__icon { color: #c97a17; background: rgba(201, 122, 23, 0.1); }
+.overview-instrument-row--red .overview-instrument-row__icon { color: #c84b42; background: rgba(200, 75, 66, 0.1); }
 .overview-instrument-row__title {
     font-size: 13px;
     font-weight: 650;
@@ -9316,7 +9315,7 @@ def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: st
 
 
 def _browser_overview_instrument_markup() -> str:
-    """Render browser instrument groups from the read-only mobile contract."""
+    """Render one icon-led instrument-status list from the mobile contract."""
     try:
         rows = mobile_catalog.overview().get("instrumentPower", [])
     except Exception as exc:
@@ -9326,40 +9325,30 @@ def _browser_overview_instrument_markup() -> str:
     if not rows:
         return "<div class='mobile-section-note'>Instrument-state snapshot unavailable.</div>"
 
-    pdu_instrument_ids = {instrument.id for instrument in REGISTERED_PDU_INSTRUMENTS}
-    pdu_rows = [row for row in rows if row.get("id") in pdu_instrument_ids]
-    collection_rows = [row for row in rows if row.get("id") not in pdu_instrument_ids]
-    groups = (
-        ("PDU-controlled instruments", "Power state from the latest PDU sample", pdu_rows),
-        ("Collection-only instruments", "Collection freshness; no individual PDU outlet", collection_rows),
-    )
-    rendered_groups = []
-    for title, note, group_rows in groups:
-        if not group_rows:
-            continue
-        rendered_rows = []
-        for row in group_rows:
-            level = _mobile_level(row.get("level"))
-            rendered_rows.append(
-                "<div class='overview-instrument-row overview-instrument-row--{level}'>"
-                "<span class='overview-instrument-row__dot'></span>"
-                "<div><div class='overview-instrument-row__title'>{title}</div>"
-                "<div class='overview-instrument-row__detail'>{detail}</div></div>"
-                "<div class='overview-instrument-row__state'>{state}</div>"
-                "</div>".format(
-                    level=escape(level),
-                    title=escape(str(row.get("title", "Instrument"))),
-                    detail=escape(str(row.get("detail", "Status unavailable"))),
-                    state=escape(str(row.get("state", "Unknown"))),
-                )
+    rendered_rows = []
+    for row in rows:
+        level = _mobile_level(row.get("level"))
+        rendered_rows.append(
+            "<div class='overview-instrument-row overview-instrument-row--{level}' data-instrument-id='{instrument_id}'>"
+            "<span class='overview-instrument-row__icon'>{icon}</span>"
+            "<div><div class='overview-instrument-row__title'>{title}</div>"
+            "<div class='overview-instrument-row__detail'>{detail}</div></div>"
+            "<div class='overview-instrument-row__state'>{state}</div>"
+            "</div>".format(
+                level=escape(level),
+                instrument_id=escape(str(row.get("id", "instrument"))),
+                icon=instrument_icon_svg(row.get("systemImage")),
+                title=escape(str(row.get("title", "Instrument"))),
+                detail=escape(str(row.get("detail", "Status unavailable"))),
+                state=escape(str(row.get("state", "Unknown"))),
             )
-        rendered_groups.append(
-            "<section class='overview-instrument-group'>"
-            f"<div class='overview-instrument-group__title'>{escape(title)}</div>"
-            f"<div class='overview-instrument-group__note'>{escape(note)}</div>"
-            f"{''.join(rendered_rows)}</section>"
         )
-    return "<div class='overview-instrument-groups'>" + "".join(rendered_groups) + "</div>"
+    return (
+        "<section class='overview-instrument-status'>"
+        "<div class='overview-instrument-status__title'>Instrument status</div>"
+        "<div class='overview-instrument-status__note'>Latest station status</div>"
+        f"{''.join(rendered_rows)}</section>"
+    )
 
 
 def _mobile_auroracam_freshness() -> tuple[str, str, str]:
