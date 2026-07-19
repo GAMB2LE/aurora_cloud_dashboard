@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -13,6 +12,12 @@ from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
 from uas_mqtt import load_uas_mqtt_log
+from instrument_registry import (
+    INSTRUMENTS,
+    INSTRUMENT_BY_ID,
+    PDU_INSTRUMENTS as PDU_INSTRUMENT_CONTRACTS,
+    SCIENCE_DC_INSTRUMENTS as SCIENCE_DC_INSTRUMENT_CONTRACTS,
+)
 
 
 UTC = timezone.utc
@@ -24,50 +29,33 @@ WXCAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 AURORACAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 
 
-@dataclass(frozen=True)
-class Instrument:
-    id: str
-    title: str
-    system_image: str
-    quicklook_subdir: str
-    science_prefixes: tuple[str, ...]
-    housekeeping_prefixes: tuple[str, ...] = ()
-    visible: bool = True
-    summary_supported: bool = True
-
-
-INSTRUMENTS: tuple[Instrument, ...] = (
-    Instrument("power", "Aurora Power Supply", "battery.100percent", "power", ("power__summary", "power"), ("power__HK_APS", "power__hk_aps")),
-    Instrument("ceilometer", "Ceilometer", "laser.burst", "ceilometer", ("ceilometer",), ("ceilometer__HK_Ceilometer", "ceilometer__hk_ceilometer")),
-    Instrument("cloud-radar", "Cloud Radar", "dot.radiowaves.left.and.right", "cloud_radar", ("cloud_radar",), ("cloud_radar__HK_Radar", "cloud_radar__hk_radar")),
-    Instrument("hatpro", "Scanning Microwave Radiometer", "antenna.radiowaves.left.and.right", "hatpro", ("hatpro",)),
-    Instrument("vaisalamet", "Meteorology", "cloud.sun", "vaisalamet", ("vaisalamet__summary", "vaisalamet"), ("vaisalamet__HK_Met", "vaisalamet__hk_met")),
-    Instrument("asfs-logger", "Radiation", "sun.max", "asfs_logger", ("asfs_logger__summary", "asfs_logger"), ("asfs_logger__HK_ASFS", "asfs_logger__hk_asfs")),
-    Instrument("ops-monitor", "Operations", "gauge.with.dots.needle.bottom.50percent", "ops_monitor", ("ops_monitor__summary", "ops_monitor"), ("ops_monitor__HK_Operations", "ops_monitor__hk_operations")),
-    Instrument("wxcam", "WXcam", "video", "wxcam", ("wxcam",), ("wxcam__HK_WXcam", "wxcam__hk_wxcam"), summary_supported=False),
-)
-
-INSTRUMENT_BY_ID = {instrument.id: instrument for instrument in INSTRUMENTS}
-
 WXCAM_STREAMS = {
     "fish_hdr": {"title": "FISH HDR", "systemImage": "camera.aperture"},
     "pano_hdr": {"title": "PANO HDR", "systemImage": "photo"},
 }
 
-PDU_INSTRUMENTS = (
-    ("uas", "UAS", "airplane", 4),
-    ("ceilometer", "CL61", "laser.burst", 5),
-    ("cloud-radar", "Cloud Radar", "dot.radiowaves.left.and.right", 6),
-    ("hatpro", "HATPRO", "antenna.radiowaves.left.and.right", 8),
+PDU_INSTRUMENTS = tuple(
+    (
+        instrument.id,
+        instrument.pdu_title or instrument.title,
+        instrument.system_image,
+        instrument.pdu_outlet,
+    )
+    for instrument in PDU_INSTRUMENT_CONTRACTS
 )
 PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
 
 # These Science-tab products have no individual PDU outlet state. Their mobile
 # status is therefore collection freshness, never an inferred power state.
-SCIENCE_DC_INSTRUMENTS = (
-    ("vaisalamet", "Meteorology", "cloud.sun", "vaisalamet"),
-    ("asfs-logger", "Radiation", "sun.max", "asfs_logger"),
+SCIENCE_DC_INSTRUMENTS = tuple(
+    (
+        instrument.id,
+        instrument.title,
+        instrument.system_image,
+        instrument.quicklook_subdir,
+    )
+    for instrument in SCIENCE_DC_INSTRUMENT_CONTRACTS
 )
 
 OPERATIONS_STREAMS = (

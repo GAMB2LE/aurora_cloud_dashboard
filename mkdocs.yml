@@ -29,6 +29,7 @@ nav:
   - Home: index.md
   - Start here: getting-started.md
   - Architecture: architecture.md
+  - Refactor baseline: reports/development-refactor-baseline-20260719.md
   - Overview:
       - Dashboard at a glance: overview/index.md
       - Tabs and views: overview/tabs-and-views.md

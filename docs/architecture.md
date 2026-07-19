@@ -29,6 +29,24 @@ the native client and never reads dashboard files directly.
 This separation is deliberate. Do not copy deployment overrides into the
 dashboard source tree, and do not add source-writer logic to the native app.
 
+## Application layers
+
+The browser entrypoint composes framework-neutral modules rather than defining
+the same instrument policy in each client:
+
+- `instrument_registry.py` is the source of truth for instrument identity,
+  browser keys, icons, assigned PDU outlets, and quicklook naming.
+- `presentation_models.py` decides how operational states such as intentional
+  power-off and empty data windows are described.
+- `request_context.py` contains defensive access to the current Panel request.
+- `mobile_catalog.py` reads bounded products and presents the mobile API
+  contract; it imports instrument policy from the shared registry.
+- `app.py` owns Panel widgets, callbacks, routing, and view composition.
+
+New presentation policy belongs in a framework-neutral module first. Browser
+and mobile code should render that policy rather than independently deciding
+what an instrument state means.
+
 ## Production and development
 
 Production is the authoritative live writer. Development mirrors the products
@@ -44,3 +62,8 @@ products only when a user selects the relevant tab or time window. Prewarmed
 Plotly JSON and generated quicklooks are preferred for common latest views.
 The mobile API returns bounded summaries so the native app does not download
 full Zarr datasets or media unless the user asks for them.
+
+The development mirror is also part of this performance boundary. Raw,
+products, internal metadata, and service state use independent timers and
+locks. Only a successful product mirror updates the public development
+freshness stamp, because that stamp describes what the dashboard can render.

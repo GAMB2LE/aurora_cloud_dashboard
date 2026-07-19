@@ -93,6 +93,19 @@ from wxcam_catalog import (
 )
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 import mobile_catalog
+from instrument_registry import browser_options
+from presentation_models import empty_data_state
+from request_context import (
+    client_ip as _client_ip,
+    live_session_count as _live_session_count,
+    request_base_url as _request_base_url,
+    request_header as _request_header,
+    request_path as _request_path,
+    request_query_args as _request_query_args,
+    server_session_count as _server_session_count,
+    session_id as _session_id,
+    total_session_count as _total_session_count,
+)
 
 pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
 
@@ -310,113 +323,6 @@ OPS_TREND_CACHE_TTL = timedelta(minutes=int(os.environ.get("AURORA_OPS_TREND_CAC
 OPS_TREND_WINDOW = timedelta(days=int(os.environ.get("AURORA_OPS_TREND_DAYS", "7")))
 OPS_BATTERY_CAPACITY_KWH = float(os.environ.get("APS_BATTERY_CAPACITY_KWH", "26"))
 OPS_BATTERY_DEPLETION_DEADBAND_W = float(os.environ.get("APS_BATTERY_DEPLETION_DEADBAND_W", "50"))
-
-
-def _session_id() -> str | None:
-    try:
-        doc = pn.state.curdoc
-        if doc is None:
-            return None
-        session_context = doc.session_context
-        if session_context is None:
-            return None
-        return session_context.id
-    except Exception:
-        return None
-
-
-def _request_header(name: str) -> str | None:
-    try:
-        headers = pn.state.headers or {}
-    except Exception:
-        return None
-    wanted = name.lower()
-    for key, value in headers.items():
-        if str(key).lower() != wanted:
-            continue
-        if isinstance(value, list):
-            return ",".join(str(item) for item in value)
-        return str(value)
-    return None
-
-
-def _request_path() -> str | None:
-    try:
-        doc = pn.state.curdoc
-        if doc and doc.session_context and doc.session_context.request:
-            return str(doc.session_context.request.path)
-    except Exception:
-        return None
-    return None
-
-
-def _request_query_args() -> dict[str, str]:
-    try:
-        doc = pn.state.curdoc
-        if not doc or not doc.session_context or not doc.session_context.request:
-            return {}
-        query_args = getattr(doc.session_context.request, "query_arguments", {}) or {}
-    except Exception:
-        return {}
-    parsed: dict[str, str] = {}
-    for key, values in query_args.items():
-        if not values:
-            continue
-        raw = values[0]
-        if isinstance(raw, bytes):
-            parsed[str(key)] = raw.decode("utf-8", errors="ignore")
-        else:
-            parsed[str(key)] = str(raw)
-    return parsed
-
-
-def _request_base_url() -> str:
-    proto = _request_header("X-Forwarded-Proto") or "http"
-    host = _request_header("Host") or "127.0.0.1:5006"
-    path = _request_path() or "/app"
-    return f"{proto}://{host}{path}"
-
-
-def _client_ip() -> str | None:
-    forwarded = _request_header("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = _request_header("X-Real-Ip")
-    if real_ip:
-        return real_ip.strip()
-    try:
-        doc = pn.state.curdoc
-        if doc and doc.session_context and doc.session_context.request:
-            remote_ip = getattr(doc.session_context.request, "remote_ip", None)
-            if remote_ip:
-                return str(remote_ip)
-    except Exception:
-        return None
-    return None
-
-
-def _server_session_count() -> int | None:
-    try:
-        doc = pn.state.curdoc
-        if doc and doc.session_context and doc.session_context.server_context:
-            return int(len(doc.session_context.server_context.sessions))
-    except Exception:
-        return None
-    return None
-
-
-def _live_session_count() -> int | None:
-    try:
-        return int((pn.state.session_info or {}).get("live", 0))
-    except Exception:
-        return None
-
-
-def _total_session_count() -> int | None:
-    try:
-        return int((pn.state.session_info or {}).get("total", 0))
-    except Exception:
-        return None
 
 
 def _session_age_seconds() -> float:
@@ -707,16 +613,8 @@ INSTRUMENTS = {
     },
 }
 
-INSTRUMENT_OPTIONS = {
-    ("WXcam" if name == "wxcam" else display_name(name)): name
-    for name in INSTRUMENTS.keys()
-    if name not in {"asfs-fast-sonic", "ops-monitor"}
-}
-HK_INSTRUMENT_OPTIONS = {
-    ("WXcam" if name == "wxcam" else display_name(name)): name
-    for name in INSTRUMENTS.keys()
-    if name != "asfs-fast-sonic"
-}
+INSTRUMENT_OPTIONS = browser_options()
+HK_INSTRUMENT_OPTIONS = browser_options(housekeeping=True)
 
 DEFAULT_WINDOW = timedelta(hours=24)
 LIVE_REFRESH_MS = 60_000  # how often to snap to latest when live is on (ms)
@@ -4169,29 +4067,31 @@ def _wxcam_today_token() -> str:
 def _empty_interactive_figure(instrument: str, reason: str, start=None, end=None, detail: str | None = None) -> go.Figure:
     start_dt = _as_naive_utc_datetime(start)
     end_dt = _as_naive_utc_datetime(end)
-    window = ""
-    if start_dt is not None and end_dt is not None:
-        window = f"<br><span style='font-size:12px;color:#647283'>Selected window: {start_dt:%Y-%m-%d %H:%M} to {end_dt:%Y-%m-%d %H:%M} UTC</span>"
-    power_status = mobile_catalog.pdu_instrument_status(
-        {
-            "Ceilometer": "ceilometer",
-            "Cloud Radar": "cloud-radar",
-            "Scanning Microwave Radiometer": "hatpro",
-        }.get(instrument, "")
+    contract = {
+        "Ceilometer": "ceilometer",
+        "Cloud Radar": "cloud-radar",
+        "Scanning Microwave Radiometer": "hatpro",
+    }.get(instrument, "")
+    state = empty_data_state(
+        instrument,
+        reason,
+        start=start_dt,
+        end=end_dt,
+        detail=detail,
+        pdu_status=mobile_catalog.pdu_instrument_status(contract),
     )
-    intentionally_off = power_status is not None and power_status.get("state") == "Off"
-    if intentionally_off:
-        reason = "Data collection is paused because this instrument is intentionally powered off."
-        detail = f"{display_name(instrument)} is off at its assigned PDU outlet. {power_status['detail']}."
-    detail_markup = "" if not detail else f"<br><span style='font-size:12px;color:#647283'>{escape(detail)}</span>"
+    window = ""
+    if state.start is not None and state.end is not None:
+        window = f"<br><span style='font-size:12px;color:#647283'>Selected window: {state.start:%Y-%m-%d %H:%M} to {state.end:%Y-%m-%d %H:%M} UTC</span>"
+    detail_markup = "" if not state.detail else f"<br><span style='font-size:12px;color:#647283'>{escape(state.detail)}</span>"
+    eyebrow = (
+        f"<span style='font-size:11px;color:{THEME_ACCENT};font-weight:600'>{state.eyebrow}</span><br>"
+        if state.eyebrow
+        else ""
+    )
     fig = go.Figure()
     fig.add_annotation(
-        text=(
-            f"<span style='font-size:11px;color:{THEME_ACCENT};font-weight:600'>INTENTIONAL POWER-OFF</span><br>"
-            f"<b>{escape(display_name(instrument))}</b><br>{escape(reason)}{window}{detail_markup}"
-            if intentionally_off
-            else f"<b>{escape(display_name(instrument))}</b><br>{escape(reason)}{window}{detail_markup}"
-        ),
+        text=f"{eyebrow}<b>{escape(state.instrument_title)}</b><br>{escape(state.reason)}{window}{detail_markup}",
         x=0.5,
         y=0.52,
         xref="paper",
@@ -4199,10 +4099,10 @@ def _empty_interactive_figure(instrument: str, reason: str, start=None, end=None
         showarrow=False,
         align="center",
         font=dict(color=THEME_TEXT, size=16),
-        bgcolor="#edf8f6" if intentionally_off else None,
-        bordercolor="#a9d8d0" if intentionally_off else None,
-        borderwidth=1 if intentionally_off else 0,
-        borderpad=16 if intentionally_off else 0,
+        bgcolor="#edf8f6" if state.intentionally_powered_off else None,
+        bordercolor="#a9d8d0" if state.intentionally_powered_off else None,
+        borderwidth=1 if state.intentionally_powered_off else 0,
+        borderpad=16 if state.intentionally_powered_off else 0,
     )
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False)
