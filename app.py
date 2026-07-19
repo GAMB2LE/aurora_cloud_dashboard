@@ -1434,6 +1434,10 @@ OPS_STREAM_SPECS = (
     },
 )
 
+# These are the operational-stream prefixes for the three data-producing PDU
+# outlets. A fresh off state means missing source data is intentional.
+OPS_STREAM_PDU_OUTLETS = {"cl61": 5, "radar": 6, "hatpro": 8}
+
 
 def _ops_snapshot_path() -> Path:
     return OPS_SNAPSHOT_PATH
@@ -1630,9 +1634,38 @@ def _ops_level_from_perf_log(snapshot: dict) -> str:
     return "red"
 
 
-def _ops_source_freshness_text(snapshot: dict, prefix: str) -> str:
+def _ops_expected_paused_prefixes() -> set[str]:
+    """Return streams whose absence is explained by a fresh PDU-off state."""
+    try:
+        outlet_states = mobile_catalog.pdu_outlet_states()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not read PDU states for Operations health: %s", exc)
+        return set()
+    if outlet_states is None:
+        return set()
+    return {
+        prefix
+        for prefix, outlet in OPS_STREAM_PDU_OUTLETS.items()
+        if outlet_states.get(outlet) is False
+    }
+
+
+def _ops_source_health(snapshot: dict, paused_prefixes: set[str]) -> tuple[int, int, int]:
+    """Return active recent, active stale, and intentionally paused stream counts."""
+    active_specs = [spec for spec in OPS_STREAM_SPECS if spec["stream_prefix"] not in paused_prefixes]
+    recent = sum(_ops_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")) is True for spec in active_specs)
+    stale = sum(_ops_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")) is False for spec in active_specs)
+    paused = sum(spec["stream_prefix"] in paused_prefixes for spec in OPS_STREAM_SPECS)
+    return recent, stale, paused
+
+
+def _ops_source_freshness_text(snapshot: dict, prefix: str, *, intentionally_paused: bool = False) -> str:
     recent = _ops_bool(snapshot.get(f"{prefix}_source_recent_state"))
     age_min = _ops_float(snapshot.get(f"{prefix}_source_age_min"))
+    if intentionally_paused:
+        if age_min is None:
+            return "Paused - PDU outlet off"
+        return f"Paused - PDU outlet off (last data {_format_duration(timedelta(minutes=age_min))} ago)"
     if recent is None:
         return "No source timestamp"
     if age_min is None:
@@ -2158,12 +2191,19 @@ def _ops_trend_card_markup(title: str, level: str, value: str, meta: str, values
     )
 
 
-def _ops_trend_cards_markup() -> str:
+def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     """Return compact seven-day trend cards from the operations Zarr."""
+    paused_prefixes = paused_prefixes or set()
+    paused_key = tuple(sorted(paused_prefixes))
     now = datetime.now(timezone.utc)
     cached_at = _OPS_TREND_CACHE.get("updated_at")
     cached_markup = str(_OPS_TREND_CACHE.get("markup") or "")
-    if isinstance(cached_at, datetime) and now - cached_at < OPS_TREND_CACHE_TTL and cached_markup:
+    if (
+        isinstance(cached_at, datetime)
+        and now - cached_at < OPS_TREND_CACHE_TTL
+        and cached_markup
+        and _OPS_TREND_CACHE.get("paused_prefixes") == paused_key
+    ):
         return cached_markup
 
     path = Path(_zarr_path("ops-monitor"))
@@ -2204,7 +2244,11 @@ def _ops_trend_cards_markup() -> str:
     voltage_series = np.asarray(ds["aps_battery_voltage_v"].values, dtype=np.float64) if "aps_battery_voltage_v" in ds else None
     source_lag_series = _ops_combined_series(
         ds,
-        tuple(f"{spec['stream_prefix']}_source_age_min" for spec in OPS_STREAM_SPECS),
+        tuple(
+            f"{spec['stream_prefix']}_source_age_min"
+            for spec in OPS_STREAM_SPECS
+            if spec["stream_prefix"] not in paused_prefixes
+        ),
         mode="max",
     )
     gws_lag_series = _ops_combined_series(
@@ -2244,8 +2288,8 @@ def _ops_trend_cards_markup() -> str:
         _ops_trend_card_markup(
             "Source lag",
             _ops_level_from_age_minutes(source_lag_latest),
-            "No data" if source_lag_latest is None else _format_duration(timedelta(minutes=source_lag_latest)),
-            "Worst stream source age",
+            "All paused" if paused_prefixes and source_lag_latest is None else ("No data" if source_lag_latest is None else _format_duration(timedelta(minutes=source_lag_latest))),
+            "Worst active stream source age" + (f"; {len(paused_prefixes)} PDU stream(s) paused" if paused_prefixes else ""),
             source_lag_series,
         ),
         _ops_trend_card_markup(
@@ -2257,7 +2301,7 @@ def _ops_trend_cards_markup() -> str:
         ),
     ]
     markup = "".join(cards)
-    _OPS_TREND_CACHE.update({"updated_at": now, "markup": markup})
+    _OPS_TREND_CACHE.update({"updated_at": now, "markup": markup, "paused_prefixes": paused_key})
     return markup
 
 
@@ -2271,9 +2315,10 @@ def _ops_root_cause_cards_markup(
     transfer_level: str,
     mirror_level: str,
     perf_log_level: str,
+    source_stale: int,
+    source_paused: int,
 ) -> str:
     """Group the traffic lights by where a user should look first."""
-    source_stale = int(_ops_float(snapshot.get("streams_source_stale_count")) or 0)
     source_probe_failures = int(_ops_float(snapshot.get("source_host_probe_fail_count")) or 0)
     source_sync_failures = int(_ops_float(snapshot.get("failed_source_sync_unit_count")) or 0)
     processing_failures = int(_ops_float(snapshot.get("failed_processing_unit_count")) or 0)
@@ -2286,7 +2331,8 @@ def _ops_root_cause_cards_markup(
         _ops_card_markup(
             "Source computers",
             _ops_worst_level([source_level, source_freshness_level]),
-            f"{source_probe_failures} host failures, {source_stale} stale streams",
+            f"{source_probe_failures} host failures, {source_stale} active stale streams"
+            + (f", {source_paused} paused" if source_paused else ""),
             "Remote source reachability and whether each stream has produced data within 1.5 hours",
         ),
         _ops_card_markup(
@@ -2357,7 +2403,9 @@ def _ops_operations_markup() -> str:
 
         snapshot_level = _ops_level_from_age_minutes(snapshot_age_min)
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
-        source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
+        paused_prefixes = _ops_expected_paused_prefixes()
+        source_recent_count, source_stale_count, source_paused_count = _ops_source_health(snapshot, paused_prefixes)
+        source_freshness_level = _ops_level_from_count(source_stale_count, amber_at=0.0)
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
@@ -2433,8 +2481,10 @@ def _ops_operations_markup() -> str:
             transfer_level,
             mirror_level,
             perf_log_level,
+            source_stale_count,
+            source_paused_count,
         )
-        trend_cards = _ops_trend_cards_markup()
+        trend_cards = _ops_trend_cards_markup(paused_prefixes)
         failover_endpoint_levels = [
             _ops_worst_level(
                 [
@@ -2479,11 +2529,12 @@ def _ops_operations_markup() -> str:
                 "Source freshness",
                 source_freshness_level,
                 (
-                    f"{int(_ops_float(snapshot.get('streams_source_recent_count')) or 0)}/{len(OPS_STREAM_SPECS)} recent"
-                    if int(_ops_float(snapshot.get('streams_source_stale_count')) or 0) == 0
-                    else f"{int(_ops_float(snapshot.get('streams_source_stale_count')) or 0)} stale streams"
+                    f"{source_stale_count} active stale streams"
+                    if source_stale_count
+                    else f"{source_recent_count}/{len(OPS_STREAM_SPECS) - source_paused_count} active streams recent"
                 ),
-                "Source data seen within the last 1.5 hours",
+                "Source data seen within the last 1.5 hours"
+                + (f"; {source_paused_count} PDU stream(s) intentionally paused" if source_paused_count else ""),
             ),
             _ops_card_markup(
                 "Battery voltage",
@@ -2761,11 +2812,16 @@ def _ops_operations_markup() -> str:
 
         table_rows = []
         for spec in OPS_STREAM_SPECS:
-            source_level_stream = _ops_worst_level(
-                [
-                    _ops_level_from_bool(snapshot.get(spec["source_key"])),
-                    _ops_level_from_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")),
-                ]
+            intentionally_paused = spec["stream_prefix"] in paused_prefixes
+            source_level_stream = (
+                "gray"
+                if intentionally_paused
+                else _ops_worst_level(
+                    [
+                        _ops_level_from_bool(snapshot.get(spec["source_key"])),
+                        _ops_level_from_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")),
+                    ]
+                )
             )
             processing_level_stream = _ops_worst_level([_ops_level_from_bool(snapshot.get(key)) for key in spec["processing_keys"]])
             processing_ok = sum(1 for key in spec["processing_keys"] if _ops_bool(snapshot.get(key)) is True)
@@ -2775,7 +2831,7 @@ def _ops_operations_markup() -> str:
             table_rows.append(
                 "<tr>"
                 f"<th class='ops-table__rowlabel'>{escape(spec['label'])}</th>"
-                f"{_ops_table_cell(source_level_stream, 'Source', _ops_source_freshness_text(snapshot, spec['stream_prefix']))}"
+                f"{_ops_table_cell(source_level_stream, 'Paused' if intentionally_paused else 'Source', _ops_source_freshness_text(snapshot, spec['stream_prefix'], intentionally_paused=intentionally_paused))}"
                 f"{_ops_table_cell(processing_level_stream, 'Processing', processing_detail)}"
                 f"{_ops_table_cell(archive_level_stream, _ops_archive_text(snapshot, spec['stream_prefix']), 'Raw mirror to GWS')}"
                 f"{_ops_table_cell(prune_level_stream, _ops_prune_text(snapshot, spec['stream_prefix'], manifest_ready), 'Deletion gate')}"
@@ -9406,7 +9462,9 @@ def _mobile_overview_markup() -> str:
         if updated_at is not None:
             snapshot_age_min = max((datetime.now(timezone.utc) - updated_at).total_seconds() / 60.0, 0.0)
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
-        source_freshness_level = _ops_level_from_count(snapshot.get("streams_source_stale_count"), amber_at=0.0)
+        paused_prefixes = _ops_expected_paused_prefixes()
+        _source_recent, source_stale_count, _source_paused = _ops_source_health(snapshot, paused_prefixes)
+        source_freshness_level = _ops_level_from_count(source_stale_count, amber_at=0.0)
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)

@@ -108,6 +108,30 @@ class DashboardShellTests(TestCase):
         self.assertIn("Data collection is paused", annotation.text)
         self.assertEqual(annotation.bgcolor, "#edf8f6")
 
+    def test_operations_marks_stale_pdu_off_streams_as_paused(self) -> None:
+        snapshot = {
+            "time_utc": "2026-07-19T12:00:00Z",
+            "cl61_source_recent_state": 0,
+            "cl61_source_age_min": 447,
+            "radar_source_recent_state": 0,
+            "radar_source_age_min": 451,
+            "hatpro_source_recent_state": 0,
+            "hatpro_source_age_min": 451,
+            "vaisalamet_source_recent_state": 1,
+            "asfs_logger_source_recent_state": 1,
+            "asfs_fast_sonic_source_recent_state": 1,
+            "power_source_recent_state": 1,
+            "wxcam_source_recent_state": 1,
+            "source_host_probe_fail_count": 0,
+        }
+        with patch.object(app.mobile_catalog, "pdu_outlet_states", return_value={5: False, 6: True, 8: False}):
+            paused = app._ops_expected_paused_prefixes()
+            recent, stale, paused_count = app._ops_source_health(snapshot, paused)
+
+        self.assertEqual(paused, {"cl61", "hatpro"})
+        self.assertEqual((recent, stale, paused_count), (5, 1, 2))
+        self.assertIn("Paused - PDU outlet off", app._ops_source_freshness_text(snapshot, "cl61", intentionally_paused=True))
+
     def test_live_query_uses_current_window_instead_of_stale_url_dates(self) -> None:
         current_start = datetime(2026, 7, 15, 10, 30)
         current_end = datetime(2026, 7, 16, 10, 30)

@@ -531,6 +531,12 @@ def pdu_instrument_status(instrument_id: str) -> dict[str, Any] | None:
     return _pdu_instrument_status(instrument_id, states, detail)
 
 
+def pdu_outlet_states() -> dict[int, bool] | None:
+    """Return fresh outlet states for dashboard health policy, if available."""
+    states, _detail = _pdu_power_snapshot()
+    return states or None
+
+
 def _pdu_power_snapshot() -> tuple[dict[int, bool], str]:
     """Read one fresh PDU sample without inferring a state from stale data."""
     path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
