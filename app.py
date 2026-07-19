@@ -98,7 +98,7 @@ from wxcam_catalog import (
 )
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 import mobile_catalog
-from instrument_registry import browser_options
+from instrument_registry import PDU_INSTRUMENTS as REGISTERED_PDU_INSTRUMENTS, browser_options
 from presentation_models import empty_data_state
 from request_context import (
     client_ip as _client_ip,
@@ -9326,9 +9326,12 @@ def _browser_overview_instrument_markup() -> str:
     if not rows:
         return "<div class='mobile-section-note'>Instrument-state snapshot unavailable.</div>"
 
+    pdu_instrument_ids = {instrument.id for instrument in REGISTERED_PDU_INSTRUMENTS}
+    pdu_rows = [row for row in rows if row.get("id") in pdu_instrument_ids]
+    collection_rows = [row for row in rows if row.get("id") not in pdu_instrument_ids]
     groups = (
-        ("PDU-controlled instruments", "Power state from the latest PDU sample", rows[:4]),
-        ("Collection-only instruments", "Collection freshness; no individual PDU outlet", rows[4:]),
+        ("PDU-controlled instruments", "Power state from the latest PDU sample", pdu_rows),
+        ("Collection-only instruments", "Collection freshness; no individual PDU outlet", collection_rows),
     )
     rendered_groups = []
     for title, note, group_rows in groups:
@@ -9877,10 +9880,22 @@ def _build_mobile_layout() -> pn.Column:
     _set_mobile_app_tab(_mobile_initial_tab())
     return pn.Column(mobile_app_nav, mobile_app_active, sizing_mode="stretch_width", margin=0, css_classes=["mobile-app"])
 
+interactive_tab_host = pn.Column(
+    interactive_tab,
+    sizing_mode="stretch_width",
+    margin=0,
+    name="Interactive Data Browser",
+)
+power_tab_host = pn.Column(
+    sizing_mode="stretch_width",
+    margin=0,
+    name="Power",
+)
+
 DESKTOP_TAB_SPECS = (
     ("Overview", "overview", browser_overview_tab),
-    ("Interactive Data Browser", "interactive", interactive_tab),
-    ("Power", "power", interactive_tab),
+    ("Interactive Data Browser", "interactive", interactive_tab_host),
+    ("Power", "power", power_tab_host),
     ("Science Quicklooks", "science", science_quicklooks_tab),
     ("House Keeping Quicklooks", "housekeeping", housekeeping_quicklooks_tab),
     ("AURORACam", "auroracam", auroracam_tab),
@@ -9922,10 +9937,14 @@ def _sync_browser_tab_instrument(active: str) -> None:
             instrument_select.visible = False
             if instrument_select.value != "power":
                 instrument_select.value = "power"
+            interactive_tab_host.clear()
+            power_tab_host[:] = [interactive_tab]
         elif active == "interactive":
             instrument_select.visible = True
             if instrument_select.value == "power":
                 instrument_select.value = "Ceilometer"
+            power_tab_host.clear()
+            interactive_tab_host[:] = [interactive_tab]
     finally:
         _browser_tab_syncing = False
 

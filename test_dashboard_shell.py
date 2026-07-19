@@ -32,6 +32,17 @@ class DashboardShellTests(TestCase):
         self.assertTrue(app.desktop_tabs.dynamic)
         self.assertIn("Overview", labels)
 
+    def test_desktop_interactive_and_power_tabs_use_distinct_hosts(self) -> None:
+        self.assertIsNot(app.TAB_PANEL_BY_SLUG["interactive"], app.TAB_PANEL_BY_SLUG["power"])
+
+        app._sync_browser_tab_instrument("power")
+        self.assertEqual(app.interactive_tab_host.objects, [])
+        self.assertEqual(app.power_tab_host.objects, [app.interactive_tab])
+
+        app._sync_browser_tab_instrument("interactive")
+        self.assertEqual(app.interactive_tab_host.objects, [app.interactive_tab])
+        self.assertEqual(app.power_tab_host.objects, [])
+
     def test_desktop_tab_labels_scroll_without_abbreviating(self) -> None:
         self.assertIn(":host(.desktop-tabs) .bk-header", app.css)
         self.assertIn("overflow-x: auto", app.css)
@@ -52,11 +63,12 @@ class DashboardShellTests(TestCase):
     def test_browser_overview_uses_shared_instrument_state_groups(self) -> None:
         overview = {
             "instrumentPower": [
-                {"title": "UAS", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
-                {"title": "CL61", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
-                {"title": "Cloud Radar", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
-                {"title": "HATPRO", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
-                {"title": "Meteorology", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
+                {"id": "vaisalamet", "title": "Meteorology", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
+                {"id": "asfs-logger", "title": "Radiation", "state": "Collecting", "level": "green", "detail": "Latest sample 1 min old"},
+                {"id": "uas", "title": "UAS", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
+                {"id": "ceilometer", "title": "CL61", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
+                {"id": "cloud-radar", "title": "Cloud Radar", "state": "On", "level": "green", "detail": "PDU sample 2 min old"},
+                {"id": "hatpro", "title": "HATPRO", "state": "Off", "level": "unknown", "detail": "PDU sample 2 min old"},
             ]
         }
         with patch.object(app.mobile_catalog, "overview", return_value=overview):
@@ -65,7 +77,13 @@ class DashboardShellTests(TestCase):
         self.assertIn("PDU-controlled instruments", markup)
         self.assertIn("Collection-only instruments", markup)
         self.assertIn("Cloud Radar", markup)
+        self.assertIn("HATPRO", markup)
         self.assertIn("Meteorology", markup)
+        pdu_group, collection_group = markup.split("Collection-only instruments", maxsplit=1)
+        self.assertIn("Cloud Radar", pdu_group)
+        self.assertIn("HATPRO", pdu_group)
+        self.assertNotIn("Cloud Radar", collection_group)
+        self.assertNotIn("HATPRO", collection_group)
 
     def test_overview_refreshes_when_selected(self) -> None:
         with patch.object(app, "_refresh_browser_overview") as refresh:
