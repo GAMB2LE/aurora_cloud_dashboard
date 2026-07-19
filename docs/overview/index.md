@@ -7,17 +7,21 @@ AURORACam still images, and an operational status view into one Panel app.
 
 ## Main dashboard views
 
-The deployed interface is organized into five top-level tabs:
+The deployed desktop interface has eight top-level tabs:
 
+- **Overview** for a compact station snapshot and instrument-state grouping
 - **Interactive Data Browser** for live browsing and recent windows
+- **Power** for the dedicated Aurora Power Supply view and forecasts
 - **Science Quicklooks** for archived science products and WXcam day views
 - **House Keeping Quicklooks** for archived diagnostics and housekeeping plots
 - **AURORACam** for four-camera MX4 still-image browsing
+- **UAS** for the mirrored Menapia tier log and recent event history
 - **Operations Dashboard** for source-host status, storage, transfers, mirror
   verification, and prune-readiness checks
 
-The default first view is **Aurora Power Supply** on the interactive browser,
-so the dashboard opens on the most direct power-health summary.
+The desktop default is **Overview**. The phone experience groups the same
+content into **Overview**, **Power**, **Plots**, **Camera**, and **Ops** so the
+most frequent field checks remain one tap away.
 
 ## Instrument families
 

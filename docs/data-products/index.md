@@ -3,6 +3,11 @@
 The dashboard depends on a mix of numeric Zarr stores, camera media products,
 and operations-monitor products.
 
+The individual product pages describe schemas and may include dated example
+sizes or time ranges. Treat those examples as historical documentation, not as
+live health checks. Use the Operations Dashboard for current stream freshness
+and the deployed runtime configuration for current paths.
+
 ## Numeric instrument Zarrs
 
 - [Ceilometer Zarr](ceilometer-zarr.md)

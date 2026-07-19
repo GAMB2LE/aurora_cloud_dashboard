@@ -9615,19 +9615,30 @@ def _mobile_overview() -> pn.Column:
     return pn.Column(pn.pane.HTML(_mobile_overview_markup(), sizing_mode="stretch_width", margin=0), sizing_mode="stretch_width", css_classes=["mobile-shell"])
 
 
-browser_overview_container = pn.Column(sizing_mode="stretch_width")
+_BROWSER_OVERVIEW_LOADED = False
+browser_overview_container = pn.Column(
+    pn.pane.HTML(
+        "<div class='mobile-section-note'>Open Overview to load the latest station snapshot.</div>",
+        sizing_mode="stretch_width",
+        margin=0,
+    ),
+    sizing_mode="stretch_width",
+)
 browser_overview_refresh = pn.widgets.Button(name="Refresh station snapshot", button_type="primary", icon="refresh")
 
 
 def _refresh_browser_overview(_event=None) -> None:
+    global _BROWSER_OVERVIEW_LOADED
     browser_overview_container[:] = [
         _mobile_overview(),
         pn.pane.HTML(_browser_overview_instrument_markup(), sizing_mode="stretch_width", margin=(8, 0, 0, 0)),
     ]
+    _BROWSER_OVERVIEW_LOADED = True
 
 
 browser_overview_refresh.on_click(_refresh_browser_overview)
-_refresh_browser_overview()
+# Do not open the power/PDU products during module import. The active-tab
+# loader refreshes this view when Overview is selected, including direct links.
 browser_overview_tab = pn.Column(
     pn.Row(
         pn.pane.HTML("<div class='desktop-overview-heading'>Station overview</div>", sizing_mode="stretch_width", margin=0),

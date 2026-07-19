@@ -1360,7 +1360,7 @@ def append_forecast_archive(
         combined = combined.isel(issue_time=~combined.indexes["issue_time"].duplicated(keep="last"))
     else:
         combined = row
-    cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=float(retention_days))
+    cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=float(retention_days))
     issue_times = pd.DatetimeIndex(combined["issue_time"].values)
     combined = combined.isel(issue_time=np.asarray(issue_times >= cutoff))
     _atomic_write_archive(combined, archive_zarr)

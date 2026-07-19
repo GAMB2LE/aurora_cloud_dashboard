@@ -27,6 +27,8 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Start here: getting-started.md
+  - Architecture: architecture.md
   - Overview:
       - Dashboard at a glance: overview/index.md
       - Tabs and views: overview/tabs-and-views.md

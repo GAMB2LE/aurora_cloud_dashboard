@@ -1202,8 +1202,8 @@ def build_operating_scenarios(
         transitions = np.flatnonzero(on & ~np.r_[False, on[:-1]])
         stops_found = np.flatnonzero(~on & np.r_[False, on[:-1]])
         starts.append(int(len(transitions)))
-        start_times.append(times[transitions[0]].to_datetime64() if transitions.size else np.datetime64("NaT"))
-        stop_times.append(times[stops_found[-1]].to_datetime64() if stops_found.size else np.datetime64("NaT"))
+        start_times.append(times[transitions[0]].to_datetime64() if transitions.size else np.datetime64("NaT", "ns"))
+        stop_times.append(times[stops_found[-1]].to_datetime64() if stops_found.size else np.datetime64("NaT", "ns"))
         labels.setdefault(scenario_id, mode_label(modes[0]))
 
     output = xr.Dataset(

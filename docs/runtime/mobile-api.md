@@ -51,8 +51,9 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 - `GET /manifest` - deployment identity, tabs, instruments, WXcam streams,
   refresh defaults, and the cross-platform capability contract. The contract
   distinguishes shared live capabilities from browser-only scientific
-  exploration and native-only resilience workflows. Deployment identity reports the current site environment,
-  public domain, data role, dashboard URL, and checked-out revision.
+  exploration and native-only resilience workflows. Deployment identity
+  reports the current site environment, public domain, data role, dashboard
+  URL, and checked-out revision.
 - `GET /operations` - latest operations health, stream states, root-cause
   groups, active alerts, and compact trend cards.
 - `GET /overview` - the small first-load status cards and active alerts.
@@ -62,8 +63,9 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
   AURORACam records with separate preview and original URLs. Historical days
   also provide a bounded list of UTC frame times for native selection.
 - `GET /uas?window=24h|7d|all` - latest UAS tier and a bounded history for
-  the selected server-side window. `24h` is the default; responses are capped
-  at the newest 2,000 records to protect mobile clients.
+  the selected server-side window. `24h` is the default. `all` means all
+  available records up to the newest 2,000, protecting mobile clients from an
+  unbounded response.
 - `GET /instruments/{id}/summary?window=24h|7d` - mobile instrument summary and
   latest generated quicklook references.
 - `GET /quicklooks?kind=science|housekeeping&instrument={id}` - available

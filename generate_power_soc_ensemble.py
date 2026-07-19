@@ -433,7 +433,7 @@ def append_ensemble_archive(forecast: xr.Dataset, path: Path, *, retention_days:
         combined = combined.isel(issue_time=~combined.indexes["issue_time"].duplicated(keep="last"))
     else:
         combined = row
-    cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=retention_days)
+    cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=retention_days)
     combined = combined.isel(issue_time=pd.DatetimeIndex(combined.issue_time.values) >= cutoff)
     tmp = path.with_name(f"{path.name}.tmp")
     if tmp.exists():
