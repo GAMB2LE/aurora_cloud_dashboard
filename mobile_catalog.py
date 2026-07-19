@@ -854,6 +854,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                     {
                         "id": panel.key,
                         "title": panel.label,
+                        "explanation": panel.description,
                         "leftAxisLabel": panel.left_axis_label,
                         "rightAxisLabel": panel.right_axis_label,
                         "traces": traces,

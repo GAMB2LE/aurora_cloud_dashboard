@@ -8530,6 +8530,12 @@ body, .bk {
     color: #344154;
     overflow: hidden;
 }
+.mobile-plot-card__note {
+    margin: 0 0 4px;
+    font-size: 8.5px;
+    line-height: 1.25;
+    color: #536273;
+}
 .mobile-plot-card__legend-item {
     display: inline-flex;
     align-items: center;
@@ -9658,6 +9664,11 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
     fig.update_layout(**layout)
     return pn.Column(
         pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0),
+        *(
+            [pn.pane.HTML(f"<div class='mobile-plot-card__note'>{escape(panel.description)}</div>", margin=0)]
+            if panel.description
+            else []
+        ),
         pn.pane.HTML(f"<div class='mobile-plot-card__legend'>{''.join(legend_items)}</div>", margin=0),
         pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=plot_height + 8, css_classes=["mobile-figure"]),
         sizing_mode="stretch_width",

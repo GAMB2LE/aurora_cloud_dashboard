@@ -40,6 +40,21 @@ def _power_layout_dataset() -> xr.Dataset:
     )
 
 
+def test_soc_hindcast_labels_explain_forecast_issue_time() -> None:
+    panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "soc_hindcast")
+
+    assert panel.label == "Battery SOC: Measured vs Earlier Forecasts"
+    assert panel.description is not None
+    assert "before that time" in panel.description
+    assert [trace.label for trace in panel.traces] == [
+        "Measured battery SOC",
+        "Forecast issued 6 h before valid time",
+        "Forecast issued 24 h before valid time",
+        "Forecast issued 48 h before valid time",
+        "Forecast issued 72 h before valid time",
+    ]
+
+
 def _power_layout_panels() -> tuple[PanelSpec, ...]:
     panel_specs = (
         ("renewables", "Renewables", "observed_1"),

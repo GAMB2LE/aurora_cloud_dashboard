@@ -188,6 +188,10 @@ POWER_SOC_HINDCAST_FIELDS = (
     "BatterySOCHindcast_48h",
     "BatterySOCHindcast_72h",
 )
+SOC_HINDCAST_EXPLANATION = (
+    "Solid green is measured battery state of charge. Broken lines are archived forecasts "
+    "for the same plotted time; each label states how long before that time the forecast was issued."
+)
 POWER_SOC_ENSEMBLE_FORECAST_FIELDS = (
     "BatterySOCForecastP10",
     "BatterySOCForecastP50",
@@ -298,6 +302,7 @@ class PanelSpec:
     left_axis_label: str
     right_axis_label: str | None
     traces: tuple[TraceSpec, ...]
+    description: str | None = None
 
 
 def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
@@ -1113,16 +1118,17 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "soc_hindcast",
-            "SOC Hindcast: Forecasts vs Observed",
+            "Battery SOC: Measured vs Earlier Forecasts",
             "SOC [%]",
             None,
             (
-                TraceSpec("BatterySOCObservedHindcast", "Observed SOC", COLOR["green"], valid_min=0.0, valid_max=100.0, step=True),
-                TraceSpec("BatterySOCHindcast_6h", "Issued 6 h Earlier", COLOR["blue"], dash="dash", valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCHindcast_24h", "Issued 24 h Earlier", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCHindcast_48h", "Issued 48 h Earlier", COLOR["purple"], dash="dashdot", valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCHindcast_72h", "Issued 72 h Earlier", COLOR["slate"], dash="longdash", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCObservedHindcast", "Measured battery SOC", COLOR["green"], valid_min=0.0, valid_max=100.0, step=True),
+                TraceSpec("BatterySOCHindcast_6h", "Forecast issued 6 h before valid time", COLOR["blue"], dash="dash", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCHindcast_24h", "Forecast issued 24 h before valid time", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCHindcast_48h", "Forecast issued 48 h before valid time", COLOR["purple"], dash="dashdot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("BatterySOCHindcast_72h", "Forecast issued 72 h before valid time", COLOR["slate"], dash="longdash", valid_min=0.0, valid_max=100.0),
             ),
+            description=SOC_HINDCAST_EXPLANATION,
         ),
         PanelSpec(
             "operating_plan_scenarios",
