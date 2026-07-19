@@ -13,7 +13,9 @@ def test_desktop_shell_has_full_named_tabs() -> None:
     labels = [label for label, _slug, _panel in app.DESKTOP_TAB_SPECS]
 
     assert labels == [
+        "Overview",
         "Interactive Data Browser",
+        "Power",
         "Science Quicklooks",
         "House Keeping Quicklooks",
         "AURORACam",
@@ -22,6 +24,7 @@ def test_desktop_shell_has_full_named_tabs() -> None:
     ]
     assert len(app.desktop_tabs) == len(labels)
     assert app.desktop_tabs.dynamic
+    assert "Overview" in labels
 
 
 def test_desktop_tab_labels_scroll_without_abbreviating() -> None:

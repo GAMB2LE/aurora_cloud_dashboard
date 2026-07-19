@@ -114,8 +114,11 @@ def auroracam(day: str = Query("latest"), time_utc: str | None = Query(None)) ->
 
 
 @app.get("/uas", dependencies=[Depends(require_auth)])
-def uas() -> dict:
-    return catalog.uas()
+def uas(window: str = Query("24h", pattern="^(24h|7d|all)$")) -> dict:
+    try:
+        return catalog.uas(window=window)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
 
 
 @app.get("/instruments/{instrument_id}/summary", dependencies=[Depends(require_auth)])

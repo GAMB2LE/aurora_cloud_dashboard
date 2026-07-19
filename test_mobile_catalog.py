@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 
 import mobile_catalog
 
@@ -27,7 +28,15 @@ class MobileCatalogTests(unittest.TestCase):
         power = next(instrument for instrument in manifest["instruments"] if instrument["id"] == "power")
         self.assertTrue(power["supportsHousekeepingQuicklooks"])
         self.assertIn("fish_hdr", {stream["id"] for stream in manifest["wxcamStreams"]})
-        self.assertEqual(manifest["schemaVersion"], 2)
+        self.assertEqual(manifest["schemaVersion"], 3)
+        self.assertTrue(
+            {
+                "power.current_system_ecmwf_p10_p90",
+                "power.assigned_pdu_outlets",
+                "operations.instrument_state",
+            }.issubset(manifest["capabilities"]["shared"])
+        )
+        self.assertIn("explore.arbitrary_variables_ranges", manifest["capabilities"]["browser"])
         self.assertEqual(
             manifest["deployment"],
             {
@@ -37,6 +46,40 @@ class MobileCatalogTests(unittest.TestCase):
                 "dataRole": "live-mirror",
                 "revision": "abc123def456",
             },
+        )
+
+    def test_auroracam_lists_day_times_for_native_time_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "radar-cam" / "2026-07-05"
+            source.mkdir(parents=True)
+            for stamp in ("12-00", "12-30"):
+                (source / f"radar-cam_2026-07-05_{stamp}.jpg").write_bytes(b"jpeg")
+
+            with patch.dict(os.environ, {"AURORACAM_RAW_ROOT": str(root)}):
+                response = mobile_catalog.auroracam("2026-07-05")
+
+        self.assertEqual(response["availableTimesUTC"], ["2026-07-05 12:30", "2026-07-05 12:00"])
+
+    def test_uas_window_is_filtered_by_the_server(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "menapia_mqtt.log"
+            recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+            path.write_text(
+                "2026-07-01 12:00:00: Tier change 1 2\n"
+                f"{recent:%Y-%m-%d %H:%M:%S}: Tier change 2 3\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"UAS_MQTT_LOG_PATH": str(path)}):
+                response = mobile_catalog.uas("24h")
+
+        self.assertEqual(response["window"], "24h")
+        self.assertEqual([record["effectiveTier"] for record in response["records"]], [3])
+
+    def test_shared_pdu_contract_has_only_assigned_outlets(self) -> None:
+        self.assertEqual(
+            [(title, outlet) for _, title, _, outlet in mobile_catalog.PDU_INSTRUMENTS],
+            [("UAS", 4), ("CL61", 5), ("Cloud Radar", 6), ("HATPRO", 8)],
         )
 
     def test_quicklooks_find_latest_and_dated_summary_images(self) -> None:

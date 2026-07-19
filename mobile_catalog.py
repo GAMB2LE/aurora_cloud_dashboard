@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -254,7 +254,7 @@ def deployment_descriptor() -> dict[str, Any]:
 def manifest() -> dict[str, Any]:
     return {
         "serverTime": utc_now_iso(),
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "minimumRefreshIntervalSeconds": 60,
         "deployment": deployment_descriptor(),
         "sections": [
@@ -280,6 +280,30 @@ def manifest() -> dict[str, Any]:
             {"id": stream_id, "title": spec["title"], "systemImage": spec["systemImage"]}
             for stream_id, spec in WXCAM_STREAMS.items()
         ],
+        # This is the cross-platform contract. Native clients can choose a
+        # compact presentation, while the browser remains the full explorer.
+        "capabilities": {
+            "shared": [
+                "power.current_system_ecmwf_p10_p90",
+                "power.assigned_pdu_outlets",
+                "operations.instrument_state",
+                "operations.live_status",
+                "quicklooks.science_housekeeping",
+                "camera.auroracam_wxcam",
+            ],
+            "browser": [
+                "explore.arbitrary_variables_ranges",
+                "plots.plotly_investigation",
+                "uas.full_history_events",
+                "camera.shareable_state",
+            ],
+            "native": [
+                "overview.cached_snapshot",
+                "overview.endpoint_failover",
+                "overview.dynamic_type",
+                "overview.pull_to_refresh",
+            ],
+        },
     }
 
 
@@ -700,7 +724,7 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
     if day != "latest" and (not AURORACAM_DAY_RE.fullmatch(day) or day not in days):
         raise KeyError(f"Unknown AURORACam day: {day}")
 
-    frames = []
+    available_times: list[str] = []
     if day == "latest":
         selected_day = days[0] if days else None
         records = auroracam_latest_records(root)
@@ -709,10 +733,13 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
         records = {}
         for camera_id in AURORACAM_CAMERAS:
             candidates = auroracam_day_records(root, camera_id, day)
+            available_times.extend(record.time_utc for record in candidates)
             if time_utc:
                 candidates = [record for record in candidates if record.time_utc == time_utc]
             if candidates:
                 records[camera_id] = candidates[-1]
+
+    frames = []
 
     for camera_id in AURORACAM_CAMERAS:
         record = records.get(camera_id)
@@ -731,7 +758,14 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
                 "modifiedAt": datetime.fromtimestamp(record.mtime_ns / 1_000_000_000, UTC).isoformat().replace("+00:00", "Z"),
             }
         )
-    return {"serverTime": utc_now_iso(), "selectedDay": selected_day, "availableDays": days, "frames": frames}
+    return {
+        "serverTime": utc_now_iso(),
+        "selectedDay": selected_day,
+        "selectedTimeUTC": time_utc,
+        "availableDays": days,
+        "availableTimesUTC": sorted(set(available_times), reverse=True)[:288],
+        "frames": frames,
+    }
 
 
 def resolve_auroracam_image_path(camera_id: str, day: str, filename: str) -> Path | None:
@@ -866,14 +900,28 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     return payload
 
 
-def uas() -> dict[str, Any]:
+def uas(window: str = "24h") -> dict[str, Any]:
+    windows = {
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+        "all": None,
+    }
+    if window not in windows:
+        raise KeyError(f"Unknown UAS window: {window}")
+
     result = load_uas_mqtt_log(uas_mqtt_log_path())
     latest = result.records[-1] if result.records else None
     age_seconds = (datetime.now(UTC) - latest.timestamp).total_seconds() if latest else None
     level = "red" if result.missing or result.error else "amber" if age_seconds is None or age_seconds > 300 else "green"
-    records = result.records[-200:]
+    duration = windows[window]
+    cutoff = datetime.now(UTC) - duration if duration is not None else None
+    records = [record for record in result.records if cutoff is None or record.timestamp >= cutoff]
+    # A corrupted or unexpectedly high-rate log must not make the mobile API
+    # response unbounded. The newest records preserve the current state.
+    records = records[-2_000:]
     return {
         "serverTime": utc_now_iso(),
+        "window": window,
         "level": level,
         "latest": None if latest is None else {
             "timeUTC": latest.timestamp.isoformat().replace("+00:00", "Z"),

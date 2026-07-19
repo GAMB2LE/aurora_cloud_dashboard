@@ -5,9 +5,11 @@ This page describes what each top-level dashboard tab is responsible for.
 ## Desktop And Phone Navigation
 
 Wide screens use the same full-name top tab bar as the stable production
-dashboard. The six tabs are **Interactive Data Browser**, **Science
-Quicklooks**, **House Keeping Quicklooks**, **AURORACam**, **UAS**, and
-**Operations Dashboard**. Only the selected tab is mounted in the browser, and
+dashboard. The tabs are **Overview**, **Interactive Data Browser**, **Power**,
+**Science Quicklooks**, **House Keeping Quicklooks**, **AURORACam**, **UAS**,
+and **Operations Dashboard**. Overview is an optional compact station landing
+view that shows the latest cached station snapshot and a manual refresh; it
+does not replace the full scientific browser. Only the selected tab is mounted in the browser, and
 the heavier quicklook, UAS, and Operations content remains lazy-loaded.
 When those full labels do not fit on a narrower desktop or tablet, the tab bar
 scrolls horizontally in one row instead of wrapping or abbreviating them.
@@ -16,7 +18,10 @@ Phones use the compact operational views: **Overview**, **Power**, **Plots**,
 **Camera**, and **Ops**. These group the same dashboard content into smaller
 plot cards and stacked controls without forcing the full desktop plotting
 surface into a narrow viewport. Science and housekeeping products are grouped
-under **Plots**; UAS status is available through **Ops**.
+under **Plots**; UAS status is available through **Ops**, with a full tier
+history and event drill-down in the native app. The native Camera view supports
+UTC frame-time selection for historical AURORACam days. The Power view shows a
+field forecast briefing alongside its full set of bounded plot cards.
 
 The URL continues to store the selected view. A desktop share link uses the
 full tab slug, while a phone link also stores its compact section in

@@ -9497,8 +9497,8 @@ def _mobile_overview_markup() -> str:
     ]
     return (
         "<div class='mobile-shell'>"
-        "<div><div class='mobile-section-title'>AURORA Mobile Overview</div>"
-        "<div class='mobile-section-note'>Fast status for phone checks. Detailed plots and camera browsing are in the bottom tabs.</div></div>"
+        "<div><div class='mobile-section-title'>AURORA Overview</div>"
+        "<div class='mobile-section-note'>Latest cached station snapshot. Detailed plots, cameras, and diagnostics remain in their dedicated views.</div></div>"
         f"<div class='mobile-card-grid'>{''.join(cards)}</div>"
         "</div>"
     )
@@ -9506,6 +9506,27 @@ def _mobile_overview_markup() -> str:
 
 def _mobile_overview() -> pn.Column:
     return pn.Column(pn.pane.HTML(_mobile_overview_markup(), sizing_mode="stretch_width", margin=0), sizing_mode="stretch_width", css_classes=["mobile-shell"])
+
+
+browser_overview_container = pn.Column(sizing_mode="stretch_width")
+browser_overview_refresh = pn.widgets.Button(name="Refresh station snapshot", button_type="primary", icon="refresh")
+
+
+def _refresh_browser_overview(_event=None) -> None:
+    browser_overview_container[:] = [_mobile_overview()]
+
+
+browser_overview_refresh.on_click(_refresh_browser_overview)
+_refresh_browser_overview()
+browser_overview_tab = pn.Column(
+    pn.Row(
+        pn.pane.HTML("<div class='desktop-overview-heading'>Station overview</div>", sizing_mode="stretch_width", margin=0),
+        browser_overview_refresh,
+        sizing_mode="stretch_width",
+    ),
+    browser_overview_container,
+    sizing_mode="stretch_width",
+)
 
 
 def _mobile_power_window() -> xr.Dataset | None:
@@ -9897,6 +9918,7 @@ def _build_mobile_layout() -> pn.Column:
     return pn.Column(mobile_app_nav, mobile_app_active, sizing_mode="stretch_width", margin=0, css_classes=["mobile-app"])
 
 DESKTOP_TAB_SPECS = (
+    ("Overview", "overview", browser_overview_tab),
     ("Interactive Data Browser", "interactive", interactive_tab),
     ("Power", "power", interactive_tab),
     ("Science Quicklooks", "science", science_quicklooks_tab),
@@ -9950,7 +9972,9 @@ def _sync_browser_tab_instrument(active: str) -> None:
 
 def _ensure_active_tab_loaded(slug: str | None = None) -> None:
     active = _normalize_tab_slug(slug or ACTIVE_TAB_SLUG)
-    if active in {"interactive", "power"}:
+    if active == "overview":
+        _refresh_browser_overview()
+    elif active in {"interactive", "power"}:
         _sync_browser_tab_instrument(active)
     elif active == "science" and "science" not in _LOADED_TABS:
         science_quicklook_container[:] = [_science_quicklook_image]
@@ -10030,6 +10054,7 @@ def _site_footer_pane() -> pn.pane.HTML:
 
 
 interactive_tab.append(_site_footer_pane())
+browser_overview_tab.append(_site_footer_pane())
 science_quicklooks_tab.append(_site_footer_pane())
 housekeeping_quicklooks_tab.append(_site_footer_pane())
 auroracam_tab.append(_site_footer_pane())
