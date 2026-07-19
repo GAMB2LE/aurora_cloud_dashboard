@@ -220,6 +220,7 @@ class MobileCatalogTests(unittest.TestCase):
 
         meteorology = next(row for row in rows if row["id"] == "vaisalamet")
         radiation = next(row for row in rows if row["id"] == "asfs-logger")
+        self.assertEqual([row["id"] for row in rows[:2]], ["vaisalamet", "asfs-logger"])
         self.assertEqual((meteorology["state"], meteorology["level"]), ("Collecting", "green"))
         self.assertEqual((radiation["state"], radiation["level"]), ("No recent data", "red"))
 

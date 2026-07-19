@@ -537,7 +537,9 @@ def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "detail": detail,
             }
         )
-    return [*pdu_rows, *science_rows]
+    # Collection freshness is the first operational signal on the mobile overview.
+    # Keep it ahead of PDU outlet state regardless of changes to either inventory.
+    return [*science_rows, *pdu_rows]
 
 
 def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None, detail: str = "") -> dict[str, Any]:
