@@ -82,6 +82,23 @@ class MobileCatalogTests(unittest.TestCase):
             [("UAS", 4), ("CL61", 5), ("Cloud Radar", 6), ("HATPRO", 8)],
         )
 
+    def test_quicklooks_reports_assigned_instrument_power_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdu = root / "pdu.zarr"
+            import numpy as np
+            import xarray as xr
+
+            xr.Dataset(
+                {"PDUOutlet5State": (("time",), np.array([0.0]))},
+                coords={"time": [datetime.now(timezone.utc).replace(tzinfo=None)]},
+            ).to_zarr(pdu, mode="w")
+            with patch.dict(os.environ, {"AURORA_QUICKLOOK_ROOT": str(root), "PDU_ZARR_PATH": str(pdu)}):
+                response = mobile_catalog.quicklooks("science", "ceilometer")
+
+        self.assertEqual(response["powerStatus"]["state"], "Off")
+        self.assertIn("PDU sample", response["powerStatus"]["detail"])
+
     def test_quicklooks_find_latest_and_dated_summary_images(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

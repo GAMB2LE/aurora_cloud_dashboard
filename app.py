@@ -4172,10 +4172,26 @@ def _empty_interactive_figure(instrument: str, reason: str, start=None, end=None
     window = ""
     if start_dt is not None and end_dt is not None:
         window = f"<br><span style='font-size:12px;color:#647283'>Selected window: {start_dt:%Y-%m-%d %H:%M} to {end_dt:%Y-%m-%d %H:%M} UTC</span>"
+    power_status = mobile_catalog.pdu_instrument_status(
+        {
+            "Ceilometer": "ceilometer",
+            "Cloud Radar": "cloud-radar",
+            "Scanning Microwave Radiometer": "hatpro",
+        }.get(instrument, "")
+    )
+    intentionally_off = power_status is not None and power_status.get("state") == "Off"
+    if intentionally_off:
+        reason = "Data collection is paused because this instrument is intentionally powered off."
+        detail = f"{display_name(instrument)} is off at its assigned PDU outlet. {power_status['detail']}."
     detail_markup = "" if not detail else f"<br><span style='font-size:12px;color:#647283'>{escape(detail)}</span>"
     fig = go.Figure()
     fig.add_annotation(
-        text=f"<b>{escape(display_name(instrument))}</b><br>{escape(reason)}{window}{detail_markup}",
+        text=(
+            f"<span style='font-size:11px;color:{THEME_ACCENT};font-weight:600'>INTENTIONAL POWER-OFF</span><br>"
+            f"<b>{escape(display_name(instrument))}</b><br>{escape(reason)}{window}{detail_markup}"
+            if intentionally_off
+            else f"<b>{escape(display_name(instrument))}</b><br>{escape(reason)}{window}{detail_markup}"
+        ),
         x=0.5,
         y=0.52,
         xref="paper",
@@ -4183,6 +4199,10 @@ def _empty_interactive_figure(instrument: str, reason: str, start=None, end=None
         showarrow=False,
         align="center",
         font=dict(color=THEME_TEXT, size=16),
+        bgcolor="#edf8f6" if intentionally_off else None,
+        bordercolor="#a9d8d0" if intentionally_off else None,
+        borderwidth=1 if intentionally_off else 0,
+        borderpad=16 if intentionally_off else 0,
     )
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False)

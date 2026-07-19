@@ -59,7 +59,10 @@ The desktop controls use two compact rows for instrument, time window, live
 state, reset, and day navigation. Variable and range controls appear beneath
 them only when the selected instrument needs those controls. If a selected
 window has no available samples, the empty view reports the UTC window and
-points to the next useful check.
+points to the next useful check. For CL61, Cloud Radar, and HATPRO, a fresh
+PDU state of **Off** changes that message to an intentional power-off notice:
+collection is expected to pause until the assigned outlet is enabled. A powered
+instrument with no samples still shows the normal data or freshness guidance.
 
 The current tab, instrument, and important control values are also kept in the
 browser URL. This makes mobile recovery less painful: if the phone backgrounds

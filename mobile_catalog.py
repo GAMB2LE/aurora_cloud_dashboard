@@ -60,6 +60,7 @@ PDU_INSTRUMENTS = (
     ("cloud-radar", "Cloud Radar", "dot.radiowaves.left.and.right", 6),
     ("hatpro", "HATPRO", "antenna.radiowaves.left.and.right", 8),
 )
+PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
 
 # These Science-tab products have no individual PDU outlet state. Their mobile
@@ -498,43 +499,11 @@ def overview() -> dict[str, Any]:
 
 def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     """Return PDU power states plus collection states for DC science streams."""
-    path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
-    try:
-        import pandas as pd
-        import xarray as xr
-
-        dataset = xr.open_zarr(path, consolidated=False)
-        try:
-            if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
-                raise ValueError("no PDU samples")
-            sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
-            if sample_time.tzinfo is None:
-                sample_time = sample_time.replace(tzinfo=UTC)
-            age_minutes = max((datetime.now(UTC) - sample_time.astimezone(UTC)).total_seconds() / 60, 0)
-            if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
-                raise ValueError("stale PDU sample")
-            states = {
-                outlet: float(dataset[f"PDUOutlet{outlet}State"].values[-1]) >= 0.5
-                for _id, _title, _icon, outlet in PDU_INSTRUMENTS
-                if f"PDUOutlet{outlet}State" in dataset
-            }
-            detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
-        finally:
-            dataset.close()
-    except Exception:
-        states = {}
-        detail = "PDU status unavailable"
+    states, detail = _pdu_power_snapshot()
 
     pdu_rows = [
-        {
-            "id": instrument_id,
-            "title": title,
-            "systemImage": icon,
-            "state": "On" if states.get(outlet) is True else "Off" if states.get(outlet) is False else "Unknown",
-            "level": "green" if states.get(outlet) is True else "unknown" if states.get(outlet) is False else "amber",
-            "detail": detail,
-        }
-        for instrument_id, title, icon, outlet in PDU_INSTRUMENTS
+        _pdu_instrument_status(instrument_id, states, detail)
+        for instrument_id, _title, _icon, _outlet in PDU_INSTRUMENTS
     ]
     science_rows = []
     for instrument_id, title, icon, prefix in SCIENCE_DC_INSTRUMENTS:
@@ -564,6 +533,58 @@ def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # Collection freshness is the first operational signal on the mobile overview.
     # Keep it ahead of PDU outlet state regardless of changes to either inventory.
     return [*science_rows, *pdu_rows]
+
+
+def pdu_instrument_status(instrument_id: str) -> dict[str, Any] | None:
+    """Return the current assigned PDU state for a powered instrument, if known."""
+    if instrument_id not in PDU_INSTRUMENT_BY_ID:
+        return None
+    states, detail = _pdu_power_snapshot()
+    return _pdu_instrument_status(instrument_id, states, detail)
+
+
+def _pdu_power_snapshot() -> tuple[dict[int, bool], str]:
+    """Read one fresh PDU sample without inferring a state from stale data."""
+    path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
+    try:
+        import pandas as pd
+        import xarray as xr
+
+        dataset = xr.open_zarr(path, consolidated=False)
+        try:
+            if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
+                raise ValueError("no PDU samples")
+            sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
+            if sample_time.tzinfo is None:
+                sample_time = sample_time.replace(tzinfo=UTC)
+            age_minutes = max((datetime.now(UTC) - sample_time.astimezone(UTC)).total_seconds() / 60, 0)
+            if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
+                raise ValueError("stale PDU sample")
+            states = {
+                outlet: float(dataset[f"PDUOutlet{outlet}State"].values[-1]) >= 0.5
+                for _id, _title, _icon, outlet in PDU_INSTRUMENTS
+                if f"PDUOutlet{outlet}State" in dataset
+            }
+            detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
+        finally:
+            dataset.close()
+    except Exception:
+        states = {}
+        detail = "PDU status unavailable"
+    return states, detail
+
+
+def _pdu_instrument_status(instrument_id: str, states: dict[int, bool], detail: str) -> dict[str, Any]:
+    title, icon, outlet = PDU_INSTRUMENT_BY_ID[instrument_id]
+    powered = states.get(outlet)
+    return {
+        "id": instrument_id,
+        "title": title,
+        "systemImage": icon,
+        "state": "On" if powered is True else "Off" if powered is False else "Unknown",
+        "level": "green" if powered is True else "unknown" if powered is False else "amber",
+        "detail": detail,
+    }
 
 
 def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None, detail: str = "") -> dict[str, Any]:
@@ -997,6 +1018,7 @@ def quicklooks(kind: str, instrument_id: str) -> dict[str, Any]:
         "instrument": {"id": instrument.id, "title": instrument.title, "systemImage": instrument.system_image},
         "latest": latest,
         "entries": entries,
+        "powerStatus": pdu_instrument_status(instrument_id),
     }
 
 

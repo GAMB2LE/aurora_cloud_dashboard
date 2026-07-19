@@ -69,7 +69,9 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 - `GET /instruments/{id}/summary?window=24h|7d` - mobile instrument summary and
   latest generated quicklook references.
 - `GET /quicklooks?kind=science|housekeeping&instrument={id}` - available
-  quicklook dates and image URLs.
+  quicklook dates and image URLs. For an assigned PDU instrument, the response
+  also includes its current power state. Clients present an intentional
+  power-off as an expected collection pause instead of a missing-data fault.
 - `GET /wxcam?stream=fish_hdr|pano_hdr&day=latest|YYYY-MM-DD` - stitched MP4,
   day list, poster, and hourly thumbnails.
 - `GET /media/...` - authenticated image/video file responses with short cache

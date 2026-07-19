@@ -73,6 +73,19 @@ class DashboardShellTests(TestCase):
 
         refresh.assert_called_once_with()
 
+    def test_empty_pdu_instrument_view_explains_intentional_power_off(self) -> None:
+        with patch.object(
+            app.mobile_catalog,
+            "pdu_instrument_status",
+            return_value={"state": "Off", "detail": "PDU sample 2 min old"},
+        ):
+            figure = app._empty_interactive_figure("Ceilometer", "No samples", start=datetime(2026, 7, 19), end=datetime(2026, 7, 20))
+
+        annotation = figure.layout.annotations[0]
+        self.assertIn("INTENTIONAL POWER-OFF", annotation.text)
+        self.assertIn("Data collection is paused", annotation.text)
+        self.assertEqual(annotation.bgcolor, "#edf8f6")
+
     def test_live_query_uses_current_window_instead_of_stale_url_dates(self) -> None:
         current_start = datetime(2026, 7, 15, 10, 30)
         current_end = datetime(2026, 7, 16, 10, 30)
