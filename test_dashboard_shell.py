@@ -12,6 +12,18 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_forecast_info_control_uses_deployed_panel_widget_api(self) -> None:
+        panel = next(
+            panel
+            for panel in app.SUMMARY_LAYOUTS["power"]
+            if panel.key == "soc_ecmwf_forecast"
+        )
+
+        control = app._forecast_plot_info_control(panel, xr.Dataset())
+
+        self.assertIsNotNone(control)
+        self.assertEqual(control.objects[0].objects[-1].name, "Info")
+
     def test_desktop_shell_has_full_named_tabs(self) -> None:
         labels = [label for label, _slug, _panel in app.DESKTOP_TAB_SPECS]
 

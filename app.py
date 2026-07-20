@@ -9861,7 +9861,6 @@ def _forecast_plot_info_control(panel, ds: xr.Dataset, *, mobile: bool = False):
         button_type="light",
         width=62,
         height=30,
-        tooltip=f"About {panel.label}",
         css_classes=["forecast-plot-info-button"],
     )
 
