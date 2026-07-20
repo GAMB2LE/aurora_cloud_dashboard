@@ -59,6 +59,10 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
 - `GET /overview` - the small first-load status cards and active alerts.
 - `GET /power?window=24h|96h&group=...` - bounded native-chart traces from the
   existing Power display-summary Zarr product (at most 260 points per trace).
+  `group=current` returns observed conditions; `group=forecast` returns the
+  24-hour forecast, 96-hour forecast/planning, and verification panels. The
+  legacy `all`, `observed`, `forecast_24h`, `forecast_96h`, and `verification`
+  groups remain supported.
 - `GET /auroracam?day=latest|YYYY-MM-DD&time_utc=...` - the latest four
   AURORACam records with separate preview and original URLs. Historical days
   also provide a bounded list of UTC frame times for native selection.

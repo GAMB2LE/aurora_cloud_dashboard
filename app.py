@@ -45,6 +45,7 @@ try:
 except Exception:  # pragma: no cover - dashboard can still serve source images.
     Image = None
 from grouped_timeseries import (
+    POWER_PANEL_TIME_GROUP_BY_KEY,
     SUMMARY_LAYOUTS,
     build_summary_plotly,
     build_power_verification_guidance,
@@ -3029,6 +3030,17 @@ next_btn = pn.widgets.Button(name="Next Day/Current Day", button_type="default")
 live_toggle = pn.widgets.Toggle(name="Live Update (Last 24h)", button_type="primary", value=True)
 reset_view_btn = pn.widgets.Button(name="Reset View Defaults", button_type="default")
 instrument_select = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
+power_view_select = pn.widgets.RadioButtonGroup(
+    name="Power view",
+    options={
+        "Current Conditions": "current",
+        "Forecast & Planning": "forecast",
+    },
+    value="current",
+    button_type="primary",
+    sizing_mode="stretch_width",
+    css_classes=["power-view-select"],
+)
 science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
 science_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
 hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=HK_INSTRUMENT_OPTIONS)
@@ -3351,7 +3363,8 @@ def _on_instrument_change(event):
         _capture_current_instrument_state(event.old)
     sync_quicklooks = _instrument_change_origin != "interactive"
     _apply_instrument_defaults(event.new, reset_time=True, sync_quicklooks=sync_quicklooks)
-    power_plan_editor.visible = event.new == "power"
+    if "power_plan_editor" in globals():
+        _sync_power_section_visibility()
     if not _browser_tab_syncing and "desktop_tabs" in globals():
         active = _active_tab_slug()
         if event.new == "power" and active == "interactive":
@@ -3790,6 +3803,7 @@ def _interactive_render_cache_key(
         dataset_version = window_cache_mode
     return (
         instrument,
+        power_view_select.value if instrument == "power" else None,
         render_quality,
         dataset_version,
         window_cache_mode,
@@ -3838,18 +3852,20 @@ def _restore_exact_interactive_cache(cache_key: tuple[object, ...] | None, inst:
 
 
 def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) -> bool:
-    if len(cache_key) < 6 or cache_key[0] != inst:
+    if len(cache_key) < 7 or cache_key[0] != inst:
         return False
-    window_mode = str(cache_key[3])
+    window_mode = str(cache_key[4])
     if inst == "power":
-        return window_mode.startswith("power_latest_")
+        # Existing prewarmed Power figures contain every panel. Reusing one
+        # would violate the Current/Forecast section selected by the user.
+        return False
     if inst not in {"vaisalamet", "asfs-logger"}:
         return False
-    if str(cache_key[1]) != _interactive_final_quality(inst):
+    if str(cache_key[2]) != _interactive_final_quality(inst):
         return False
     try:
-        start_dt = _as_naive_utc_datetime(pd.Timestamp(cache_key[4]))
-        end_dt = _as_naive_utc_datetime(pd.Timestamp(cache_key[5]))
+        start_dt = _as_naive_utc_datetime(pd.Timestamp(cache_key[5]))
+        end_dt = _as_naive_utc_datetime(pd.Timestamp(cache_key[6]))
     except Exception:
         return False
     if start_dt is None or end_dt is None or end_dt <= start_dt:
@@ -5240,6 +5256,13 @@ def _update_stacked_timeseries_view(
                 title=display_name(instrument),
                 max_time_samples=max_time_samples,
                 x_limits=(start, end),
+                panel_groups=(
+                    {"observed"}
+                    if instrument == "power" and power_view_select.value == "current"
+                    else {"forecast_24h", "forecast_96h", "verification"}
+                    if instrument == "power"
+                    else None
+                ),
             )
             perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
             perf.update(_figure_metrics(fig))
@@ -7038,6 +7061,8 @@ def _view_query_params(tab_slug: str) -> dict[str, str]:
         params["start"] = range_start.value.isoformat() if range_start.value else ""
         params["end"] = range_end.value.isoformat() if range_end.value else ""
         params["live"] = "1" if live_toggle.value else "0"
+        if tab_slug == "power":
+            params["power_view"] = power_view_select.value
         if _is_wxcam_instrument(instrument_select.value):
             params["wxcam_image_type"] = wxcam_image_type.value or ""
             params["wxcam_date"] = wxcam_date.value or ""
@@ -7183,10 +7208,13 @@ def _apply_query_state() -> None:
         auroracam_time.value = args["auroracam_time"]
     if args.get("uas_window") in list(uas_window.options):
         uas_window.value = args["uas_window"]
+    if args.get("power_view") in {"current", "forecast"}:
+        power_view_select.value = args["power_view"]
 
 
 for widget, parameter in (
     (instrument_select, "value"),
+    (power_view_select, "value"),
     (range_start, "value"),
     (range_end, "value"),
     (live_toggle, "value"),
@@ -8528,11 +8556,22 @@ body, .bk {
 .verification-guidance__status--learning { color: #5f6c7b; }
 @media (max-width: 420px) { .verification-guidance__metrics { grid-template-columns: 1fr; } }
 .power-browser-guidance { margin: 8px 0; }
+.power-view-select { max-width: 620px; margin: 8px auto 4px; }
+.power-view-select .bk-btn { min-height: 38px; font-weight: 650; }
+.power-section-intro { margin: 2px 0 8px; padding: 8px 12px; border-bottom: 1px solid #d9e4e8; }
+.power-section-intro__title { color: #22313f; font-size: 17px; font-weight: 700; }
+.power-section-intro__detail { margin-top: 2px; color: #5f6c7b; font-size: 12px; line-height: 1.35; }
 .power-browser-briefing { margin: 0 0 8px; padding: 10px 12px; border: 1px solid #d9e4e8; border-left: 4px solid #0b7285; background: #f8fbfc; color: #344154; }
 .power-browser-briefing__title { color: #22313f; font-size: 14px; font-weight: 700; }
 .power-browser-briefing__copy { margin-top: 4px; font-size: 12px; line-height: 1.35; }
 .power-browser-briefing__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 6px; font-size: 12px; line-height: 1.35; }
-@media (max-width: 760px) { .power-browser-briefing__grid { grid-template-columns: 1fr; gap: 6px; } }
+@media (max-width: 760px) {
+    .power-view-select { max-width: none; margin: 4px 0; }
+    .power-view-select .bk-btn { min-height: 34px; padding: 4px 6px; font-size: 12px; }
+    .power-section-intro { padding: 7px 4px; }
+    .power-section-intro__title { font-size: 15px; }
+    .power-browser-briefing__grid { grid-template-columns: 1fr; gap: 6px; }
+}
 .mobile-plot-card__legend-item {
     display: inline-flex;
     align-items: center;
@@ -9311,10 +9350,69 @@ housekeeping_quicklook_container = pn.Column(_lazy_tab_placeholder("House keepin
 uas_container = pn.Column(_lazy_tab_placeholder("UAS status"), sizing_mode="stretch_width")
 operations_container = pn.Column(_lazy_tab_placeholder("Operations dashboard"), sizing_mode="stretch_width")
 _LOADED_TABS: set[str] = set()
-power_browser_guidance_container = pn.Column(sizing_mode="stretch_width", margin=0)
+power_browser_guidance_container = pn.Column(
+    sizing_mode="stretch_width",
+    margin=0,
+    visible=False,
+)
+
+
+@pn.depends(power_view_select.param.value)
+def _power_section_intro(section: str):
+    if section == "forecast":
+        title = "Forecast & Planning"
+        detail = "Forecasts, operating scenarios, recommended schedules, and verification."
+    else:
+        title = "Current Conditions"
+        detail = "Observed station power, battery state, instrument load, voltage, and temperature."
+    return pn.pane.HTML(
+        "<div class='power-section-intro'>"
+        f"<div class='power-section-intro__title'>{escape(title)}</div>"
+        f"<div class='power-section-intro__detail'>{escape(detail)}</div>"
+        "</div>",
+        sizing_mode="stretch_width",
+        margin=0,
+    )
+
+
+power_section_intro_container = pn.Column(
+    _power_section_intro,
+    sizing_mode="stretch_width",
+    margin=0,
+    visible=CURRENT_INSTRUMENT == "power",
+)
+power_view_select_container = pn.Column(
+    power_view_select,
+    sizing_mode="stretch_width",
+    margin=0,
+    visible=CURRENT_INSTRUMENT == "power",
+)
+
+
+def _sync_power_section_visibility() -> None:
+    is_power = instrument_select.value == "power"
+    is_forecast = is_power and power_view_select.value == "forecast"
+    power_view_select_container.visible = is_power
+    power_section_intro_container.visible = is_power
+    power_browser_guidance_container.visible = is_forecast
+    power_plan_editor.visible = is_forecast
+
+
+def _on_power_view_change(_event) -> None:
+    _sync_power_section_visibility()
+    if instrument_select.value == "power":
+        _show_interactive_placeholder("power", "Preparing the selected Power section.")
+        _schedule_current_interactive_render()
+    _refresh_share_and_download_state()
+
+
+power_view_select.param.watch(_on_power_view_change, "value")
+_sync_power_section_visibility()
 
 interactive_tab = pn.Column(
     controls,
+    power_view_select_container,
+    power_section_intro_container,
     power_browser_guidance_container,
     interactive_content,
     power_plan_editor,
@@ -9397,6 +9495,8 @@ def _mobile_query_params(tab_slug: str) -> dict[str, str]:
     params = _view_query_params("interactive")
     params["view"] = "mobile"
     params["mobile_tab"] = tab_slug
+    if tab_slug == "power":
+        params["power_view"] = power_view_select.value
     return {key: value for key, value in params.items() if value not in ("", None)}
 
 
@@ -9885,9 +9985,17 @@ def _browser_power_briefing(instrument, _live_refresh_anchor):
         _verification_guidance_markup(build_power_verification_guidance(panel_key, ds))
         for panel_key in ("soc_forecast_skill", "soc_ensemble_skill", "forecast_power_skill")
     ]
+    guidance_card = pn.Card(
+        *[pn.pane.HTML(markup, sizing_mode="stretch_width", margin=0) for markup in guidance if markup],
+        title="How to interpret forecast verification",
+        collapsible=True,
+        collapsed=True,
+        sizing_mode="stretch_width",
+        css_classes=["small-card", "forecast-guidance-card"],
+    )
     return pn.Column(
         pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
-        *[pn.pane.HTML(markup, sizing_mode="stretch_width", margin=0) for markup in guidance if markup],
+        guidance_card,
         sizing_mode="stretch_width",
         css_classes=["power-browser-guidance"],
     )
@@ -9896,7 +10004,8 @@ def _browser_power_briefing(instrument, _live_refresh_anchor):
 power_browser_guidance_container[:] = [_browser_power_briefing]
 
 
-def _mobile_power_tab() -> pn.Column:
+@pn.depends(power_view_select.param.value, range_end.param.value)
+def _mobile_power_section(section: str, _live_refresh_anchor):
     ds = _mobile_power_window()
     if ds is None or "time" not in ds:
         return pn.Column(
@@ -9904,20 +10013,46 @@ def _mobile_power_tab() -> pn.Column:
             sizing_mode="stretch_width",
             css_classes=["mobile-shell"],
         )
-    cards = [_mobile_power_card(ds, panel) for panel in SUMMARY_LAYOUTS["power"]]
+    selected_groups = (
+        {"observed"}
+        if section == "current"
+        else {"forecast_24h", "forecast_96h", "verification"}
+    )
+    panels = [
+        panel
+        for panel in SUMMARY_LAYOUTS["power"]
+        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key, "observed") in selected_groups
+    ]
+    cards = [_mobile_power_card(ds, panel) for panel in panels]
     cards = [card for card in cards if card is not None]
     if not cards:
         cards = [pn.pane.HTML("<div class='mobile-plot-card__empty'>No plottable Power panels are available.</div>", sizing_mode="stretch_width")]
+    forecast_content = []
+    if section == "forecast":
+        forecast_content = [
+            pn.pane.HTML(_power_forecast_status_markup(ds), sizing_mode="stretch_width", margin=0),
+            pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
+            mobile_power_plan_editor,
+        ]
+    return pn.Column(
+        *forecast_content,
+        *cards,
+        sizing_mode="stretch_width",
+        css_classes=["mobile-shell", "mobile-shell--power"],
+    )
+
+
+def _mobile_power_tab() -> pn.Column:
     return pn.Column(
         pn.pane.HTML(
             "<div class='mobile-section-title mobile-power-title'>Power</div>"
-            "<div class='mobile-section-note mobile-power-note'>Last 24 hours, split into phone-readable cards. Forecast cards extend into the available forecast horizon.</div>",
+            "<div class='mobile-section-note mobile-power-note'>Current station conditions and forecast planning are kept in separate views.</div>",
             sizing_mode="stretch_width",
             margin=0,
         ),
-        pn.pane.HTML(_power_forecast_status_markup(ds), sizing_mode="stretch_width", margin=0),
-        mobile_power_plan_editor,
-        *cards,
+        power_view_select,
+        _power_section_intro,
+        _mobile_power_section,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell", "mobile-shell--power"],
     )

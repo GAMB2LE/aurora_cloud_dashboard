@@ -3430,10 +3430,17 @@ def build_summary_plotly(
     title: str | None = None,
     max_time_samples: int = INTERACTIVE_MAX_TIME_SAMPLES,
     x_limits=None,
+    panel_groups: set[str] | None = None,
 ) -> go.Figure:
     ds = prepare_summary_dataset(ds, instrument)
     times = _time_index(ds)
     panels = _active_panels(ds, instrument)
+    if instrument == "power" and panel_groups is not None:
+        panels = [
+            panel_rows
+            for panel_rows in panels
+            if _power_panel_time_group(panel_rows[0].key) in panel_groups
+        ]
     if len(times) == 0 or not panels:
         raise ValueError(f"No summary time-series panels available for {instrument}")
 

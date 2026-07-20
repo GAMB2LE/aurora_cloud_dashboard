@@ -824,7 +824,16 @@ def _prune_preview_cache(cache: Path, max_bytes: int = 50 * 1024 * 1024) -> None
 
 def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     """Return compact chart points from the existing display-summary Zarr only."""
-    if window not in {"24h", "96h"} or group not in {"all", "observed", "forecast_24h", "forecast_96h", "verification"}:
+    supported_groups = {
+        "all",
+        "current",
+        "forecast",
+        "observed",
+        "forecast_24h",
+        "forecast_96h",
+        "verification",
+    }
+    if window not in {"24h", "96h"} or group not in supported_groups:
         raise KeyError("Unsupported Power window or group")
     path = power_display_summary_path()
     payload: dict[str, Any] = {
@@ -855,11 +864,19 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
         start = now - pd.Timedelta(hours=24)
         horizon = 24 if window == "24h" else 96
         end = now + pd.Timedelta(hours=horizon)
-        panel_keys = (
-            {panel_key for panel_group in POWER_PANEL_TIME_GROUPS.values() for panel_key in panel_group}
-            if group == "all"
-            else set(POWER_PANEL_TIME_GROUPS[group])
-        )
+        if group == "all":
+            selected_groups = tuple(POWER_PANEL_TIME_GROUPS)
+        elif group == "current":
+            selected_groups = ("observed",)
+        elif group == "forecast":
+            selected_groups = ("forecast_24h", "forecast_96h", "verification")
+        else:
+            selected_groups = (group,)
+        panel_keys = {
+            panel_key
+            for selected_group in selected_groups
+            for panel_key in POWER_PANEL_TIME_GROUPS[selected_group]
+        }
         for panel in SUMMARY_LAYOUTS["power"]:
             if panel.key not in panel_keys:
                 continue

@@ -20,8 +20,14 @@ plot cards and stacked controls without forcing the full desktop plotting
 surface into a narrow viewport. Science and housekeeping products are grouped
 under **Plots**; UAS status is available through **Ops**, with a full tier
 history and event drill-down in the native app. The native Camera view supports
-UTC frame-time selection for historical AURORACam days. The Power view shows a
-field forecast briefing alongside its full set of bounded plot cards.
+UTC frame-time selection for historical AURORACam days.
+
+On every browser width and in the native app, **Power** is divided into
+**Current Conditions** and **Forecast & Planning**. Current Conditions is the
+default and contains observed electrical and thermal panels. Forecast &
+Planning is loaded on demand and contains the 24-hour and 96-hour outlooks,
+operating scenarios, custom schedules, and forecast verification. The selected
+browser section is retained in share links as `power_view=current|forecast`.
 
 The URL continues to store the selected view. A desktop share link uses the
 full tab slug, while a phone link also stores its compact section in

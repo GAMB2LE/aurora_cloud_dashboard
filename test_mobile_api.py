@@ -113,6 +113,28 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(response.json()["group"], "all")
         self.assertEqual(response.json()["panels"], [])
 
+    def test_power_accepts_current_and_forecast_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.zarr"
+            with patch.dict(
+                os.environ,
+                {"AURORA_MOBILE_API_TOKEN": "secret", "POWER_DISPLAY_SUMMARY_ZARR_PATH": str(missing)},
+                clear=False,
+            ):
+                current = self.client.get(
+                    "/power?window=24h&group=current",
+                    headers={"Authorization": "Bearer secret"},
+                )
+                forecast = self.client.get(
+                    "/power?window=96h&group=forecast",
+                    headers={"Authorization": "Bearer secret"},
+                )
+
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.json()["group"], "current")
+        self.assertEqual(forecast.status_code, 200)
+        self.assertEqual(forecast.json()["group"], "forecast")
+
     def test_auroracam_listing_and_original_media_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

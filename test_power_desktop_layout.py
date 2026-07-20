@@ -132,6 +132,35 @@ def test_power_desktop_panels_are_tall_and_grouped_by_time_axis() -> None:
     assert [axis.matches for axis in xaxes] == [None, "x", None, None, "x4", "x4", None, "x7", "x7", "x7"]
 
 
+def test_power_panel_groups_split_current_from_forecast() -> None:
+    ds = _power_layout_dataset()
+
+    with patch.dict(SUMMARY_LAYOUTS, {"power": _power_layout_panels()}):
+        current = build_summary_plotly(ds, "power", panel_groups={"observed"})
+        forecast = build_summary_plotly(
+            ds,
+            "power",
+            panel_groups={"forecast_24h", "forecast_96h", "verification"},
+        )
+
+    assert [annotation.text for annotation in current.layout.annotations[:2]] == [
+        "Renewables",
+        "Battery Charging",
+    ]
+    forecast_titles = [annotation.text for annotation in forecast.layout.annotations[:8]]
+    assert "Renewables" not in forecast_titles
+    assert forecast_titles == [
+        "SOC Next 24 h Forecast",
+        "ECMWF Solar & Load Forecast",
+        "SOC 96 h Forecast",
+        "Learned Operating-Mode SOC Plans",
+        "Battery SOC: Measured vs Earlier Forecasts",
+        "SOC Forecast Verification",
+        "SOC Ensemble Verification",
+        "Solar and Load Forecast Verification",
+    ]
+
+
 def test_non_power_summary_height_is_unchanged() -> None:
     times = pd.date_range("2026-07-15T00:00:00", periods=5, freq="1h")
     ds = xr.Dataset({"h1_t": (("time",), np.linspace(0.0, 1.0, len(times)))}, coords={"time": times})

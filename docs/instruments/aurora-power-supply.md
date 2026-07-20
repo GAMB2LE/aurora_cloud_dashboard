@@ -8,6 +8,17 @@ and ASS PDU outlet power for station-load context.
 
 The dashboard presents Aurora Power Supply in a deliberately scientific,
 multi-panel style inspired by the reference plots used during development.
+The Power view is divided consistently across desktop, phone browser, iPhone,
+and iPad:
+
+- **Current Conditions** is the default and shows observed station electrical
+  and thermal behavior for the selected window.
+- **Forecast & Planning** loads on demand and groups the 24-hour forecast,
+  ECMWF 96-hour outlook, operating-mode scenarios, custom operating plan, and
+  verification evidence.
+
+This split changes only presentation and bounded API selection. It does not
+change the forecast calculations or stored products.
 
 Typical panels include:
 
