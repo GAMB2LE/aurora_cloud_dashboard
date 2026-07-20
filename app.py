@@ -750,6 +750,13 @@ def _power_operating_scenarios_path() -> Path:
     )
 
 
+def _power_operating_scenario_paths() -> tuple[Path, ...]:
+    """Return the configured scenario store followed by the mirrored live store."""
+    configured = _power_operating_scenarios_path()
+    mirrored = Path("/data/aurora/products/power/power_operating_scenarios.zarr")
+    return tuple(dict.fromkeys((configured, mirrored)))
+
+
 def _power_operating_recommendations_path() -> Path:
     configured = os.environ.get("POWER_OPERATING_RECOMMENDATION_ARCHIVE_PATH", "").strip()
     if configured:
@@ -948,30 +955,31 @@ def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
             pass
         _POWER_OPERATING_SCENARIOS_DS = None
         _POWER_OPERATING_SCENARIOS_REFRESHED_AT = None
-    path = _power_operating_scenarios_path()
-    if not path.exists():
-        return None
-    with _timed_perf("power_operating_scenarios_open", instrument="power", zarr_path=str(path)) as perf:
-        try:
-            ds = xr.open_zarr(path, chunks={}, consolidated=True)
-        except Exception as exc:
-            perf["status"] = "unavailable"
-            perf["error"] = str(exc)
-            return None
-        missing = sorted(required.difference(ds.variables))
-        if missing:
-            perf["status"] = "incomplete"
-            perf["missing"] = missing
+    for path in _power_operating_scenario_paths():
+        if not path.exists():
+            continue
+        with _timed_perf("power_operating_scenarios_open", instrument="power", zarr_path=str(path)) as perf:
             try:
-                ds.close()
-            except Exception:
-                pass
-            return None
-        perf["status"] = "ok"
-        perf["dims"] = dict(ds.sizes)
-    _POWER_OPERATING_SCENARIOS_DS = ds
-    _POWER_OPERATING_SCENARIOS_REFRESHED_AT = datetime.now(timezone.utc)
-    return ds
+                ds = xr.open_zarr(path, chunks={}, consolidated=True)
+            except Exception as exc:
+                perf["status"] = "unavailable"
+                perf["error"] = str(exc)
+                continue
+            missing = sorted(required.difference(ds.variables))
+            if missing:
+                perf["status"] = "incomplete"
+                perf["missing"] = missing
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+                continue
+            perf["status"] = "ok"
+            perf["dims"] = dict(ds.sizes)
+        _POWER_OPERATING_SCENARIOS_DS = ds
+        _POWER_OPERATING_SCENARIOS_REFRESHED_AT = datetime.now(timezone.utc)
+        return ds
+    return None
 
 
 def _refresh_power_display_energy_dataset() -> None:

@@ -192,11 +192,11 @@ class DashboardShellTests(TestCase):
         )
         with (
             patch.object(app, "_POWER_OPERATING_SCENARIOS_DS", incomplete),
-            patch.object(app, "_power_operating_scenarios_path") as path,
-            patch.object(app.xr, "open_zarr", return_value=complete) as open_zarr,
+            patch.object(app, "_power_operating_scenario_paths") as paths,
+            patch.object(app.xr, "open_zarr", side_effect=(incomplete, complete)) as open_zarr,
         ):
-            path.return_value.exists.return_value = True
+            paths.return_value = (app.Path(__file__), app.Path(app.__file__))
             result = app._get_power_operating_scenarios_dataset()
 
         self.assertIs(result, complete)
-        open_zarr.assert_called_once()
+        self.assertEqual(open_zarr.call_count, 2)
