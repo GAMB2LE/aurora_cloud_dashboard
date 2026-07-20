@@ -8453,7 +8453,15 @@ body, .bk {
     color: #64748b;
     background: rgba(100, 116, 139, 0.1);
 }
-.overview-instrument-row__icon-svg { width: 19px; height: 19px; }
+.overview-instrument-row__icon-symbol {
+    width: 19px;
+    height: 19px;
+    display: block;
+    background: currentColor;
+    -webkit-mask: var(--instrument-symbol) center / contain no-repeat;
+    mask: var(--instrument-symbol) center / contain no-repeat;
+}
+.overview-instrument-row__icon-fallback { font-weight: 700; line-height: 19px; }
 .overview-instrument-row--green .overview-instrument-row__icon { color: #1c9b6c; background: rgba(28, 155, 108, 0.1); }
 .overview-instrument-row--amber .overview-instrument-row__icon { color: #c97a17; background: rgba(201, 122, 23, 0.1); }
 .overview-instrument-row--red .overview-instrument-row__icon { color: #c84b42; background: rgba(200, 75, 66, 0.1); }
