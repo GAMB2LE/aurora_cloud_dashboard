@@ -54,6 +54,24 @@ from power_soc_thresholds import (
 
 
 class PowerSocForecastTests(unittest.TestCase):
+    def test_browser_power_briefing_documents_system_and_operating_scenarios(self) -> None:
+        from app import _browser_power_briefing_markup
+
+        markup = _browser_power_briefing_markup(
+            xr.Dataset(
+                attrs={
+                    "operating_planning_status": "ready",
+                    "operating_current_mode_label": "DC-Only",
+                    "operating_optimization_horizon_hours": "96",
+                }
+            )
+        )
+
+        self.assertIn("System as-is", markup)
+        self.assertIn("Operating plans", markup)
+        self.assertIn("DC-Only", markup)
+        self.assertIn("40% operational minimum", markup)
+
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
         self.tmp_archive_path = Path(self._tmp.name) / "power_soc_forecast_archive.zarr"

@@ -8519,6 +8519,12 @@ body, .bk {
 .verification-guidance__status--caution { color: #8a5720; }
 .verification-guidance__status--learning { color: #5f6c7b; }
 @media (max-width: 420px) { .verification-guidance__metrics { grid-template-columns: 1fr; } }
+.power-browser-guidance { margin: 8px 0; }
+.power-browser-briefing { margin: 0 0 8px; padding: 10px 12px; border: 1px solid #d9e4e8; border-left: 4px solid #0b7285; background: #f8fbfc; color: #344154; }
+.power-browser-briefing__title { color: #22313f; font-size: 14px; font-weight: 700; }
+.power-browser-briefing__copy { margin-top: 4px; font-size: 12px; line-height: 1.35; }
+.power-browser-briefing__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 6px; font-size: 12px; line-height: 1.35; }
+@media (max-width: 760px) { .power-browser-briefing__grid { grid-template-columns: 1fr; gap: 6px; } }
 .mobile-plot-card__legend-item {
     display: inline-flex;
     align-items: center;
@@ -9297,8 +9303,16 @@ housekeeping_quicklook_container = pn.Column(_lazy_tab_placeholder("House keepin
 uas_container = pn.Column(_lazy_tab_placeholder("UAS status"), sizing_mode="stretch_width")
 operations_container = pn.Column(_lazy_tab_placeholder("Operations dashboard"), sizing_mode="stretch_width")
 _LOADED_TABS: set[str] = set()
+power_browser_guidance_container = pn.Column(sizing_mode="stretch_width", margin=0)
 
-interactive_tab = pn.Column(controls, interactive_content, power_plan_editor, interactive_footer, sizing_mode="stretch_width")
+interactive_tab = pn.Column(
+    controls,
+    power_browser_guidance_container,
+    interactive_content,
+    power_plan_editor,
+    interactive_footer,
+    sizing_mode="stretch_width",
+)
 science_quicklooks_tab = pn.Column(
     pn.Card(
         pn.Row(science_instrument, science_image_type, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
@@ -9822,6 +9836,56 @@ def _power_forecast_status_markup(ds: xr.Dataset) -> str:
         state = "Fresh ECMWF forecast"
     detail = " | ".join(part for part in (f"Anchor {anchor}" if anchor else "", f"Issued {issued}" if issued else "") if part)
     return f"<div class='mobile-section-note'>{escape(state)}{': ' + escape(detail) if detail else ''}</div>"
+
+
+def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
+    """Explain the Power forecast scenarios in the desktop browser."""
+    status = str(ds.attrs.get("operating_planning_status", "")).strip()
+    if status == "unavailable":
+        reason = str(ds.attrs.get("operating_planning_status_reason", "")).strip()
+        detail = "An operating recommendation will appear when its planning forecast is aligned with the current SOC measurement."
+        if reason:
+            detail = f"{detail} {reason}"
+        return (
+            "<div class='power-browser-briefing'>"
+            "<div class='power-browser-briefing__title'>Operating scenarios</div>"
+            f"<div class='power-browser-briefing__copy'>{escape(detail)}</div>"
+            "</div>"
+        )
+
+    current_mode = str(ds.attrs.get("operating_current_mode_label", "Current system state")).strip()
+    horizon = str(ds.attrs.get("operating_optimization_horizon_hours", "96")).strip()
+    return (
+        "<div class='power-browser-briefing'>"
+        "<div class='power-browser-briefing__title'>Forecast scenarios</div>"
+        "<div class='power-browser-briefing__grid'>"
+        "<div><strong>System as-is</strong><br>ECMWF ensemble forecast using the current station load and instrument state. P10/P90 show the uncertainty range.</div>"
+        f"<div><strong>Operating plans</strong><br>Current mode: {escape(current_mode)}. The planner compares DC-only, continuous CL61, and a constrained CL61 schedule across {escape(horizon)} hours.</div>"
+        "<div><strong>Safety rule</strong><br>The recommended schedule is advisory only and aims to keep P10 SOC at or above the 40% operational minimum.</div>"
+        "</div></div>"
+    )
+
+
+@pn.depends(instrument_select.param.value, range_end.param.value)
+def _browser_power_briefing(instrument, _live_refresh_anchor):
+    if str(instrument) != "power":
+        return pn.Spacer(height=0)
+    ds = _get_power_display_summary_dataset()
+    if ds is None or "time" not in ds:
+        return pn.pane.Alert("Power forecast data is not available.", alert_type="warning")
+    guidance = [
+        _verification_guidance_markup(build_power_verification_guidance(panel_key, ds))
+        for panel_key in ("soc_forecast_skill", "soc_ensemble_skill", "forecast_power_skill")
+    ]
+    return pn.Column(
+        pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
+        *[pn.pane.HTML(markup, sizing_mode="stretch_width", margin=0) for markup in guidance if markup],
+        sizing_mode="stretch_width",
+        css_classes=["power-browser-guidance"],
+    )
+
+
+power_browser_guidance_container[:] = [_browser_power_briefing]
 
 
 def _mobile_power_tab() -> pn.Column:
