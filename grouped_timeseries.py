@@ -673,7 +673,6 @@ HUMAN_LABELS = {
     "ir20_lwd_fan_Avg": "Downwelling IR20 Fan",
     "ir20_lwu_fan_Avg": "Upwelling IR20 Fan",
     "fp_A_Wm2_Avg": "Flux Plate A",
-    "fp_B_Wm2_Avg": "Flux Plate B",
     "sr50_dist_Avg": "SR50 Distance",
     "sr50_qc_Avg": "SR50 Quality",
     "kt15_amb_Avg": "KT15 Ambient Temperature",
@@ -1053,12 +1052,11 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "flux_plates",
-            "Flux Plates",
+            "Flux Plate",
             "Flux [W m^-2]",
             None,
             (
                 TraceSpec("fp_A_Wm2_Avg", "Flux Plate A", COLOR["teal"]),
-                TraceSpec("fp_B_Wm2_Avg", "Flux Plate B", COLOR["light_blue"]),
             ),
         ),
         PanelSpec(

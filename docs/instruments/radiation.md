@@ -11,8 +11,9 @@ The current Radiation instrument intentionally stays compact:
   - SR30 downwelling and upwelling shortwave radiation
 - **Longwave Radiation**
   - IR20 downwelling and upwelling longwave radiation
-- **Flux Plates**
-  - flux plate A and B heat flux
+- **Flux Plate**
+  - flux plate A heat flux
+  - flux plate B is intentionally hidden because its signal is noise
 - **Surface Temperature**
   - KT15 surface temperature
   - SR50 distance on the right axis

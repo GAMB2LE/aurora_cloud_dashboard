@@ -27,6 +27,15 @@ def test_power_time_ticks_include_date_time_and_utc() -> None:
     assert options["tickformat"] == "%a %d %b<br>%H:%M UTC"
 
 
+def test_radiation_layout_excludes_noisy_flux_plate_b() -> None:
+    panel = next(panel for panel in SUMMARY_LAYOUTS["asfs-logger"] if panel.key == "flux_plates")
+
+    assert panel.label == "Flux Plate"
+    assert [(trace.variable, trace.label) for trace in panel.traces] == [
+        ("fp_A_Wm2_Avg", "Flux Plate A"),
+    ]
+
+
 def _power_layout_dataset() -> xr.Dataset:
     times = pd.date_range("2026-07-15T00:00:00", periods=33, freq="3h")
     values = np.linspace(1.0, 2.0, len(times))
