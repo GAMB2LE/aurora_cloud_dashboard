@@ -176,3 +176,27 @@ class DashboardShellTests(TestCase):
         self.assertEqual(upper, datetime(2026, 7, 16, 10, 0))
         self.assertEqual(raw_count, 7)
         self.assertEqual(valid_count, 3)
+
+    def test_operating_scenario_cache_reopens_an_incomplete_mirror(self) -> None:
+        incomplete = xr.Dataset(coords={"time": pd.date_range("2026-07-20", periods=2, freq="1h")})
+        complete = xr.Dataset(
+            {
+                "SolarEnsembleWatts": (("member", "time"), np.ones((1, 2))),
+                "ComponentLoadWatts": (("member", "component"), np.ones((1, 1))),
+            },
+            coords={
+                "time": pd.date_range("2026-07-20", periods=2, freq="1h"),
+                "member": [0],
+                "component": ["DC"],
+            },
+        )
+        with (
+            patch.object(app, "_POWER_OPERATING_SCENARIOS_DS", incomplete),
+            patch.object(app, "_power_operating_scenarios_path") as path,
+            patch.object(app.xr, "open_zarr", return_value=complete) as open_zarr,
+        ):
+            path.return_value.exists.return_value = True
+            result = app._get_power_operating_scenarios_dataset()
+
+        self.assertIs(result, complete)
+        open_zarr.assert_called_once()

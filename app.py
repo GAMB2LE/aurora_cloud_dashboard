@@ -936,8 +936,18 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
 def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
     """Open the compact learned operating-plan product when available."""
     global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
-    if _POWER_OPERATING_SCENARIOS_DS is not None:
+    required = {"component", "SolarEnsembleWatts", "ComponentLoadWatts"}
+    if _POWER_OPERATING_SCENARIOS_DS is not None and required.issubset(
+        set(_POWER_OPERATING_SCENARIOS_DS.variables)
+    ):
         return _POWER_OPERATING_SCENARIOS_DS
+    if _POWER_OPERATING_SCENARIOS_DS is not None:
+        try:
+            _POWER_OPERATING_SCENARIOS_DS.close()
+        except Exception:
+            pass
+        _POWER_OPERATING_SCENARIOS_DS = None
+        _POWER_OPERATING_SCENARIOS_REFRESHED_AT = None
     path = _power_operating_scenarios_path()
     if not path.exists():
         return None
@@ -947,6 +957,15 @@ def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
         except Exception as exc:
             perf["status"] = "unavailable"
             perf["error"] = str(exc)
+            return None
+        missing = sorted(required.difference(ds.variables))
+        if missing:
+            perf["status"] = "incomplete"
+            perf["missing"] = missing
+            try:
+                ds.close()
+            except Exception:
+                pass
             return None
         perf["status"] = "ok"
         perf["dims"] = dict(ds.sizes)
