@@ -534,6 +534,119 @@ def build_power_verification_guidance(panel_key: str, ds: xr.Dataset) -> dict[st
     return None
 
 
+def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> dict[str, object] | None:
+    """Return the implementation note shown by every Power forecast plot.
+
+    This deliberately describes the operational meaning of each panel rather
+    than repeating its trace labels.  It is kept here so the Panel browser and
+    native mobile API cannot drift apart.
+    """
+    del ds  # The wording is stable; the plotted values remain product-driven.
+    minimum = MINIMUM_OPERATIONAL_SOC_LABEL
+    notes: dict[str, dict[str, object]] = {
+        "soc_projection": {
+            "title": "SOC projection",
+            "summary": "A short display-only extrapolation of the latest measured battery state of charge.",
+            "implementation": "Two low-degree polynomial fits use the latest 30 minutes and latest 2 hours of APS SOC, then extend for 24 hours. It is a trend indicator, not the weather-informed operating forecast.",
+            "metrics": [
+                {"label": "30 min / 2 h fits", "detail": "Short recent trends; they can diverge when the battery behaviour changes."},
+                {"label": "Use", "detail": "Immediate trend context only; use the ECMWF forecast for planning."},
+            ],
+        },
+        "soc_24h_forecast": {
+            "title": "SOC next 24 h forecast",
+            "summary": "The near-term weather-informed SOC outlook used for immediate station context.",
+            "implementation": "It starts from the latest valid APS SOC and propagates the forecast solar charging and the detected current station load. It is the central forecast only; uncertainty is shown in the 96-hour ensemble panel.",
+            "metrics": [
+                {"label": "Starting point", "detail": "Latest valid APS battery SOC."},
+                {"label": "Load assumption", "detail": "Current detected system configuration, held fixed."},
+            ],
+        },
+        "soc_ecmwf_forecast": {
+            "title": "SOC 96 h forecast",
+            "summary": "The system-as-is ECMWF ensemble outlook for battery SOC and the risk of crossing the operational minimum.",
+            "implementation": "Every ECMWF member starts from the latest valid APS SOC with the detected current system mode and load held fixed. P10, central, and P90 therefore represent solar-weather uncertainty only, not alternative instrument schedules.",
+            "metrics": [
+                {"label": "P10", "detail": "Lower-end SOC outcome across ECMWF solar members; use it for conservative planning."},
+                {"label": "Central / P90", "detail": "Central estimate and upper-end solar outcome for the same system-as-is load."},
+                {"label": f"Probability below {minimum}", "detail": f"The fraction of ensemble members below the {minimum} operational reference at each time."},
+            ],
+        },
+        "soc_hindcast": {
+            "title": "Measured SOC versus earlier forecasts",
+            "summary": "A retrospective check, not a new prediction.",
+            "implementation": "Each dashed trace is an archived forecast issued 6, 24, 48, or 72 hours before its valid time. It is compared with the later APS measurement to expose timing or bias errors.",
+            "metrics": [
+                {"label": "Measured SOC", "detail": "Later APS observation used as the verification reference."},
+                {"label": "Lead time", "detail": "How far in advance that archived forecast was issued."},
+            ],
+        },
+        "operating_plan_scenarios": {
+            "title": "Learned operating-mode SOC plans",
+            "summary": "Advisory comparisons of recognised station modes using the same weather forecast.",
+            "implementation": "The planner simulates the current recognised mode, DC-only, continuous CL61, learned alternatives, and a recommended CL61 schedule. The recommended plan maximises collection only while its P10 SOC remains at or above the operational minimum; it does not operate PDU outlets.",
+            "metrics": [
+                {"label": "Current mode", "detail": "Detected station load and instrument state carried forward unchanged."},
+                {"label": "Recommended plan", "detail": "Constrained advisory schedule, shown as solid teal P50 and dotted teal P10."},
+                {"label": "Shading", "detail": "Planned CL61-on periods for the recommended plan, not a probability or safety line."},
+            ],
+        },
+        "operating_plan_schedule": {
+            "title": "Recommended CL61 collection schedule",
+            "summary": "The on/off timetable behind the recommended advisory CL61 plan.",
+            "implementation": "A value of 1 means the optimiser recommends CL61 collection for that interval; 0 means it recommends it remain off. The schedule is calculated from the same constrained P10 SOC plan and is never sent to the PDU automatically.",
+            "metrics": [
+                {"label": "1 / 0", "detail": "Recommended collection on / off."},
+                {"label": "Constraint", "detail": f"P10 SOC is held at or above the {minimum} operational reference over the planning horizon."},
+            ],
+        },
+        "ecmwf_solar_forecast": {
+            "title": "ECMWF solar and load forecast",
+            "summary": "The weather input and electrical assumptions used by the SOC forecast and operating plans.",
+            "implementation": "ECMWF irradiance is converted to expected solar charging using the currently learned station conversion. The current-load trace holds the detected system configuration fixed; the recommended-load trace applies the advisory CL61 schedule.",
+            "metrics": [
+                {"label": "ECMWF solar", "detail": "Forecast irradiance from the meteorological ensemble input."},
+                {"label": "Solar charging", "detail": "Estimated battery charging after the learned solar conversion."},
+                {"label": "Load traces", "detail": "Current system-as-is load versus the advisory recommended-plan load."},
+            ],
+        },
+        "soc_forecast_skill": {
+            "title": "SOC forecast verification",
+            "summary": "How closely archived SOC forecasts matched later APS measurements.",
+            "implementation": "The rolling 24-hour verification groups archived forecasts by lead time and calculates mean absolute error (MAE) against later observed SOC. It compares each forecast with persistence from the issue-time SOC.",
+            "metrics": [
+                {"label": "MAE", "detail": "Mean absolute error in SOC percentage points; lower is better."},
+                {"label": "Lead buckets", "detail": "0-6, 6-24, 24-48, and 48-96 hours separate short- and longer-range performance."},
+                {"label": "Independent cycles", "detail": "Number of distinct ECMWF forecast cycles contributing evidence."},
+            ],
+        },
+        "soc_ensemble_skill": {
+            "title": "SOC ensemble verification",
+            "summary": "Whether the ensemble is accurate and whether its stated uncertainty is appropriately wide.",
+            "implementation": "CRPS evaluates the ensemble centre and spread against later APS SOC. P10-P90 coverage checks whether the central 80% interval contains observations about 80% of the time; Brier score checks the forecast probability of dropping below the operational minimum.",
+            "metrics": [
+                {"label": "CRPS", "detail": "Combined accuracy and uncertainty score in SOC percentage points; lower is better."},
+                {"label": "P10-P90 coverage", "detail": "Target is 0.80; lower is overconfident and higher is underconfident."},
+                {"label": "Brier score", "detail": f"Probability error for SOC below {minimum}; 0 is perfect and lower is better."},
+            ],
+        },
+        "forecast_power_skill": {
+            "title": "Solar and load forecast verification",
+            "summary": "How well the electrical inputs used by the SOC forecast matched later station data.",
+            "implementation": "Solar MAE compares forecast charging with observed charging. Load MAE compares the station load model with the APS power balance, including the main DC load where available; AC plus inverter power is the fallback. Scores are separated by load-model version.",
+            "metrics": [
+                {"label": "MAE", "detail": "Average absolute forecast miss in watts; lower is better."},
+                {"label": "Bias", "detail": "Forecast minus observed; positive solar means too much charging forecast, positive load means too much consumption forecast."},
+                {"label": "Versioned evidence", "detail": "Load metrics only compare rows produced by the same load-model version."},
+            ],
+        },
+    }
+    info = notes.get(panel_key)
+    if info is None:
+        return None
+    return {"id": panel_key, **info}
+
+
 COLOR = {
     "teal": "#0b7285",
     "light_blue": "#7fb6d6",

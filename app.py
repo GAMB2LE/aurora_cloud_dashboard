@@ -47,6 +47,7 @@ except Exception:  # pragma: no cover - dashboard can still serve source images.
 from grouped_timeseries import (
     POWER_PANEL_TIME_GROUP_BY_KEY,
     SUMMARY_LAYOUTS,
+    build_power_forecast_info,
     build_summary_plotly,
     build_power_verification_guidance,
     calendar_date_tokens,
@@ -9822,6 +9823,66 @@ def _verification_guidance_markup(guidance: dict[str, object] | None) -> str:
     )
 
 
+def _forecast_plot_info_markup(info: dict[str, object] | None) -> str:
+    """Render shared forecast implementation notes without duplicating policy in views."""
+    if not info:
+        return ""
+    metrics = info.get("metrics", [])
+    rows = []
+    if isinstance(metrics, list):
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            rows.append(
+                "<li>"
+                f"<strong>{escape(str(metric.get('label', 'Detail')))}</strong>: "
+                f"{escape(str(metric.get('detail', '')))}"
+                "</li>"
+            )
+    implementation = escape(str(info.get("implementation", "")))
+    return (
+        "<div class='forecast-plot-info'>"
+        f"<div>{escape(str(info.get('summary', '')))}</div>"
+        f"<div><strong>Implementation here:</strong> {implementation}</div>"
+        f"<ul>{''.join(rows)}</ul>"
+        "</div>"
+    )
+
+
+def _forecast_plot_info_control(panel, ds: xr.Dataset, *, mobile: bool = False):
+    """Return a small per-plot info button with an on-demand explanation."""
+    info = build_power_forecast_info(panel.key, ds)
+    if not info:
+        return None
+    detail = pn.pane.HTML(_forecast_plot_info_markup(info), sizing_mode="stretch_width", visible=False, margin=(0, 0, 4, 0))
+    button = pn.widgets.Button(
+        name="Info",
+        icon="info-circle",
+        button_type="light",
+        width=62,
+        height=30,
+        tooltip=f"About {panel.label}",
+        css_classes=["forecast-plot-info-button"],
+    )
+
+    def toggle(_event) -> None:
+        detail.visible = not detail.visible
+        button.name = "Hide" if detail.visible else "Info"
+
+    button.on_click(toggle)
+    title = pn.pane.HTML(
+        f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(panel.label)}</div>",
+        sizing_mode="stretch_width",
+        margin=0,
+    )
+    return pn.Column(
+        pn.Row(title, pn.Spacer(), button, sizing_mode="stretch_width", margin=0),
+        detail,
+        sizing_mode="stretch_width",
+        css_classes=["forecast-plot-info-control"],
+    )
+
+
 def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
     forecast_panel_keys = {
         "soc_24h_forecast",
@@ -9936,8 +9997,9 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         )
     fig.update_layout(**layout)
     guidance = _verification_guidance_markup(build_power_verification_guidance(panel.key, ds))
+    info_control = _forecast_plot_info_control(panel, ds, mobile=True)
     return pn.Column(
-        pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0),
+        *([info_control] if info_control is not None else [pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0)]),
         *(
             [pn.pane.HTML(f"<div class='mobile-plot-card__note'>{escape(panel.description)}</div>", margin=0)]
             if panel.description
@@ -10008,21 +10070,22 @@ def _browser_power_briefing(instrument, _live_refresh_anchor):
     ds = _get_power_display_summary_dataset()
     if ds is None or "time" not in ds:
         return pn.pane.Alert("Power forecast data is not available.", alert_type="warning")
-    guidance = [
-        _verification_guidance_markup(build_power_verification_guidance(panel_key, ds))
-        for panel_key in ("soc_forecast_skill", "soc_ensemble_skill", "forecast_power_skill")
+    forecast_groups = {"forecast_24h", "forecast_96h", "verification"}
+    info_controls = [
+        _forecast_plot_info_control(panel, ds)
+        for panel in SUMMARY_LAYOUTS["power"]
+        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in forecast_groups
     ]
-    guidance_card = pn.Card(
-        *[pn.pane.HTML(markup, sizing_mode="stretch_width", margin=0) for markup in guidance if markup],
-        title="How to interpret forecast verification",
-        collapsible=True,
-        collapsed=True,
+    info_controls = [control for control in info_controls if control is not None]
+    info_card = pn.Card(
+        *info_controls,
+        title="Forecast plot information",
         sizing_mode="stretch_width",
         css_classes=["small-card", "forecast-guidance-card"],
     )
     return pn.Column(
         pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
-        guidance_card,
+        info_card,
         sizing_mode="stretch_width",
         css_classes=["power-browser-guidance"],
     )

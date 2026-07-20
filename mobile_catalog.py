@@ -855,6 +855,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             POWER_PANEL_TIME_GROUPS,
             POWER_PANEL_TIME_GROUP_BY_KEY,
             SUMMARY_LAYOUTS,
+            build_power_forecast_info,
             build_power_verification_guidance,
         )
 
@@ -928,6 +929,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                         "id": panel.key,
                         "title": panel.label,
                         "explanation": panel.description,
+                        "info": build_power_forecast_info(panel.key, dataset),
                         "guidance": build_power_verification_guidance(panel.key, dataset),
                         "leftAxisLabel": panel.left_axis_label,
                         "rightAxisLabel": panel.right_axis_label,

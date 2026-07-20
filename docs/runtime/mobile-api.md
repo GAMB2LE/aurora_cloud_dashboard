@@ -61,6 +61,10 @@ can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
   existing Power display-summary Zarr product (at most 260 points per trace).
   `group=current` returns observed conditions; `group=forecast` returns the
   24-hour forecast, 96-hour forecast/planning, and verification panels. The
+  Each forecast panel includes an `info` object with its summary,
+  implementation-specific assumptions, and metric definitions for the native
+  per-plot Info sheet. Verification panels also retain their live `guidance`
+  evidence and score cards. The
   legacy `all`, `observed`, `forecast_24h`, `forecast_96h`, and `verification`
   groups remain supported.
 - `GET /auroracam?day=latest|YYYY-MM-DD&time_utc=...` - the latest four

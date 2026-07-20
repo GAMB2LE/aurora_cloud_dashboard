@@ -251,6 +251,8 @@ class MobileCatalogTests(unittest.TestCase):
                 response = mobile_catalog.power(window="24h", group="forecast_96h")
 
         panel = next(panel for panel in response["panels"] if panel["id"] == "ecmwf_solar_forecast")
+        self.assertEqual(panel["info"]["title"], "ECMWF solar and load forecast")
+        self.assertTrue(panel["info"]["implementation"])
         for trace in panel["traces"]:
             self.assertTrue(all(point["time"] >= "2026-07-20T07:00:00" for point in trace["points"]))
 

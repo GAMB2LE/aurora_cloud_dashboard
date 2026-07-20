@@ -16,6 +16,7 @@ from grouped_timeseries import (
     PanelSpec,
     TraceSpec,
     _plotly_time_tick_options,
+    build_power_forecast_info,
     build_summary_plotly,
     operating_mode_intervals,
 )
@@ -31,7 +32,7 @@ def test_radiation_layout_excludes_noisy_flux_plate_b() -> None:
     panel = next(panel for panel in SUMMARY_LAYOUTS["asfs-logger"] if panel.key == "flux_plates")
 
     assert panel.label == "Flux Plate"
-    assert [(trace.variable, trace.label) for trace in panel.traces] == [
+    assert [(trace.var, trace.label) for trace in panel.traces] == [
         ("fp_A_Wm2_Avg", "Flux Plate A"),
     ]
 
@@ -69,6 +70,24 @@ def test_soc_hindcast_labels_explain_forecast_issue_time() -> None:
         "Forecast issued 48 h before valid time",
         "Forecast issued 72 h before valid time",
     ]
+
+
+def test_every_power_forecast_panel_has_shared_implementation_info() -> None:
+    from grouped_timeseries import POWER_PANEL_TIME_GROUP_BY_KEY
+
+    forecast_groups = {"forecast_24h", "forecast_96h", "verification"}
+    panels = [
+        panel
+        for panel in SUMMARY_LAYOUTS["power"]
+        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in forecast_groups
+    ]
+
+    for panel in panels:
+        info = build_power_forecast_info(panel.key)
+        assert info is not None, panel.key
+        assert info["title"]
+        assert info["implementation"]
+        assert info["metrics"]
 
 
 def _power_layout_panels() -> tuple[PanelSpec, ...]:
@@ -163,7 +182,7 @@ def test_power_panel_groups_split_current_from_forecast() -> None:
         "ECMWF Solar & Load Forecast",
         "SOC 96 h Forecast",
         "Learned Operating-Mode SOC Plans",
-        "Battery SOC: Measured vs Earlier Forecasts",
+        "SOC Hindcast: Forecasts vs Observed",
         "SOC Forecast Verification",
         "SOC Ensemble Verification",
         "Solar and Load Forecast Verification",

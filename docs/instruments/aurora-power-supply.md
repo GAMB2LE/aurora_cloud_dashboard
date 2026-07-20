@@ -20,6 +20,25 @@ and iPad:
 This split changes only presentation and bounded API selection. It does not
 change the forecast calculations or stored products.
 
+## Forecast plot information
+
+Every Forecast & Planning plot has an **Info** control in the desktop browser,
+mobile browser, and native iOS app. It describes the metric and the exact
+implementation used at AURORA, so a plot can be interpreted without leaving
+the dashboard. The key distinctions are:
+
+- **P10, central, and P90 SOC** are ECMWF solar-weather outcomes with the
+  detected current system load held fixed. They are not different instrument
+  schedules.
+- **Operating-mode plans** are separate advisory simulations. Their shaded
+  intervals identify recommended CL61-on periods and do not indicate forecast
+  probability or an automatic PDU command.
+- **Hindcasts and verification scores** look backwards: archived forecasts are
+  matched to later APS observations. MAE, CRPS, and Brier scores are lower-is-
+  better; P10-P90 coverage targets 0.80.
+- **Solar and load verification** is versioned with the load model, so a model
+  update begins a comparable new set of evidence rather than mixing scores.
+
 Typical panels include:
 
 - **Renewables**
