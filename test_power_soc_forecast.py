@@ -40,6 +40,7 @@ from grouped_timeseries import (
     _active_panels,
     _trace_plot_values,
     build_power_display_summary_dataset,
+    build_power_verification_guidance,
     build_summary_plotly,
     merge_operating_scenarios_into_display_summary,
     prepare_summary_dataset,
@@ -829,11 +830,40 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertIn("ForecastSOCCRPS_0_6h", skill)
         self.assertIn("ForecastSOCIntervalCoverage80", skill)
         self.assertIn(SOC_BELOW_THRESHOLD_BRIER_FIELD, skill)
+        self.assertIn("ForecastSOCCRPSSamples_0_6h", skill)
+        self.assertIn("ForecastSOCCRPSCycles_0_6h", skill)
+        self.assertIn("ForecastSOCCRPSSkill_0_6h", skill)
         self.assertNotIn("ForecastSOCBelow20Brier", skill)
         self.assertTrue(np.isfinite(skill["ForecastSOCCRPS_0_6h"].values).any())
         finite_coverage = skill["ForecastSOCIntervalCoverage80"].values
         finite_coverage = finite_coverage[np.isfinite(finite_coverage)]
         self.assertTrue(np.all((finite_coverage >= 0.0) & (finite_coverage <= 1.0)))
+
+    def test_ensemble_guidance_marks_immature_long_range_scores_not_verified(self) -> None:
+        times = pd.date_range("2026-07-10T00:00:00", periods=2, freq="1h")
+        summary = xr.Dataset(
+            {
+                "ForecastSOCCRPS_0_6h": (("time",), [1.0, 1.2]),
+                "ForecastSOCCRPSSamples_0_6h": (("time",), [24.0, 24.0]),
+                "ForecastSOCCRPSCycles_0_6h": (("time",), [12.0, 12.0]),
+                "ForecastSOCCRPSSkill_0_6h": (("time",), [0.1, 0.1]),
+                "ForecastSOCIntervalCoverage80": (("time",), [0.8, 0.8]),
+                "ForecastSOCIntervalCoverage80Samples": (("time",), [24.0, 24.0]),
+                "ForecastSOCIntervalCoverage80Cycles": (("time",), [12.0, 12.0]),
+                SOC_BELOW_THRESHOLD_BRIER_FIELD: (("time",), [0.05, 0.05]),
+                f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Samples": (("time",), [24.0, 24.0]),
+                f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Cycles": (("time",), [12.0, 12.0]),
+            },
+            coords={"time": times},
+        )
+
+        guidance = build_power_verification_guidance("soc_ensemble_skill", summary)
+
+        self.assertIsNotNone(guidance)
+        metrics = {metric["id"]: metric for metric in guidance["metrics"]}
+        self.assertEqual(metrics["soc-crps-0_6h"]["status"], "Better than persistence")
+        self.assertEqual(metrics["soc-crps-48_96h"]["valueText"], "Not yet verified")
+        self.assertEqual(metrics["soc-coverage"]["status"], "Consistent with 80% target")
 
     def test_display_summary_merges_forecast_fields(self) -> None:
         power_times = pd.date_range("2026-07-10T00:00:00", periods=3, freq="1h")

@@ -409,11 +409,15 @@ def _prune_ensemble_site_cache(cache_dir: Path, *, keep: int = 4) -> None:
 def _archive_row(forecast: xr.Dataset) -> xr.Dataset:
     issue = pd.Timestamp(forecast.attrs["initial_soc_time"])
     times = pd.DatetimeIndex(forecast["time"].values)
+    cycle = pd.Timestamp(forecast.attrs.get("ecmwf_cycle_time", issue))
+    if cycle.tz is not None:
+        cycle = cycle.tz_convert("UTC").tz_localize(None)
     return xr.Dataset(
         {
             "ForecastValidTime": (("issue_time", "forecast_step"), times.to_numpy(dtype="datetime64[ns]")[None, :]),
             "ForecastLeadHours": (("issue_time", "forecast_step"), (((times - issue) / pd.Timedelta(hours=1)).to_numpy(dtype=np.float32))[None, :]),
             "BatterySOCForecastEnsemble": (("issue_time", "member", "forecast_step"), forecast["BatterySOCForecastEnsemble"].values[None, :, :]),
+            "ECMWFCycleTime": (("issue_time",), np.array([cycle.to_datetime64()], dtype="datetime64[ns]")),
         },
         coords={
             "issue_time": np.array([issue.to_datetime64()], dtype="datetime64[ns]"),
@@ -454,44 +458,99 @@ def _crps_ensemble(members: np.ndarray, observation: float) -> float:
     return float(first - second)
 
 
+def _independent_ensemble_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """Keep one re-anchored ensemble per ECMWF cycle and valid time."""
+    if rows.empty:
+        return rows
+    return rows.sort_values("issue_time").drop_duplicates(["cycle_time", "valid_time"], keep="last")
+
+
 def build_ensemble_skill_dataset(archive: xr.Dataset, power: xr.Dataset, *, retention_days: float = 7.0) -> xr.Dataset:
     frame = _power_frame(power)
     observed = frame.get("BatterySOC", pd.Series(dtype=np.float64))
     end = pd.Timestamp(frame.index.max())
     times = pd.date_range((end - pd.Timedelta(days=retention_days)).floor("1h"), end.ceil("1h"), freq="1h")
     fields = [f"ForecastSOCCRPS_{bucket}" for bucket, _, _ in LEAD_BUCKETS]
-    fields += ["ForecastSOCIntervalCoverage80", SOC_BELOW_THRESHOLD_BRIER_FIELD, "ForecastEnsembleCycles"]
+    fields += [f"ForecastSOCCRPSSkill_{bucket}" for bucket, _, _ in LEAD_BUCKETS]
+    fields += [f"ForecastSOCCRPS{suffix}_{bucket}" for bucket, _, _ in LEAD_BUCKETS for suffix in ("Samples", "Cycles")]
+    fields += [
+        "ForecastSOCIntervalCoverage80",
+        "ForecastSOCIntervalCoverage80Samples",
+        "ForecastSOCIntervalCoverage80Cycles",
+        SOC_BELOW_THRESHOLD_BRIER_FIELD,
+        f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Reference",
+        f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Skill",
+        f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Samples",
+        f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Cycles",
+        "ForecastEnsembleCycles",
+    ]
     values = {name: np.full(len(times), np.nan, dtype=np.float32) for name in fields}
     valid_times = pd.DatetimeIndex(archive["ForecastValidTime"].values.reshape(-1))
     leads = archive["ForecastLeadHours"].values.reshape(-1)
     ensembles = archive["BatterySOCForecastEnsemble"].values.transpose(0, 2, 1).reshape(-1, archive.sizes["member"])
     issues = np.repeat(pd.DatetimeIndex(archive.issue_time.values), archive.sizes["forecast_step"])
+    if "ECMWFCycleTime" in archive:
+        cycle_times = np.repeat(pd.DatetimeIndex(archive["ECMWFCycleTime"].values), archive.sizes["forecast_step"])
+        cycle_times = cycle_times.where(~cycle_times.isna(), issues)
+    else:
+        cycle_times = issues
     observed_values = observed.reindex(valid_times, method="nearest", tolerance=pd.Timedelta(minutes=10)).to_numpy(dtype=np.float64)
-    rows = pd.DataFrame({"valid_time": valid_times, "issue_time": issues, "lead": leads, "observed": observed_values})
+    reference_values = observed.reindex(issues, method="nearest", tolerance=pd.Timedelta(minutes=10)).to_numpy(dtype=np.float64)
+    rows = pd.DataFrame(
+        {
+            "valid_time": valid_times,
+            "issue_time": issues,
+            "cycle_time": cycle_times,
+            "lead": leads,
+            "observed": observed_values,
+            "reference": reference_values,
+        }
+    )
     rows["sample_index"] = np.arange(len(rows))
-    rows = rows[np.isfinite(rows["observed"]) & (rows["valid_time"] <= end)]
+    rows = rows[np.isfinite(rows["observed"]) & np.isfinite(rows["reference"]) & (rows["valid_time"] <= end)]
     for index, now in enumerate(times):
-        selected = rows[(rows.valid_time > now - pd.Timedelta(hours=24)) & (rows.valid_time <= now)]
+        selected = _independent_ensemble_rows(rows[(rows.valid_time > now - pd.Timedelta(hours=24)) & (rows.valid_time <= now)])
         if selected.empty:
             continue
-        values["ForecastEnsembleCycles"][index] = float(selected.issue_time.nunique())
+        values["ForecastEnsembleCycles"][index] = float(selected.cycle_time.nunique())
         coverage = []
         brier = []
+        brier_outcomes = []
+        brier_cycles = []
         for bucket, start, stop in LEAD_BUCKETS:
             bucket_rows = selected[(selected.lead >= start) & (selected.lead < stop)]
             scores = []
+            reference_scores = []
             for row in bucket_rows.itertuples(index=False):
                 member_values = ensembles[int(row.sample_index)]
                 scores.append(_crps_ensemble(member_values, float(row.observed)))
+                reference_scores.append(abs(float(row.reference) - float(row.observed)))
                 coverage.append(float(np.nanquantile(member_values, 0.1) <= row.observed <= np.nanquantile(member_values, 0.9)))
                 probability = float(np.mean(member_values < MINIMUM_OPERATIONAL_SOC_PCT))
-                brier.append((probability - float(row.observed < MINIMUM_OPERATIONAL_SOC_PCT)) ** 2)
+                outcome = float(row.observed < MINIMUM_OPERATIONAL_SOC_PCT)
+                brier.append((probability - outcome) ** 2)
+                brier_outcomes.append(outcome)
+                brier_cycles.append(row.cycle_time)
             if scores:
                 values[f"ForecastSOCCRPS_{bucket}"][index] = float(np.nanmean(scores))
+                values[f"ForecastSOCCRPSSamples_{bucket}"][index] = float(len(scores))
+                values[f"ForecastSOCCRPSCycles_{bucket}"][index] = float(bucket_rows.cycle_time.nunique())
+                reference_score = float(np.nanmean(reference_scores))
+                if np.isfinite(reference_score) and reference_score > 0.0:
+                    values[f"ForecastSOCCRPSSkill_{bucket}"][index] = float(1.0 - np.nanmean(scores) / reference_score)
         if coverage:
             values["ForecastSOCIntervalCoverage80"][index] = float(np.mean(coverage))
+            values["ForecastSOCIntervalCoverage80Samples"][index] = float(len(coverage))
+            values["ForecastSOCIntervalCoverage80Cycles"][index] = float(selected.cycle_time.nunique())
         if brier:
             values[SOC_BELOW_THRESHOLD_BRIER_FIELD][index] = float(np.mean(brier))
+            values[f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Samples"][index] = float(len(brier))
+            values[f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Cycles"][index] = float(pd.DatetimeIndex(brier_cycles).nunique())
+            event_rate = float(np.mean(brier_outcomes))
+            reference_brier = event_rate * (1.0 - event_rate)
+            values[f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Reference"][index] = reference_brier
+            if reference_brier > 0.0:
+                values[f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Skill"][index] = float(1.0 - np.mean(brier) / reference_brier)
     out = xr.Dataset({name: (("time",), data) for name, data in values.items()}, coords={"time": times.values})
     out.attrs = {
         "power_soc_ensemble_skill_product": "true",
@@ -501,7 +560,15 @@ def build_ensemble_skill_dataset(archive: xr.Dataset, power: xr.Dataset, *, rete
         "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
     }
     for name in out.data_vars:
-        out[name].attrs["units"] = "cycles" if name.endswith("Cycles") else "1" if name.endswith(("Coverage80", "Brier")) else "percentage points"
+        out[name].attrs["units"] = (
+            "samples"
+            if name.endswith("Samples")
+            else "cycles"
+            if name.endswith("Cycles")
+            else "1"
+            if name.endswith(("Coverage80", "Brier", "Reference", "Skill"))
+            else "percentage points"
+        )
     return out
 
 

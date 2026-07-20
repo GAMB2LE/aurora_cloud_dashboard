@@ -1069,7 +1069,7 @@ def _guarded_skill(mae: float, reference_mae: float, *, minimum_reference_mae: f
 
 def _empty_skill_dataset() -> xr.Dataset:
     empty_time = np.array([], dtype="datetime64[ns]")
-    fields = (
+    fields = [
         "ForecastVerificationSamples",
         "ForecastIndependentCycles",
         "ForecastSOCMAE_0_6h_Verified",
@@ -1084,6 +1084,16 @@ def _empty_skill_dataset() -> xr.Dataset:
         "ForecastSolarMAE24h",
         "ForecastSolarBias24h",
         "ForecastSolarSkill24h",
+    ]
+    for bucket, _, _ in LEAD_BUCKETS:
+        fields.extend((f"ForecastSOCMAESamples_{bucket}", f"ForecastSOCMAECycles_{bucket}", f"ForecastSOCSkill_{bucket}"))
+    fields.extend(
+        (
+            "ForecastLoadVerificationSamples",
+            "ForecastLoadIndependentCycles",
+            "ForecastSolarVerificationSamples",
+            "ForecastSolarIndependentCycles",
+        )
     )
     return xr.Dataset(
         {name: (("time",), np.array([], dtype=np.float32)) for name in fields},
@@ -1149,7 +1159,7 @@ def build_forecast_skill_dataset(
 
     columns: dict[str, np.ndarray] = {}
     window = pd.Timedelta(hours=float(window_hours))
-    for metric_name in (
+    metric_names = [
         "ForecastVerificationSamples",
         "ForecastIndependentCycles",
         "ForecastSOCMAE_0_6h_Verified",
@@ -1164,7 +1174,18 @@ def build_forecast_skill_dataset(
         "ForecastSolarMAE24h",
         "ForecastSolarBias24h",
         "ForecastSolarSkill24h",
-    ):
+    ]
+    for bucket, _, _ in LEAD_BUCKETS:
+        metric_names.extend((f"ForecastSOCMAESamples_{bucket}", f"ForecastSOCMAECycles_{bucket}", f"ForecastSOCSkill_{bucket}"))
+    metric_names.extend(
+        (
+            "ForecastLoadVerificationSamples",
+            "ForecastLoadIndependentCycles",
+            "ForecastSolarVerificationSamples",
+            "ForecastSolarIndependentCycles",
+        )
+    )
+    for metric_name in metric_names:
         columns[metric_name] = np.full(len(time_index), np.nan, dtype=np.float32)
 
     for idx, now in enumerate(time_index):
@@ -1184,11 +1205,14 @@ def build_forecast_skill_dataset(
                 )
                 if sample_count >= 2:
                     columns[f"ForecastSOCMAE_{bucket}_Verified"][idx] = mae
+                    columns[f"ForecastSOCMAESamples_{bucket}"][idx] = float(sample_count)
+                    columns[f"ForecastSOCMAECycles_{bucket}"][idx] = float(bucketed["cycle_time"].nunique())
+                    columns[f"ForecastSOCSkill_{bucket}"][idx] = _guarded_skill(
+                        mae, ref_mae, minimum_reference_mae=0.5
+                    )
                     if bucket == "0_6h":
                         columns["ForecastSOCBias_0_6h_Verified"][idx] = bias
-                        columns["ForecastSOCSkill_0_6h"][idx] = _guarded_skill(
-                            mae, ref_mae, minimum_reference_mae=0.5
-                        )
+                        columns["ForecastSOCSkill_0_6h"][idx] = columns[f"ForecastSOCSkill_{bucket}"][idx]
         load = pieces.get("load")
         if load is not None:
             selected = _independent_verification_rows(
@@ -1201,6 +1225,8 @@ def build_forecast_skill_dataset(
             if sample_count >= 2:
                 columns["ForecastLoadMAE24h"][idx] = mae
                 columns["ForecastLoadBias24h"][idx] = bias
+                columns["ForecastLoadVerificationSamples"][idx] = float(sample_count)
+                columns["ForecastLoadIndependentCycles"][idx] = float(selected["cycle_time"].nunique())
                 columns["ForecastLoadSkill24h"][idx] = _guarded_skill(
                     mae, ref_mae, minimum_reference_mae=5.0
                 )
@@ -1216,6 +1242,8 @@ def build_forecast_skill_dataset(
             if sample_count >= 2:
                 columns["ForecastSolarMAE24h"][idx] = mae
                 columns["ForecastSolarBias24h"][idx] = bias
+                columns["ForecastSolarVerificationSamples"][idx] = float(sample_count)
+                columns["ForecastSolarIndependentCycles"][idx] = float(selected["cycle_time"].nunique())
                 columns["ForecastSolarSkill24h"][idx] = _guarded_skill(
                     mae, ref_mae, minimum_reference_mae=5.0
                 )
@@ -1240,6 +1268,8 @@ def build_forecast_skill_dataset(
     for name in out.data_vars:
         if name.endswith("Samples"):
             out[name].attrs["units"] = "samples"
+        elif name.endswith("Cycles"):
+            out[name].attrs["units"] = "cycles"
         elif "Skill" in name:
             out[name].attrs["units"] = "1"
         elif "SOC" in name:

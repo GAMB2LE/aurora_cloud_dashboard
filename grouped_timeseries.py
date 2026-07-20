@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import timedelta
+import math
 import os
 from pathlib import Path
 import shutil
@@ -180,6 +181,22 @@ POWER_SOC_FORECAST_SKILL_FIELDS = (
     "ForecastSolarMAE24h",
     "ForecastSolarBias24h",
     "ForecastSolarSkill24h",
+    "ForecastSOCMAESamples_0_6h",
+    "ForecastSOCMAESamples_6_24h",
+    "ForecastSOCMAESamples_24_48h",
+    "ForecastSOCMAESamples_48_96h",
+    "ForecastSOCMAECycles_0_6h",
+    "ForecastSOCMAECycles_6_24h",
+    "ForecastSOCMAECycles_24_48h",
+    "ForecastSOCMAECycles_48_96h",
+    "ForecastSOCSkill_0_6h",
+    "ForecastSOCSkill_6_24h",
+    "ForecastSOCSkill_24_48h",
+    "ForecastSOCSkill_48_96h",
+    "ForecastLoadVerificationSamples",
+    "ForecastLoadIndependentCycles",
+    "ForecastSolarVerificationSamples",
+    "ForecastSolarIndependentCycles",
 )
 POWER_SOC_HINDCAST_FIELDS = (
     "BatterySOCObservedHindcast",
@@ -208,6 +225,24 @@ POWER_SOC_ENSEMBLE_SKILL_FIELDS = (
     "ForecastSOCIntervalCoverage80",
     SOC_BELOW_THRESHOLD_BRIER_FIELD,
     "ForecastEnsembleCycles",
+    "ForecastSOCCRPSSkill_0_6h",
+    "ForecastSOCCRPSSkill_6_24h",
+    "ForecastSOCCRPSSkill_24_48h",
+    "ForecastSOCCRPSSkill_48_96h",
+    "ForecastSOCCRPSSamples_0_6h",
+    "ForecastSOCCRPSSamples_6_24h",
+    "ForecastSOCCRPSSamples_24_48h",
+    "ForecastSOCCRPSSamples_48_96h",
+    "ForecastSOCCRPSCycles_0_6h",
+    "ForecastSOCCRPSCycles_6_24h",
+    "ForecastSOCCRPSCycles_24_48h",
+    "ForecastSOCCRPSCycles_48_96h",
+    "ForecastSOCIntervalCoverage80Samples",
+    "ForecastSOCIntervalCoverage80Cycles",
+    f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Reference",
+    f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Skill",
+    f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Samples",
+    f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Cycles",
 )
 OPERATING_SCENARIO_PREFIXES = OrderedDict(
     (
@@ -322,6 +357,181 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
             if mode:
                 return f"Comparison: {mode}"
     return trace.label
+
+
+VERIFICATION_MIN_SAMPLES = 20
+VERIFICATION_MIN_CYCLES = 10
+
+
+def _latest_finite_value(ds: xr.Dataset, name: str) -> float:
+    if name not in ds:
+        return float("nan")
+    values = np.asarray(ds[name].values, dtype=np.float64).reshape(-1)
+    values = values[np.isfinite(values)]
+    return float(values[-1]) if values.size else float("nan")
+
+
+def _verification_evidence(samples: float, cycles: float) -> tuple[str, str]:
+    if not np.isfinite(samples) or samples <= 0:
+        return ("Not yet verified", "learning")
+    if not np.isfinite(cycles) or samples < VERIFICATION_MIN_SAMPLES or cycles < VERIFICATION_MIN_CYCLES:
+        cycle_text = "unknown" if not np.isfinite(cycles) else str(int(round(cycles)))
+        return (f"Learning: {int(round(samples))} samples, {cycle_text} ECMWF cycles", "learning")
+    return (f"{int(round(samples))} samples, {int(round(cycles))} independent ECMWF cycles", "neutral")
+
+
+def _skill_status(skill: float, evidence_status: str) -> tuple[str, str]:
+    if evidence_status == "learning":
+        return ("Insufficient evidence", "learning")
+    if not np.isfinite(skill):
+        return ("No usable persistence baseline", "neutral")
+    if skill > 0.0:
+        return ("Better than persistence", "good")
+    return ("Not better than persistence", "caution")
+
+
+def _wilson_interval(successes: float, samples: float, *, z: float = 1.96) -> tuple[float, float]:
+    if samples <= 0:
+        return (float("nan"), float("nan"))
+    proportion = successes / samples
+    denominator = 1.0 + z**2 / samples
+    centre = (proportion + z**2 / (2.0 * samples)) / denominator
+    margin = z * math.sqrt((proportion * (1.0 - proportion) + z**2 / (4.0 * samples)) / samples) / denominator
+    return (centre - margin, centre + margin)
+
+
+def build_power_verification_guidance(panel_key: str, ds: xr.Dataset) -> dict[str, object] | None:
+    """Build compact, common score guidance for browser and native Power cards."""
+    if panel_key == "soc_forecast_skill":
+        metrics = []
+        for bucket, label in (("0_6h", "0-6 h"), ("6_24h", "6-24 h"), ("24_48h", "24-48 h"), ("48_96h", "48-96 h")):
+            value = _latest_finite_value(ds, f"ForecastSOCMAE_{bucket}_Verified")
+            samples = _latest_finite_value(ds, f"ForecastSOCMAESamples_{bucket}")
+            cycles = _latest_finite_value(ds, f"ForecastSOCMAECycles_{bucket}")
+            evidence, evidence_level = _verification_evidence(samples, cycles)
+            status, level = _skill_status(_latest_finite_value(ds, f"ForecastSOCSkill_{bucket}"), evidence_level)
+            metrics.append(
+                {
+                    "id": f"soc-mae-{bucket}",
+                    "label": f"SOC MAE {label}",
+                    "valueText": "Not yet verified" if not np.isfinite(value) else f"{value:.2f} percentage points",
+                    "direction": "Lower is better",
+                    "reference": "Compared with persistence from issue-time SOC",
+                    "status": status,
+                    "evidence": evidence,
+                    "level": level,
+                }
+            )
+        return {
+            "title": "How to read SOC verification",
+            "summary": "Average absolute miss of archived SOC forecasts against later APS measurements. Scores use the previous 24 hours.",
+            "metrics": metrics,
+        }
+
+    if panel_key == "soc_ensemble_skill":
+        metrics = []
+        for bucket, label in (("0_6h", "0-6 h"), ("6_24h", "6-24 h"), ("24_48h", "24-48 h"), ("48_96h", "48-96 h")):
+            value = _latest_finite_value(ds, f"ForecastSOCCRPS_{bucket}")
+            samples = _latest_finite_value(ds, f"ForecastSOCCRPSSamples_{bucket}")
+            cycles = _latest_finite_value(ds, f"ForecastSOCCRPSCycles_{bucket}")
+            evidence, evidence_level = _verification_evidence(samples, cycles)
+            status, level = _skill_status(_latest_finite_value(ds, f"ForecastSOCCRPSSkill_{bucket}"), evidence_level)
+            metrics.append(
+                {
+                    "id": f"soc-crps-{bucket}",
+                    "label": f"SOC CRPS {label}",
+                    "valueText": "Not yet verified" if not np.isfinite(value) else f"{value:.2f} percentage points",
+                    "direction": "Lower is better",
+                    "reference": "Scores ensemble centre and uncertainty against persistence",
+                    "status": status,
+                    "evidence": evidence,
+                    "level": level,
+                }
+            )
+        coverage = _latest_finite_value(ds, "ForecastSOCIntervalCoverage80")
+        coverage_samples = _latest_finite_value(ds, "ForecastSOCIntervalCoverage80Samples")
+        coverage_cycles = _latest_finite_value(ds, "ForecastSOCIntervalCoverage80Cycles")
+        evidence, evidence_level = _verification_evidence(coverage_samples, coverage_cycles)
+        if evidence_level == "learning":
+            coverage_status, coverage_level = ("Insufficient evidence", "learning")
+        elif np.isfinite(coverage):
+            lower, upper = _wilson_interval(coverage * coverage_samples, coverage_samples)
+            if upper < 0.8:
+                coverage_status, coverage_level = ("Too narrow / overconfident", "caution")
+            elif lower > 0.8:
+                coverage_status, coverage_level = ("Too wide / underconfident", "caution")
+            else:
+                coverage_status, coverage_level = ("Consistent with 80% target", "good")
+        else:
+            coverage_status, coverage_level = ("Not yet verified", "learning")
+        metrics.append(
+            {
+                "id": "soc-coverage",
+                "label": "P10-P90 coverage",
+                "valueText": "Not yet verified" if not np.isfinite(coverage) else f"{coverage:.2f}",
+                "direction": "Target is 0.80",
+                "reference": "Observed SOC should fall inside the central 80% ensemble interval about 80% of the time",
+                "status": coverage_status,
+                "evidence": evidence,
+                "level": coverage_level,
+            }
+        )
+        brier = _latest_finite_value(ds, SOC_BELOW_THRESHOLD_BRIER_FIELD)
+        brier_samples = _latest_finite_value(ds, f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Samples")
+        brier_cycles = _latest_finite_value(ds, f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Cycles")
+        evidence, evidence_level = _verification_evidence(brier_samples, brier_cycles)
+        brier_status, brier_level = _skill_status(
+            _latest_finite_value(ds, f"{SOC_BELOW_THRESHOLD_BRIER_FIELD}Skill"), evidence_level
+        )
+        metrics.append(
+            {
+                "id": "soc-brier",
+                "label": f"Below {MINIMUM_OPERATIONAL_SOC_LABEL} Brier score",
+                "valueText": "Not yet verified" if not np.isfinite(brier) else f"{brier:.3f}",
+                "direction": "Lower is better; 0 is perfect",
+                "reference": "Compared with predicting the recent below-threshold event frequency",
+                "status": brier_status,
+                "evidence": evidence,
+                "level": brier_level,
+            }
+        )
+        return {
+            "title": "How to read ensemble verification",
+            "summary": "CRPS checks both the likely SOC and the honesty of ensemble uncertainty. Coverage and Brier check calibration and the 40% safety-risk probability.",
+            "metrics": metrics,
+        }
+
+    if panel_key == "forecast_power_skill":
+        metrics = []
+        for kind, label, sample_name, cycle_name in (
+            ("Solar", "Solar forecast", "ForecastSolarVerificationSamples", "ForecastSolarIndependentCycles"),
+            ("Load", "Station load forecast", "ForecastLoadVerificationSamples", "ForecastLoadIndependentCycles"),
+        ):
+            value = _latest_finite_value(ds, f"Forecast{kind}MAE24h")
+            bias = _latest_finite_value(ds, f"Forecast{kind}Bias24h")
+            samples = _latest_finite_value(ds, sample_name)
+            cycles = _latest_finite_value(ds, cycle_name)
+            evidence, evidence_level = _verification_evidence(samples, cycles)
+            status, level = _skill_status(_latest_finite_value(ds, f"Forecast{kind}Skill24h"), evidence_level)
+            bias_text = "not yet verified" if not np.isfinite(bias) else f"{bias:+.1f} W"
+            metrics.append(
+                {
+                    "id": f"{kind.lower()}-mae",
+                    "label": f"{label} MAE",
+                    "valueText": "Not yet verified" if not np.isfinite(value) else f"{value:.1f} W",
+                    "direction": "Lower is better",
+                    "reference": f"Bias {bias_text}; positive means forecast exceeds observed",
+                    "status": status,
+                    "evidence": evidence,
+                    "level": level,
+                }
+            )
+        return {
+            "title": "How to read solar and load verification",
+            "summary": "Solar is forecast panel charging. Station load is solar generation minus APS battery flow when available, including the main DC load; AC plus inverter power is the fallback.",
+            "metrics": metrics,
+        }
+    return None
 
 
 COLOR = {
@@ -1182,6 +1392,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("ForecastSOCMAE_48_96h_Verified", "SOC MAE 48-96 h", COLOR["slate"], valid_min=0.0),
                 TraceSpec("ForecastIndependentCycles", "Independent ECMWF Cycles", COLOR["brown"], axis="right", dash="dot", valid_min=0.0),
             ),
+            "Rolling 24-hour verification of archived SOC forecasts against later APS measurements. Lower MAE is better.",
         ),
         PanelSpec(
             "soc_ensemble_skill",
@@ -1196,6 +1407,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("ForecastSOCIntervalCoverage80", "P10-P90 Coverage", COLOR["olive"], axis="right", valid_min=0.0, valid_max=1.0),
                 TraceSpec(SOC_BELOW_THRESHOLD_BRIER_FIELD, f"Below {MINIMUM_OPERATIONAL_SOC_LABEL} Brier Score", COLOR["red"], axis="right", dash="dash", valid_min=0.0, valid_max=1.0),
             ),
+            "Rolling 24-hour ensemble verification. CRPS measures forecast accuracy and uncertainty; coverage targets 0.80; Brier assesses the probability of SOC below 40%.",
         ),
         PanelSpec(
             "forecast_power_skill",
@@ -1208,6 +1420,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("ForecastLoadMAE24h", "Load MAE 24 h", COLOR["red"], dash="dash", valid_min=0.0),
                 TraceSpec("ForecastLoadBias24h", "Load Bias 24 h", COLOR["purple"], dash="dot"),
             ),
+            "Rolling 24-hour forecast error in watts. Bias is forecast minus observed: positive solar means too much charging; positive load means too much consumption.",
         ),
     ),
     "ops-monitor": (
@@ -2413,6 +2626,13 @@ def build_power_display_summary_dataset(
     for name in POWER_SOC_ENSEMBLE_FORECAST_FIELDS + POWER_SOC_ENSEMBLE_SKILL_FIELDS:
         if name in out:
             out[name].attrs["units"] = human_unit(name)
+    for name in out.data_vars:
+        if name.endswith("Samples"):
+            out[name].attrs["units"] = "samples"
+        elif name.endswith("Cycles"):
+            out[name].attrs["units"] = "cycles"
+        elif "Skill" in name:
+            out[name].attrs["units"] = "1"
     return out
 
 

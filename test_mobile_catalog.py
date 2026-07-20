@@ -227,6 +227,33 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(response["group"], "all")
         self.assertIn("warning", response)
 
+    def test_forecast_panels_start_at_their_first_forecast_time(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "power_display_summary.zarr"
+            times = pd.date_range("2026-07-19T07:00:00", periods=31, freq="1h")
+            solar = np.full(len(times), np.nan)
+            solar[24:] = [150.0, 350.0, 500.0, 300.0, 100.0, 0.0, 0.0]
+            xr.Dataset(
+                {
+                    "ForecastSolarWatts": (("time",), solar),
+                    "OperatingCurrentLoadP50Watts": (("time",), np.full(len(times), 250.0)),
+                },
+                coords={"time": times},
+            ).to_zarr(path, mode="w")
+            with patch.dict(os.environ, {"POWER_DISPLAY_SUMMARY_ZARR_PATH": str(path)}), patch.object(
+                mobile_catalog, "datetime", wraps=datetime
+            ) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
+                response = mobile_catalog.power(window="24h", group="forecast_96h")
+
+        panel = next(panel for panel in response["panels"] if panel["id"] == "ecmwf_solar_forecast")
+        for trace in panel["traces"]:
+            self.assertTrue(all(point["time"] >= "2026-07-20T07:00:00" for point in trace["points"]))
+
     def test_overview_matches_browser_mobile_card_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

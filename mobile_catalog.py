@@ -842,7 +842,12 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
         import numpy as np
         import pandas as pd
         import xarray as xr
-        from grouped_timeseries import POWER_PANEL_TIME_GROUPS, SUMMARY_LAYOUTS
+        from grouped_timeseries import (
+            POWER_PANEL_TIME_GROUPS,
+            POWER_PANEL_TIME_GROUP_BY_KEY,
+            SUMMARY_LAYOUTS,
+            build_power_verification_guidance,
+        )
 
         dataset = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
         times = pd.DatetimeIndex(dataset["time"].values)
@@ -855,16 +860,18 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             if group == "all"
             else set(POWER_PANEL_TIME_GROUPS[group])
         )
-        include_future = group != "observed"
         for panel in SUMMARY_LAYOUTS["power"]:
             if panel.key not in panel_keys:
                 continue
+            forecast_panel = POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in {"forecast_24h", "forecast_96h"}
+            panel_start = _forecast_panel_start(dataset, times, panel) if forecast_panel else start
+            panel_end = end if forecast_panel else now
             traces = []
             for trace in panel.traces:
                 if trace.var not in dataset or dataset[trace.var].dims != ("time",):
                     continue
                 values = np.asarray(dataset[trace.var].values, dtype=np.float64)
-                mask = np.isfinite(values) & (times >= start) & (times <= end if include_future else times <= now)
+                mask = np.isfinite(values) & (times >= panel_start) & (times <= panel_end)
                 if trace.valid_min is not None:
                     mask &= values >= float(trace.valid_min)
                 if trace.valid_max is not None:
@@ -904,6 +911,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                         "id": panel.key,
                         "title": panel.label,
                         "explanation": panel.description,
+                        "guidance": build_power_verification_guidance(panel.key, dataset),
                         "leftAxisLabel": panel.left_axis_label,
                         "rightAxisLabel": panel.right_axis_label,
                         "traces": traces,
@@ -913,6 +921,30 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     except Exception as exc:
         payload["warning"] = f"Power display data unavailable: {exc}"
     return payload
+
+
+def _forecast_panel_start(dataset, times, panel):
+    """Return the first valid operational forecast time for a forecast-only panel."""
+    import numpy as np
+    import pandas as pd
+
+    preferred_fields = {
+        "soc_projection": ("BatterySOCForecast",),
+        "soc_24h_forecast": ("BatterySOCForecast",),
+        "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
+        "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
+        "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
+        "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
+    }
+    fields = preferred_fields.get(panel.key, tuple(trace.var for trace in panel.traces))
+    for field in fields:
+        if field not in dataset or dataset[field].dims != ("time",):
+            continue
+        values = np.asarray(dataset[field].values, dtype=np.float64)
+        valid = np.isfinite(values)
+        if valid.any():
+            return pd.Timestamp(times[valid][0])
+    return pd.Timestamp(datetime.now(UTC)).tz_localize(None)
 
 
 def uas(window: str = "24h") -> dict[str, Any]:

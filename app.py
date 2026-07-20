@@ -47,6 +47,7 @@ except Exception:  # pragma: no cover - dashboard can still serve source images.
 from grouped_timeseries import (
     SUMMARY_LAYOUTS,
     build_summary_plotly,
+    build_power_verification_guidance,
     calendar_date_tokens,
     combine_summary_datasets,
     default_calendar_label,
@@ -8500,6 +8501,24 @@ body, .bk {
     line-height: 1.25;
     color: #536273;
 }
+.verification-guidance {
+    margin: 4px 0 5px;
+    padding: 6px;
+    border-left: 3px solid #0b7285;
+    background: #f4f8fa;
+    color: #344154;
+}
+.verification-guidance__title { font-size: 9px; font-weight: 700; color: #22313f; }
+.verification-guidance__summary { margin-top: 2px; font-size: 8px; line-height: 1.25; color: #536273; }
+.verification-guidance__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 5px; }
+.verification-guidance__metric { min-width: 0; padding: 4px; border: 1px solid #d9e4e8; background: #fff; }
+.verification-guidance__label { font-size: 8px; font-weight: 700; color: #344154; }
+.verification-guidance__value { margin-top: 1px; font-size: 9px; font-weight: 700; color: #22313f; }
+.verification-guidance__detail { margin-top: 1px; font-size: 7.5px; line-height: 1.2; color: #647283; }
+.verification-guidance__status--good { color: #23623a; }
+.verification-guidance__status--caution { color: #8a5720; }
+.verification-guidance__status--learning { color: #5f6c7b; }
+@media (max-width: 420px) { .verification-guidance__metrics { grid-template-columns: 1fr; } }
 .mobile-plot-card__legend-item {
     display: inline-flex;
     align-items: center;
@@ -9560,7 +9579,13 @@ def _mobile_power_window() -> xr.Dataset | None:
     return ds
 
 
-def _mobile_trace_values(ds: xr.Dataset, trace, include_future: bool) -> tuple[pd.DatetimeIndex, np.ndarray]:
+def _mobile_trace_values(
+    ds: xr.Dataset,
+    trace,
+    include_future: bool,
+    *,
+    start_at: pd.Timestamp | None = None,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
     if trace.var not in ds or "time" not in ds:
         return pd.DatetimeIndex([]), np.asarray([], dtype=float)
     times = pd.DatetimeIndex(ds["time"].values)
@@ -9575,6 +9600,8 @@ def _mobile_trace_values(ds: xr.Dataset, trace, include_future: bool) -> tuple[p
         mask &= values <= float(trace.valid_max)
     if not include_future:
         mask &= times <= now
+    if start_at is not None:
+        mask &= times >= start_at
     if not mask.any():
         return pd.DatetimeIndex([]), np.asarray([], dtype=float)
     out_times = times[mask]
@@ -9594,22 +9621,74 @@ def _mobile_trace_values(ds: xr.Dataset, trace, include_future: bool) -> tuple[p
     return out_times, out_values
 
 
+def _mobile_forecast_panel_start(ds: xr.Dataset, panel) -> pd.Timestamp | None:
+    preferred_fields = {
+        "soc_projection": ("BatterySOCForecast",),
+        "soc_24h_forecast": ("BatterySOCForecast",),
+        "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
+        "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
+        "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
+        "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
+    }
+    times = pd.DatetimeIndex(ds["time"].values)
+    for field in preferred_fields.get(panel.key, tuple(trace.var for trace in panel.traces)):
+        if field not in ds or ds[field].dims != ("time",):
+            continue
+        values = np.asarray(ds[field].values, dtype=np.float64)
+        valid = np.isfinite(values)
+        if valid.any():
+            return pd.Timestamp(times[valid][0])
+    return None
+
+
+def _verification_guidance_markup(guidance: dict[str, object] | None) -> str:
+    if not guidance:
+        return ""
+    metrics = guidance.get("metrics", [])
+    if not isinstance(metrics, list):
+        return ""
+    cards = []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        level = escape(str(metric.get("level", "neutral")))
+        cards.append(
+            "<div class='verification-guidance__metric'>"
+            f"<div class='verification-guidance__label'>{escape(str(metric.get('label', 'Metric')))}</div>"
+            f"<div class='verification-guidance__value'>{escape(str(metric.get('valueText', 'Not available')))}</div>"
+            f"<div class='verification-guidance__detail'>{escape(str(metric.get('direction', '')))}</div>"
+            f"<div class='verification-guidance__detail'>{escape(str(metric.get('reference', '')))}</div>"
+            f"<div class='verification-guidance__detail verification-guidance__status--{level}'>{escape(str(metric.get('status', '')))}</div>"
+            f"<div class='verification-guidance__detail'>{escape(str(metric.get('evidence', '')))}</div>"
+            "</div>"
+        )
+    if not cards:
+        return ""
+    return (
+        "<div class='verification-guidance'>"
+        f"<div class='verification-guidance__title'>{escape(str(guidance.get('title', 'How to read this plot')))}</div>"
+        f"<div class='verification-guidance__summary'>{escape(str(guidance.get('summary', '')))}</div>"
+        f"<div class='verification-guidance__metrics'>{''.join(cards)}</div>"
+        "</div>"
+    )
+
+
 def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
     forecast_panel_keys = {
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
         "operating_plan_scenarios",
         "ecmwf_solar_forecast",
-        "soc_forecast_skill",
     }
     include_future = panel.key in forecast_panel_keys
+    forecast_start = _mobile_forecast_panel_start(ds, panel) if include_future else None
     fig = go.Figure()
     has_right_axis = panel.right_axis_label is not None
     legend_items: list[str] = []
     for trace in panel.traces:
         if trace.projection_lookback_minutes is not None:
             continue
-        times, values = _mobile_trace_values(ds, trace, include_future=include_future)
+        times, values = _mobile_trace_values(ds, trace, include_future=include_future, start_at=forecast_start)
         if len(times) == 0:
             continue
         use_right = trace.axis == "right" and has_right_axis
@@ -9707,6 +9786,7 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
             nticks=4,
         )
     fig.update_layout(**layout)
+    guidance = _verification_guidance_markup(build_power_verification_guidance(panel.key, ds))
     return pn.Column(
         pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0),
         *(
@@ -9714,6 +9794,7 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
             if panel.description
             else []
         ),
+        *([pn.pane.HTML(guidance, margin=0)] if guidance else []),
         pn.pane.HTML(f"<div class='mobile-plot-card__legend'>{''.join(legend_items)}</div>", margin=0),
         pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=plot_height + 8, css_classes=["mobile-figure"]),
         sizing_mode="stretch_width",
