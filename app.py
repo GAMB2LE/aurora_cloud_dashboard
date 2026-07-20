@@ -8509,8 +8509,8 @@ body, .bk {
     background: rgba(100, 116, 139, 0.1);
 }
 .overview-instrument-row__icon-symbol {
-    width: 19px;
-    height: 19px;
+    width: 24px;
+    height: 24px;
     display: block;
     background: currentColor;
     -webkit-mask: var(--instrument-symbol) center / contain no-repeat;
