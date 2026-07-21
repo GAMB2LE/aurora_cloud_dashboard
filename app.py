@@ -405,7 +405,17 @@ def _timed_perf(event: str, **fields):
         details.setdefault("error", str(exc))
         raise
     finally:
-        _perf_log(event, duration_ms=(perf_counter() - start) * 1000.0, **details)
+        duration_ms = (perf_counter() - start) * 1000.0
+        _perf_log(event, duration_ms=duration_ms, **details)
+        if event in {"interactive_view_update", "stacked_timeseries_render"} and duration_ms > INTERACTIVE_RENDER_BUDGET_MS:
+            _perf_log(
+                "interactive_render_budget_exceeded",
+                instrument=details.get("instrument"),
+                source_event=event,
+                duration_ms=duration_ms,
+                budget_ms=INTERACTIVE_RENDER_BUDGET_MS,
+                status=details.get("status", "unknown"),
+            )
 
 
 def _path_from_env(env_name: str, default: Path) -> Path:
@@ -623,6 +633,7 @@ TIME_TARGET = 300  # target max time samples for plotting
 HEIGHT_TARGET = 200  # target max height samples for plotting
 DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
 RENDER_DEBOUNCE_MS = int(os.environ.get("AURORA_RENDER_DEBOUNCE_MS", "150"))
+INTERACTIVE_RENDER_BUDGET_MS = int(os.environ.get("AURORA_INTERACTIVE_RENDER_BUDGET_MS", "10000"))
 INTERACTIVE_RENDER_CACHE_SIZE = int(os.environ.get("AURORA_INTERACTIVE_RENDER_CACHE_SIZE", "12"))
 POWER_INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES", "700"))
 POWER_LATEST_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_LATEST_CACHE_ROUND_MINUTES", "5"))

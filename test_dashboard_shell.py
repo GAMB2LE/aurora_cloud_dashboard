@@ -63,6 +63,19 @@ class DashboardShellTests(TestCase):
             app.instrument_select.value = original_instrument
             app.power_view_select.value = original_view
 
+    def test_slow_interactive_render_emits_a_budget_event(self) -> None:
+        events = []
+        with (
+            patch.object(app, "INTERACTIVE_RENDER_BUDGET_MS", 0),
+            patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))),
+        ):
+            with app._timed_perf("interactive_view_update", instrument="power") as details:
+                details["status"] = "ok"
+
+        self.assertEqual(events[0][0], "interactive_view_update")
+        self.assertEqual(events[1][0], "interactive_render_budget_exceeded")
+        self.assertEqual(events[1][1]["source_event"], "interactive_view_update")
+
     def test_forecast_info_control_uses_deployed_panel_widget_api(self) -> None:
         panel = next(
             panel
