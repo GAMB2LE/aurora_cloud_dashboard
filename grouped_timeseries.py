@@ -63,6 +63,9 @@ POWER_DISPLAY_SUMMARY_ATTR = "power_display_summary_product"
 POWER_SOC_PROJECTION_HOURS = float(os.environ.get("AURORA_POWER_SOC_PROJECTION_HOURS", "24"))
 POWER_SOC_PROJECTION_STEP_MINUTES = float(os.environ.get("AURORA_POWER_SOC_PROJECTION_STEP_MINUTES", "5"))
 POWER_SOC_PROJECTION_POLY_DEGREE = int(os.environ.get("AURORA_POWER_SOC_PROJECTION_POLY_DEGREE", "1"))
+OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES = float(
+    os.environ.get("AURORA_OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES", "20")
+)
 POWER_PANEL_TIME_GROUPS = OrderedDict(
     (
         (
@@ -2552,7 +2555,7 @@ def _operating_scenario_alignment(
     if forecast_anchor is None or plan_anchor is None:
         return False, "Missing SOC anchor required to compare the system forecast and operating plan"
     difference_seconds = abs(float((forecast_anchor - plan_anchor) / pd.Timedelta(seconds=1)))
-    if difference_seconds > 60.0:
+    if difference_seconds > OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES * 60.0:
         return (
             False,
             "Operating-plan SOC anchor does not match the current system forecast "
@@ -2709,7 +2712,10 @@ def build_power_display_summary_dataset(
         if forecast_anchor is None or planning_anchor is None:
             operating_aligned = False
             operating_alignment_reason = "Missing SOC anchor required to compare the system forecast and operating plan"
-        elif abs(float((forecast_anchor - planning_anchor) / pd.Timedelta(seconds=1))) > 60.0:
+        elif (
+            abs(float((forecast_anchor - planning_anchor) / pd.Timedelta(seconds=1)))
+            > OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES * 60.0
+        ):
             operating_aligned = False
             operating_alignment_reason = (
                 "Operating-plan SOC anchor does not match the current system forecast "

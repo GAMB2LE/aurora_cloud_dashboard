@@ -1008,6 +1008,24 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(merged.attrs["operating_learned_1_label"], "DC + Radar")
         self.assertEqual(pd.Timestamp(merged["time"].values[-1]), forecast_times[-1])
 
+    def test_operating_plan_anchor_within_refresh_window_is_displayed(self) -> None:
+        times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
+        display = xr.Dataset(
+            {"BatterySOCForecastP50": (("time",), [90.0, 88.0, 86.0])},
+            coords={"time": times},
+            attrs={"forecast_initial_soc_time": "2026-07-20T20:15:00"},
+        )
+        operating = xr.Dataset(
+            {"ScenarioSOCP50": (("scenario", "time"), [[90.0, 80.0, 70.0]])},
+            coords={"scenario": ["optimized_cl61"], "time": times},
+            attrs={"initial_soc_time": "2026-07-20T20:00:00"},
+        )
+
+        merged = merge_operating_scenarios_into_display_summary(display, operating)
+
+        self.assertIn("OperatingCL61OptimizedSOCP50", merged)
+        self.assertEqual(merged.attrs["operating_planning_status"], "ready")
+
     def test_mismatched_operating_plan_anchor_is_withheld_from_display(self) -> None:
         times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
         display = xr.Dataset(
