@@ -13,6 +13,7 @@ from power_operating_scenarios import (
     COMPONENT_INDEX,
     MODE_DC_ONLY,
     SCENARIO_CL61,
+    SCENARIO_CURRENT,
     SCENARIO_DC_ONLY,
     SCENARIO_OPTIMIZED,
     build_operating_scenarios,
@@ -63,14 +64,21 @@ def _training_data() -> tuple[xr.Dataset, xr.Dataset]:
 def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.Dataset, xr.Dataset]:
     times = pd.date_range(issue, issue + pd.Timedelta(hours=horizon_hours), freq="3h")
     solar = np.full(len(times), 520.0, dtype=float)
+    load = np.full(len(times), 640.0, dtype=float)
     deterministic = xr.Dataset(
-        {"ForecastSolarWatts": (("time",), solar)},
+        {
+            "ForecastSolarWatts": (("time",), solar),
+            "ForecastLoadWatts": (("time",), load),
+        },
         coords={"time": times},
         attrs={"battery_capacity_kwh": "26", "initial_soc_time": issue.isoformat()},
     )
     members = np.vstack([solar * factor for factor in np.linspace(0.75, 1.25, 20)])
     ensemble = xr.Dataset(
-        {"ForecastSolarWattsEnsemble": (("member", "time"), members)},
+        {
+            "ForecastSolarWattsEnsemble": (("member", "time"), members),
+            "ForecastLoadWattsEnsemble": (("member", "time"), np.tile(load, (20, 1))),
+        },
         coords={"member": np.arange(1, 21), "time": times},
     )
     return deterministic, ensemble
@@ -271,6 +279,30 @@ class OperatingScenarioTests(unittest.TestCase):
         optimized = scenarios.sel(scenario=SCENARIO_OPTIMIZED)
         self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
         self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
+
+    def test_current_scenario_matches_system_ensemble_load_and_soc_anchor(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+        current = scenarios.sel(scenario=SCENARIO_CURRENT)
+
+        self.assertEqual(pd.Timestamp(scenarios.time.values[0]), issue)
+        self.assertEqual(float(current["ScenarioSOCP50"].isel(time=0)), 86.0)
+        expected_load = float(ensemble["ForecastLoadWattsEnsemble"].isel(time=0).median("member"))
+        self.assertAlmostEqual(float(current["ScenarioLoadP50Watts"].isel(time=0)), expected_load, places=5)
+        self.assertEqual(
+            scenarios.attrs["load_baseline_source"],
+            "system_as_is_forecast_plus_learned_instrument_deltas",
+        )
 
     def test_optimizer_enforces_minimum_run_and_daily_start_limit(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=97, freq="1h")

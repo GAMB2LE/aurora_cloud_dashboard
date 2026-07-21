@@ -731,7 +731,12 @@ def _hourly_solar_members(
     issue_time: pd.Timestamp,
     horizon_hours: int,
 ) -> tuple[pd.DatetimeIndex, np.ndarray, dict[str, str]]:
-    times = pd.date_range(issue_time.floor("h"), issue_time.floor("h") + pd.Timedelta(hours=horizon_hours), freq="1h")
+    # Every scenario is anchored to the physical SOC observation.  Flooring
+    # this timestamp created forecast points before the observation and made
+    # the scenario panel incomparable with the system-as-is ensemble.
+    times = pd.DatetimeIndex(
+        issue_time + pd.to_timedelta(np.arange(int(horizon_hours) + 1), unit="h")
+    )
     if "ForecastSolarWatts" not in deterministic or "time" not in deterministic:
         raise ValueError("Deterministic forecast does not contain ForecastSolarWatts")
     deterministic_times = pd.DatetimeIndex(deterministic["time"].values)
@@ -787,6 +792,57 @@ def _hourly_solar_members(
         "native_ensemble_end_time": "",
         "uncertainty_extrapolated": "false",
     }
+
+
+def _current_system_load_members(
+    deterministic: xr.Dataset,
+    ensemble: xr.Dataset | None,
+    times: pd.DatetimeIndex,
+    member_count: int,
+    *,
+    fallback: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return the system-as-is load used by the SOC ensemble on ``times``."""
+    source = ensemble if ensemble is not None and "ForecastLoadWattsEnsemble" in ensemble else None
+    if source is not None and "time" in source:
+        source_times = pd.DatetimeIndex(source["time"].values)
+        values = np.asarray(
+            source["ForecastLoadWattsEnsemble"].transpose("member", "time").values,
+            dtype=np.float64,
+        )
+        rows = []
+        for row in values:
+            aligned = (
+                pd.Series(row, index=source_times)
+                .reindex(times.union(source_times))
+                .interpolate("time", limit_area="inside")
+                .reindex(times)
+                .ffill()
+                .bfill()
+            )
+            rows.append(aligned.to_numpy(dtype=np.float64))
+        if rows:
+            result = np.asarray(rows, dtype=np.float64)
+            if result.shape[0] == member_count and np.isfinite(result).all():
+                return np.clip(result, 0.0, None)
+
+    if "ForecastLoadWatts" in deterministic and "time" in deterministic:
+        source_times = pd.DatetimeIndex(deterministic["time"].values)
+        aligned = (
+            pd.Series(np.asarray(deterministic["ForecastLoadWatts"].values, dtype=np.float64), index=source_times)
+            .reindex(times.union(source_times))
+            .interpolate("time", limit_area="inside")
+            .reindex(times)
+            .ffill()
+            .bfill()
+            .clip(lower=0.0)
+        )
+        return np.tile(aligned.to_numpy(dtype=np.float64), (member_count, 1))
+    if fallback is not None:
+        values = np.asarray(fallback, dtype=np.float64)
+        if values.shape == (member_count, len(times)) and np.isfinite(values).all():
+            return np.clip(values, 0.0, None)
+    raise ValueError("System forecast does not contain ForecastLoadWatts")
 
 
 def _component_members(
@@ -1131,6 +1187,27 @@ def build_operating_scenarios(
         regimes=model.component_regimes,
     )
     base_mode = model.current_mode if model.current_mode != MODE_UNKNOWN_AC else MODE_DC_ONLY
+    # The component model learns differences between instrument modes.  Its DC
+    # intercept can miss shared station loads that are present in the main SOC
+    # forecast.  Calibrate that intercept member-by-member so all alternatives
+    # retain the system-as-is baseline and differ only by their named kit.
+    modeled_current_load = _load_members_for_modes(
+        component_members,
+        tuple(base_mode for _ in times),
+    )
+    current_system_load = _current_system_load_members(
+        deterministic,
+        ensemble,
+        times,
+        member_count,
+        fallback=modeled_current_load,
+    )
+    baseline_adjustment = np.nanmedian(current_system_load - modeled_current_load, axis=1)
+    component_members[:, COMPONENT_INDEX["DC"]] = np.clip(
+        component_members[:, COMPONENT_INDEX["DC"]] + baseline_adjustment,
+        0.0,
+        None,
+    )
     optimized = optimize_cl61_schedule(
         times=times,
         solar_members_w=solar_members,
@@ -1195,6 +1272,17 @@ def build_operating_scenarios(
             initial_soc=initial_soc,
             capacity_kwh=capacity,
         )
+        if scenario_id == SCENARIO_CURRENT:
+            # This is the same system-as-is forecast shown in the 96-hour
+            # ensemble panel, so use its exact load members as a hard contract.
+            loads = current_system_load
+            soc = integrate_soc_members(
+                initial_soc=initial_soc,
+                times=times,
+                solar_members_w=solar_members,
+                load_members_w=loads,
+                capacity_kwh=capacity,
+            )
         load_p10.append(np.nanquantile(loads, 0.10, axis=0))
         load_p50.append(np.nanquantile(loads, 0.50, axis=0))
         load_p90.append(np.nanquantile(loads, 0.90, axis=0))
@@ -1268,6 +1356,7 @@ def build_operating_scenarios(
             "observed_modes": json.dumps(list(model.observed_modes)),
             "mode_maturity": json.dumps(model.mode_maturity, sort_keys=True),
             "scenario_base_mode": base_mode,
+            "load_baseline_source": "system_as_is_forecast_plus_learned_instrument_deltas",
             "forecast_horizon_hours": str(actual_horizon),
             "optimization_horizon_hours": str(min(optimization_hours, actual_horizon)),
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
