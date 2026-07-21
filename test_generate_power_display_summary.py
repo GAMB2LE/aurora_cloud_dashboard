@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import xarray as xr
 
-from generate_power_display_summary import _section_subset, _write_metadata
+from generate_power_display_summary import _release_generation_lock, _section_subset, _try_generation_lock, _write_metadata
 from grouped_timeseries import POWER_PANEL_TIME_GROUP_BY_KEY, SUMMARY_LAYOUTS
 
 
@@ -52,6 +52,20 @@ class PowerDisplaySummaryMetadataTests(unittest.TestCase):
 
         self.assertEqual(set(current.data_vars), current_fields)
         self.assertEqual(set(forecast.data_vars), forecast_fields)
+
+    def test_generation_lock_skips_overlapping_build(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "power_display_summary.zarr"
+            first = _try_generation_lock(output)
+            self.assertIsNotNone(first)
+            try:
+                self.assertIsNone(_try_generation_lock(output))
+            finally:
+                _release_generation_lock(first)
+
+            second = _try_generation_lock(output)
+            self.assertIsNotNone(second)
+            _release_generation_lock(second)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
@@ -87,7 +88,9 @@ def _write_metadata(output_zarr: Path, display: xr.Dataset) -> Path:
 
 def _write_zarr_atomic(ds: xr.Dataset, output_zarr: Path, chunk_time: int = 1440) -> None:
     output_zarr.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output_zarr.with_name(f"{output_zarr.name}.tmp")
+    # The generator lock serialises complete builds; this unique path also
+    # keeps an interrupted build from being mistaken for the next build.
+    tmp = output_zarr.with_name(f"{output_zarr.name}.tmp.{os.getpid()}")
     if tmp.exists():
         shutil.rmtree(tmp)
     ds.chunk({"time": chunk_time}).to_zarr(tmp, mode="w", consolidated=True)
@@ -176,7 +179,25 @@ def _write_manifest(path: Path, current: xr.Dataset, forecast: xr.Dataset, curre
     temporary.replace(path)
 
 
-def generate(
+def _try_generation_lock(output_zarr: Path):
+    """Return a non-blocking lock handle, or ``None`` when a build is active."""
+    lock_path = output_zarr.with_name(f".{output_zarr.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def _release_generation_lock(handle) -> None:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
+def _generate_unlocked(
     power_zarr: Path = POWER_ZARR_PATH,
     output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH,
     ass_logger_zarr: Path = ASFS_LOGGER_ZARR_PATH,
@@ -240,6 +261,22 @@ def generate(
             _write_manifest(manifest_path, current, forecast_display, current_output_zarr, forecast_output_zarr)
             print(f"Wrote {manifest_path}")
     return output_zarr
+
+
+def generate(*args, **kwargs) -> Path:
+    """Build one Power display generation at a time for all output products."""
+    output_zarr = kwargs.get("output_zarr")
+    if output_zarr is None:
+        output_zarr = args[1] if len(args) > 1 else POWER_DISPLAY_SUMMARY_ZARR_PATH
+    output_zarr = Path(output_zarr)
+    lock = _try_generation_lock(output_zarr)
+    if lock is None:
+        print(f"Power display-summary build already running for {output_zarr}; skipping duplicate request")
+        return output_zarr
+    try:
+        return _generate_unlocked(*args, **kwargs)
+    finally:
+        _release_generation_lock(lock)
 
 
 def write_metadata_only(output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH) -> Path:
