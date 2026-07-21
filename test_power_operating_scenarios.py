@@ -77,19 +77,21 @@ def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.D
 
 
 class OperatingScenarioTests(unittest.TestCase):
-    def test_validation_rejects_a_planning_forecast_with_an_old_soc_anchor(self) -> None:
+    def test_validation_reanchors_a_planning_forecast_with_an_old_soc_anchor(self) -> None:
         power, _ = _training_data()
         forecast, _ = _forecast_inputs(pd.Timestamp("2026-07-15T00:00:00"), horizon_hours=240)
         forecast.attrs["initial_soc_time"] = "2026-07-13T00:00:00"
 
-        with self.assertRaisesRegex(ValueError, "mismatched planning forecast"):
-            _validate_operating_inputs(
-                power,
-                forecast,
-                planning_hours=96,
-                max_power_age_minutes=None,
-                now=pd.Timestamp("2026-07-15T12:00:00"),
-            )
+        anchor_time, anchor_soc, _ = _validate_operating_inputs(
+            power,
+            forecast,
+            planning_hours=96,
+            max_power_age_minutes=None,
+            now=pd.Timestamp("2026-07-15T12:00:00"),
+        )
+
+        self.assertEqual(anchor_time, pd.Timestamp(power.time.values[-1]))
+        self.assertEqual(anchor_soc, float(power.BatterySOC.values[-1]))
     def test_archived_decision_verifies_against_actual_soc_and_mode(self) -> None:
         times = pd.date_range("2026-07-18T00:00:00", periods=3, freq="1h")
         record = {

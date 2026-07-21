@@ -2546,12 +2546,10 @@ def _operating_scenario_alignment(
     if status != "ready":
         return False, str(operating_scenarios_ds.attrs.get("planning_status_reason", "Operating plan is unavailable"))
     forecast_anchor = _summary_display_timestamp(display_ds.attrs.get("forecast_initial_soc_time"))
-    plan_anchor = _summary_display_timestamp(
-        operating_scenarios_ds.attrs.get(
-            "planning_forecast_initial_soc_time",
-            operating_scenarios_ds.attrs.get("initial_soc_time"),
-        )
-    )
+    # Scenarios are re-integrated from the latest measured SOC. Compare that
+    # scenario anchor with the system forecast; the planning forecast anchor is
+    # retained separately as solar-cycle provenance.
+    plan_anchor = _summary_display_timestamp(operating_scenarios_ds.attrs.get("initial_soc_time"))
     if forecast_anchor is None or plan_anchor is None:
         return False, "Missing SOC anchor required to compare the system forecast and operating plan"
     difference_seconds = abs(float((forecast_anchor - plan_anchor) / pd.Timedelta(seconds=1)))

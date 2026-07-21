@@ -324,25 +324,13 @@ def _validate_operating_inputs(
             f"but {required_end.isoformat()} is required for {required_hours} h planning"
         )
 
-    # A planning product may be retained after an upstream ECMWF refresh fails.
-    # Its time coordinate can still extend into the future, but it cannot be
-    # compared with today's system-as-is forecast unless it was anchored to the
-    # same recent physical SOC measurement.
+    # The planning product supplies the solar forecast, while
+    # build_operating_scenarios() re-integrates every scenario from the latest
+    # measured SOC above. Its original SOC anchor is therefore provenance, not
+    # a requirement for re-anchoring, provided the future coverage is complete.
     forecast_anchor = pd.to_datetime(forecast.attrs.get("initial_soc_time"), errors="coerce")
     if pd.isna(forecast_anchor):
         raise ValueError("Operating scenarios require a planning forecast SOC anchor")
-    forecast_anchor = pd.Timestamp(forecast_anchor)
-    if forecast_anchor.tzinfo is not None:
-        forecast_anchor = forecast_anchor.tz_convert("UTC").tz_localize(None)
-    anchor_difference = abs(float((forecast_anchor - anchor_time) / pd.Timedelta(minutes=1)))
-    allowed_difference = max(float(max_power_age_minutes or 0.0), 20.0)
-    if anchor_difference > allowed_difference:
-        raise ValueError(
-            "Refusing to publish an operating plan from a mismatched planning forecast: "
-            f"forecast SOC anchor is {forecast_anchor.isoformat()} but current SOC anchor is "
-            f"{anchor_time.isoformat()} ({anchor_difference:.1f} minutes apart; "
-            f"limit {allowed_difference:.1f} minutes)"
-        )
     return anchor_time, anchor_soc, max(power_age_minutes, 0.0)
 
 
