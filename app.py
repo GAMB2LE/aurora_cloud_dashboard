@@ -4925,6 +4925,16 @@ def _on_auroracam_date_change(_event) -> None:
 auroracam_date.param.watch(_on_auroracam_date_change, "value")
 
 
+def _refresh_auroracam_latest_if_needed() -> None:
+    """Refresh live camera selections without changing an operator's history view."""
+    if ACTIVE_TAB_SLUG != "auroracam":
+        return
+    if auroracam_date.value != "Today (latest)" or auroracam_time.value != "Latest":
+        return
+    _refresh_auroracam_options(preserve_current=True)
+    auroracam_time.param.trigger("value")
+
+
 @pn.depends(auroracam_date.param.value, auroracam_time.param.value, auroracam_camera.param.value)
 def _auroracam_browser(selected_day, selected_time, camera_id):
     with _timed_perf(
@@ -9392,6 +9402,7 @@ def _refresh_operations_dashboard() -> None:
 
 _uas_timer = _safe_periodic_callback(_refresh_uas_dashboard, period=30_000, start=False)
 _operations_timer = _safe_periodic_callback(_refresh_operations_dashboard, period=60_000, start=False)
+_auroracam_timer = _safe_periodic_callback(_refresh_auroracam_latest_if_needed, period=60_000, start=False)
 
 
 def _lazy_tab_placeholder(label: str) -> pn.pane.HTML:
@@ -10433,6 +10444,12 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         hk_status_container[:] = [hk_status]
         hk_availability_container[:] = [hk_availability]
         _LOADED_TABS.add("housekeeping")
+    elif active == "auroracam":
+        _refresh_auroracam_latest_if_needed()
+        try:
+            _auroracam_timer.start()
+        except RuntimeError:
+            pass
     elif active == "uas" and "uas" not in _LOADED_TABS:
         uas_container[:] = [pn.Column(uas_status_pane, uas_plot_pane, uas_table_pane, sizing_mode="stretch_width", css_classes=["uas-shell"])]
         _refresh_uas_dashboard()
