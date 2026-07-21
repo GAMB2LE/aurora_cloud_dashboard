@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import xarray as xr
 
-from generate_power_display_summary import _release_generation_lock, _section_subset, _try_generation_lock, _write_metadata
+from generate_power_display_summary import _release_generation_lock, _section_subset, _try_generation_lock, _write_metadata, _write_zarr_atomic
 from grouped_timeseries import POWER_PANEL_TIME_GROUP_BY_KEY, SUMMARY_LAYOUTS
 
 
@@ -66,6 +66,20 @@ class PowerDisplaySummaryMetadataTests(unittest.TestCase):
             second = _try_generation_lock(output)
             self.assertIsNotNone(second)
             _release_generation_lock(second)
+
+    def test_atomic_store_has_consolidated_metadata(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "display.zarr"
+            display = xr.Dataset(
+                {"power": ("time", np.asarray([1.0, 2.0]))},
+                coords={"time": np.asarray(["2026-07-17T00:00", "2026-07-17T00:01"], dtype="datetime64[m]")},
+            )
+            _write_zarr_atomic(display, output, chunk_time=1)
+            opened = xr.open_zarr(output, consolidated=True)
+            try:
+                self.assertEqual(opened.sizes["time"], 2)
+            finally:
+                opened.close()
 
 
 if __name__ == "__main__":

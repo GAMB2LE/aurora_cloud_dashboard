@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import xarray as xr
+import zarr
 
 from grouped_timeseries import (
     POWER_DISPLAY_ENERGY_ATTR,
@@ -97,6 +98,7 @@ def _write_zarr_atomic(ds: xr.Dataset, output_zarr: Path, chunk_time: int = 1440
     if output_zarr.exists():
         shutil.rmtree(output_zarr)
     tmp.rename(output_zarr)
+    zarr.consolidate_metadata(output_zarr)
 
 
 def _open_optional_zarr(path: Path, label: str) -> xr.Dataset | None:
