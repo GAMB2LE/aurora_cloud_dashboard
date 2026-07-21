@@ -30,9 +30,10 @@ the dashboard. The key distinctions are:
 - **P10, central, and P90 SOC** are ECMWF solar-weather outcomes with the
   detected current system load held fixed. They are not different instrument
   schedules.
-- **Operating-mode plans** are separate advisory simulations. Their shaded
-  intervals identify recommended CL61-on periods and do not indicate forecast
-  probability or an automatic PDU command.
+- **Operating-mode scenarios** are separate advisory simulations. Each includes
+  the DC baseline plus the instruments named in its legend. Shaded intervals on
+  the solar/load panel identify recommended CL61-on periods and do not indicate
+  forecast probability or an automatic PDU command.
 - **Hindcasts and verification scores** look backwards: archived forecasts are
   matched to later APS observations. MAE, CRPS, and Brier scores are lower-is-
   better; P10-P90 coverage targets 0.80.
@@ -80,10 +81,10 @@ Typical panels include:
   - ECMWF-informed SOC forecast, shown when the forecast product is available
   - ECMWF solar power in `W m-2`
   - forecast solar charging and expected load
-- **Learned Operating-Mode SOC Plans**
-  - current recognised mode, DC-Only, DC + CL61, optimized CL61, and other
-    learned kit combinations
-  - P10/P50/P90 uncertainty and a 40% minimum operational reference
+- **Suggested Instrument-Mode SOC Forecasts**
+  - CL61, CL61 + Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar,
+    Radar, and HATPRO
+  - median SOC for each combination and a 40% minimum operational reference
 - **Custom CL61 Operating Plan**
   - user-selected UTC start and run duration
   - immediate advisory safety, collection-hour, minimum-P10, and final-P10
@@ -207,13 +208,14 @@ learning run.
 This product is operational guidance only and is stored separately from
 model-evaluation products.
 
-The **Learned Operating-Mode SOC Plans** panel uses the same ECMWF solar input
-and latest `BatterySOC` anchor with load distributions learned for DC-Only,
-DC + CL61, and every other observed PDU kit combination. The optimized CL61
-plan maximizes collection time over 96 hours while keeping P10 SOC at or above
-40%, requiring a 12-hour minimum run, and allowing no more than one start per
-UTC day. The custom-plan editor evaluates a selected start and duration against
-the stored ensembles immediately. Both are advisory only.
+The **Suggested Instrument-Mode SOC Forecasts** panel uses the same ECMWF solar
+input and latest `BatterySOC` anchor for all seven stable combinations. Each
+scenario includes the DC baseline and load distributions learned for its named
+instruments. The separate optimized CL61 plan maximizes collection time over 96
+hours while keeping P10 SOC at or above 40%, requiring a 12-hour minimum run,
+and allowing no more than one start per UTC day. The custom-plan editor
+evaluates a selected start and duration against the stored ensembles
+immediately. All plans are advisory only.
 
 The hybrid learner combines a finite-state/HMM-like mode classifier with robust
 Kalman updates for the DC and kit load components. It saves the full component

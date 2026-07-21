@@ -24,6 +24,7 @@ from plotly.subplots import make_subplots
 import xarray as xr
 
 from quicklook_time_axis import apply_quicklook_time_axis
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_LABEL,
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -252,6 +253,10 @@ OPERATING_SCENARIO_PREFIXES = OrderedDict(
         ("optimized_cl61", "OperatingCL61Optimized"),
     )
 )
+OPERATING_SUGGESTED_PREFIXES = OrderedDict(
+    (definition.scenario_id, f"OperatingSuggested{index}")
+    for index, definition in enumerate(SUGGESTED_OPERATING_SCENARIOS, start=1)
+)
 MAX_OPERATING_LEARNED_SCENARIOS = 6
 OPERATING_LEARNED_PREFIXES = tuple(
     f"OperatingLearned{index}" for index in range(1, MAX_OPERATING_LEARNED_SCENARIOS + 1)
@@ -268,7 +273,11 @@ OPERATING_SCENARIO_SOURCE_FIELDS = (
 )
 OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     f"{prefix}{suffix}"
-    for prefix in tuple(OPERATING_SCENARIO_PREFIXES.values()) + OPERATING_LEARNED_PREFIXES
+    for prefix in (
+        tuple(OPERATING_SCENARIO_PREFIXES.values())
+        + tuple(OPERATING_SUGGESTED_PREFIXES.values())
+        + OPERATING_LEARNED_PREFIXES
+    )
     for _source, suffix in OPERATING_SCENARIO_SOURCE_FIELDS
 ) + (
     "OperatingCL61OptimizedCL61On",
@@ -289,7 +298,7 @@ OPERATING_MODE_BITS = (
     ("HATPRO", 4, "rgba(134, 91, 170, 0.16)"),
     ("UAS", 8, "rgba(211, 138, 55, 0.16)"),
 )
-OPERATING_SCHEDULE_SHADE_PANELS = {"operating_plan_scenarios", "ecmwf_solar_forecast"}
+OPERATING_SCHEDULE_SHADE_PANELS = {"ecmwf_solar_forecast"}
 FAST_SONIC_TO_LOGGER_AVG = {
     "metek_x_out": "metek_x_out_Avg",
     "metek_y_out": "metek_y_out_Avg",
@@ -582,13 +591,13 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             ],
         },
         "operating_plan_scenarios": {
-            "title": "Learned operating-mode SOC plans",
-            "summary": "Advisory comparisons of recognised station modes using the same weather forecast.",
-            "implementation": "The planner simulates the current recognised mode, DC-only, continuous CL61, learned alternatives, and a recommended CL61 schedule. The recommended plan maximises collection only while its P10 SOC remains at or above the operational minimum; it does not operate PDU outlets.",
+            "title": "Suggested instrument-mode SOC forecasts",
+            "summary": "Seven explicit combinations of CL61, Cloud Radar, and HATPRO using one common solar and battery forecast.",
+            "implementation": "Each line includes the station DC baseline plus the named instruments. Instrument loads come from the learned component model; all scenarios use the same forecast issue time, initial SOC, solar ensemble, battery capacity, and efficiency assumptions. They are advisory comparisons and do not operate PDU outlets.",
             "metrics": [
-                {"label": "Current mode", "detail": "Detected station load and instrument state carried forward unchanged."},
-                {"label": "Recommended plan", "detail": "Constrained advisory schedule, shown as solid teal P50 and dotted teal P10."},
-                {"label": "Shading", "detail": "Planned CL61-on periods for the recommended plan, not a probability or safety line."},
+                {"label": "P50", "detail": "The median SOC path for each named instrument combination."},
+                {"label": "Common basis", "detail": "Every line starts from the same measured SOC and uses the same weather forecast."},
+                {"label": "Loads", "detail": "DC baseline plus the learned load of each instrument named in the scenario."},
             ],
         },
         "operating_plan_schedule": {
@@ -1453,21 +1462,17 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "operating_plan_scenarios",
-            "Learned Operating-Mode SOC Plans",
+            "Suggested Instrument-Mode SOC Forecasts",
             "SOC [%]",
             None,
             (
-                TraceSpec("OperatingCurrentSOCP50", "Current Mode", COLOR["slate"], valid_min=0.0, valid_max=100.0, line_width=1.5, opacity=0.65),
-                TraceSpec("OperatingDCOnlySOCP50", "Comparison: DC-Only", COLOR["green"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=1.3, opacity=0.45),
-                TraceSpec("OperatingCL61ContinuousSOCP50", "Stress test: CL61 continuously on", COLOR["red"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=1.5, opacity=0.6),
-                TraceSpec("OperatingCL61OptimizedSOCP50", "Recommended CL61 plan", COLOR["teal"], valid_min=0.0, valid_max=100.0, line_width=3.2),
-                TraceSpec("OperatingCL61OptimizedSOCP10", "Recommended CL61 P10", COLOR["teal"], dash="dot", valid_min=0.0, valid_max=100.0, line_width=2.0),
-                TraceSpec("OperatingLearned1SOCP50", "Learned Mode 1", COLOR["blue"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
-                TraceSpec("OperatingLearned2SOCP50", "Learned Mode 2", COLOR["purple"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
-                TraceSpec("OperatingLearned3SOCP50", "Learned Mode 3", COLOR["magenta"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
-                TraceSpec("OperatingLearned4SOCP50", "Learned Mode 4", COLOR["brown"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
-                TraceSpec("OperatingLearned5SOCP50", "Learned Mode 5", COLOR["olive"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
-                TraceSpec("OperatingLearned6SOCP50", "Learned Mode 6", COLOR["black"], valid_min=0.0, valid_max=100.0, line_width=1.2, opacity=0.4),
+                TraceSpec("OperatingSuggested1SOCP50", "CL61", COLOR["red"], valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec("OperatingSuggested2SOCP50", "CL61 + Radar", COLOR["blue"], valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec("OperatingSuggested3SOCP50", "CL61 + HATPRO", COLOR["purple"], valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec("OperatingSuggested4SOCP50", "CL61 + HATPRO + Radar", COLOR["magenta"], valid_min=0.0, valid_max=100.0, line_width=2.4),
+                TraceSpec("OperatingSuggested5SOCP50", "HATPRO + Radar", COLOR["green"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec("OperatingSuggested6SOCP50", "Radar", COLOR["slate"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec("OperatingSuggested7SOCP50", "HATPRO", COLOR["brown"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
             ),
         ),
         PanelSpec(
@@ -2369,6 +2374,17 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
         if scenario_id == "optimized_cl61" and "ScenarioModeCode" in ds:
             codes = np.asarray(ds["ScenarioModeCode"].isel(scenario=index).values, dtype=np.int64)
             values["OperatingCL61OptimizedCL61On"] = ((codes & 1) > 0).astype(np.float64)
+    for scenario_id, prefix in OPERATING_SUGGESTED_PREFIXES.items():
+        if scenario_id not in scenario_ids:
+            continue
+        index = scenario_ids.index(scenario_id)
+        for source_name, suffix in OPERATING_SCENARIO_SOURCE_FIELDS:
+            if source_name not in ds or ds[source_name].dims != ("scenario", "time"):
+                continue
+            values[f"{prefix}{suffix}"] = np.asarray(
+                ds[source_name].isel(scenario=index).values,
+                dtype=np.float64,
+            )
     current_mode = str(ds.attrs.get("current_mode", ""))
     learned_ids = [
         value
@@ -2501,6 +2517,11 @@ def _operating_scenario_attrs(
         if value.startswith("learned_") and value != f"learned_{current_mode}"
     ][:MAX_OPERATING_LEARNED_SCENARIOS]
     labels = [str(value) for value in ds["scenario_label"].values] if "scenario_label" in ds else scenario_ids
+    for slot, definition in enumerate(SUGGESTED_OPERATING_SCENARIOS, start=1):
+        if definition.scenario_id in scenario_ids:
+            attrs[f"operating_suggested_{slot}_label"] = labels[
+                scenario_ids.index(definition.scenario_id)
+            ]
     for slot, scenario_id in enumerate(learned_ids, start=1):
         attrs[f"operating_learned_{slot}_label"] = labels[scenario_ids.index(scenario_id)]
     return attrs

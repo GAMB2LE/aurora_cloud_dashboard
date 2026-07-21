@@ -24,6 +24,7 @@ from power_operating_scenarios import (
     load_operating_events,
     optimize_cl61_schedule,
 )
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
 from generate_power_operating_scenarios import (
     _verification_for_record,
     _planning_forecast_provenance,
@@ -423,6 +424,15 @@ class OperatingScenarioTests(unittest.TestCase):
                 self.assertEqual(state.attrs["model_version"], "6")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
+                scenario_ids = [str(value) for value in scenarios["scenario"].values]
+                scenario_labels = [str(value) for value in scenarios["scenario_label"].values]
+                for definition in SUGGESTED_OPERATING_SCENARIOS:
+                    self.assertIn(definition.scenario_id, scenario_ids)
+                    index = scenario_ids.index(definition.scenario_id)
+                    self.assertEqual(scenario_labels[index], definition.label)
+                    codes = np.asarray(scenarios["ScenarioModeCode"].isel(scenario=index).values)
+                    expected_mode = mode_id(definition.instruments)
+                    self.assertTrue(all(mode_from_code(value) == expected_mode for value in codes))
             finally:
                 state.close()
                 scenarios.close()

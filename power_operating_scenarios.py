@@ -15,11 +15,15 @@ import pandas as pd
 import xarray as xr
 
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+from power_scenario_catalog import (
+    SUGGESTED_OPERATING_SCENARIOS,
+    SUGGESTED_OPERATING_SCENARIO_IDS,
+)
 
 MODEL_NAME = "hybrid_state_space_v6"
 MODEL_VERSION = 6
 STATE_SCHEMA_VERSION = 2
-SCENARIO_SCHEMA_VERSION = 2
+SCENARIO_SCHEMA_VERSION = 3
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -1146,9 +1150,12 @@ def build_operating_scenarios(
     scenario_modes: dict[str, tuple[str, ...]] = {
         SCENARIO_CURRENT: tuple(base_mode for _ in times),
         SCENARIO_DC_ONLY: tuple(MODE_DC_ONLY for _ in times),
-        SCENARIO_CL61: tuple(mode_id(("CL61",)) for _ in times),
         SCENARIO_OPTIMIZED: tuple(optimized_modes),
     }
+    for definition in SUGGESTED_OPERATING_SCENARIOS:
+        scenario_modes[definition.scenario_id] = tuple(
+            mode_id(definition.instruments) for _ in times
+        )
     for observed_mode in model.observed_modes:
         if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
@@ -1161,6 +1168,9 @@ def build_operating_scenarios(
         SCENARIO_CL61: "DC + CL61 Continuously On",
         SCENARIO_OPTIMIZED: "Optimized CL61 Schedule",
     }
+    labels.update(
+        {definition.scenario_id: definition.label for definition in SUGGESTED_OPERATING_SCENARIOS}
+    )
     load_p10: list[np.ndarray] = []
     load_p50: list[np.ndarray] = []
     load_p90: list[np.ndarray] = []
@@ -1233,7 +1243,9 @@ def build_operating_scenarios(
             "scenario": np.asarray(scenario_ids, dtype=str),
             "scenario_label": (("scenario",), np.asarray([labels[value] for value in scenario_ids], dtype=str)),
             "scenario_mode_maturity": (("scenario",), np.asarray([
-                "core" if value in CORE_SCENARIOS else model.mode_maturity.get(value.removeprefix("learned_"), "observed")
+                "core" if value in CORE_SCENARIOS else
+                "suggested" if value in SUGGESTED_OPERATING_SCENARIO_IDS else
+                model.mode_maturity.get(value.removeprefix("learned_"), "observed")
                 for value in scenario_ids
             ], dtype=str)),
             "time": times.to_numpy(dtype="datetime64[ns]"),

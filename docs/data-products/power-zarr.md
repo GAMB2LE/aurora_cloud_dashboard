@@ -160,8 +160,9 @@ display summary also includes the ECMWF-informed **SOC 96 h Forecast** traces:
 
 The fixed-load fields remain in the deterministic product for backwards
 compatibility, but the dashboard no longer presents them as operating plans.
-The visible scenario panel is populated from the learned operating-mode product
-described below.
+The visible scenario panel is populated from the operating-mode product
+described below. It always includes seven stable comparisons: CL61, CL61 +
+Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, and HATPRO.
 
 The **SOC 96 h Forecast** P10/P90 traces hold the detected current system mode
 and load fixed for every member. They vary only the ECMWF solar member, so
