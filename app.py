@@ -137,13 +137,14 @@ def _static_asset_data_uri(path: Path) -> str:
 
 DASHBOARD_LOGO = _static_asset_data_uri(Path(__file__).resolve().parent / "assets" / "logo.png")
 DASHBOARD_FAVICON = "https://gamb2le.pages.dev/assets/logo.png"
-THEME_TEXT = "#22313f"
-THEME_MUTED = "#5f6c7b"
-THEME_BORDER = "#d8e1e8"
-THEME_LINE = "#c5d0da"
-THEME_GRID = "#e5eaef"
-THEME_PANEL = "#fbfcfd"
-THEME_ACCENT = "#0b7285"
+# Dashboard palette. The supplied source values use #RRGGBBAA notation.
+THEME_TEXT = "#1e2f50"
+THEME_MUTED = "#52627d"
+THEME_BORDER = "#b9c5d4"
+THEME_LINE = "#8191a8"
+THEME_GRID = "#dbe2ea"
+THEME_PANEL = "#fffaf4"
+THEME_ACCENT = "#36b9b2"
 SITE_ENV_RAW = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
 SITE_ENV_EXPLICIT = bool(SITE_ENV_RAW)
 SITE_ENV = SITE_ENV_RAW
@@ -7270,37 +7271,64 @@ wxcam_calendar_state.param.watch(_refresh_share_and_download_state, "selected_ho
 
 ACCENT = THEME_ACCENT  # header/accent color
 css = """
+:root {
+    --aurora-navy: #1e2f50ff;
+    --aurora-navy-soft: #1e2f5033;
+    --aurora-navy-muted: #1e2f5070;
+    --aurora-cream: #fdf4eaff;
+    --aurora-card: #fffaf4ff;
+    --aurora-sky: #003155ff;
+    --aurora-sky-wash: #2196d15d;
+    --aurora-sun: #f2d485ff;
+    --aurora-teal: #36b9b2ff;
+    --aurora-violet: #a66fd3ff;
+    --aurora-header: linear-gradient(112deg, var(--aurora-sky) 0%, #0b587dff 48%, var(--aurora-teal) 100%);
+    --aurora-wash: linear-gradient(120deg, #36b9b21f 0%, #2196d15d 52%, #a66fd32b 100%);
+}
+
 # Global font override for a clean, consistent look.
-body, .bk {
+html, body, .bk {
     font-family: "SF Pro Display","SF Pro","-apple-system","BlinkMacSystemFont","Segoe UI",sans-serif;
     font-size: 15px;
-    background: #ffffff;
-    color: #22313f;
+    background: var(--aurora-cream);
+    color: var(--aurora-navy);
+}
+.pn-template,
+.pn-template .pn-main,
+.pn-template .pn-wrapper,
+.pn-template main {
+    background: var(--aurora-cream) !important;
 }
 .bk.card, .bk-panel-models-card {
-    border: 1px solid #d8e1e8;
+    border: 1px solid var(--aurora-navy-soft);
     border-radius: 8px;
     box-shadow: none;
-    background: #ffffff;
+    background: var(--aurora-card);
 }
 .bk-btn, button.bk-btn {
     border-radius: 6px;
-    border: 1px solid #c5d0da;
+    border: 1px solid var(--aurora-navy-muted);
     box-shadow: none;
-    background: #ffffff;
-    color: #22313f;
+    background: var(--aurora-card);
+    color: var(--aurora-navy);
 }
 .bk-btn-primary, button.bk-btn-primary {
-    background: #0b7285;
-    border-color: #0b7285;
-    color: #ffffff;
+    background: var(--aurora-header);
+    border-color: var(--aurora-sky);
+    color: #fff;
 }
 .bk-input {
     border-radius: 6px;
-    border-color: #c5d0da;
-    background: #ffffff;
-    color: #22313f;
+    border-color: var(--aurora-navy-muted);
+    background: var(--aurora-card);
+    color: var(--aurora-navy);
 }
+.bk-btn:hover, button.bk-btn:hover { border-color: var(--aurora-teal); background: #36b9b214; }
+.bk-btn-primary:hover, button.bk-btn-primary:hover { border-color: var(--aurora-sun); background: linear-gradient(112deg, var(--aurora-sky) 0%, var(--aurora-teal) 58%, var(--aurora-violet) 100%); }
+.mdc-top-app-bar { background: var(--aurora-header) !important; }
+.mdc-tab { color: var(--aurora-navy) !important; }
+.mdc-tab--active, .mdc-tab:hover { color: var(--aurora-sky) !important; }
+.mdc-tab-indicator__content--underline { border-color: var(--aurora-teal) !important; }
 .mobile-stack {
     flex-wrap: wrap !important;
     gap: 8px;
@@ -7338,9 +7366,9 @@ body, .bk {
     gap: 6px;
     padding: 4px 10px;
     border-radius: 999px;
-    border: 1px solid #d8e1e8;
-    background: #fbfcfd;
-    color: #334155;
+    border: 1px solid var(--aurora-navy-soft);
+    background: var(--aurora-card);
+    color: var(--aurora-navy);
     font-size: 12px;
     line-height: 1.2;
 }
@@ -7364,9 +7392,9 @@ body, .bk {
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
-    border: 1px solid #d8e1e8;
+    border: 1px solid var(--aurora-navy-soft);
     border-radius: 8px;
-    background: #fbfcfd;
+    background: var(--aurora-wash);
 }
 .interactive-loading-notice__badge {
     display: inline-flex;
@@ -7375,8 +7403,8 @@ body, .bk {
     min-width: 78px;
     padding: 3px 8px;
     border-radius: 999px;
-    background: #edf6f8;
-    color: #0b7285;
+    background: #36b9b21f;
+    color: var(--aurora-sky);
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0;
@@ -7389,10 +7417,10 @@ body, .bk {
 .interactive-loading-note,
 .lazy-tab-placeholder {
     padding: 10px 12px;
-    border: 1px solid #d8e1e8;
+    border: 1px solid var(--aurora-navy-soft);
     border-radius: 8px;
-    background: #fbfcfd;
-    color: #536171;
+    background: var(--aurora-card);
+    color: var(--aurora-navy);
     font-size: 12px;
     line-height: 1.35;
 }
@@ -7464,20 +7492,20 @@ body, .bk {
 .availability-segment {
     height: 8px;
     border-radius: 3px;
-    border: 1px solid #d8e1e8;
-    background: #ffffff;
+    border: 1px solid var(--aurora-navy-soft);
+    background: var(--aurora-card);
 }
 .availability-segment--full {
-    background: #0b7285;
-    border-color: #0b7285;
+    background: var(--aurora-teal);
+    border-color: var(--aurora-teal);
 }
 .availability-segment--partial {
-    background: #e0b15c;
-    border-color: #e0b15c;
+    background: var(--aurora-sun);
+    border-color: var(--aurora-sun);
 }
 .availability-segment--empty {
-    background: #eef2f5;
-    border-color: #d8e1e8;
+    background: #1e2f5014;
+    border-color: var(--aurora-navy-soft);
 }
 .availability-scale {
     display: flex;
@@ -7530,13 +7558,13 @@ body, .bk {
 .site-footer {
     margin-top: 8px;
     padding: 12px 14px;
-    border-top: 1px solid #d8dee4;
-    background: #ffffff;
+    border-top: 1px solid var(--aurora-navy-soft);
+    background: var(--aurora-card);
 }
 .site-footer__title {
     font-size: 12px;
     font-weight: 600;
-    color: #243b53;
+    color: var(--aurora-navy);
     margin-bottom: 8px;
 }
 .site-footer__links {
@@ -7549,7 +7577,7 @@ body, .bk {
     flex: 1 1 280px;
 }
 .site-footer__link a {
-    color: #0b7285;
+    color: var(--aurora-sky);
     font-size: 13px;
     font-weight: 600;
     text-decoration: none;
@@ -7569,16 +7597,16 @@ body, .bk {
     justify-content: space-between;
     gap: 12px;
     padding: 10px 14px;
-    border: 1px solid #c8e2e7;
+    border: 1px solid #36b9b270;
     border-radius: 8px;
-    background: #eef8fa;
-    color: #0b5f6b;
+    background: var(--aurora-wash);
+    color: var(--aurora-navy);
     font-size: 13px;
     font-weight: 600;
     line-height: 1.35;
 }
 .site-env-banner__meta {
-    color: #38606a;
+    color: var(--aurora-sky);
     font-size: 12px;
     font-weight: 500;
 }
@@ -8714,8 +8742,8 @@ body, .bk {
     padding: 0 8px;
     box-sizing: border-box;
     overflow: hidden;
-    background: #ffffff;
-    border-bottom: 1px solid #d8e1e8;
+    background: var(--aurora-card);
+    border-bottom: 1px solid var(--aurora-navy-soft);
     box-shadow: none;
 }
 .mobile-app-tabs {
@@ -8733,7 +8761,7 @@ body, .bk {
     min-height: 30px;
     padding: 4px 1px 3px;
     box-sizing: border-box;
-    color: #344154;
+    color: var(--aurora-navy);
     font-size: 10.5px;
     font-weight: 600;
     line-height: 1.05;
@@ -8742,12 +8770,12 @@ body, .bk {
 }
 .mobile-app-tabs__link:hover,
 .mobile-app-tabs__link:focus {
-    color: #087b88;
+    color: var(--aurora-sky);
     text-decoration: none;
 }
 .mobile-app-tabs__link--active {
-    color: #087b88;
-    border-bottom-color: #087b88;
+    color: var(--aurora-sky);
+    border-bottom-color: var(--aurora-teal);
 }
 .mobile-app-tabs__label {
     display: block;
