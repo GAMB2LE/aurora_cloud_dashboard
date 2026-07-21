@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -12,6 +14,55 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_power_section_prewarm_paths_are_distinct(self) -> None:
+        original = app.power_view_select.value
+        try:
+            app.power_view_select.value = "current"
+            current = app._prewarmed_interactive_path("power")
+            app.power_view_select.value = "forecast"
+            forecast = app._prewarmed_interactive_path("power")
+        finally:
+            app.power_view_select.value = original
+
+        self.assertEqual(current.name, "power_current_latest_interactive.json")
+        self.assertEqual(forecast.name, "power_forecast_latest_interactive.json")
+
+    def test_power_section_window_reads_only_the_selected_compact_store(self) -> None:
+        times = pd.date_range("2026-07-20T00:00:00", periods=5, freq="1h")
+        dataset = xr.Dataset(
+            {"BatterySOC": (("time",), np.arange(len(times), dtype=float))},
+            coords={"time": times},
+        )
+        with TemporaryDirectory() as tmpdir:
+            current_path = Path(tmpdir) / "power_current_display.zarr"
+            dataset.to_zarr(current_path, mode="w", consolidated=True)
+            previous = dict(app._POWER_DISPLAY_SECTION_DS)
+            previous_times = dict(app._POWER_DISPLAY_SECTION_REFRESHED_AT)
+            app._POWER_DISPLAY_SECTION_DS.clear()
+            app._POWER_DISPLAY_SECTION_REFRESHED_AT.clear()
+            try:
+                with patch.dict("os.environ", {"POWER_CURRENT_DISPLAY_ZARR_PATH": str(current_path)}, clear=False):
+                    result = app._open_power_display_summary_window(times[1], times[3], section="current")
+            finally:
+                app._refresh_power_display_energy_dataset()
+                app._POWER_DISPLAY_SECTION_DS.update(previous)
+                app._POWER_DISPLAY_SECTION_REFRESHED_AT.update(previous_times)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(list(pd.DatetimeIndex(result["time"].values)), list(times[1:4]))
+
+    def test_power_query_selects_power_before_interactive_callbacks(self) -> None:
+        original_instrument = app.instrument_select.value
+        original_view = app.power_view_select.value
+        try:
+            with patch.object(app, "_request_query_args", return_value={"tab": "power", "power_view": "forecast"}):
+                app._apply_query_state()
+            self.assertEqual(app.instrument_select.value, "power")
+            self.assertEqual(app.power_view_select.value, "forecast")
+        finally:
+            app.instrument_select.value = original_instrument
+            app.power_view_select.value = original_view
+
     def test_forecast_info_control_uses_deployed_panel_widget_api(self) -> None:
         panel = next(
             panel
