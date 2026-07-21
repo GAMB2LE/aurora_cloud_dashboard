@@ -7269,9 +7269,9 @@ for widget, parameter in (
 wxcam_calendar_state.param.watch(_refresh_share_and_download_state, "selected_hour_path")
 
 
-ACCENT = THEME_ACCENT  # header/accent color
+ACCENT = "#003155"  # stable MaterialTemplate header; gradients are applied inside views
 css = """
-:root {
+:root, :host {
     --aurora-navy: #1e2f50ff;
     --aurora-navy-soft: #1e2f5033;
     --aurora-navy-muted: #1e2f5070;
