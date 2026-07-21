@@ -145,6 +145,23 @@ def power_display_summary_path() -> Path:
     return env_path("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
 
 
+def power_display_section_path(section: str) -> Path:
+    """Return the compact Power product used by one presentation section."""
+    if section == "current":
+        return env_path("POWER_CURRENT_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_current_display.zarr")
+    if section == "forecast":
+        return env_path("POWER_FORECAST_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_forecast_display.zarr")
+    return power_display_summary_path()
+
+
+def power_prewarm_path(section: str) -> Path | None:
+    """Return the published Plotly JSON for one Power section, if valid."""
+    if section not in {"current", "forecast"}:
+        return None
+    root = env_path("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm")
+    return root / f"power_{section}_latest_interactive.json"
+
+
 def power_operating_scenario_paths() -> tuple[Path, ...]:
     """Locate the authoritative operating-plan product for native clients."""
     configured = env_path(
@@ -839,7 +856,7 @@ def _prune_preview_cache(cache: Path, max_bytes: int = 50 * 1024 * 1024) -> None
 
 
 def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
-    """Return compact chart points from the existing display-summary Zarr only."""
+    """Return compact chart points without reading unrelated Power sections."""
     supported_groups = {
         "all",
         "current",
@@ -851,7 +868,17 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     }
     if window not in {"24h", "96h"} or group not in supported_groups:
         raise KeyError("Unsupported Power window or group")
-    path = power_display_summary_path()
+    if group in {"current", "observed"}:
+        section = "current"
+    elif group in {"forecast", "forecast_24h", "forecast_96h", "verification"}:
+        section = "forecast"
+    else:
+        section = "all"
+    path = power_display_section_path(section)
+    if section != "all" and not path.exists():
+        # A mixed-version deployment can temporarily lack the new product.
+        # Retain the established combined store as a read-only fallback.
+        path = power_display_summary_path()
     payload: dict[str, Any] = {
         "serverTime": utc_now_iso(),
         "window": window,
@@ -876,26 +903,31 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             merge_operating_scenarios_into_display_summary,
         )
 
+        now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
+        start = now - pd.Timedelta(hours=24)
+        horizon = 24 if window == "24h" else 96
+        end = now + pd.Timedelta(hours=horizon)
         dataset = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
         # The display summary can lag behind the fast planner.  Always replace
         # baked operating traces with the standalone contract, which rejects a
         # plan whose SOC anchor differs from the current ensemble forecast.
         scenarios = None
-        for scenario_path in power_operating_scenario_paths():
-            if not scenario_path.exists():
-                continue
-            try:
-                candidate = xr.open_zarr(scenario_path, chunks={}, consolidated=True)
-            except Exception:
-                continue
-            scenarios = candidate
-            break
-        dataset = merge_operating_scenarios_into_display_summary(dataset, scenarios)
+        if section == "all":
+            for scenario_path in power_operating_scenario_paths():
+                if not scenario_path.exists():
+                    continue
+                try:
+                    candidate = xr.open_zarr(scenario_path, chunks={}, consolidated=True)
+                except Exception:
+                    continue
+                scenarios = candidate
+                break
+            dataset = merge_operating_scenarios_into_display_summary(dataset, scenarios)
+        # Xarray performs a coordinate slice rather than materialising every
+        # variable in the historical display store. Only this bounded window is
+        # converted to API chart points below.
+        dataset = dataset.sel(time=slice(start, end))
         times = pd.DatetimeIndex(dataset["time"].values)
-        now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
-        start = now - pd.Timedelta(hours=24)
-        horizon = 24 if window == "24h" else 96
-        end = now + pd.Timedelta(hours=horizon)
         if group == "all":
             selected_groups = tuple(POWER_PANEL_TIME_GROUPS)
         elif group == "current":

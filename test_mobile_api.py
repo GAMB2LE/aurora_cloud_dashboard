@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+
+import numpy as np
+import pandas as pd
+import xarray as xr
 
 try:
     from fastapi.testclient import TestClient
@@ -158,6 +163,47 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(current.json()["group"], "current")
         self.assertEqual(forecast.status_code, 200)
         self.assertEqual(forecast.json()["group"], "forecast")
+
+    def test_power_current_group_prefers_the_section_product(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            current_path = Path(tmp) / "power_current_display.zarr"
+            now = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).floor("h")
+            times = pd.date_range(now - pd.Timedelta(hours=2), periods=4, freq="1h")
+            xr.Dataset(
+                {"BatterySOC": ("time", np.asarray([70.0, 71.0, 72.0, 73.0]))},
+                coords={"time": times},
+            ).to_zarr(current_path, mode="w", consolidated=True)
+            with patch.dict(
+                os.environ,
+                {
+                    "AURORA_MOBILE_API_TOKEN": "secret",
+                    "POWER_CURRENT_DISPLAY_ZARR_PATH": str(current_path),
+                    "POWER_DISPLAY_SUMMARY_ZARR_PATH": str(Path(tmp) / "missing.zarr"),
+                },
+                clear=False,
+            ):
+                response = self.client.get("/power?window=24h&group=current", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source"]["path"], str(current_path))
+
+    def test_power_prewarmed_figure_is_a_cacheable_media_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "power_current_latest_interactive.json"
+            current.write_text('{"data":[],"layout":{}}', encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"AURORA_MOBILE_API_TOKEN": "secret", "AURORA_INTERACTIVE_PREWARM_DIR": str(root)},
+                clear=False,
+            ):
+                response = self.client.get("/media/power/figure/current", headers={"Authorization": "Bearer secret"})
+                unavailable = self.client.get("/media/power/figure/unknown", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "private, max-age=60")
+        self.assertEqual(response.json(), {"data": [], "layout": {}})
+        self.assertEqual(unavailable.status_code, 404)
 
     def test_auroracam_listing_and_original_media_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

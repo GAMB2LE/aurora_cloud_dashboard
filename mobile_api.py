@@ -128,6 +128,17 @@ def power(
         raise _not_found(str(exc)) from exc
 
 
+@app.get("/media/power/figure/{section}", dependencies=[Depends(require_auth)])
+def power_figure(request: Request, section: str) -> Response:
+    """Serve a cacheable prewarmed Plotly figure without exposing a Zarr store."""
+    path = catalog.power_prewarm_path(section)
+    if path is None:
+        raise _not_found("Unsupported Power figure section")
+    if not path.exists():
+        raise _not_found("Power figure is not available yet")
+    return _file_response(path, request)
+
+
 @app.get("/auroracam", dependencies=[Depends(require_auth)])
 def auroracam(day: str = Query("latest"), time_utc: str | None = Query(None)) -> dict:
     try:
