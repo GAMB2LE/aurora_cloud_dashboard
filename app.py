@@ -11,6 +11,7 @@ height as blank page space after browser scaling.
 """
 
 import asyncio
+from base64 import b64encode
 from collections import OrderedDict, deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
@@ -669,9 +670,12 @@ _POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
 _POWER_DISPLAY_SUMMARY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_SUMMARY_REFRESHED_AT: datetime | None = None
+_POWER_DISPLAY_SECTION_DS: dict[str, xr.Dataset] = {}
+_POWER_DISPLAY_SECTION_REFRESHED_AT: dict[str, datetime] = {}
 _POWER_OPERATING_SCENARIOS_DS: xr.Dataset | None = None
 _POWER_OPERATING_SCENARIOS_REFRESHED_AT: datetime | None = None
 _OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
+_SESSION_PERIODIC_CALLBACKS: list[object] = []
 
 
 def _utcnow_naive() -> datetime:
@@ -681,6 +685,7 @@ def _utcnow_naive() -> datetime:
 def _safe_periodic_callback(callback, period: int, start: bool = True):
     """Register a Panel timer, but allow plain Python imports for smoke tests."""
     timer = pn.state.add_periodic_callback(callback, period=period, start=False)
+    _SESSION_PERIODIC_CALLBACKS.append(timer)
     if start:
         try:
             asyncio.get_running_loop()
@@ -711,6 +716,19 @@ def _power_display_energy_path() -> Path:
 
 def _power_display_summary_path() -> Path:
     return Path(os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr"))
+
+
+def _power_display_section_path(section: str) -> Path:
+    """Return the compact display store for one Power browser section."""
+    if section == "current":
+        configured = os.environ.get("POWER_CURRENT_DISPLAY_ZARR_PATH", "").strip()
+        default = "/data/aurora/products/power/power_current_display.zarr"
+    elif section == "forecast":
+        configured = os.environ.get("POWER_FORECAST_DISPLAY_ZARR_PATH", "").strip()
+        default = "/data/aurora/products/power/power_forecast_display.zarr"
+    else:
+        raise ValueError(f"Unsupported Power display section: {section}")
+    return Path(configured or default)
 
 
 def _power_display_summary_metadata_path() -> Path:
@@ -760,6 +778,9 @@ def _prewarmed_interactive_dir() -> Path:
 
 
 def _prewarmed_interactive_path(inst: str) -> Path:
+    if inst == "power":
+        section = power_view_select.value if "power_view_select" in globals() else "current"
+        return _prewarmed_interactive_dir() / f"power_{section}_latest_interactive.json"
     safe = inst.replace(" ", "_").replace("-", "_").lower()
     return _prewarmed_interactive_dir() / f"{safe}_latest_interactive.json"
 
@@ -908,7 +929,7 @@ def _get_power_display_energy_dataset() -> xr.Dataset | None:
 
 
 def _get_power_display_summary_dataset() -> xr.Dataset | None:
-    """Open the compact Power display-summary store when it is available."""
+    """Open the legacy combined Power display store as a compatibility fallback."""
     global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
     if _POWER_DISPLAY_SUMMARY_DS is not None:
         return _POWER_DISPLAY_SUMMARY_DS
@@ -928,6 +949,33 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
         perf["var_count"] = len(ds.data_vars)
     _POWER_DISPLAY_SUMMARY_DS = ds
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = datetime.now(timezone.utc)
+    return ds
+
+
+def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
+    """Open only the display variables required by a Power page section.
+
+    The combined store is retained for existing scripts and old deployments, but
+    normal browser renders must not open all observed and forecast fields.
+    """
+    cached = _POWER_DISPLAY_SECTION_DS.get(section)
+    if cached is not None:
+        return cached
+    path = _power_display_section_path(section)
+    if not path.exists():
+        return None
+    with _timed_perf("power_display_section_open", instrument="power", section=section, zarr_path=str(path)) as perf:
+        try:
+            ds = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+        except Exception as exc:
+            perf["status"] = "unavailable"
+            perf["error"] = str(exc)
+            return None
+        perf["status"] = "ok"
+        perf["dims"] = dict(ds.sizes)
+        perf["var_count"] = len(ds.data_vars)
+    _POWER_DISPLAY_SECTION_DS[section] = ds
+    _POWER_DISPLAY_SECTION_REFRESHED_AT[section] = datetime.now(timezone.utc)
     return ds
 
 
@@ -992,6 +1040,13 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_DISPLAY_SUMMARY_DS = None
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = None
+    for ds in _POWER_DISPLAY_SECTION_DS.values():
+        try:
+            ds.close()
+        except Exception:
+            pass
+    _POWER_DISPLAY_SECTION_DS.clear()
+    _POWER_DISPLAY_SECTION_REFRESHED_AT.clear()
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
             _POWER_OPERATING_SCENARIOS_DS.close()
@@ -1010,20 +1065,23 @@ def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
     if start_dt is None or end_dt is None:
         return None
     with _timed_perf("power_display_energy_window", instrument="power", start=start_dt, end=end_dt) as perf:
-        times = pd.DatetimeIndex(ds["time"].values)
-        mask = (times >= start_dt) & (times <= end_dt)
-        perf["matched_time_count"] = int(np.count_nonzero(mask))
-        if not mask.any():
+        window = ds.sel(time=slice(start_dt, end_dt))
+        perf["matched_time_count"] = int(window.sizes.get("time", 0))
+        if not window.sizes.get("time", 0):
             perf["status"] = "empty"
             return None
-        window = ds.isel(time=mask).sortby("time")
         perf["status"] = "ok"
         perf["output_time_count"] = int(window.sizes.get("time", 0))
         return window
 
 
-def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
-    ds = _get_power_display_summary_dataset()
+def _open_power_display_summary_window(start, end, section: str | None = None) -> xr.Dataset | None:
+    """Open a bounded Power display window without scanning every forecast field."""
+    section = section or (power_view_select.value if "power_view_select" in globals() else "current")
+    ds = _get_power_display_section_dataset(section)
+    legacy = ds is None
+    if ds is None:
+        ds = _get_power_display_summary_dataset()
     if ds is None or "time" not in ds:
         return None
     start_dt = _as_naive_utc_datetime(start)
@@ -1031,21 +1089,17 @@ def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
     if start_dt is None or end_dt is None:
         return None
     with _timed_perf("power_display_summary_window", instrument="power", start=start_dt, end=end_dt) as perf:
-        times = pd.DatetimeIndex(ds["time"].values)
-        mask = (times >= start_dt) & (times <= end_dt)
-        forecast_names = [name for name in POWER_FUTURE_DISPLAY_FIELDS if name in ds]
-        if forecast_names:
-            forecast_valid = np.zeros(len(times), dtype=bool)
-            for name in forecast_names:
-                forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
-            forecast_horizon = end_dt + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
-            mask |= forecast_valid & (times >= start_dt) & (times <= forecast_horizon)
-        matched = int(np.count_nonzero(mask))
+        window_end = end_dt
+        if section == "forecast":
+            window_end = end_dt + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "96")))
+        window = ds.sel(time=slice(start_dt, window_end))
+        matched = int(window.sizes.get("time", 0))
         perf["matched_time_count"] = matched
-        if not mask.any():
+        perf["section"] = section
+        perf["legacy_store"] = legacy
+        if not matched:
             perf["status"] = "empty"
             return None
-        window = ds.isel(time=mask).sortby("time")
         perf["status"] = "ok"
         perf["output_time_count"] = int(window.sizes.get("time", 0))
         perf["var_count"] = len(window.data_vars)
@@ -3873,11 +3927,7 @@ def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) 
     if len(cache_key) < 7 or cache_key[0] != inst:
         return False
     window_mode = str(cache_key[4])
-    if inst == "power":
-        # Existing prewarmed Power figures contain every panel. Reusing one
-        # would violate the Current/Forecast section selected by the user.
-        return False
-    if inst not in {"vaisalamet", "asfs-logger"}:
+    if inst not in {"power", "vaisalamet", "asfs-logger"}:
         return False
     if str(cache_key[2]) != _interactive_final_quality(inst):
         return False
@@ -3890,7 +3940,10 @@ def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) 
         return False
     if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=5):
         return False
-    _lower, latest = _dataset_time_bounds(inst)
+    if inst == "power":
+        _lower, latest = _power_display_summary_time_bounds_metadata()
+    else:
+        _lower, latest = _dataset_time_bounds(inst)
     latest_dt = _as_naive_utc_datetime(latest)
     if latest_dt is None:
         return False
@@ -5226,7 +5279,7 @@ def _update_stacked_timeseries_view(
         source_open_started = perf_counter()
         source_windows: list[xr.Dataset | None] = []
         if instrument == "power":
-            display_summary_window = _open_power_display_summary_window(start, end)
+            display_summary_window = _open_power_display_summary_window(start, end, section=power_view_select.value)
             if display_summary_window is not None:
                 source_windows = [display_summary_window]
                 perf["power_display_summary"] = "used"
@@ -6307,12 +6360,12 @@ def _log_session_destroyed(session_context) -> None:
     )
     current_instrument = fields.get("current_instrument") or globals().get("CURRENT_INSTRUMENT")
     perf_logger("session_destroyed", instrument=current_instrument, **fields)
-    heartbeat = globals().get("_session_heartbeat_cb")
-    if heartbeat is not None:
+    for timer in list(globals().get("_SESSION_PERIODIC_CALLBACKS", ())):
         try:
-            heartbeat.stop()
+            timer.stop()
         except Exception:
             pass
+    globals().get("_SESSION_PERIODIC_CALLBACKS", []).clear()
 
 
 instrument_select.param.watch(
@@ -7196,7 +7249,10 @@ def _apply_query_state() -> None:
         return
     visible_instruments = set(INSTRUMENT_OPTIONS.values())
     hk_visible_instruments = set(HK_INSTRUMENT_OPTIONS.values())
-    instrument = args.get("instrument")
+    # A direct Power URL owns the shared interactive component. Apply this
+    # before its generic instrument parameter so tab switches cannot fall back
+    # to the previous Ceilometer selection during initial callback wiring.
+    instrument = "power" if args.get("tab") == "power" else args.get("instrument")
     if instrument in visible_instruments:
         instrument_select.value = instrument
     time_state = _query_interactive_time_state(args, instrument_select.value)
@@ -9754,7 +9810,8 @@ def _mobile_power_window() -> xr.Dataset | None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     start = now - DEFAULT_WINDOW
     end = now + timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
-    ds = _open_power_display_summary_window(start, end)
+    section = power_view_select.value
+    ds = _open_power_display_summary_window(start, end, section=section)
     if ds is None:
         ds = open_window(start, end, instrument="power", render_quality="coarse")
     if ds is not None and "time" in ds:

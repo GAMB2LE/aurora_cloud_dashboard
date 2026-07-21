@@ -135,10 +135,12 @@ events should be interpreted:
 - Power interactive plots use the same display-time preparation and per-trace
   time downsampling approach as the quicklooks, with display-only sanity limits
   for impossible APS values
-- Power summary traces are read from a compact one-minute display-summary Zarr
-  when available. The older display-energy Zarr remains as a cumulative-panel
-  fallback. Latest Power, Meteorology, and Radiation interactive figures can be
-  loaded from prewarmed Plotly JSON created by their quicklook generators
+- Power summary traces are read from section-specific one-minute display Zarrs
+  when available: Current Conditions opens only observed variables and
+  Forecast & Planning opens only forecast variables. The legacy combined
+  display-summary and display-energy Zarrs remain compatibility fallbacks.
+  Latest Power, Meteorology, and Radiation interactive figures can be loaded
+  from prewarmed Plotly JSON created by their quicklook generators
 - the live Power 24 h window is rounded into 5-minute cache buckets, so a small
   latest-timestamp change does not force an immediate full rebuild
 - fixed-summary instruments use instrument-specific display-time sample caps;

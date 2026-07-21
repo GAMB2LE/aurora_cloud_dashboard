@@ -8,7 +8,8 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import xarray as xr
 
-from generate_power_display_summary import _write_metadata
+from generate_power_display_summary import _section_subset, _write_metadata
+from grouped_timeseries import POWER_PANEL_TIME_GROUP_BY_KEY, SUMMARY_LAYOUTS
 
 
 class PowerDisplaySummaryMetadataTests(unittest.TestCase):
@@ -26,6 +27,31 @@ class PowerDisplaySummaryMetadataTests(unittest.TestCase):
         self.assertEqual(payload["variable_count"], 1)
         self.assertEqual(str(np.datetime64(payload["time_start_utc"])), "2026-07-17T00:00:00")
         self.assertEqual(str(np.datetime64(payload["time_end_utc"])), "2026-07-17T00:01:00")
+
+    def test_section_products_contain_only_their_panel_variables(self) -> None:
+        times = np.asarray(["2026-07-17T00:00", "2026-07-17T00:01"], dtype="datetime64[m]")
+        fields = {
+            trace.var
+            for panel in SUMMARY_LAYOUTS["power"]
+            for trace in panel.traces
+        }
+        display = xr.Dataset(
+            {name: ("time", np.asarray([1.0, 2.0])) for name in fields},
+            coords={"time": times},
+        )
+
+        current = _section_subset(display, "current")
+        forecast = _section_subset(display, "forecast")
+        current_fields = {
+            trace.var
+            for panel in SUMMARY_LAYOUTS["power"]
+            if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key, "observed") == "observed"
+            for trace in panel.traces
+        }
+        forecast_fields = fields - current_fields
+
+        self.assertEqual(set(current.data_vars), current_fields)
+        self.assertEqual(set(forecast.data_vars), forecast_fields)
 
 
 if __name__ == "__main__":

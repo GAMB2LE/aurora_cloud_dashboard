@@ -17,6 +17,8 @@ from grouped_timeseries import (
     POWER_DISPLAY_ENERGY_MAP,
     POWER_DISPLAY_SUMMARY_ATTR,
     POWER_DISPLAY_SUMMARY_FREQ,
+    POWER_PANEL_TIME_GROUP_BY_KEY,
+    SUMMARY_LAYOUTS,
     build_power_display_summary_dataset,
 )
 
@@ -49,6 +51,15 @@ POWER_DISPLAY_SUMMARY_ZARR_PATH = Path(
 )
 POWER_DISPLAY_ENERGY_ZARR_PATH = Path(
     os.environ.get("POWER_DISPLAY_ENERGY_ZARR_PATH", "/data/aurora/products/power/power_display_energy.zarr")
+)
+POWER_CURRENT_DISPLAY_ZARR_PATH = Path(
+    os.environ.get("POWER_CURRENT_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_current_display.zarr")
+)
+POWER_FORECAST_DISPLAY_ZARR_PATH = Path(
+    os.environ.get("POWER_FORECAST_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_forecast_display.zarr")
+)
+POWER_DISPLAY_MANIFEST_PATH = Path(
+    os.environ.get("POWER_DISPLAY_MANIFEST_PATH", "/data/aurora/products/power/power_display_manifest.json")
 )
 
 
@@ -111,6 +122,60 @@ def _energy_subset(summary: xr.Dataset, freq: str) -> xr.Dataset:
     return out
 
 
+def _section_subset(summary: xr.Dataset, section: str) -> xr.Dataset:
+    """Return only the variables plotted by one Power browser section."""
+    groups = {"observed"} if section == "current" else {"forecast_24h", "forecast_96h", "verification"}
+    names = tuple(
+        dict.fromkeys(
+            trace.var
+            for panel in SUMMARY_LAYOUTS["power"]
+            if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key, "observed") in groups
+            for trace in panel.traces
+            if trace.var in summary
+        )
+    )
+    if not names:
+        return xr.Dataset(coords={"time": summary["time"]})
+    out = summary[list(names)].copy(deep=False)
+    out.attrs = dict(summary.attrs)
+    out.attrs.update(
+        {
+            POWER_DISPLAY_SUMMARY_ATTR: "true",
+            "display_section": section,
+            "description": f"Display-only Power {section} variables for the dashboard.",
+        }
+    )
+    # Remove the empty timeline introduced when observed and forecast sources
+    # are aligned. This keeps the forecast product compact and avoids full-array
+    # validity scans in the browser request path.
+    return out.dropna(dim="time", how="all")
+
+
+def _display_descriptor(path: Path, display: xr.Dataset) -> dict[str, object]:
+    times = display["time"].values if "time" in display.coords else []
+    return {
+        "path": str(path),
+        "time_count": int(display.sizes.get("time", 0)),
+        "variable_count": len(display.data_vars),
+        "time_start_utc": str(times[0]) if len(times) else "",
+        "time_end_utc": str(times[-1]) if len(times) else "",
+    }
+
+
+def _write_manifest(path: Path, current: xr.Dataset, forecast: xr.Dataset, current_path: Path, forecast_path: Path) -> None:
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "products": {
+            "current": _display_descriptor(current_path, current),
+            "forecast": _display_descriptor(forecast_path, forecast),
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def generate(
     power_zarr: Path = POWER_ZARR_PATH,
     output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH,
@@ -123,6 +188,9 @@ def generate(
     ensemble_skill_zarr: Path = POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH,
     operating_scenarios_zarr: Path = POWER_OPERATING_SCENARIOS_ZARR_PATH,
     energy_output_zarr: Path | None = POWER_DISPLAY_ENERGY_ZARR_PATH,
+    current_output_zarr: Path | None = POWER_CURRENT_DISPLAY_ZARR_PATH,
+    forecast_output_zarr: Path | None = POWER_FORECAST_DISPLAY_ZARR_PATH,
+    manifest_path: Path | None = POWER_DISPLAY_MANIFEST_PATH,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> Path:
     """Build the derived one-minute display-summary store from Power inputs."""
@@ -161,6 +229,16 @@ def generate(
         if energy.sizes.get("time", 0) and len(energy.data_vars):
             _write_zarr_atomic(energy, energy_output_zarr)
             print(f"Wrote {energy_output_zarr} with {energy.sizes.get('time', 0)} samples")
+    if current_output_zarr is not None and forecast_output_zarr is not None:
+        current = _section_subset(display, "current")
+        forecast_display = _section_subset(display, "forecast")
+        _write_zarr_atomic(current, current_output_zarr)
+        _write_zarr_atomic(forecast_display, forecast_output_zarr)
+        print(f"Wrote {current_output_zarr} with {current.sizes.get('time', 0)} samples")
+        print(f"Wrote {forecast_output_zarr} with {forecast_display.sizes.get('time', 0)} samples")
+        if manifest_path is not None:
+            _write_manifest(manifest_path, current, forecast_display, current_output_zarr, forecast_output_zarr)
+            print(f"Wrote {manifest_path}")
     return output_zarr
 
 
@@ -186,6 +264,9 @@ def main() -> None:
     parser.add_argument("--operating-scenarios-zarr", type=Path, default=POWER_OPERATING_SCENARIOS_ZARR_PATH)
     parser.add_argument("--output-zarr", type=Path, default=POWER_DISPLAY_SUMMARY_ZARR_PATH)
     parser.add_argument("--energy-output-zarr", type=Path, default=POWER_DISPLAY_ENERGY_ZARR_PATH)
+    parser.add_argument("--current-output-zarr", type=Path, default=POWER_CURRENT_DISPLAY_ZARR_PATH)
+    parser.add_argument("--forecast-output-zarr", type=Path, default=POWER_FORECAST_DISPLAY_ZARR_PATH)
+    parser.add_argument("--manifest-path", type=Path, default=POWER_DISPLAY_MANIFEST_PATH)
     parser.add_argument("--no-energy-output", action="store_true", help="Do not refresh the legacy cumulative-energy display Zarr")
     parser.add_argument("--freq", default=POWER_DISPLAY_SUMMARY_FREQ)
     parser.add_argument("--write-metadata-only", action="store_true")
@@ -205,6 +286,9 @@ def main() -> None:
         ensemble_skill_zarr=args.ensemble_skill_zarr,
         operating_scenarios_zarr=args.operating_scenarios_zarr,
         energy_output_zarr=None if args.no_energy_output else args.energy_output_zarr,
+        current_output_zarr=args.current_output_zarr,
+        forecast_output_zarr=args.forecast_output_zarr,
+        manifest_path=args.manifest_path,
         freq=args.freq,
     )
 

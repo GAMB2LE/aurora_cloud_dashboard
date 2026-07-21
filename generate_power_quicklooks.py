@@ -37,6 +37,8 @@ ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/auro
 QUICKLOOK_DIR = Path(os.environ.get("POWER_QUICKLOOK_DIR", QUICKLOOK_ROOT / "power"))
 PREWARM_DIR = Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm"))
 PREWARM_JSON = PREWARM_DIR / "power_latest_interactive.json"
+PREWARM_CURRENT_JSON = PREWARM_DIR / "power_current_latest_interactive.json"
+PREWARM_FORECAST_JSON = PREWARM_DIR / "power_forecast_latest_interactive.json"
 INSTRUMENT = "power"
 ASS_POWER_VAR = "watts_on_48vdc_Avg"
 
@@ -152,6 +154,24 @@ def main(force: bool = False) -> None:
         fig = build_summary_plotly(latest_summary, INSTRUMENT, title="Aurora Power Supply", max_time_samples=700)
         fig.write_json(PREWARM_JSON)
         print(f"Wrote {PREWARM_JSON}")
+        current_fig = build_summary_plotly(
+            latest_summary,
+            INSTRUMENT,
+            title="Aurora Power Supply",
+            max_time_samples=700,
+            panel_groups={"observed"},
+        )
+        current_fig.write_json(PREWARM_CURRENT_JSON)
+        print(f"Wrote {PREWARM_CURRENT_JSON}")
+        forecast_fig = build_summary_plotly(
+            latest_summary,
+            INSTRUMENT,
+            title="Aurora Power Supply",
+            max_time_samples=700,
+            panel_groups={"forecast_24h", "forecast_96h", "verification"},
+        )
+        forecast_fig.write_json(PREWARM_FORECAST_JSON)
+        print(f"Wrote {PREWARM_FORECAST_JSON}")
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
