@@ -93,9 +93,11 @@ journalctl -u aurora-dashboard-perf-summary.service --since '1 hour ago' --no-pa
 - `window_open`
 - `power_display_summary_open`
 - `power_display_summary_window`
+- `power_display_section_open`
 - `power_display_energy_open`
 - `power_display_energy_window`
 - `interactive_view_update`
+- `interactive_render_budget_exceeded`
 - `hatpro_render`
 - `stacked_timeseries_render`
 - `science_quicklook_render`
