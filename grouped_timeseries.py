@@ -2453,13 +2453,18 @@ def _power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
     return panel.label
 
 
-def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
+def _operating_scenario_attrs(
+    ds: xr.Dataset | None,
+    *,
+    status_override: str | None = None,
+    reason_override: str | None = None,
+) -> dict[str, str]:
     if ds is None:
         return {}
     attrs: dict[str, str] = {}
-    status = str(ds.attrs.get("planning_status", "ready")).strip() or "ready"
+    status = status_override or str(ds.attrs.get("planning_status", "ready")).strip() or "ready"
     attrs["operating_planning_status"] = status
-    reason = str(ds.attrs.get("planning_status_reason", "")).strip()
+    reason = reason_override if reason_override is not None else str(ds.attrs.get("planning_status_reason", "")).strip()
     if reason:
         attrs["operating_planning_status_reason"] = reason
     if "scenario" not in ds or status != "ready":
@@ -2501,6 +2506,40 @@ def _operating_scenario_attrs(ds: xr.Dataset | None) -> dict[str, str]:
     return attrs
 
 
+def _operating_scenario_alignment(
+    display_ds: xr.Dataset,
+    operating_scenarios_ds: xr.Dataset | None,
+) -> tuple[bool, str]:
+    """Require operating plans and the system forecast to share one SOC anchor.
+
+    A scenario plan is only comparable with the 96-hour system forecast when
+    both calculations start at the same physical APS SOC observation.  The
+    timestamp is part of the forecast contract, not display metadata.
+    """
+    if operating_scenarios_ds is None:
+        return False, "Operating-plan product is unavailable"
+    status = str(operating_scenarios_ds.attrs.get("planning_status", "ready")).strip() or "ready"
+    if status != "ready":
+        return False, str(operating_scenarios_ds.attrs.get("planning_status_reason", "Operating plan is unavailable"))
+    forecast_anchor = _summary_display_timestamp(display_ds.attrs.get("forecast_initial_soc_time"))
+    plan_anchor = _summary_display_timestamp(
+        operating_scenarios_ds.attrs.get(
+            "planning_forecast_initial_soc_time",
+            operating_scenarios_ds.attrs.get("initial_soc_time"),
+        )
+    )
+    if forecast_anchor is None or plan_anchor is None:
+        return False, "Missing SOC anchor required to compare the system forecast and operating plan"
+    difference_seconds = abs(float((forecast_anchor - plan_anchor) / pd.Timedelta(seconds=1)))
+    if difference_seconds > 60.0:
+        return (
+            False,
+            "Operating-plan SOC anchor does not match the current system forecast "
+            f"({plan_anchor.isoformat()} versus {forecast_anchor.isoformat()})",
+        )
+    return True, ""
+
+
 def merge_operating_scenarios_into_display_summary(
     display_ds: xr.Dataset,
     operating_scenarios_ds: xr.Dataset | None,
@@ -2511,11 +2550,18 @@ def merge_operating_scenarios_into_display_summary(
     # state, so never retain those stale traces.
     stale_fields = [name for name in display_ds.data_vars if name.startswith("Operating")]
     base_ds = display_ds.drop_vars(stale_fields) if stale_fields else display_ds
-    frame = _operating_scenario_frame(operating_scenarios_ds)
+    aligned, alignment_reason = _operating_scenario_alignment(base_ds, operating_scenarios_ds)
+    frame = _operating_scenario_frame(operating_scenarios_ds) if aligned else pd.DataFrame()
     if frame.empty:
         base_ds = base_ds.copy()
         base_ds.attrs = dict(display_ds.attrs)
-        base_ds.attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
+        base_ds.attrs.update(
+            _operating_scenario_attrs(
+                operating_scenarios_ds,
+                status_override="unavailable" if not aligned else None,
+                reason_override=alignment_reason if not aligned else None,
+            )
+        )
         return base_ds
     scenario_ds = xr.Dataset(
         {name: (("time",), frame[name].to_numpy(dtype=np.float32)) for name in frame.columns},
@@ -2625,7 +2671,30 @@ def build_power_display_summary_dataset(
         if not ensemble_skill_frame.empty:
             frames.append(ensemble_skill_frame)
 
-    operating_frame = _operating_scenario_frame(operating_scenarios_ds)
+    forecast_anchor = _summary_display_timestamp(
+        ensemble_forecast_ds.attrs.get("initial_soc_time") if ensemble_forecast_ds is not None else None
+    )
+    planning_anchor = _summary_display_timestamp(
+        operating_scenarios_ds.attrs.get(
+            "planning_forecast_initial_soc_time",
+            operating_scenarios_ds.attrs.get("initial_soc_time"),
+        )
+        if operating_scenarios_ds is not None
+        else None
+    )
+    operating_alignment_reason = ""
+    operating_aligned = operating_scenarios_ds is not None
+    if operating_scenarios_ds is not None:
+        if forecast_anchor is None or planning_anchor is None:
+            operating_aligned = False
+            operating_alignment_reason = "Missing SOC anchor required to compare the system forecast and operating plan"
+        elif abs(float((forecast_anchor - planning_anchor) / pd.Timedelta(seconds=1))) > 60.0:
+            operating_aligned = False
+            operating_alignment_reason = (
+                "Operating-plan SOC anchor does not match the current system forecast "
+                f"({planning_anchor.isoformat()} versus {forecast_anchor.isoformat()})"
+            )
+    operating_frame = _operating_scenario_frame(operating_scenarios_ds) if operating_aligned else pd.DataFrame()
     if not operating_frame.empty:
         frames.append(operating_frame)
 
@@ -2673,7 +2742,20 @@ def build_power_display_summary_dataset(
         ):
             if source_name in forecast_ds.attrs:
                 summary_attrs[target_name] = str(forecast_ds.attrs[source_name])
-    summary_attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
+    if ensemble_forecast_ds is not None:
+        for source_name, target_name in (
+            ("initial_soc_time", "forecast_initial_soc_time"),
+            ("generated_at_utc", "forecast_generated_at_utc"),
+        ):
+            if source_name in ensemble_forecast_ds.attrs:
+                summary_attrs[target_name] = str(ensemble_forecast_ds.attrs[source_name])
+    summary_attrs.update(
+        _operating_scenario_attrs(
+            operating_scenarios_ds,
+            status_override="unavailable" if not operating_aligned else None,
+            reason_override=operating_alignment_reason if not operating_aligned else None,
+        )
+    )
     out = xr.Dataset(
         {name: (("time",), display_frame[name].to_numpy(dtype=np.float32)) for name in display_frame.columns},
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},

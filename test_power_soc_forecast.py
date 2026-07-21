@@ -961,8 +961,10 @@ class PowerSocForecastTests(unittest.TestCase):
                 "current_mode_confidence": "0.98",
                 "model": "hybrid_state_space_v5",
                 "model_version": "5",
+                "initial_soc_time": forecast_times[0].isoformat(),
             },
         )
+        ensemble.attrs["initial_soc_time"] = forecast_times[0].isoformat()
 
         summary = build_power_display_summary_dataset(
             power,
@@ -999,10 +1001,36 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(float(summary.attrs["minimum_operational_soc_pct"]), 40.0)
         self.assertGreater(summary.sizes["time"], power.sizes["time"])
 
-        merged = merge_operating_scenarios_into_display_summary(power, operating)
+        display_with_anchor = power.copy()
+        display_with_anchor.attrs["forecast_initial_soc_time"] = forecast_times[0].isoformat()
+        merged = merge_operating_scenarios_into_display_summary(display_with_anchor, operating)
         self.assertIn("OperatingLearned1SOCP50", merged)
         self.assertEqual(merged.attrs["operating_learned_1_label"], "DC + Radar")
         self.assertEqual(pd.Timestamp(merged["time"].values[-1]), forecast_times[-1])
+
+    def test_mismatched_operating_plan_anchor_is_withheld_from_display(self) -> None:
+        times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
+        display = xr.Dataset(
+            {
+                "BatterySOCForecastP50": (("time",), [90.0, 88.0, 86.0]),
+                "OperatingCL61OptimizedSOCP50": (("time",), [90.0, 80.0, 70.0]),
+            },
+            coords={"time": times},
+            attrs={"forecast_initial_soc_time": "2026-07-20T20:29:00"},
+        )
+        operating = xr.Dataset(
+            {
+                "ScenarioSOCP50": (("scenario", "time"), [[90.0, 80.0, 70.0]]),
+            },
+            coords={"scenario": ["optimized_cl61"], "time": times},
+            attrs={"initial_soc_time": "2026-07-20T20:00:00"},
+        )
+
+        merged = merge_operating_scenarios_into_display_summary(display, operating)
+
+        self.assertNotIn("OperatingCL61OptimizedSOCP50", merged)
+        self.assertEqual(merged.attrs["operating_planning_status"], "unavailable")
+        self.assertIn("does not match", merged.attrs["operating_planning_status_reason"])
 
     def test_all_soc_decision_panels_draw_40_percent_operational_minimum(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=4, freq="3h")

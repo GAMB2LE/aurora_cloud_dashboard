@@ -144,6 +144,16 @@ def power_display_summary_path() -> Path:
     return env_path("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
 
 
+def power_operating_scenario_paths() -> tuple[Path, ...]:
+    """Locate the authoritative operating-plan product for native clients."""
+    configured = env_path(
+        "POWER_OPERATING_SCENARIOS_ZARR_PATH",
+        "/data/aurora/products/power/power_operating_scenarios.zarr",
+    )
+    mirrored = Path("/data/aurora/products/power/power_operating_scenarios.zarr")
+    return tuple(dict.fromkeys((configured, mirrored)))
+
+
 def uas_mqtt_log_path() -> Path:
     return env_path("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log")
 
@@ -857,9 +867,24 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             SUMMARY_LAYOUTS,
             build_power_forecast_info,
             build_power_verification_guidance,
+            merge_operating_scenarios_into_display_summary,
         )
 
         dataset = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+        # The display summary can lag behind the fast planner.  Always replace
+        # baked operating traces with the standalone contract, which rejects a
+        # plan whose SOC anchor differs from the current ensemble forecast.
+        scenarios = None
+        for scenario_path in power_operating_scenario_paths():
+            if not scenario_path.exists():
+                continue
+            try:
+                candidate = xr.open_zarr(scenario_path, chunks={}, consolidated=True)
+            except Exception:
+                continue
+            scenarios = candidate
+            break
+        dataset = merge_operating_scenarios_into_display_summary(dataset, scenarios)
         times = pd.DatetimeIndex(dataset["time"].values)
         now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
         start = now - pd.Timedelta(hours=24)
@@ -924,6 +949,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                     }
                 )
             if traces:
+                forecast_context = _power_forecast_context(dataset, panel.key, traces)
                 payload["panels"].append(
                     {
                         "id": panel.key,
@@ -934,9 +960,12 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                         "leftAxisLabel": panel.left_axis_label,
                         "rightAxisLabel": panel.right_axis_label,
                         "traces": traces,
+                        **({"forecastContext": forecast_context} if forecast_context else {}),
                     }
                 )
         dataset.close()
+        if scenarios is not None:
+            scenarios.close()
     except Exception as exc:
         payload["warning"] = f"Power display data unavailable: {exc}"
     return payload
@@ -964,6 +993,46 @@ def _forecast_panel_start(dataset, times, panel):
         if valid.any():
             return pd.Timestamp(times[valid][0])
     return pd.Timestamp(datetime.now(UTC)).tz_localize(None)
+
+
+def _power_forecast_context(dataset, panel_key: str, traces: list[dict[str, Any]]) -> dict[str, str] | None:
+    """Return one anchor and one valid time for all values shown on a forecast card."""
+    import pandas as pd
+
+    forecast_panels = {
+        "soc_24h_forecast",
+        "soc_ecmwf_forecast",
+        "ecmwf_solar_forecast",
+        "operating_plan_scenarios",
+        "operating_plan_schedule",
+    }
+    if panel_key not in forecast_panels:
+        return None
+    end_times: list[pd.Timestamp] = []
+    for trace in traces:
+        points = trace.get("points", [])
+        if not points:
+            continue
+        value = pd.to_datetime(points[-1].get("time"), errors="coerce", utc=True)
+        if pd.notna(value):
+            end_times.append(pd.Timestamp(value).tz_convert("UTC").tz_localize(None))
+    if not end_times:
+        return None
+    if panel_key.startswith("operating_plan"):
+        anchor = dataset.attrs.get("operating_planning_forecast_initial_soc_time", "")
+        issued = dataset.attrs.get("operating_planning_forecast_generated_at_utc", "")
+        kind = "Operating-plan forecast"
+    else:
+        anchor = dataset.attrs.get("forecast_initial_soc_time", "")
+        issued = dataset.attrs.get("forecast_generated_at_utc", "")
+        kind = "System forecast"
+    return {
+        "kind": kind,
+        "anchorTime": str(anchor),
+        "issuedTime": str(issued),
+        # The minimum end time is the last valid point shared by every trace.
+        "validTime": min(end_times).isoformat() + "Z",
+    }
 
 
 def uas(window: str = "24h") -> dict[str, Any]:
