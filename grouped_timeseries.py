@@ -2552,8 +2552,11 @@ def _operating_scenario_alignment(
     plan_anchor = _summary_display_timestamp(operating_scenarios_ds.attrs.get("initial_soc_time"))
     if forecast_anchor is None or plan_anchor is None:
         return False, "Missing SOC anchor required to compare the system forecast and operating plan"
-    difference_seconds = abs(float((forecast_anchor - plan_anchor) / pd.Timedelta(seconds=1)))
-    if difference_seconds > OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES * 60.0:
+    # A newer scenario has been re-integrated from a newer physical SOC sample
+    # and remains authoritative for its own panel. Only withhold a plan that is
+    # materially older than the system forecast it is being compared with.
+    plan_age_seconds = float((forecast_anchor - plan_anchor) / pd.Timedelta(seconds=1))
+    if plan_age_seconds > OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES * 60.0:
         return (
             False,
             "Operating-plan SOC anchor does not match the current system forecast "
@@ -2697,12 +2700,7 @@ def build_power_display_summary_dataset(
         ensemble_forecast_ds.attrs.get("initial_soc_time") if ensemble_forecast_ds is not None else None
     )
     planning_anchor = _summary_display_timestamp(
-        operating_scenarios_ds.attrs.get(
-            "planning_forecast_initial_soc_time",
-            operating_scenarios_ds.attrs.get("initial_soc_time"),
-        )
-        if operating_scenarios_ds is not None
-        else None
+        operating_scenarios_ds.attrs.get("initial_soc_time") if operating_scenarios_ds is not None else None
     )
     operating_alignment_reason = ""
     operating_aligned = operating_scenarios_ds is not None
@@ -2711,7 +2709,7 @@ def build_power_display_summary_dataset(
             operating_aligned = False
             operating_alignment_reason = "Missing SOC anchor required to compare the system forecast and operating plan"
         elif (
-            abs(float((forecast_anchor - planning_anchor) / pd.Timedelta(seconds=1)))
+            float((forecast_anchor - planning_anchor) / pd.Timedelta(seconds=1))
             > OPERATING_SCENARIO_ANCHOR_TOLERANCE_MINUTES * 60.0
         ):
             operating_aligned = False
