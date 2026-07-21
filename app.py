@@ -40,6 +40,7 @@ from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
     SOC_REFERENCE_PANEL_KEYS,
 )
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
 try:
     from PIL import Image
 except Exception:  # pragma: no cover - dashboard can still serve source images.
@@ -10051,12 +10052,13 @@ def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
 
     current_mode = str(ds.attrs.get("operating_current_mode_label", "Current system state")).strip()
     horizon = str(ds.attrs.get("operating_optimization_horizon_hours", "96")).strip()
+    scenario_labels = ", ".join(definition.label for definition in SUGGESTED_OPERATING_SCENARIOS)
     return (
         "<div class='power-browser-briefing'>"
         "<div class='power-browser-briefing__title'>Forecast scenarios</div>"
         "<div class='power-browser-briefing__grid'>"
         "<div><strong>System as-is</strong><br>ECMWF ensemble forecast using the current station load and instrument state. P10/P90 show the uncertainty range.</div>"
-        f"<div><strong>Operating plans</strong><br>Current mode: {escape(current_mode)}. The planner compares DC-only, continuous CL61, and a constrained CL61 schedule across {escape(horizon)} hours.</div>"
+        f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and uses the same ECMWF solar forecast.</div>"
         "<div><strong>Safety rule</strong><br>The recommended schedule is advisory only and aims to keep P10 SOC at or above the 40% operational minimum.</div>"
         "</div></div>"
     )

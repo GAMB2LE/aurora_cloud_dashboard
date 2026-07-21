@@ -68,8 +68,10 @@ class PowerSocForecastTests(unittest.TestCase):
         )
 
         self.assertIn("System as-is", markup)
-        self.assertIn("Operating plans", markup)
+        self.assertIn("Instrument scenarios", markup)
         self.assertIn("DC-Only", markup)
+        self.assertIn("CL61 + HATPRO + Radar", markup)
+        self.assertIn("HATPRO + Radar", markup)
         self.assertIn("40% operational minimum", markup)
 
     def setUp(self) -> None:
