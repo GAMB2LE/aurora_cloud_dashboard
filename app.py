@@ -11,7 +11,6 @@ height as blank page space after browser scaling.
 """
 
 import asyncio
-from base64 import b64encode
 from collections import OrderedDict, deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
@@ -117,25 +116,14 @@ from request_context import (
     total_session_count as _total_session_count,
 )
 
-pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
+pn.extension("plotly", notifications=True, sizing_mode="stretch_width", defer_load=True)
 
 
-def _static_asset_data_uri(path: Path) -> str:
-    if not path.exists():
-        return ""
-    suffix = path.suffix.lower()
-    mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".svg": "image/svg+xml",
-        ".ico": "image/x-icon",
-    }.get(suffix, "application/octet-stream")
-    encoded = b64encode(path.read_bytes()).decode("utf-8")
-    return f"data:{mime};base64,{encoded}"
-
-
-DASHBOARD_LOGO = _static_asset_data_uri(Path(__file__).resolve().parent / "assets" / "logo.png")
+# Keep the logo out of the server-rendered document.  It is deliberately served
+# as a normal cacheable asset by Panel/nginx rather than base64-encoding a full
+# resolution PNG into every new browser session.
+DASHBOARD_ASSET_PREFIX = os.environ.get("AURORA_DASHBOARD_ASSET_PREFIX", "/dashboard-assets").rstrip("/")
+DASHBOARD_LOGO = f"{DASHBOARD_ASSET_PREFIX}/logo.png"
 DASHBOARD_FAVICON = "https://gamb2le.pages.dev/assets/logo.png"
 # Dashboard palette. The supplied source values use #RRGGBBAA notation.
 THEME_TEXT = "#1e2f50"
@@ -6251,6 +6239,7 @@ def _log_session_loaded() -> None:
             "client_ip": _client_ip(),
             "user_agent": _request_header("User-Agent"),
             "status": "loaded",
+            "app_boot_ms": round(_session_age_seconds() * 1000.0, 3),
         }
     )
     _perf_log("session_loaded", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
@@ -6318,6 +6307,12 @@ def _log_session_destroyed(session_context) -> None:
     )
     current_instrument = fields.get("current_instrument") or globals().get("CURRENT_INSTRUMENT")
     perf_logger("session_destroyed", instrument=current_instrument, **fields)
+    heartbeat = globals().get("_session_heartbeat_cb")
+    if heartbeat is not None:
+        try:
+            heartbeat.stop()
+        except Exception:
+            pass
 
 
 instrument_select.param.watch(

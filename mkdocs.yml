@@ -51,6 +51,7 @@ nav:
       - Services and timers: runtime/services-and-timers.md
       - Mobile API: runtime/mobile-api.md
       - Performance logging: runtime/performance-logging.md
+      - Display artifact manifest: runtime/display-artifacts.md
       - Running locally: runtime/running-locally.md
       - Model evaluation cleanup: runtime/model-evaluation-cleanup.md
       - Documentation publishing: runtime/documentation-publishing.md

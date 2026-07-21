@@ -20,6 +20,20 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def cache_read_only_payloads(request: Request, call_next):
+    """Permit short client caching for small authenticated JSON payloads.
+
+    Media responses set their own cache policy and raw/Zarr paths are never
+    exposed by this API.  A private response avoids sharing authenticated
+    payloads in intermediary caches.
+    """
+    response = await call_next(request)
+    if request.method == "GET" and not request.url.path.startswith("/media/"):
+        response.headers.setdefault("Cache-Control", "private, max-age=30, stale-while-revalidate=60")
+    return response
+
+
 def _token() -> str | None:
     value = os.environ.get("AURORA_MOBILE_API_TOKEN")
     if value and value.strip():
@@ -82,6 +96,12 @@ def health() -> dict:
 @app.get("/manifest", dependencies=[Depends(require_auth)])
 def manifest() -> dict:
     return catalog.manifest()
+
+
+@app.get("/artifacts/manifest", dependencies=[Depends(require_auth)])
+def display_artifacts() -> dict:
+    """Expose derived browser artifacts without exposing raw or Zarr products."""
+    return catalog.display_artifacts()
 
 
 @app.get("/operations", dependencies=[Depends(require_auth)])

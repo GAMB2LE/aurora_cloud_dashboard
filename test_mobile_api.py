@@ -42,6 +42,30 @@ class MobileAPITests(unittest.TestCase):
         self.assertIn("power", {instrument["id"] for instrument in authorized.json()["instruments"]})
         self.assertIn("deployment", authorized.json())
 
+    def test_read_only_payloads_are_short_term_cacheable(self) -> None:
+        with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False):
+            response = self.client.get("/manifest", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "private, max-age=30, stale-while-revalidate=60")
+
+    def test_display_artifact_manifest_requires_bearer_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "latest.json"
+            manifest.write_text(json.dumps({"schemaVersion": 1, "artifactCount": 2}), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"AURORA_MOBILE_API_TOKEN": "secret", "AURORA_DISPLAY_ARTIFACT_MANIFEST": str(manifest)},
+                clear=False,
+            ):
+                unauthorized = self.client.get("/artifacts/manifest")
+                authorized = self.client.get("/artifacts/manifest", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+        self.assertTrue(authorized.json()["available"])
+        self.assertEqual(authorized.json()["artifactCount"], 2)
+
     def test_operations_endpoint_reads_fixture_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

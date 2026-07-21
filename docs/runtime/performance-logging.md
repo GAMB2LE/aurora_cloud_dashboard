@@ -37,6 +37,7 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT`
 - `AURORA_DASHBOARD_PERF_ENABLED`
 - `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS`
+- `AURORA_DASHBOARD_ASSET_PREFIX`
 - `AURORA_RENDER_DEBOUNCE_MS`
 - `AURORA_INTERACTIVE_RENDER_CACHE_SIZE`
 - `AURORA_INTERACTIVE_MAX_TIME_SAMPLES`
@@ -62,6 +63,11 @@ Operations Dashboard **Overall** action state or the health report's
 `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS` defaults to `0`, which disables
 per-session heartbeat logging. That avoids keeping mobile browser sessions
 alive on the server after the phone has backgrounded or killed the tab.
+
+The dashboard logo is served as a normal static asset under
+`AURORA_DASHBOARD_ASSET_PREFIX`, rather than being embedded in every HTML
+document. This lets browsers cache it independently of the live dashboard
+document.
 
 ## Useful commands
 

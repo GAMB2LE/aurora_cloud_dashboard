@@ -11,6 +11,7 @@ import sqlite3
 from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
+from display_artifact_manifest import load_manifest
 from uas_mqtt import load_uas_mqtt_log
 from instrument_registry import (
     INSTRUMENTS,
@@ -193,6 +194,11 @@ def file_record(path: Path) -> dict[str, Any]:
         "sizeBytes": stat_result.st_size,
         "modifiedAt": datetime.fromtimestamp(stat_result.st_mtime, UTC).isoformat().replace("+00:00", "Z"),
     }
+
+
+def display_artifacts() -> dict[str, Any]:
+    """Return the latest publishable dashboard-artifact manifest when present."""
+    return load_manifest()
 
 
 def normalize_level(value: Any) -> str:
