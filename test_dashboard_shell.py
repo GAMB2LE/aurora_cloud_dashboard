@@ -67,6 +67,15 @@ class DashboardShellTests(TestCase):
             path.write_text('{"data":[],"layout":{}}', encoding="utf-8")
             self.assertTrue(app._cache_key_targets_latest_prewarm(cache_key, "power"))
 
+    def test_power_live_window_does_not_open_raw_data_when_prewarmed(self) -> None:
+        end = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        start = end - app.DEFAULT_WINDOW
+        with TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ", {"AURORA_INTERACTIVE_PREWARM_DIR": tmpdir}, clear=False
+        ), patch.object(app, "_dataset_time_bounds", side_effect=AssertionError("raw data should not be read")):
+            (Path(tmpdir) / "power_current_latest_interactive.json").write_text("{}", encoding="utf-8")
+            self.assertTrue(app._is_power_latest_window(start, end, "power"))
+
     def test_power_section_window_reads_only_the_selected_compact_store(self) -> None:
         times = pd.date_range("2026-07-20T00:00:00", periods=5, freq="1h")
         dataset = xr.Dataset(

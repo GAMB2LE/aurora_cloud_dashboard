@@ -3984,6 +3984,17 @@ def _is_power_latest_window(start, end, instrument: str) -> bool:
         return False
     if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=2):
         return False
+    # A fresh development prewarm is authoritative for the live browser
+    # window. Avoid opening the raw Power Zarr merely to discover its latest
+    # sample, because that read is exactly what the prewarm removes.
+    prewarm_path = _prewarmed_interactive_path("power")
+    try:
+        prewarm_age = datetime.now(timezone.utc) - datetime.fromtimestamp(prewarm_path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        prewarm_age = None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if prewarm_age is not None and prewarm_age <= PREWARM_LATEST_CACHE_TOLERANCE:
+        return abs(end_dt - now) <= PREWARM_LATEST_CACHE_TOLERANCE
     _lower, latest = _dataset_time_bounds(instrument)
     latest_dt = _as_naive_utc_datetime(latest)
     if latest_dt is None:
