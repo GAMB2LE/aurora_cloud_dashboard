@@ -178,6 +178,9 @@ POWER_SOC_FORECAST_SKILL_FIELDS = (
     "ForecastSOCMAE_24_48h_Verified",
     "ForecastSOCMAE_48_96h_Verified",
     "ForecastSOCBias_0_6h_Verified",
+    "ForecastSOCBias_6_24h_Verified",
+    "ForecastSOCBias_24_48h_Verified",
+    "ForecastSOCBias_48_96h_Verified",
     "ForecastSOCSkill_0_6h",
     "ForecastLoadMAE24h",
     "ForecastLoadBias24h",
@@ -197,6 +200,10 @@ POWER_SOC_FORECAST_SKILL_FIELDS = (
     "ForecastSOCSkill_6_24h",
     "ForecastSOCSkill_24_48h",
     "ForecastSOCSkill_48_96h",
+    "ForecastSOCReadiness_0_6h",
+    "ForecastSOCReadiness_6_24h",
+    "ForecastSOCReadiness_24_48h",
+    "ForecastSOCReadiness_48_96h",
     "ForecastLoadVerificationSamples",
     "ForecastLoadIndependentCycles",
     "ForecastSolarVerificationSamples",
@@ -372,7 +379,7 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
 
 
 VERIFICATION_MIN_SAMPLES = 20
-VERIFICATION_MIN_CYCLES = 10
+VERIFICATION_MIN_CYCLES = 30
 
 
 def _latest_finite_value(ds: xr.Dataset, name: str) -> float:
@@ -418,17 +425,24 @@ def build_power_verification_guidance(panel_key: str, ds: xr.Dataset) -> dict[st
         metrics = []
         for bucket, label in (("0_6h", "0-6 h"), ("6_24h", "6-24 h"), ("24_48h", "24-48 h"), ("48_96h", "48-96 h")):
             value = _latest_finite_value(ds, f"ForecastSOCMAE_{bucket}_Verified")
+            bias = _latest_finite_value(ds, f"ForecastSOCBias_{bucket}_Verified")
             samples = _latest_finite_value(ds, f"ForecastSOCMAESamples_{bucket}")
             cycles = _latest_finite_value(ds, f"ForecastSOCMAECycles_{bucket}")
             evidence, evidence_level = _verification_evidence(samples, cycles)
             status, level = _skill_status(_latest_finite_value(ds, f"ForecastSOCSkill_{bucket}"), evidence_level)
+            ready = _latest_finite_value(ds, f"ForecastSOCReadiness_{bucket}")
+            if evidence_level != "learning" and np.isfinite(ready):
+                status, level = ("Meets 10-point target", "good") if ready >= 0.5 else ("Outside 10-point target", "caution")
             metrics.append(
                 {
                     "id": f"soc-mae-{bucket}",
                     "label": f"SOC MAE {label}",
                     "valueText": "Not yet verified" if not np.isfinite(value) else f"{value:.2f} percentage points",
                     "direction": "Lower is better",
-                    "reference": "Compared with persistence from issue-time SOC",
+                    "reference": (
+                        f"Bias {'not yet verified' if not np.isfinite(bias) else f'{bias:+.2f} points'}; "
+                        "target: MAE and absolute bias below 10 points"
+                    ),
                     "status": status,
                     "evidence": evidence,
                     "level": level,
@@ -436,7 +450,7 @@ def build_power_verification_guidance(panel_key: str, ds: xr.Dataset) -> dict[st
             )
         return {
             "title": "How to read SOC verification",
-            "summary": "Average absolute miss of archived SOC forecasts against later APS measurements. Scores use the previous 24 hours.",
+            "summary": "Average absolute miss and signed error of immutable issue-time SOC forecasts against later APS measurements. Certification requires 30 independent ECMWF cycles.",
             "metrics": metrics,
         }
 
@@ -870,6 +884,13 @@ HUMAN_LABELS = {
     "ForecastSOCMAE_24_48h_Verified": "SOC MAE 24-48 h",
     "ForecastSOCMAE_48_96h_Verified": "SOC MAE 48-96 h",
     "ForecastSOCBias_0_6h_Verified": "SOC Bias 0-6 h",
+    "ForecastSOCBias_6_24h_Verified": "SOC Bias 6-24 h",
+    "ForecastSOCBias_24_48h_Verified": "SOC Bias 24-48 h",
+    "ForecastSOCBias_48_96h_Verified": "SOC Bias 48-96 h",
+    "ForecastSOCReadiness_0_6h": "SOC Target Ready 0-6 h",
+    "ForecastSOCReadiness_6_24h": "SOC Target Ready 6-24 h",
+    "ForecastSOCReadiness_24_48h": "SOC Target Ready 24-48 h",
+    "ForecastSOCReadiness_48_96h": "SOC Target Ready 48-96 h",
     "ForecastSOCSkill_0_6h": "SOC Skill 0-6 h",
     "ForecastSolarMAE24h": "Solar MAE 24 h",
     "ForecastSolarBias24h": "Solar Bias 24 h",
@@ -1047,6 +1068,13 @@ HUMAN_UNITS = {
     "ForecastSOCMAE_24_48h_Verified": "percentage points",
     "ForecastSOCMAE_48_96h_Verified": "percentage points",
     "ForecastSOCBias_0_6h_Verified": "percentage points",
+    "ForecastSOCBias_6_24h_Verified": "percentage points",
+    "ForecastSOCBias_24_48h_Verified": "percentage points",
+    "ForecastSOCBias_48_96h_Verified": "percentage points",
+    "ForecastSOCReadiness_0_6h": "1",
+    "ForecastSOCReadiness_6_24h": "1",
+    "ForecastSOCReadiness_24_48h": "1",
+    "ForecastSOCReadiness_48_96h": "1",
     "ForecastSOCSkill_0_6h": "1",
     "ForecastSolarMAE24h": "W",
     "ForecastSolarBias24h": "W",

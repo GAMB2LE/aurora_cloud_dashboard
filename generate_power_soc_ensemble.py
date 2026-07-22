@@ -60,6 +60,7 @@ ENSEMBLE_INPUT_ATTRS = (
     "initial_soc_time",
     "initial_soc_pct",
     "solar_calibration_factor_w_per_wm2",
+    "solar_mos_factor_by_lead_bucket",
     "battery_capacity_kwh",
     "load_bias_correction_w",
     "forecast_load_w",
@@ -308,20 +309,34 @@ def build_ensemble_dataset(
     # Planned instrument schedules are evaluated by the separate operating-plan
     # product; only the ECMWF solar members may vary here.
     current_system_load = central_load.reindex(common_times).ffill().bfill().clip(lower=0.0)
+    # Keep the deterministic lead-dependent solar calibration when propagating
+    # ECMWF members. The remaining member spread then combines meteorological
+    # forcing with observed, mode-conditioned station-load variability.
+    if {"ForecastSolarWatts", "ECMWFSolarIrradiance"}.issubset(deterministic.data_vars) and "time" in deterministic:
+        deterministic_times = pd.DatetimeIndex(deterministic["time"].values)
+        deterministic_solar = pd.Series(np.asarray(deterministic["ForecastSolarWatts"].values, dtype=np.float64), index=deterministic_times)
+        deterministic_irradiance = pd.Series(np.asarray(deterministic["ECMWFSolarIrradiance"].values, dtype=np.float64), index=deterministic_times)
+        inferred_factor = (deterministic_solar / deterministic_irradiance.where(deterministic_irradiance > 1.0)).replace([np.inf, -np.inf], np.nan)
+        solar_factor_profile = inferred_factor.reindex(common_times, method="nearest", tolerance=pd.Timedelta(hours=2))
+        solar_factor_profile = solar_factor_profile.ffill().bfill().fillna(solar_factor).clip(lower=0.0)
+    else:
+        solar_factor_profile = pd.Series(float(solar_factor), index=common_times)
+    load_offsets = _load_residual_offsets(frame, end=latest_time, members=len(member_irradiance))
 
     soc_rows = []
     irr_rows = []
     solar_rows = []
     load_rows = []
     output_times: pd.DatetimeIndex | None = None
-    for irradiance in member_irradiance:
+    for member_index, irradiance in enumerate(member_irradiance):
         irradiance = irradiance.reindex(common_times).interpolate().ffill().bfill()
+        member_load = (current_system_load + float(load_offsets[member_index])).clip(lower=0.0)
         result = integrate_soc_forecast(
             initial_soc=latest_soc,
             initial_time=latest_time,
             irradiance=irradiance,
-            solar_factor=solar_factor,
-            load_w=current_system_load,
+            solar_factor=solar_factor_profile,
+            load_w=member_load,
             capacity_kwh=capacity_kwh,
         )
         output_times = pd.DatetimeIndex(result.index)
@@ -361,7 +376,7 @@ def build_ensemble_dataset(
             "load_mode_source": str(deterministic.attrs.get("load_mode_source", "unknown")),
             "load_mode_active_kits": str(deterministic.attrs.get("load_mode_active_kits", "")),
             "load_mode_signature": str(deterministic.attrs.get("load_mode_signature", "")),
-            "load_uncertainty": "fixed current-system load; ECMWF solar ensemble only",
+            "load_uncertainty": "mode-conditioned recent load residuals plus ECMWF solar ensemble",
             "scenario_scope": "current_system_only",
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
             "source": "ECMWF IFS perturbed ssrd members plus APS power history",

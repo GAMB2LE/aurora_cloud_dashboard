@@ -68,6 +68,10 @@ DEFAULT_AC_MODE_THRESHOLD_W = float(os.environ.get("AURORA_POWER_AC_MODE_THRESHO
 DEFAULT_PDU_MODE_FRESHNESS_MINUTES = float(os.environ.get("AURORA_POWER_PDU_MODE_FRESHNESS_MINUTES", "60"))
 DEFAULT_PDU_ACTIVE_W_THRESHOLD = float(os.environ.get("AURORA_POWER_PDU_ACTIVE_W_THRESHOLD", "5"))
 DEFAULT_LOAD_MODE_MIN_STABLE_SAMPLES = int(os.environ.get("AURORA_POWER_LOAD_MODE_MIN_STABLE_SAMPLES", "2"))
+DEFAULT_MODE_MIN_OBSERVATIONS = int(os.environ.get("AURORA_POWER_LOAD_MODE_MIN_OBSERVATIONS", "3"))
+FORECAST_TARGET_MAE_PCT_POINTS = float(os.environ.get("AURORA_POWER_FORECAST_TARGET_MAE_PCT_POINTS", "10"))
+FORECAST_TARGET_MIN_CYCLES = int(os.environ.get("AURORA_POWER_FORECAST_TARGET_MIN_CYCLES", "30"))
+FORECAST_TARGET_MIN_SAMPLES = int(os.environ.get("AURORA_POWER_FORECAST_TARGET_MIN_SAMPLES", "20"))
 DEFAULT_ZERO_SOLAR_THRESHOLD_W = float(os.environ.get("AURORA_POWER_ZERO_SOLAR_THRESHOLD_W", "10"))
 DEFAULT_DARK_LOAD_LOOKBACK_HOURS = float(os.environ.get("AURORA_POWER_DARK_LOAD_LOOKBACK_HOURS", "48"))
 DEFAULT_SOC_BIAS_CORRECTION_LIMIT = float(os.environ.get("AURORA_POWER_SOC_BIAS_CORRECTION_LIMIT", "8"))
@@ -77,8 +81,8 @@ DEFAULT_OPEN_DATA_SOURCE = os.environ.get("AURORA_POWER_ECMWF_OPEN_DATA_SOURCE",
 DEFAULT_SKILL_WINDOW_HOURS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_WINDOW_HOURS", "24"))
 DEFAULT_SKILL_RETENTION_DAYS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_RETENTION_DAYS", "7"))
 ECMWF_PARAM = "ssrd"
-LOAD_MODEL_NAME = "kit_mode_persistence_v4"
-LOAD_MODEL_VERSION = 4
+LOAD_MODEL_NAME = "mode_conditioned_energy_balance_v5"
+LOAD_MODEL_VERSION = 5
 PDU_OUTLET_KIT_NAMES = {
     4: "UAS",
     5: "CL61",
@@ -915,6 +919,20 @@ def _archive_verification_frame(
         )
     else:
         model_versions = np.full(len(forecast_values), np.nan, dtype=np.float64)
+    if "LoadMode" in archive:
+        load_modes = np.repeat(
+            np.asarray(archive["LoadMode"].values, dtype=str).reshape(-1),
+            int(archive.sizes.get("forecast_step", 0)),
+        )
+    else:
+        load_modes = np.full(len(forecast_values), "unknown", dtype="U16")
+    if "LoadModeLearningReady" in archive:
+        mode_learning_ready = np.repeat(
+            np.asarray(archive["LoadModeLearningReady"].values, dtype=bool).reshape(-1),
+            int(archive.sizes.get("forecast_step", 0)),
+        )
+    else:
+        mode_learning_ready = np.zeros(len(forecast_values), dtype=bool)
     if "ECMWFCycleTime" in archive:
         cycle_grid = np.repeat(
             pd.DatetimeIndex(archive["ECMWFCycleTime"].values).to_numpy(dtype="datetime64[ns]"),
@@ -938,6 +956,8 @@ def _archive_verification_frame(
     issue_times = issue_times[valid_mask]
     cycle_times = cycle_times[valid_mask]
     model_versions = model_versions[valid_mask]
+    load_modes = load_modes[valid_mask]
+    mode_learning_ready = mode_learning_ready[valid_mask]
     lead_hours = lead_hours[valid_mask]
     observed_valid = observed.reindex(valid_times, method="nearest", tolerance=tolerance).to_numpy(dtype=np.float64)
     reference_values = observed.reindex(issue_times, method="nearest", tolerance=tolerance).to_numpy(dtype=np.float64)
@@ -949,6 +969,8 @@ def _archive_verification_frame(
             "issue_time": issue_times[paired],
             "cycle_time": cycle_times[paired],
             "load_model_version": model_versions[paired],
+            "load_mode": load_modes[paired],
+            "load_mode_learning_ready": mode_learning_ready[paired],
             "valid_time": valid_times[paired],
             "lead_hour": lead_hours[paired],
             "forecast_value": forecast_values[paired],
@@ -1047,6 +1069,64 @@ def evaluate_forecast_archive(archive: xr.Dataset | None, frame: pd.DataFrame) -
     return metrics
 
 
+def evaluate_independent_forecast_archive(archive: xr.Dataset | None, frame: pd.DataFrame) -> dict[str, float | int | str]:
+    """Score one operational forecast per ECMWF cycle and valid time.
+
+    The archive deliberately retains re-issued forecasts so operators can audit
+    their decisions. Those re-issues share weather forcing and must not be
+    treated as independent training examples for calibration.
+    """
+    if archive is None or frame.empty or "issue_time" not in archive.sizes or archive.sizes.get("issue_time", 0) == 0:
+        return {}
+    metrics: dict[str, float | int | str] = {}
+    tolerance = pd.Timedelta(minutes=10)
+
+    def score(name: str, forecast_var: str, observed: pd.Series, *, current_load_model: bool = False) -> None:
+        if observed.empty:
+            return
+        table = _archive_verification_frame(
+            archive,
+            observed,
+            forecast_var=forecast_var,
+            tolerance=tolerance,
+        )
+        if table.empty:
+            return
+        if current_load_model:
+            table = table[table["load_model_version"] == float(LOAD_MODEL_VERSION)]
+        table = _independent_verification_rows(table)
+        if table.empty:
+            return
+        _add_error_metrics(
+            metrics,
+            name,
+            table["error"].to_numpy(dtype=np.float64),
+            table["lead_hour"].to_numpy(dtype=np.float64),
+        )
+        metrics[f"{name}_independent_cycles"] = int(table["cycle_time"].nunique())
+
+    if "BatterySOC" in frame:
+        score("soc", "BatterySOCForecast", frame["BatterySOC"])
+    score("solar", "ForecastSolarWatts", _observed_solar_w(frame))
+    score("load", "ForecastLoadWatts", _observed_load_w(frame), current_load_model=True)
+    if not metrics:
+        return {}
+    aliases = {
+        "soc_mae_pct_points": "soc_mae",
+        "soc_bias_pct_points": "soc_bias",
+        "solar_mae_w": "solar_mae",
+        "solar_bias_w": "solar_bias",
+        "load_mae_w": "load_mae",
+        "load_bias_w": "load_bias",
+    }
+    for alias, source in aliases.items():
+        if source in metrics:
+            metrics[alias] = metrics[source]
+    metrics["sample_independence"] = "one forecast per ECMWF cycle and valid time"
+    metrics["evaluated_at_utc"] = _utc_now()
+    return metrics
+
+
 def _rolling_error_stats(errors: np.ndarray, reference_errors: np.ndarray) -> tuple[float, float, float, float, float, float, int]:
     valid = np.isfinite(errors)
     if np.count_nonzero(valid) < 2:
@@ -1086,7 +1166,15 @@ def _empty_skill_dataset() -> xr.Dataset:
         "ForecastSolarSkill24h",
     ]
     for bucket, _, _ in LEAD_BUCKETS:
-        fields.extend((f"ForecastSOCMAESamples_{bucket}", f"ForecastSOCMAECycles_{bucket}", f"ForecastSOCSkill_{bucket}"))
+        fields.extend(
+            (
+                f"ForecastSOCBias_{bucket}_Verified",
+                f"ForecastSOCMAESamples_{bucket}",
+                f"ForecastSOCMAECycles_{bucket}",
+                f"ForecastSOCSkill_{bucket}",
+                f"ForecastSOCReadiness_{bucket}",
+            )
+        )
     fields.extend(
         (
             "ForecastLoadVerificationSamples",
@@ -1176,7 +1264,15 @@ def build_forecast_skill_dataset(
         "ForecastSolarSkill24h",
     ]
     for bucket, _, _ in LEAD_BUCKETS:
-        metric_names.extend((f"ForecastSOCMAESamples_{bucket}", f"ForecastSOCMAECycles_{bucket}", f"ForecastSOCSkill_{bucket}"))
+        metric_names.extend(
+            (
+                f"ForecastSOCBias_{bucket}_Verified",
+                f"ForecastSOCMAESamples_{bucket}",
+                f"ForecastSOCMAECycles_{bucket}",
+                f"ForecastSOCSkill_{bucket}",
+                f"ForecastSOCReadiness_{bucket}",
+            )
+        )
     metric_names.extend(
         (
             "ForecastLoadVerificationSamples",
@@ -1187,6 +1283,28 @@ def build_forecast_skill_dataset(
     )
     for metric_name in metric_names:
         columns[metric_name] = np.full(len(time_index), np.nan, dtype=np.float32)
+
+    soc_mode_table = pieces.get("soc", pd.DataFrame())
+    mode_labels: list[str] = []
+    if not soc_mode_table.empty and "load_mode" in soc_mode_table:
+        learned_mask = (
+            soc_mode_table["load_mode_learning_ready"].astype(bool)
+            if "load_mode_learning_ready" in soc_mode_table
+            else pd.Series(False, index=soc_mode_table.index)
+        )
+        mode_labels = sorted(
+            {
+                str(value)
+                for value in soc_mode_table.loc[learned_mask, "load_mode"]
+                if str(value).strip() and str(value).lower() not in {"unknown", "nan"}
+            }
+        )
+    mode_shape = (len(time_index), len(mode_labels), len(LEAD_BUCKETS))
+    mode_mae = np.full(mode_shape, np.nan, dtype=np.float32)
+    mode_bias = np.full(mode_shape, np.nan, dtype=np.float32)
+    mode_samples = np.full(mode_shape, np.nan, dtype=np.float32)
+    mode_cycles = np.full(mode_shape, np.nan, dtype=np.float32)
+    mode_ready = np.full(mode_shape, np.nan, dtype=np.float32)
 
     for idx, now in enumerate(time_index):
         window_start = now - window
@@ -1205,14 +1323,43 @@ def build_forecast_skill_dataset(
                 )
                 if sample_count >= 2:
                     columns[f"ForecastSOCMAE_{bucket}_Verified"][idx] = mae
+                    columns[f"ForecastSOCBias_{bucket}_Verified"][idx] = bias
                     columns[f"ForecastSOCMAESamples_{bucket}"][idx] = float(sample_count)
                     columns[f"ForecastSOCMAECycles_{bucket}"][idx] = float(bucketed["cycle_time"].nunique())
                     columns[f"ForecastSOCSkill_{bucket}"][idx] = _guarded_skill(
                         mae, ref_mae, minimum_reference_mae=0.5
                     )
+                    columns[f"ForecastSOCReadiness_{bucket}"][idx] = float(
+                        mae <= FORECAST_TARGET_MAE_PCT_POINTS
+                        and abs(bias) <= FORECAST_TARGET_MAE_PCT_POINTS
+                        and sample_count >= FORECAST_TARGET_MIN_SAMPLES
+                        and bucketed["cycle_time"].nunique() >= FORECAST_TARGET_MIN_CYCLES
+                    )
                     if bucket == "0_6h":
                         columns["ForecastSOCBias_0_6h_Verified"][idx] = bias
                         columns["ForecastSOCSkill_0_6h"][idx] = columns[f"ForecastSOCSkill_{bucket}"][idx]
+                for mode_index, mode in enumerate(mode_labels):
+                    mode_rows = bucketed[
+                        (bucketed["load_mode"] == mode)
+                        & bucketed["load_mode_learning_ready"].astype(bool)
+                    ]
+                    mode_mae_value, mode_bias_value, _rmse, _reference, _skill, _count_float, mode_count = _rolling_error_stats(
+                        mode_rows["error"].to_numpy(dtype=np.float64),
+                        mode_rows["reference_error"].to_numpy(dtype=np.float64),
+                    )
+                    if mode_count < 2:
+                        continue
+                    cycles = int(mode_rows["cycle_time"].nunique())
+                    mode_mae[idx, mode_index, LEAD_BUCKETS.index((bucket, start_hour, end_hour))] = mode_mae_value
+                    mode_bias[idx, mode_index, LEAD_BUCKETS.index((bucket, start_hour, end_hour))] = mode_bias_value
+                    mode_samples[idx, mode_index, LEAD_BUCKETS.index((bucket, start_hour, end_hour))] = float(mode_count)
+                    mode_cycles[idx, mode_index, LEAD_BUCKETS.index((bucket, start_hour, end_hour))] = float(cycles)
+                    mode_ready[idx, mode_index, LEAD_BUCKETS.index((bucket, start_hour, end_hour))] = float(
+                        mode_mae_value <= FORECAST_TARGET_MAE_PCT_POINTS
+                        and abs(mode_bias_value) <= FORECAST_TARGET_MAE_PCT_POINTS
+                        and mode_count >= FORECAST_TARGET_MIN_SAMPLES
+                        and cycles >= FORECAST_TARGET_MIN_CYCLES
+                    )
         load = pieces.get("load")
         if load is not None:
             selected = _independent_verification_rows(
@@ -1263,8 +1410,22 @@ def build_forecast_skill_dataset(
             "sample_independence": "one forecast per ECMWF cycle and valid time",
             "load_model": LOAD_MODEL_NAME,
             "load_model_version": str(LOAD_MODEL_VERSION),
+            "target_soc_mae_pct_points": str(float(FORECAST_TARGET_MAE_PCT_POINTS)),
+            "target_soc_abs_bias_pct_points": str(float(FORECAST_TARGET_MAE_PCT_POINTS)),
+            "target_minimum_independent_cycles": str(int(FORECAST_TARGET_MIN_CYCLES)),
+            "target_minimum_verified_samples": str(int(FORECAST_TARGET_MIN_SAMPLES)),
         },
     )
+    if mode_labels:
+        out = out.assign_coords(
+            load_mode=np.asarray(mode_labels, dtype="U96"),
+            lead_bucket=np.asarray([bucket for bucket, _, _ in LEAD_BUCKETS], dtype="U16"),
+        )
+        out["ForecastSOCModeMAE"] = (("time", "load_mode", "lead_bucket"), mode_mae)
+        out["ForecastSOCModeBias"] = (("time", "load_mode", "lead_bucket"), mode_bias)
+        out["ForecastSOCModeSamples"] = (("time", "load_mode", "lead_bucket"), mode_samples)
+        out["ForecastSOCModeCycles"] = (("time", "load_mode", "lead_bucket"), mode_cycles)
+        out["ForecastSOCModeReadiness"] = (("time", "load_mode", "lead_bucket"), mode_ready)
     for name in out.data_vars:
         if name.endswith("Samples"):
             out[name].attrs["units"] = "samples"
@@ -1272,6 +1433,16 @@ def build_forecast_skill_dataset(
             out[name].attrs["units"] = "cycles"
         elif "Skill" in name:
             out[name].attrs["units"] = "1"
+        elif name.startswith("ForecastSOCReadiness_"):
+            out[name].attrs["units"] = "1"
+        elif name == "ForecastSOCModeReadiness":
+            out[name].attrs["units"] = "1"
+        elif name.endswith("Samples"):
+            out[name].attrs["units"] = "samples"
+        elif name.endswith("Cycles"):
+            out[name].attrs["units"] = "cycles"
+        elif name in {"ForecastSOCModeMAE", "ForecastSOCModeBias"}:
+            out[name].attrs["units"] = "percentage points"
         elif "SOC" in name:
             out[name].attrs["units"] = "percentage points"
         else:
@@ -1297,6 +1468,13 @@ def _archive_row_from_forecast(forecast: xr.Dataset) -> xr.Dataset:
     data_vars["LoadModelVersion"] = (
         ("issue_time",),
         np.array([float(forecast.attrs.get("load_model_version", LOAD_MODEL_VERSION))], dtype=np.float32),
+    )
+    # Keep the detected state with the issue record. Older archive rows simply
+    # have no mode label and are excluded from future per-mode certification.
+    data_vars["LoadMode"] = (("issue_time",), np.array([str(forecast.attrs.get("load_mode", "unknown"))], dtype="U96"))
+    data_vars["LoadModeLearningReady"] = (
+        ("issue_time",),
+        np.array([forecast.attrs.get("load_mode_learning_ready", "false") == "true"], dtype=bool),
     )
     for name in ARCHIVE_FORECAST_FIELDS:
         if name in forecast:
@@ -1536,12 +1714,59 @@ def calibrate_solar_factor(
     return float(DEFAULT_SOLAR_CALIBRATION_FACTOR)
 
 
+def calibrated_solar_factor_profile(
+    base_factor: float,
+    archive: xr.Dataset | None,
+    frame: pd.DataFrame,
+    forecast_times: pd.DatetimeIndex,
+    *,
+    issue_time: pd.Timestamp,
+) -> tuple[pd.Series, dict[str, float]]:
+    """Apply conservative, lead-specific solar MOS corrections.
+
+    A single local panel factor cannot correct a systematic ECMWF error that
+    grows with lead time. The correction is trained only on independent cycles
+    and only on meaningful daylight samples; sparse buckets retain the physical
+    panel factor unchanged.
+    """
+    factors = {bucket: 1.0 for bucket, _, _ in LEAD_BUCKETS}
+    observed = _observed_solar_w(frame)
+    if archive is not None and not observed.empty:
+        table = _archive_verification_frame(
+            archive,
+            observed,
+            forecast_var="ForecastSolarWatts",
+            tolerance=pd.Timedelta(minutes=10),
+        )
+        table = _independent_verification_rows(table)
+        for bucket, start, stop in LEAD_BUCKETS:
+            subset = table[
+                (table["lead_hour"] >= start)
+                & (table["lead_hour"] < stop)
+                & (table["forecast_value"] >= 50.0)
+                & (table["observed_value"] >= 0.0)
+            ]
+            if len(subset) < 12:
+                continue
+            ratios = (subset["observed_value"] / subset["forecast_value"]).to_numpy(dtype=np.float64)
+            ratios = ratios[np.isfinite(ratios)]
+            if ratios.size >= 12:
+                # Bound a young calibration so one cloudy cycle cannot erase
+                # physically plausible charging in the next forecast.
+                factors[bucket] = float(np.clip(np.nanmedian(ratios), 0.4, 1.4))
+    lead_hours = (pd.DatetimeIndex(forecast_times) - pd.Timestamp(issue_time)) / pd.Timedelta(hours=1)
+    values = np.full(len(forecast_times), float(base_factor), dtype=np.float64)
+    for bucket, start, stop in LEAD_BUCKETS:
+        values[(lead_hours >= start) & (lead_hours < stop)] *= factors[bucket]
+    return pd.Series(values, index=pd.DatetimeIndex(forecast_times)), factors
+
+
 def integrate_soc_forecast(
     *,
     initial_soc: float,
     initial_time: pd.Timestamp | None = None,
     irradiance: pd.Series,
-    solar_factor: float,
+    solar_factor: float | pd.Series,
     load_w: float | pd.Series,
     capacity_kwh: float = DEFAULT_BATTERY_CAPACITY_KWH,
 ) -> pd.DataFrame:
@@ -1550,7 +1775,12 @@ def integrate_soc_forecast(
         return pd.DataFrame()
     forecast_times = pd.DatetimeIndex(irradiance.index)
     forecast_irradiance = irradiance.to_numpy(dtype=np.float64)
-    forecast_solar_w = np.clip(forecast_irradiance * float(solar_factor), 0.0, None)
+    if isinstance(solar_factor, pd.Series):
+        factors = solar_factor.reindex(forecast_times, method="nearest", tolerance=pd.Timedelta(hours=2))
+        factors = factors.ffill().bfill().fillna(DEFAULT_SOLAR_CALIBRATION_FACTOR).to_numpy(dtype=np.float64)
+    else:
+        factors = np.full(len(forecast_times), float(solar_factor), dtype=np.float64)
+    forecast_solar_w = np.clip(forecast_irradiance * factors, 0.0, None)
     if initial_time is not None:
         initial_time = pd.Timestamp(initial_time)
         if initial_time.tz is not None:
@@ -1641,7 +1871,10 @@ def build_forecast_dataset(
         raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
     latest_time, latest_soc = latest_finite(frame["BatterySOC"])
     state = dict(state or {})
-    previous_metrics = evaluate_forecast_archive(forecast_archive, frame)
+    # Only independent ECMWF cycles are allowed to tune the live model. The
+    # full archive remains available for audit, but repeated same-cycle
+    # re-anchors otherwise overweight a single weather realisation.
+    previous_metrics = evaluate_independent_forecast_archive(forecast_archive, frame)
     if not previous_metrics:
         previous_metrics = evaluate_previous_forecast(previous_forecast, frame)
     irradiance = solar_irradiance_from_ssrd(solar)
@@ -1668,6 +1901,13 @@ def build_forecast_dataset(
         )
     )
     factor = _adaptive_value(factor_raw, state.get("solar_calibration_factor_w_per_wm2"), alpha=adaptive_alpha)
+    solar_factor_profile, solar_mos_by_bucket = calibrated_solar_factor_profile(
+        factor,
+        forecast_archive,
+        frame,
+        pd.DatetimeIndex(irradiance.index),
+        issue_time=latest_time,
+    )
     raw_load_profile = build_historical_load_forecast(
         frame,
         pd.DatetimeIndex(irradiance.index),
@@ -1693,7 +1933,7 @@ def build_forecast_dataset(
     mode_signature = _load_mode_signature(load_mode, mode_source, active_kits)
     learning_ready, learning_reason = _mode_learning_status(load_diagnostics, load_mode)
     if learning_ready:
-        load_mode_registry, load_w = _update_load_mode_registry(
+        load_mode_registry, learned_load_w = _update_load_mode_registry(
             load_mode_registry,
             mode=load_mode,
             observed_level_w=raw_load_w,
@@ -1702,13 +1942,21 @@ def build_forecast_dataset(
             mode_source=mode_source,
             signature=mode_signature,
         )
+        learned_entry = load_mode_registry.get(load_mode, {})
+        learned_count = int(learned_entry.get("observation_count", 0) or 0)
+        # A newly observed signature is informative but not yet a calibrated
+        # mode. Keep the measured current level until the robust mode median
+        # has enough separated stable observations.
+        load_w = learned_load_w if learned_count >= DEFAULT_MODE_MIN_OBSERVATIONS else raw_load_w
     else:
         mode_entry = load_mode_registry.get(load_mode, {})
         try:
             learned_level_w = float(mode_entry.get("learned_level_w", np.nan))
+            learned_observations = int(mode_entry.get("observation_count", 0) or 0)
         except Exception:
             learned_level_w = np.nan
-        if np.isfinite(learned_level_w):
+            learned_observations = 0
+        if np.isfinite(learned_level_w) and learned_observations >= DEFAULT_MODE_MIN_OBSERVATIONS:
             load_w = learned_level_w
         elif mode_source == "pdu_signature" and np.isfinite(pdu_active_watts) and clean_dc_only_level_w is not None:
             load_w = float(clean_dc_only_level_w) + float(pdu_active_watts)
@@ -1727,6 +1975,7 @@ def build_forecast_dataset(
             "load_mode_learning_ready": learning_ready,
             "load_mode_learning_reason": learning_reason,
             "load_mode_learning_observations": learning_observations,
+            "load_mode_minimum_observations": DEFAULT_MODE_MIN_OBSERVATIONS,
             "load_regime": load_mode,
             "load_regime_level_w": load_w,
         }
@@ -1739,7 +1988,7 @@ def build_forecast_dataset(
         initial_soc=latest_soc,
         initial_time=latest_time,
         irradiance=irradiance,
-        solar_factor=factor,
+        solar_factor=solar_factor_profile,
         load_w=load_profile,
         capacity_kwh=capacity_kwh,
     )
@@ -1748,7 +1997,7 @@ def build_forecast_dataset(
             initial_soc=latest_soc,
             initial_time=latest_time,
             irradiance=irradiance,
-            solar_factor=factor,
+            solar_factor=solar_factor_profile,
             load_w=float(scenario_load_w),
             capacity_kwh=capacity_kwh,
         )
@@ -1792,6 +2041,8 @@ def build_forecast_dataset(
             "calibration_days": str(float(calibration_days)),
             "solar_calibration_factor_w_per_wm2": f"{factor:.6g}",
             "raw_solar_calibration_factor_w_per_wm2": f"{factor_raw:.6g}",
+            "solar_mos_factor_by_lead_bucket": json.dumps(solar_mos_by_bucket, sort_keys=True),
+            "solar_calibration": "physical panel factor plus independent-cycle lead-specific MOS",
             "forecast_load_w": f"{load_w:.6g}",
             "raw_forecast_load_w": f"{raw_load_w:.6g}",
             "load_bias_correction_w": f"{load_bias_correction:.6g}",

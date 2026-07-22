@@ -23,6 +23,7 @@ from generate_power_soc_forecast import (
     build_historical_load_forecast,
     build_soc_hindcast_dataset,
     evaluate_forecast_archive,
+    evaluate_independent_forecast_archive,
     resolve_ecmwf_cycle_hour,
     solar_irradiance_from_ssrd,
     validate_power_input_freshness,
@@ -222,8 +223,8 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertGreaterEqual(float(forecast["BatterySOCForecast"].min()), 0.0)
         self.assertLessEqual(float(forecast["BatterySOCForecast"].max()), 100.0)
         self.assertEqual(forecast.attrs["forecast_horizon_hours"], "12")
-        self.assertEqual(forecast.attrs["load_model"], "kit_mode_persistence_v4")
-        self.assertEqual(forecast.attrs["load_model_version"], "4")
+        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v5")
+        self.assertEqual(forecast.attrs["load_model_version"], "5")
         self.assertEqual(float(forecast.attrs["minimum_operational_soc_pct"]), 40.0)
         self.assertEqual(forecast.attrs["scenario_loads_w"], "100,200,300,400,500,600")
         self.assertEqual(forecast.attrs["scenario_solar_mode"], "ecmwf")
@@ -303,8 +304,8 @@ class PowerSocForecastTests(unittest.TestCase):
         load = build_historical_load_forecast(frame, forecast_times, end=times[-1], calibration_days=10)
 
         np.testing.assert_allclose(load.to_numpy(), 9.0)
-        self.assertEqual(load.attrs["load_model"], "kit_mode_persistence_v4")
-        self.assertEqual(load.attrs["load_model_version"], 4)
+        self.assertEqual(load.attrs["load_model"], "mode_conditioned_energy_balance_v5")
+        self.assertEqual(load.attrs["load_model_version"], 5)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
         self.assertEqual(load.attrs["load_regime"], "DC-Only")
         self.assertGreater(float(load.attrs["load_regime_threshold_w"]), 9.0)
@@ -489,7 +490,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(float(forecast.attrs["load_bias_correction_w"]), 0.0)
         self.assertAlmostEqual(float(forecast["ForecastLoadWatts"].median()), 250.0)
-        self.assertEqual(forecast.attrs["load_model"], "kit_mode_persistence_v4")
+        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v5")
         self.assertIn("ForecastLoadBiasRecent", forecast)
 
     def test_stale_negative_load_bias_cannot_zero_ac_dc_load_forecast(self) -> None:
@@ -616,7 +617,7 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={
                 "initial_soc_time": new_issue.isoformat(),
                 "ecmwf_cycle_time": new_issue.isoformat(),
-                "load_model_version": "4",
+                "load_model_version": "5",
             },
         )
         archive = append_forecast_archive(new_forecast, self.tmp_archive_path)
@@ -640,7 +641,7 @@ class PowerSocForecastTests(unittest.TestCase):
         finite_mae = skill["ForecastLoadMAE24h"].dropna("time")
         self.assertTrue(len(finite_mae))
         self.assertAlmostEqual(float(finite_mae.values[-1]), 10.0)
-        self.assertEqual(skill.attrs["load_model_version"], "4")
+        self.assertEqual(skill.attrs["load_model_version"], "5")
 
     def test_hindcast_selects_fixed_lead_forecasts(self) -> None:
         issue = pd.Timestamp("2026-07-10T00:00:00")
@@ -700,6 +701,29 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertTrue(len(finite))
         self.assertEqual(float(finite.values[-1]), 1.0)
 
+    def test_independent_metrics_do_not_overweight_same_cycle_reanchors(self) -> None:
+        cycle = pd.Timestamp("2026-07-10T00:00:00")
+        archive = None
+        for minute, value in ((0, 40.0), (15, 58.0)):
+            issue = cycle + pd.Timedelta(minutes=minute)
+            forecast = xr.Dataset(
+                {"BatterySOCForecast": (("time",), [60.0, value])},
+                coords={"time": [issue, cycle + pd.Timedelta(hours=3)]},
+                attrs={"initial_soc_time": issue.isoformat(), "ecmwf_cycle_time": cycle.isoformat()},
+            )
+            archive = append_forecast_archive(forecast, self.tmp_archive_path)
+        frame = pd.DataFrame(
+            {"BatterySOC": [60.0, 60.0, 58.0]},
+            index=pd.DatetimeIndex([cycle, cycle + pd.Timedelta(minutes=15), cycle + pd.Timedelta(hours=3)]),
+        )
+
+        raw = evaluate_forecast_archive(archive, frame)
+        independent = evaluate_independent_forecast_archive(archive, frame)
+
+        self.assertGreater(float(raw["soc_mae_0_6h"]), 0.0)
+        self.assertAlmostEqual(float(independent["soc_mae_0_6h"]), 0.0)
+        self.assertEqual(int(independent["soc_independent_cycles"]), 1)
+
     def test_build_ensemble_starts_every_member_at_actual_soc(self) -> None:
         power_times = pd.date_range("2026-07-10T00:00:00", periods=49, freq="1h")
         power = xr.Dataset(
@@ -724,8 +748,8 @@ class PowerSocForecastTests(unittest.TestCase):
                 "battery_capacity_kwh": "26",
                 "load_bias_correction_w": "0",
                 "forecast_load_w": "455.15",
-                "load_model": "kit_mode_persistence_v4",
-                "load_model_version": "4",
+                "load_model": "mode_conditioned_energy_balance_v5",
+                "load_model_version": "5",
                 "load_mode": "DC-Only + CL61",
                 "load_mode_source": "pdu_signature",
                 "load_mode_active_kits": "CL61",
@@ -753,15 +777,15 @@ class PowerSocForecastTests(unittest.TestCase):
             float(ensemble.attrs["minimum_operational_soc_pct"]),
             MINIMUM_OPERATIONAL_SOC_PCT,
         )
-        self.assertEqual(ensemble.attrs["load_model"], "kit_mode_persistence_v4")
-        self.assertEqual(ensemble.attrs["load_model_version"], "4")
+        self.assertEqual(ensemble.attrs["load_model"], "mode_conditioned_energy_balance_v5")
+        self.assertEqual(ensemble.attrs["load_model_version"], "5")
         self.assertEqual(ensemble.attrs["load_mode"], "DC-Only + CL61")
         self.assertEqual(ensemble.attrs["load_mode_signature"], "PDUOutlet5Watts>=5W")
         self.assertEqual(float(ensemble.attrs["forecast_load_w"]), 455.15)
         self.assertEqual(ensemble.attrs["scenario_scope"], "current_system_only")
         self.assertEqual(
             ensemble.attrs["load_uncertainty"],
-            "fixed current-system load; ECMWF solar ensemble only",
+            "mode-conditioned recent load residuals plus ECMWF solar ensemble",
         )
 
     def test_ensemble_reanchors_when_soc_or_load_mode_changes_within_same_cycle(self) -> None:
@@ -772,8 +796,8 @@ class PowerSocForecastTests(unittest.TestCase):
             "battery_capacity_kwh": "26",
             "load_bias_correction_w": "0",
             "forecast_load_w": "455.15",
-            "load_model": "kit_mode_persistence_v4",
-            "load_model_version": "4",
+            "load_model": "mode_conditioned_energy_balance_v5",
+            "load_model_version": "5",
             "load_mode": "DC-Only + CL61",
             "load_mode_source": "pdu_signature",
             "load_mode_active_kits": "CL61",
@@ -881,9 +905,9 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertIsNotNone(guidance)
         metrics = {metric["id"]: metric for metric in guidance["metrics"]}
-        self.assertEqual(metrics["soc-crps-0_6h"]["status"], "Better than persistence")
+        self.assertEqual(metrics["soc-crps-0_6h"]["status"], "Insufficient evidence")
         self.assertEqual(metrics["soc-crps-48_96h"]["valueText"], "Not yet verified")
-        self.assertEqual(metrics["soc-coverage"]["status"], "Consistent with 80% target")
+        self.assertEqual(metrics["soc-coverage"]["status"], "Insufficient evidence")
 
     def test_display_summary_merges_forecast_fields(self) -> None:
         power_times = pd.date_range("2026-07-10T00:00:00", periods=3, freq="1h")
@@ -906,8 +930,8 @@ class PowerSocForecastTests(unittest.TestCase):
             coords={"time": forecast_times},
             attrs={
                 "load_mode": "DC-Only",
-                "load_model": "kit_mode_persistence_v4",
-                "load_model_version": "4",
+                "load_model": "mode_conditioned_energy_balance_v5",
+                "load_model_version": "5",
                 "load_mode_source": "ac_output",
                 "load_mode_active_kits": "",
                 "load_mode_signature": "ACOutputWatts<=25W",
@@ -995,7 +1019,7 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(summary.attrs["operating_learned_1_label"], "DC + Radar")
         self.assertEqual(summary.attrs["operating_current_mode_label"], "DC + CL61")
         self.assertEqual(summary.attrs["forecast_load_mode"], "DC-Only")
-        self.assertEqual(summary.attrs["forecast_load_model"], "kit_mode_persistence_v4")
+        self.assertEqual(summary.attrs["forecast_load_model"], "mode_conditioned_energy_balance_v5")
         self.assertEqual(summary.attrs["forecast_load_mode_signature"], "ACOutputWatts<=25W")
         self.assertEqual(summary.attrs["forecast_load_mode_learning_ready"], "true")
         self.assertEqual(summary.attrs["forecast_load_measurement"], "battery_discharge_when_solar_zero")
