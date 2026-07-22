@@ -500,7 +500,11 @@ def overview() -> dict[str, Any]:
     latest_cameras = auroracam("latest")
     camera_times = [record.get("timeUTC") for record in latest_cameras["frames"] if record.get("timeUTC")]
     latest_camera_time = max(camera_times) if camera_times else None
-    latest_power_time = snapshot.get("power_latest_time_utc") or _latest_power_time()
+    # The operations snapshot can retain an older convenience timestamp while
+    # its battery metrics are refreshed from the same current power stream.
+    # Prefer the measured display product so the overview reports actual data
+    # freshness; preserve the snapshot value only for legacy/missing products.
+    latest_power_time = _latest_power_time() or snapshot.get("power_latest_time_utc")
     depletion_value, depletion_detail = _battery_depletion_text(snapshot)
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
