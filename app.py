@@ -403,6 +403,8 @@ _BROWSER_PERF_EVENTS = {
 class BrowserPerformanceProbe(pn.custom.JSComponent):
     """Report real browser milestones to the development performance log."""
 
+    message = param.Dict(default={})
+
     _esm = """
     export function render({ model }) {
       const marker = document.createElement("span");
@@ -441,7 +443,9 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
           viewport_height: window.innerHeight,
           ...extra,
         };
-        window.setTimeout(() => model.send_msg(payload), 0);
+        window.setTimeout(() => {
+          model.message = { ...payload, nonce: Date.now() };
+        }, 0);
       };
 
       window.setTimeout(() => emit("browser_document_ready", performance.now(), {
@@ -511,6 +515,13 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
       return marker;
     }
     """
+
+    def __init__(self, **params) -> None:
+        super().__init__(**params)
+        self.param.watch(self._handle_param_message, "message")
+
+    def _handle_param_message(self, event) -> None:
+        self._handle_msg(event.new)
 
     def _handle_msg(self, data) -> None:
         if not isinstance(data, dict):
