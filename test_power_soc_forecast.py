@@ -22,6 +22,7 @@ from generate_power_soc_forecast import (
     build_forecast_skill_dataset,
     build_historical_load_forecast,
     build_soc_hindcast_dataset,
+    calibrated_solar_factor_profile,
     evaluate_forecast_archive,
     evaluate_independent_forecast_archive,
     resolve_ecmwf_cycle_hour,
@@ -94,6 +95,22 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(list(irradiance.index), list(times[1:]))
         np.testing.assert_allclose(irradiance.to_numpy(), [100.0, 150.0, 150.0])
+
+    def test_solar_factor_profile_uses_defaults_when_archive_has_no_verification_rows(self) -> None:
+        observed_times = pd.date_range("2026-07-22T06:00:00", periods=3, freq="10min")
+        frame = pd.DataFrame({"SolarWatts_East": [10.0, 20.0, 30.0]}, index=observed_times)
+        forecast_times = pd.date_range("2026-07-22T08:00:00", periods=4, freq="6h")
+
+        profile, corrections = calibrated_solar_factor_profile(
+            2.5,
+            xr.Dataset(),
+            frame,
+            forecast_times,
+            issue_time=pd.Timestamp("2026-07-22T08:00:00"),
+        )
+
+        np.testing.assert_allclose(profile.to_numpy(), np.full(4, 2.5))
+        self.assertTrue(all(value == 1.0 for value in corrections.values()))
 
     def test_auto_long_cycle_selects_the_latest_likely_complete_cycle(self) -> None:
         self.assertEqual(resolve_ecmwf_cycle_hour("auto", now=datetime(2026, 7, 16, 9, tzinfo=timezone.utc)), 0)

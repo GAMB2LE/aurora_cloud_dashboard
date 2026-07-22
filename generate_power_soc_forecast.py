@@ -1739,21 +1739,22 @@ def calibrated_solar_factor_profile(
             tolerance=pd.Timedelta(minutes=10),
         )
         table = _independent_verification_rows(table)
-        for bucket, start, stop in LEAD_BUCKETS:
-            subset = table[
-                (table["lead_hour"] >= start)
-                & (table["lead_hour"] < stop)
-                & (table["forecast_value"] >= 50.0)
-                & (table["observed_value"] >= 0.0)
-            ]
-            if len(subset) < 12:
-                continue
-            ratios = (subset["observed_value"] / subset["forecast_value"]).to_numpy(dtype=np.float64)
-            ratios = ratios[np.isfinite(ratios)]
-            if ratios.size >= 12:
-                # Bound a young calibration so one cloudy cycle cannot erase
-                # physically plausible charging in the next forecast.
-                factors[bucket] = float(np.clip(np.nanmedian(ratios), 0.4, 1.4))
+        if not table.empty:
+            for bucket, start, stop in LEAD_BUCKETS:
+                subset = table[
+                    (table["lead_hour"] >= start)
+                    & (table["lead_hour"] < stop)
+                    & (table["forecast_value"] >= 50.0)
+                    & (table["observed_value"] >= 0.0)
+                ]
+                if len(subset) < 12:
+                    continue
+                ratios = (subset["observed_value"] / subset["forecast_value"]).to_numpy(dtype=np.float64)
+                ratios = ratios[np.isfinite(ratios)]
+                if ratios.size >= 12:
+                    # Bound a young calibration so one cloudy cycle cannot erase
+                    # physically plausible charging in the next forecast.
+                    factors[bucket] = float(np.clip(np.nanmedian(ratios), 0.4, 1.4))
     lead_hours = (pd.DatetimeIndex(forecast_times) - pd.Timestamp(issue_time)) / pd.Timedelta(hours=1)
     values = np.full(len(forecast_times), float(base_factor), dtype=np.float64)
     for bucket, start, stop in LEAD_BUCKETS:
