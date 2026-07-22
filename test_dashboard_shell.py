@@ -14,6 +14,32 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_browser_performance_probe_is_development_only(self) -> None:
+        with (
+            patch.object(app, "SITE_ENV", "development"),
+            patch.dict("os.environ", {"AURORA_BROWSER_RUM_ENABLED": "1"}, clear=False),
+        ):
+            probe = app._browser_performance_probe()
+
+        self.assertIsInstance(probe, app.BrowserPerformanceProbe)
+        self.assertIn("browser_first_power_plot", probe._esm)
+        self.assertIn("browser_power_section_switch", probe._esm)
+
+        with (
+            patch.object(app, "SITE_ENV", "production"),
+            patch.dict("os.environ", {"AURORA_BROWSER_RUM_ENABLED": "1"}, clear=False),
+        ):
+            self.assertIsNone(app._browser_performance_probe())
+
+    def test_browser_performance_probe_rejects_unknown_events(self) -> None:
+        probe = app.BrowserPerformanceProbe()
+        events = []
+        with patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))):
+            probe._handle_msg({"event": "untrusted", "duration_ms": 1})
+            probe._handle_msg({"event": "browser_document_ready", "duration_ms": 12.5, "path": "/app"})
+
+        self.assertEqual(events, [("browser_document_ready", {"duration_ms": 12.5, "instrument": "power", "path": "/app"})])
+
     def test_power_section_prewarm_paths_are_distinct(self) -> None:
         original = app.power_view_select.value
         try:

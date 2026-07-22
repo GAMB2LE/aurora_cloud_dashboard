@@ -393,6 +393,152 @@ def _perf_log(event: str, duration_ms: float | None = None, **fields) -> None:
         print(f"[perf] write failed for {event}: {exc}")
 
 
+_BROWSER_PERF_EVENTS = {
+    "browser_document_ready",
+    "browser_first_power_plot",
+    "browser_power_section_switch",
+}
+
+
+class BrowserPerformanceProbe(pn.custom.JSComponent):
+    """Report real browser milestones to the development performance log."""
+
+    _esm = """
+    export function render({ model }) {
+      const marker = document.createElement("span");
+      marker.hidden = true;
+      marker.setAttribute("aria-hidden", "true");
+
+      const roots = () => {
+        const found = [document];
+        for (let index = 0; index < found.length; index += 1) {
+          const root = found[index];
+          for (const element of root.querySelectorAll("*")) {
+            if (element.shadowRoot && !found.includes(element.shadowRoot)) {
+              found.push(element.shadowRoot);
+            }
+          }
+        }
+        return found;
+      };
+      const plots = () => roots().flatMap(
+        (root) => Array.from(root.querySelectorAll(".js-plotly-plot"))
+      );
+      const plotSignature = () => {
+        const nodes = plots();
+        const traces = nodes.reduce(
+          (total, node) => total + (Array.isArray(node.data) ? node.data.length : 0), 0
+        );
+        return `${nodes.length}:${traces}`;
+      };
+      const navigation = performance.getEntriesByType("navigation")[0] || {};
+      const emit = (event, duration, extra = {}) => model.send_msg({
+        event,
+        duration_ms: Math.round(Number(duration) * 1000) / 1000,
+        path: `${location.pathname}${location.search}`,
+        viewport_width: window.innerWidth,
+        viewport_height: window.innerHeight,
+        ...extra,
+      });
+
+      emit("browser_document_ready", performance.now(), {
+        response_start_ms: Number(navigation.responseStart || 0),
+        dom_interactive_ms: Number(navigation.domInteractive || 0),
+        load_event_end_ms: Number(navigation.loadEventEnd || 0),
+        navigation_type: String(navigation.type || "unknown"),
+      });
+
+      let firstPlotSent = false;
+      let firstPlotTimer = null;
+      const checkFirstPlot = () => {
+        if (firstPlotSent || firstPlotTimer !== null) return;
+        firstPlotTimer = window.setTimeout(() => {
+          firstPlotTimer = null;
+          const nodes = plots();
+          if (!nodes.length) return;
+          firstPlotSent = true;
+          emit("browser_first_power_plot", performance.now(), {
+            plot_count: nodes.length,
+            trace_count: nodes.reduce(
+              (total, node) => total + (Array.isArray(node.data) ? node.data.length : 0), 0
+            ),
+          });
+        }, 50);
+      };
+
+      let switchTimer = null;
+      const onClick = (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const label = button.textContent.trim();
+        if (label !== "Current Conditions" && label !== "Forecast & Planning") return;
+        if (switchTimer !== null) window.clearInterval(switchTimer);
+        const started = performance.now();
+        const original = plotSignature();
+        switchTimer = window.setInterval(() => {
+          const elapsed = performance.now() - started;
+          const signature = plotSignature();
+          if (signature === original && elapsed < 20000) return;
+          window.clearInterval(switchTimer);
+          switchTimer = null;
+          emit("browser_power_section_switch", elapsed, {
+            section: label,
+            plot_signature_before: original,
+            plot_signature_after: signature,
+            timed_out: elapsed >= 20000,
+          });
+        }, 100);
+      };
+
+      document.addEventListener("click", onClick, true);
+      const observer = new MutationObserver(checkFirstPlot);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      checkFirstPlot();
+
+      marker.remove = (() => {
+        const remove = marker.remove.bind(marker);
+        return () => {
+          observer.disconnect();
+          document.removeEventListener("click", onClick, true);
+          if (firstPlotTimer !== null) window.clearTimeout(firstPlotTimer);
+          if (switchTimer !== null) window.clearInterval(switchTimer);
+          remove();
+        };
+      })();
+      return marker;
+    }
+    """
+
+    def _handle_msg(self, data) -> None:
+        if not isinstance(data, dict):
+            return
+        event = str(data.get("event", ""))
+        if event not in _BROWSER_PERF_EVENTS:
+            return
+        try:
+            duration_ms = float(data.get("duration_ms"))
+        except (TypeError, ValueError):
+            return
+        fields = {
+            str(key): value
+            for key, value in data.items()
+            if key not in {"event", "duration_ms"}
+        }
+        _perf_log(event, duration_ms=duration_ms, instrument="power", **fields)
+
+
+def _browser_performance_probe() -> BrowserPerformanceProbe | None:
+    enabled = os.environ.get("AURORA_BROWSER_RUM_ENABLED", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if SITE_ENV != "development" or not enabled:
+        return None
+    return BrowserPerformanceProbe(width=0, height=0, margin=0, sizing_mode="fixed")
+
+
 @contextmanager
 def _timed_perf(event: str, **fields):
     details = dict(fields)
@@ -10609,7 +10755,12 @@ if not _MOBILE_LAYOUT_ACTIVE:
     pn.state.onload(_enable_browser_interactive_render)
 
 site_env_banner = _site_env_banner_pane()
-template.main[:] = ([site_env_banner] if site_env_banner is not None else []) + [main_layout]
+browser_performance_probe = _browser_performance_probe()
+template.main[:] = (
+    ([site_env_banner] if site_env_banner is not None else [])
+    + [main_layout]
+    + ([browser_performance_probe] if browser_performance_probe is not None else [])
+)
 
 # Serve the app. `location=True` installs Panel's Location model so the app can
 # keep the browser URL aligned with the selected view.
