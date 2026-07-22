@@ -536,7 +536,9 @@ def _browser_performance_probe() -> BrowserPerformanceProbe | None:
     }
     if SITE_ENV != "development" or not enabled:
         return None
-    return BrowserPerformanceProbe(width=0, height=0, margin=0, sizing_mode="fixed")
+    # A real 1 px box keeps Panel's global deferred loader from skipping the
+    # probe while remaining visually imperceptible.
+    return BrowserPerformanceProbe(width=1, height=1, margin=0, sizing_mode="fixed")
 
 
 @contextmanager
@@ -10758,8 +10760,8 @@ site_env_banner = _site_env_banner_pane()
 browser_performance_probe = _browser_performance_probe()
 template.main[:] = (
     ([site_env_banner] if site_env_banner is not None else [])
-    + [main_layout]
     + ([browser_performance_probe] if browser_performance_probe is not None else [])
+    + [main_layout]
 )
 
 # Serve the app. `location=True` installs Panel's Location model so the app can
