@@ -9409,6 +9409,7 @@ power_plan_editor = pn.Card(
     visible=CURRENT_INSTRUMENT == "power",
     css_classes=["small-card", "operating-plan-card"],
 )
+power_plan_editor_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
 
 mobile_custom_cl61_start = pn.widgets.DatetimePicker(
     name="Instrument start (UTC)",
@@ -9704,7 +9705,16 @@ def _sync_power_section_visibility() -> None:
     power_view_select_container.visible = is_power
     power_section_intro_container.visible = is_power
     power_browser_guidance_container.visible = is_forecast
-    power_plan_editor.visible = is_forecast
+    power_plan_editor_container.visible = is_forecast
+    if is_forecast:
+        guidance = globals().get("_browser_power_briefing")
+        if not power_browser_guidance_container.objects and callable(guidance):
+            power_browser_guidance_container[:] = [guidance]
+        if not power_plan_editor_container.objects:
+            power_plan_editor_container[:] = [power_plan_editor]
+    else:
+        power_browser_guidance_container.clear()
+        power_plan_editor_container.clear()
 
 
 def _on_power_view_change(_event) -> None:
@@ -9743,7 +9753,7 @@ interactive_tab = pn.Column(
     power_section_intro_container,
     power_browser_guidance_container,
     interactive_content,
-    power_plan_editor,
+    power_plan_editor_container,
     interactive_footer,
     sizing_mode="stretch_width",
 )
@@ -10392,7 +10402,7 @@ def _browser_power_briefing(instrument, _live_refresh_anchor):
     )
 
 
-power_browser_guidance_container[:] = [_browser_power_briefing]
+_sync_power_section_visibility()
 
 
 @pn.depends(power_view_select.param.value, range_end.param.value)
