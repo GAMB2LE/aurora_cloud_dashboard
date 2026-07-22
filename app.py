@@ -827,6 +827,7 @@ _BASE_DS: dict[str, xr.Dataset | None] = {}
 _TIME_BOUNDS_CACHE: dict[str, dict[str, object]] = {}
 _INTERACTIVE_FIGURE_CACHE: dict[str, go.Figure] = {}
 _INTERACTIVE_RENDER_CACHE: OrderedDict[tuple[object, ...], go.Figure] = OrderedDict()
+_IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS: set[tuple[object, ...]] = set()
 _INSTRUMENT_VIEW_STATE: dict[str, dict[str, object]] = {}
 _DATASET_VERSION: dict[str, int] = {}
 _DATASET_REFRESHED_AT: dict[str, datetime] = {}
@@ -4114,7 +4115,20 @@ def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) 
     if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=5):
         return False
     if inst == "power":
-        _lower, latest = _power_display_summary_time_bounds_metadata()
+        # Development prewarms represent the live browser window ending now,
+        # rather than ending at the newest observed point. The latter hides a
+        # collection gap and used to force an expensive synchronous Zarr read.
+        prewarm_path = _prewarmed_interactive_path(inst)
+        if not prewarm_path.exists():
+            return False
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromtimestamp(prewarm_path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            return False
+        if age > PREWARM_LATEST_CACHE_TOLERANCE:
+            return False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return abs(end_dt - now) <= PREWARM_LATEST_CACHE_TOLERANCE
     else:
         _lower, latest = _dataset_time_bounds(inst)
     latest_dt = _as_naive_utc_datetime(latest)
@@ -5564,37 +5578,23 @@ def _render_interactive_view(
         CURRENT_INSTRUMENT = instrument
     start, end, cache_window_mode = _canonical_interactive_window(start, end, instrument)
     print(f"[render-view] instrument={instrument} quality={render_quality} request={request_id}")
-    with _timed_perf(
-        "interactive_view_update",
-        instrument=instrument,
-        start=start,
-        end=end,
+    cache_key = _interactive_render_cache_key(
+        start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax,
+        lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument,
         render_quality=render_quality,
-        request_id=request_id,
-    ) as perf:
+    )
+    try:
+      with _timed_perf(
+          "interactive_view_update",
+          instrument=instrument,
+          start=start,
+          end=end,
+          render_quality=render_quality,
+          request_id=request_id,
+      ) as perf:
         if not _render_request_active(request_id):
             perf["status"] = "stale_before_start"
             return
-        cache_key = _interactive_render_cache_key(
-            start,
-            end,
-            bottom_val,
-            top_val,
-            var1_name,
-            var2_name,
-            bmin,
-            bmax,
-            lmin,
-            lmax,
-            lymin,
-            lymax,
-            iymin,
-            iymax,
-            rymin,
-            rymax,
-            instrument,
-            render_quality=render_quality,
-        )
         perf["cache_window_mode"] = cache_window_mode
         perf["top_var"] = var1_name
         perf["bottom_var"] = var2_name
@@ -5860,6 +5860,8 @@ def _render_interactive_view(
             )
         elif _render_request_active(request_id):
             _clear_interactive_loading()
+    finally:
+        _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.discard(cache_key)
 
 
 def _start_interactive_render(
@@ -5914,6 +5916,9 @@ def _start_interactive_render(
     if _restore_exact_interactive_cache(full_cache_key, instrument):
         _clear_interactive_loading()
         return
+    if full_cache_key in _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS:
+        _perf_log("interactive_render_deduplicated", instrument=instrument)
+        return
     first_cache_key = _interactive_render_cache_key(
         start,
         end,
@@ -5945,6 +5950,7 @@ def _start_interactive_render(
         if not _show_cached_quicklook_placeholder(instrument, start=start, end=end):
             _show_interactive_placeholder(instrument, "Loading the selected window and preparing the first pass of the plot.")
 
+    _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.add(first_cache_key)
     _schedule_next_tick(
         lambda: _render_interactive_view(
             start,
@@ -9693,8 +9699,27 @@ def _sync_power_section_visibility() -> None:
 def _on_power_view_change(_event) -> None:
     _sync_power_section_visibility()
     if instrument_select.value == "power":
-        _show_interactive_placeholder("power", "Preparing the selected Power section.")
-        _schedule_current_interactive_render()
+        # A section-specific prewarm is normally available. Start directly so
+        # the tab can replace the visible figure without a placeholder flash.
+        _start_interactive_render(
+            range_start.value,
+            range_end.value,
+            bottom_range_m.value,
+            top_range_m.value,
+            var1_select.value,
+            var2_select.value,
+            beta_vmin.value,
+            beta_vmax.value,
+            ldr_vmin.value,
+            ldr_vmax.value,
+            lwp_ymin.value,
+            lwp_ymax.value,
+            iwv_ymin.value,
+            iwv_ymax.value,
+            irr_ymin.value,
+            irr_ymax.value,
+            "power",
+        )
     _refresh_share_and_download_state()
 
 

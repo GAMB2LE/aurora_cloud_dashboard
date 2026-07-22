@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -39,6 +40,7 @@ PREWARM_DIR = Path(os.environ.get("AURORA_INTERACTIVE_PREWARM_DIR", "/data/auror
 PREWARM_JSON = PREWARM_DIR / "power_latest_interactive.json"
 PREWARM_CURRENT_JSON = PREWARM_DIR / "power_current_latest_interactive.json"
 PREWARM_FORECAST_JSON = PREWARM_DIR / "power_forecast_latest_interactive.json"
+PREWARM_METADATA_JSON = PREWARM_DIR / "power_prewarms_metadata.json"
 INSTRUMENT = "power"
 ASS_POWER_VAR = "watts_on_48vdc_Avg"
 
@@ -82,12 +84,13 @@ def _with_display_window(ds: xr.Dataset, start: pd.Timestamp, end: pd.Timestamp)
     return ds
 
 
-def _optional_display_summary_dataset() -> xr.Dataset | None:
+def _optional_display_summary_dataset(*, refresh: bool = True) -> xr.Dataset | None:
     """Return the compact Power display product used by summary panels."""
-    try:
-        generate_power_display_summary()
-    except Exception as exc:
-        print(f"Could not refresh Power display-summary Zarr: {exc}")
+    if refresh:
+        try:
+            generate_power_display_summary()
+        except Exception as exc:
+            print(f"Could not refresh Power display-summary Zarr: {exc}")
     if not POWER_DISPLAY_SUMMARY_ZARR_PATH.exists():
         return None
     try:
@@ -114,16 +117,91 @@ def _summary_inputs(
     )
 
 
-def main(force: bool = False) -> None:
+def _atomic_write_figure_json(fig, path: Path) -> None:
+    """Publish complete Plotly JSON only after its temporary file is written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    fig.write_json(temporary)
+    temporary.replace(path)
+
+
+def _latest_prewarm_window(time_index: pd.DatetimeIndex) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Return the live 24-hour browser window, ending at current UTC time.
+
+    The observed series may end before now. Keeping that empty tail is deliberate:
+    it makes a collection gap visible instead of silently shifting the plot back
+    to the latest available sample.
+    """
+    observed_end = pd.Timestamp(time_index.max())
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    end = max(now, observed_end)
+    return end - timedelta(hours=24), end
+
+
+def generate_latest_prewarms(
+    ds: xr.Dataset,
+    display_summary: xr.Dataset | None,
+    ass_power: xr.Dataset | None,
+) -> dict[str, Path]:
+    """Build the browser's Current and Forecast Power figures in the background."""
+    time_index = pd.DatetimeIndex(ds["time"].values)
+    if len(time_index) == 0:
+        raise ValueError("Dataset contains no time samples")
+    start_time, end_time = _latest_prewarm_window(time_index)
+    latest_day = _slice_window(ds, start_time, end_time)
+    if latest_day is None or latest_day.sizes.get("time", 0) < 2:
+        raise ValueError("Dataset has fewer than two samples in the latest Power window")
+
+    latest_summary = combine_summary_datasets(
+        INSTRUMENT,
+        *_summary_inputs(latest_day, display_summary, ass_power, start_time, end_time),
+    )
+    latest_summary = _with_display_window(latest_summary, start_time, end_time)
+    figures = {
+        "all": (PREWARM_JSON, {}),
+        "current": (PREWARM_CURRENT_JSON, {"observed"}),
+        "forecast": (PREWARM_FORECAST_JSON, {"forecast_24h", "forecast_96h", "verification"}),
+    }
+    written: dict[str, Path] = {}
+    for section, (path, panel_groups) in figures.items():
+        fig = build_summary_plotly(
+            latest_summary,
+            INSTRUMENT,
+            title="Aurora Power Supply",
+            max_time_samples=700,
+            panel_groups=panel_groups or None,
+        )
+        _atomic_write_figure_json(fig, path)
+        written[section] = path
+        print(f"Wrote {path}")
+
+    metadata = {
+        "generated_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+        "display_start_utc": start_time.tz_localize("UTC").isoformat(),
+        "display_end_utc": end_time.tz_localize("UTC").isoformat(),
+        "observed_latest_utc": pd.Timestamp(time_index.max()).tz_localize("UTC").isoformat(),
+        "sections": {section: str(path) for section, path in written.items()},
+    }
+    temporary = PREWARM_METADATA_JSON.with_suffix(PREWARM_METADATA_JSON.suffix + ".tmp")
+    PREWARM_METADATA_JSON.parent.mkdir(parents=True, exist_ok=True)
+    temporary.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    temporary.replace(PREWARM_METADATA_JSON)
+    return written
+
+
+def main(force: bool = False, *, prewarm_only: bool = False, skip_display_refresh: bool = False) -> None:
     ds = xr.open_zarr(ZARR_PATH, chunks={})
     if "time" not in ds:
         raise KeyError("Dataset is missing a time coordinate")
     ass_power = _optional_ass_power_dataset()
-    display_summary = _optional_display_summary_dataset()
+    display_summary = _optional_display_summary_dataset(refresh=not skip_display_refresh)
 
     time_index = pd.DatetimeIndex(ds["time"].values)
     if len(time_index) == 0:
         raise ValueError("Dataset contains no time samples")
+    if prewarm_only:
+        generate_latest_prewarms(ds, display_summary, ass_power)
+        return
     today = pd.Timestamp.utcnow().date()
     dates = sorted(d for d in pd.Series(time_index.date).unique() if d < today)
 
@@ -150,28 +228,7 @@ def main(force: bool = False) -> None:
         latest_summary = _with_display_window(latest_summary, pd.Timestamp(start_time), pd.Timestamp(end_time))
         summary_out = summary_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         save_summary_png(latest_summary, INSTRUMENT, "Aurora Power Supply - Latest 24 hours", summary_out)
-        PREWARM_DIR.mkdir(parents=True, exist_ok=True)
-        fig = build_summary_plotly(latest_summary, INSTRUMENT, title="Aurora Power Supply", max_time_samples=700)
-        fig.write_json(PREWARM_JSON)
-        print(f"Wrote {PREWARM_JSON}")
-        current_fig = build_summary_plotly(
-            latest_summary,
-            INSTRUMENT,
-            title="Aurora Power Supply",
-            max_time_samples=700,
-            panel_groups={"observed"},
-        )
-        current_fig.write_json(PREWARM_CURRENT_JSON)
-        print(f"Wrote {PREWARM_CURRENT_JSON}")
-        forecast_fig = build_summary_plotly(
-            latest_summary,
-            INSTRUMENT,
-            title="Aurora Power Supply",
-            max_time_samples=700,
-            panel_groups={"forecast_24h", "forecast_96h", "verification"},
-        )
-        forecast_fig.write_json(PREWARM_FORECAST_JSON)
-        print(f"Wrote {PREWARM_FORECAST_JSON}")
+        generate_latest_prewarms(ds, display_summary, ass_power)
         hk_out = housekeeping_latest_png(QUICKLOOK_DIR, INSTRUMENT)
         if hk_out is not None:
             hk_title = f"{housekeeping_label(INSTRUMENT)} - Latest 24 hours"
@@ -206,5 +263,7 @@ def main(force: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Aurora Power Supply summary and housekeeping quicklook PNGs")
     parser.add_argument("--force", action="store_true", help="Regenerate all quicklooks")
+    parser.add_argument("--prewarm-only", action="store_true", help="Generate only the Current and Forecast browser prewarms")
+    parser.add_argument("--skip-display-refresh", action="store_true", help="Reuse an already refreshed compact Power display product")
     args = parser.parse_args()
-    main(force=args.force)
+    main(force=args.force, prewarm_only=args.prewarm_only, skip_display_refresh=args.skip_display_refresh)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -52,6 +52,20 @@ class DashboardShellTests(TestCase):
 
         self.assertEqual(current.name, "power_current_latest_interactive.json")
         self.assertEqual(forecast.name, "power_forecast_latest_interactive.json")
+
+    def test_power_live_window_uses_a_fresh_section_prewarm(self) -> None:
+        end = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        start = end - app.DEFAULT_WINDOW
+        cache_key = (
+            "power", "current", app._interactive_final_quality("power"), "power_latest_5min", "power_latest_5min",
+            start.isoformat(), end.isoformat(), 0, 1, "", "", 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+        )
+        with TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ", {"AURORA_INTERACTIVE_PREWARM_DIR": tmpdir}, clear=False
+        ):
+            path = Path(tmpdir) / "power_current_latest_interactive.json"
+            path.write_text('{"data":[],"layout":{}}', encoding="utf-8")
+            self.assertTrue(app._cache_key_targets_latest_prewarm(cache_key, "power"))
 
     def test_power_section_window_reads_only_the_selected_compact_store(self) -> None:
         times = pd.date_range("2026-07-20T00:00:00", periods=5, freq="1h")

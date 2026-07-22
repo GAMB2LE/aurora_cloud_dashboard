@@ -117,9 +117,13 @@ and appended by `append_new_pdu_to_zarr.py`.
 The app opens the Power store with larger read chunks and uses per-trace time
 downsampling. Display-only sanity limits remove impossible APS values, such as
 single-sample charging-current/current-power outliers, before plotting. The
-live latest window is rounded into 5-minute cache buckets, and the latest Power
-interactive figure is prewarmed as Plotly JSON by `generate_power_quicklooks.py`
-so first paint can reuse the most recent quicklook-era render.
+live latest window is rounded into 5-minute cache buckets, and the Current and
+Forecast Power figures are prewarmed as Plotly JSON by
+`generate_power_quicklooks.py --prewarm-only` after the compact display product
+refreshes. The browser reads those complete files before it considers a live
+Zarr render. Their x-axis ends at current UTC time, so an absent tail remains a
+visible collection gap rather than being hidden by moving the window back to
+the last observed sample.
 
 Observed panels in that prewarm use the measured APS display window rather than
 the later timestamp of the 96-hour forecast fields. Power panels reserve a
