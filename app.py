@@ -423,7 +423,7 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
       };
       const plots = () => roots().flatMap(
         (root) => Array.from(root.querySelectorAll(".js-plotly-plot"))
-      );
+      ).filter((node) => node.getClientRects().length > 0);
       const plotSignature = () => {
         const nodes = plots();
         const traces = nodes.reduce(
@@ -432,21 +432,24 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
         return `${nodes.length}:${traces}`;
       };
       const navigation = performance.getEntriesByType("navigation")[0] || {};
-      const emit = (event, duration, extra = {}) => model.send_msg({
-        event,
-        duration_ms: Math.round(Number(duration) * 1000) / 1000,
-        path: `${location.pathname}${location.search}`,
-        viewport_width: window.innerWidth,
-        viewport_height: window.innerHeight,
-        ...extra,
-      });
+      const emit = (event, duration, extra = {}) => {
+        const payload = {
+          event,
+          duration_ms: Math.round(Number(duration) * 1000) / 1000,
+          path: `${location.pathname}${location.search}`,
+          viewport_width: window.innerWidth,
+          viewport_height: window.innerHeight,
+          ...extra,
+        };
+        window.setTimeout(() => model.send_msg(payload), 0);
+      };
 
-      emit("browser_document_ready", performance.now(), {
-        response_start_ms: Number(navigation.responseStart || 0),
-        dom_interactive_ms: Number(navigation.domInteractive || 0),
-        load_event_end_ms: Number(navigation.loadEventEnd || 0),
-        navigation_type: String(navigation.type || "unknown"),
-      });
+      window.setTimeout(() => emit("browser_document_ready", performance.now(), {
+          response_start_ms: Number(navigation.responseStart || 0),
+          dom_interactive_ms: Number(navigation.domInteractive || 0),
+          load_event_end_ms: Number(navigation.loadEventEnd || 0),
+          navigation_type: String(navigation.type || "unknown"),
+        }), 1000);
 
       let firstPlotSent = false;
       let firstPlotTimer = null;
