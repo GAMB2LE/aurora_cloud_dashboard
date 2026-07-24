@@ -47,7 +47,7 @@ INSTRUMENT = "power"
 ASS_POWER_VAR = "watts_on_48vdc_Avg"
 POWER_PREWARM_MAX_TIME_SAMPLES = max(
     100,
-    min(int(os.environ.get("AURORA_POWER_PREWARM_MAX_TIME_SAMPLES", "240")), 700),
+    min(int(os.environ.get("AURORA_POWER_PREWARM_MAX_TIME_SAMPLES", "160")), 700),
 )
 
 

@@ -4224,6 +4224,14 @@ async def _load_prewarmed_interactive_figure_async(
             fig = await asyncio.to_thread(_read_prewarmed_interactive_figure, path)
             perf["status"] = "ok"
             perf["trace_count"] = len(fig.data)
+    except asyncio.CancelledError:
+        _perf_log(
+            "interactive_prewarm_load_async",
+            instrument=inst,
+            request_id=request_id,
+            status="cancelled",
+        )
+        raise
     except Exception as exc:
         _perf_log("interactive_prewarm_load_async", instrument=inst, status="error", error=str(exc))
 
@@ -6185,7 +6193,7 @@ def _start_interactive_render(
                 start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax,
                 lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument,
             )
-            loop.create_task(
+            prewarm_task = loop.create_task(
                 _load_prewarmed_interactive_figure_async(
                     prewarm_path,
                     full_cache_key,
@@ -6195,6 +6203,15 @@ def _start_interactive_render(
                     render_args,
                 )
             )
+            _BACKGROUND_RENDER_TASKS[request_id] = prewarm_task
+
+            def finish_prewarm_task(task: asyncio.Task) -> None:
+                if _BACKGROUND_RENDER_TASKS.get(request_id) is task:
+                    _BACKGROUND_RENDER_TASKS.pop(request_id, None)
+                if task.cancelled():
+                    _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.discard(full_cache_key)
+
+            prewarm_task.add_done_callback(finish_prewarm_task)
             return
     if _restore_exact_interactive_cache(full_cache_key, instrument):
         _clear_interactive_loading()
