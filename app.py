@@ -458,10 +458,15 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
       ).filter((node) => node.getClientRects().length > 0);
       const plotSignature = () => {
         const nodes = plots();
-        const traces = nodes.reduce(
-          (total, node) => total + (Array.isArray(node.data) ? node.data.length : 0), 0
-        );
-        return `${nodes.length}:${traces}`;
+        // Plotly stores trace metadata on the SVG renderer but not on the
+        // WebGL canvas renderer. Use the visible axis/title text as a stable
+        // render signature so Current and Forecast remain distinguishable.
+        const labels = nodes.map((node) => Array.from(node.querySelectorAll("text"))
+          .map((text) => text.textContent.trim())
+          .filter(Boolean)
+          .join("|"))
+          .join("||");
+        return `${nodes.length}:${labels}`;
       };
       const navigation = performance.getEntriesByType("navigation")[0] || {};
       const emit = (event, duration, extra = {}) => {
@@ -508,9 +513,7 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
           firstPlotSent = true;
           emit("browser_first_power_plot", performance.now(), {
             plot_count: nodes.length,
-            trace_count: nodes.reduce(
-              (total, node) => total + (Array.isArray(node.data) ? node.data.length : 0), 0
-            ),
+            renderer: nodes.some((node) => node.querySelector("canvas")) ? "webgl" : "svg",
           });
           }, 100);
         }
