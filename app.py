@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import param
+from bokeh.core.json_encoder import serialize_json
 from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -6862,10 +6863,10 @@ def _log_serialized_document_size() -> None:
         return
     started = perf_counter()
     try:
-        # ``to_json`` is the server-side representation Bokeh uses to create
-        # the client document. Compact separators make this a byte count, not
-        # a pretty-print estimate.
-        payload_bytes = len(json.dumps(doc.to_json(), separators=(",", ":")).encode("utf-8"))
+        # ``serialize_json`` is Bokeh's own protocol serializer. Unlike the
+        # standard library encoder, it also handles NumPy and datetime values
+        # used by richer forecast figures.
+        payload_bytes = len(serialize_json(doc.to_json()).encode("utf-8"))
     except Exception as exc:
         _perf_log(
             "browser_document_model_size",
