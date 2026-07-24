@@ -5735,13 +5735,14 @@ async def _prepare_power_view_async(
     finally:
         _BACKGROUND_RENDER_TASKS.pop(request_id, None)
 
+    log_metrics = {key: value for key, value in metrics.items() if key != "status"}
     _perf_log(
         "power_background_prepare",
         instrument="power",
         request_id=request_id,
         status=str(metrics.get("status", "ok")),
         duration_ms=round((perf_counter() - started) * 1000, 3),
-        **metrics,
+        **log_metrics,
     )
 
     def publish() -> None:
