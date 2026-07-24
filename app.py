@@ -468,12 +468,20 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
         }, 0);
       };
 
-      window.setTimeout(() => emit("browser_document_ready", performance.now(), {
+      // This component itself arrives with the first Bokeh document, so a
+      // paint frame is sufficient to observe the shell. The former one-second
+      // timeout inflated the reported shell latency without delaying the UI.
+      const reportDocumentReady = () => emit("browser_document_ready", performance.now(), {
           response_start_ms: Number(navigation.responseStart || 0),
           dom_interactive_ms: Number(navigation.domInteractive || 0),
           load_event_end_ms: Number(navigation.loadEventEnd || 0),
           navigation_type: String(navigation.type || "unknown"),
-        }), 1000);
+        });
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(reportDocumentReady);
+      } else {
+        window.setTimeout(reportDocumentReady, 0);
+      }
 
       let firstPlotSent = false;
       let firstPlotTimer = null;
