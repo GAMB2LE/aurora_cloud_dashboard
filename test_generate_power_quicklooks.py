@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -19,6 +20,9 @@ class _Figure:
     def write_json(self, path: Path) -> None:
         Path(path).write_text(json.dumps({"section": self.section}), encoding="utf-8")
 
+    def to_plotly_json(self) -> dict[str, object]:
+        return {"data": [], "layout": {"meta": {"section": self.section}}}
+
 
 def test_latest_prewarms_publish_all_sections_and_live_window_metadata() -> None:
     times = pd.date_range(pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(hours=2), periods=5, freq="30min")
@@ -34,6 +38,7 @@ def test_latest_prewarms_publish_all_sections_and_live_window_metadata() -> None
         }
         with (
             patch.multiple(quicklooks, **paths),
+            patch.dict(os.environ, {"AURORA_POWER_PREWARM_WORKERS": "1"}, clear=False),
             patch.object(quicklooks, "combine_summary_datasets", side_effect=lambda _instrument, *items: next(item for item in items if item is not None)),
             patch.object(quicklooks, "build_summary_plotly", side_effect=lambda _ds, _instrument, **kwargs: _Figure(str(kwargs.get("panel_groups")))),
         ):

@@ -100,6 +100,38 @@ class DashboardShellTests(TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(list(pd.DatetimeIndex(result["time"].values)), list(times[1:4]))
 
+    def test_power_background_prepare_uses_selected_section_without_panel_mutation(self) -> None:
+        times = pd.date_range("2026-07-20T00:00:00", periods=3, freq="1h")
+        dataset = xr.Dataset(
+            {"BatterySOC": (("time",), np.array([70.0, 71.0, 72.0]))},
+            coords={"time": times},
+        )
+        figure = app.go.Figure()
+        with (
+            patch.object(app, "_power_display_summary_path", return_value=Path("/tmp")),
+            patch.object(app, "_open_power_display_summary_window", return_value=dataset) as open_display,
+            patch.object(app, "build_summary_plotly", return_value=figure) as build_plot,
+        ):
+            prepared, metrics = app._prepare_stacked_timeseries_figure(
+                "power",
+                times[0],
+                times[-1],
+                "downsampled",
+                power_section="forecast",
+            )
+
+        self.assertIs(prepared, figure)
+        self.assertEqual(metrics["status"], "ok")
+        self.assertEqual(open_display.call_args.kwargs["section"], "forecast")
+        self.assertEqual(
+            build_plot.call_args.kwargs["panel_groups"],
+            {"forecast_24h", "forecast_96h", "verification"},
+        )
+
+    def test_background_preparation_executor_stays_bounded(self) -> None:
+        self.assertGreaterEqual(app._BACKGROUND_PREPARATION_EXECUTOR._max_workers, 1)
+        self.assertLessEqual(app._BACKGROUND_PREPARATION_EXECUTOR._max_workers, 4)
+
     def test_power_query_selects_power_before_interactive_callbacks(self) -> None:
         original_instrument = app.instrument_select.value
         original_view = app.power_view_select.value

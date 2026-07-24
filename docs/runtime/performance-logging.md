@@ -49,6 +49,8 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_POWER_LATEST_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_PREWARM_LATEST_CACHE_TOLERANCE_MINUTES`
+- `AURORA_DASHBOARD_PREP_WORKERS`
+- `AURORA_POWER_PREWARM_WORKERS`
 - `AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_DISPLAY_SUMMARY_FREQ`
 - `AURORA_POWER_DISPLAY_ENERGY_FREQ`
@@ -76,6 +78,13 @@ prewarm writer uses up to `AURORA_POWER_PREWARM_WORKERS` processes (default
 `2`) only for JSON serialization; it does not share or mutate live Zarr or
 Panel state.
 
+`AURORA_DASHBOARD_PREP_WORKERS` defaults to `2` and is capped at `4`. It is
+used only for custom browser Power windows that cannot use prewarmed JSON.
+The executor prepares Zarr/NumPy/Plotly data away from the Panel event loop;
+the finished figure is committed through a document callback. A new control
+change cancels the awaiting stale request, so only the newest completed result
+can update the browser.
+
 ## Useful commands
 
 ```bash
@@ -97,6 +106,9 @@ journalctl -u aurora-dashboard-perf-summary.service --since '1 hour ago' --no-pa
 - `interactive_render_cache_hit`
 - `interactive_render_debounced`
 - `interactive_prewarm_load`
+- `interactive_prewarm_load_async`
+- `power_background_prepare_scheduled`
+- `power_background_prepare`
 - `window_open`
 - `power_display_summary_open`
 - `power_display_summary_window`
@@ -135,6 +147,8 @@ events should be interpreted:
   data-refresh interval
 - stale-render protection drops older queued renders before they can repaint the
   page
+- custom Power preparations run in the bounded background executor; cancelling
+  a superseded request never mutates the active Bokeh document
 - the matching cached Science Quicklook is shown first when available,
   otherwise a loading skeleton is shown for uncached views
 - the initial interactive render is deferred until the browser session is

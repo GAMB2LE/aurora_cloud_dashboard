@@ -13,9 +13,10 @@ height as blank page space after browser scaling.
 import asyncio
 from base64 import b64encode
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
-from functools import lru_cache
+from functools import lru_cache, partial
 import hashlib
 from html import escape
 import json
@@ -23,6 +24,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
+from threading import RLock
 from time import perf_counter
 from urllib.parse import quote, urlencode
 
@@ -852,6 +854,15 @@ _DATASET_REFRESHED_AT: dict[str, datetime] = {}
 CURRENT_INSTRUMENT = "power"
 _RENDER_REQUEST_COUNTER = 0
 _ACTIVE_RENDER_REQUEST_ID = 0
+_BACKGROUND_RENDER_TASKS: dict[int, asyncio.Task] = {}
+# Plot creation is CPU and IO bound, while Panel/Bokeh model changes must stay
+# on the document callback.  Two workers keep custom Power requests responsive
+# without multiplying the memory use of the dashboard process.
+_BACKGROUND_PREPARATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, min(int(os.environ.get("AURORA_DASHBOARD_PREP_WORKERS", "2")), 4)),
+    thread_name_prefix="aurora-dashboard-prep",
+)
+_POWER_PREPARATION_LOCK = RLock()
 _DISPLAYED_INTERACTIVE_INSTRUMENT: str | None = None
 _PENDING_INTERACTIVE_RENDER_ARGS: tuple[object, ...] | None = None
 _PENDING_INTERACTIVE_RENDER_CB = None
@@ -3958,6 +3969,15 @@ def _begin_render_request() -> int:
     global _RENDER_REQUEST_COUNTER, _ACTIVE_RENDER_REQUEST_ID
     _RENDER_REQUEST_COUNTER += 1
     _ACTIVE_RENDER_REQUEST_ID = _RENDER_REQUEST_COUNTER
+    # Thread work cannot be forcibly interrupted safely, but cancelling its
+    # awaiting task releases the event loop and ensures an obsolete result is
+    # never published into the current Panel document.
+    for pending_id, task in tuple(_BACKGROUND_RENDER_TASKS.items()):
+        if pending_id == _ACTIVE_RENDER_REQUEST_ID:
+            continue
+        if not task.done():
+            task.cancel()
+        _BACKGROUND_RENDER_TASKS.pop(pending_id, None)
     return _ACTIVE_RENDER_REQUEST_ID
 
 
@@ -5507,6 +5527,125 @@ def _update_hatpro_view(
         return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id, cache_key=cache_key)
 
 
+def _prepare_stacked_timeseries_figure(
+    instrument: str,
+    start,
+    end,
+    render_quality: str,
+    *,
+    power_section: str | None = None,
+) -> tuple[go.Figure, dict[str, object]]:
+    """Prepare a summary figure without touching Panel or Bokeh state."""
+    metrics: dict[str, object] = {"source_instruments": list(summary_source_instruments(instrument))}
+    source_instruments = tuple(metrics["source_instruments"])
+    is_power = instrument == "power"
+    power_section = power_section or "current"
+    lock = _POWER_PREPARATION_LOCK if is_power else None
+
+    def prepare() -> tuple[go.Figure, dict[str, object]]:
+        power_display_summary_available = is_power and _power_display_summary_path().exists()
+        power_display_energy_available = is_power and _power_display_energy_path().exists()
+        source_render_quality = (
+            "summary_full_time"
+            if is_power and not (power_display_summary_available or power_display_energy_available)
+            else render_quality
+        )
+        metrics.update(
+            source_render_quality=source_render_quality,
+            power_display_summary_available=bool(power_display_summary_available),
+            power_display_energy_available=bool(power_display_energy_available),
+        )
+        context_start = _summary_context_start(start, instrument)
+        metrics["context_start"] = context_start
+        source_open_started = perf_counter()
+        source_windows: list[xr.Dataset | None] = []
+        if is_power:
+            display_summary_window = _open_power_display_summary_window(start, end, section=power_section)
+            if display_summary_window is not None:
+                source_windows = [display_summary_window]
+                metrics["power_display_summary"] = "used"
+                metrics["power_display_energy"] = "embedded"
+            else:
+                metrics["power_display_summary"] = "missing"
+        if not source_windows:
+            source_windows = [
+                open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
+                for source_inst in source_instruments
+            ]
+            if is_power:
+                display_window = _open_power_display_energy_window(start, end)
+                if display_window is not None:
+                    source_windows.append(display_window)
+                    metrics["power_display_energy"] = "used"
+                else:
+                    metrics["power_display_energy"] = "missing"
+        metrics["source_open_ms"] = round((perf_counter() - source_open_started) * 1000, 3)
+        source_metrics = [_dataset_window_metrics(window) for window in source_windows]
+        metrics["source_window_count"] = len(source_metrics)
+        metrics["source_window_time_counts"] = [item["time_count"] for item in source_metrics]
+        metrics["source_window_var_counts"] = [item["var_count"] for item in source_metrics]
+        combine_started = perf_counter()
+        ds = combine_summary_datasets(instrument, *source_windows)
+        metrics["combine_ms"] = round((perf_counter() - combine_started) * 1000, 3)
+        metrics["combined_var_count"] = 0 if ds is None else len(ds.data_vars)
+        if is_power and ds is not None:
+            display_start = _as_naive_utc_datetime(start)
+            display_end = _as_naive_utc_datetime(end)
+            if display_start is not None:
+                ds.attrs[SUMMARY_DISPLAY_START_ATTR] = display_start.isoformat()
+            if display_end is not None:
+                ds.attrs[SUMMARY_DISPLAY_END_ATTR] = display_end.isoformat()
+        times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
+        metrics["time_count"] = 0 if times is None else int(len(times))
+        if times is None or len(times) == 0:
+            metrics["status"] = "no_data"
+            return _empty_interactive_figure(
+                instrument,
+                "No samples were found for this selected time window.",
+                start=start,
+                end=end,
+                detail="Try a wider time range or check the Operations Dashboard source-freshness cards.",
+            ), metrics
+        try:
+            max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
+            metrics["max_time_samples"] = max_time_samples
+            metrics["plot_density_mode"] = "per_trace_display_downsampled"
+            fig_started = perf_counter()
+            fig = build_summary_plotly(
+                ds,
+                instrument,
+                title=display_name(instrument),
+                max_time_samples=max_time_samples,
+                x_limits=(start, end),
+                panel_groups=(
+                    {"observed"}
+                    if is_power and power_section == "current"
+                    else {"forecast_24h", "forecast_96h", "verification"}
+                    if is_power
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            metrics["status"] = "no_data"
+            return _empty_interactive_figure(
+                instrument,
+                "No plottable variables are available for this window.",
+                start=start,
+                end=end,
+                detail=str(exc),
+            ), metrics
+        metrics["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
+        metrics.update(_figure_metrics(fig))
+        metrics["status"] = "ok"
+        metrics["trace_count"] = len(fig.data)
+        return fig, metrics
+
+    if lock is None:
+        return prepare()
+    with lock:
+        return prepare()
+
+
 def _update_stacked_timeseries_view(
     instrument: str,
     start,
@@ -5527,106 +5666,120 @@ def _update_stacked_timeseries_view(
         if not _render_request_active(request_id):
             perf["status"] = "stale_before_start"
             return False
-        source_instruments = summary_source_instruments(instrument)
-        perf["source_instruments"] = list(source_instruments)
-        power_display_summary_available = instrument == "power" and _power_display_summary_path().exists()
-        power_display_energy_available = instrument == "power" and _power_display_energy_path().exists()
-        # Power summary traces can now come from a compact display product.
-        # Only keep full raw time detail as a fallback when compact products are
-        # absent and cumulative energy must be derived from source samples.
-        if instrument == "power" and not (power_display_summary_available or power_display_energy_available):
-            source_render_quality = "summary_full_time"
-        else:
-            source_render_quality = render_quality
-        perf["source_render_quality"] = source_render_quality
-        perf["power_display_summary_available"] = bool(power_display_summary_available)
-        perf["power_display_energy_available"] = bool(power_display_energy_available)
-        context_start = _summary_context_start(start, instrument)
-        perf["context_start"] = context_start
-        source_open_started = perf_counter()
-        source_windows: list[xr.Dataset | None] = []
-        if instrument == "power":
-            display_summary_window = _open_power_display_summary_window(start, end, section=power_view_select.value)
-            if display_summary_window is not None:
-                source_windows = [display_summary_window]
-                perf["power_display_summary"] = "used"
-                perf["power_display_energy"] = "embedded"
-            else:
-                perf["power_display_summary"] = "missing"
-        if not source_windows:
-            source_windows = [
-                open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
-                for source_inst in source_instruments
-            ]
-            if instrument == "power":
-                display_window = _open_power_display_energy_window(start, end)
-                if display_window is not None:
-                    source_windows.append(display_window)
-                    perf["power_display_energy"] = "used"
-                else:
-                    perf["power_display_energy"] = "missing"
-        perf["source_open_ms"] = round((perf_counter() - source_open_started) * 1000, 3)
-        source_metrics = [_dataset_window_metrics(window) for window in source_windows]
-        perf["source_window_count"] = len(source_metrics)
-        perf["source_window_time_counts"] = [item["time_count"] for item in source_metrics]
-        perf["source_window_var_counts"] = [item["var_count"] for item in source_metrics]
-        combine_started = perf_counter()
-        ds = combine_summary_datasets(instrument, *source_windows)
-        perf["combine_ms"] = round((perf_counter() - combine_started) * 1000, 3)
-        perf["combined_var_count"] = 0 if ds is None else len(ds.data_vars)
-        if instrument == "power" and ds is not None:
-            display_start = _as_naive_utc_datetime(start)
-            display_end = _as_naive_utc_datetime(end)
-            if display_start is not None:
-                ds.attrs[SUMMARY_DISPLAY_START_ATTR] = display_start.isoformat()
-            if display_end is not None:
-                ds.attrs[SUMMARY_DISPLAY_END_ATTR] = display_end.isoformat()
-        times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
-        perf["time_count"] = 0 if times is None else int(len(times))
-        if times is None or len(times) == 0:
-            perf["status"] = "no_data"
-            empty = _empty_interactive_figure(
-                instrument,
-                "No samples were found for this selected time window.",
-                start=start,
-                end=end,
-                detail="Try a wider time range or check the Operations Dashboard source-freshness cards.",
-            )
-            return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
-        try:
-            max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
-            perf["max_time_samples"] = max_time_samples
-            perf["plot_density_mode"] = "per_trace_display_downsampled"
-            fig_started = perf_counter()
-            fig = build_summary_plotly(
-                ds,
-                instrument,
-                title=display_name(instrument),
-                max_time_samples=max_time_samples,
-                x_limits=(start, end),
-                panel_groups=(
-                    {"observed"}
-                    if instrument == "power" and power_view_select.value == "current"
-                    else {"forecast_24h", "forecast_96h", "verification"}
-                    if instrument == "power"
-                    else None
-                ),
-            )
-            perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
-            perf.update(_figure_metrics(fig))
-        except ValueError as exc:
-            perf["status"] = "no_data"
-            empty = _empty_interactive_figure(
-                instrument,
-                "No plottable variables are available for this window.",
-                start=start,
-                end=end,
-                detail=str(exc),
-            )
-            return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
-        perf["status"] = "ok"
-        perf["trace_count"] = len(fig.data)
+        fig, metrics = _prepare_stacked_timeseries_figure(
+            instrument,
+            start,
+            end,
+            render_quality,
+            power_section=power_view_select.value if instrument == "power" else None,
+        )
+        perf.update(metrics)
         return _publish_plot_if_current(fig, instrument, request_id, cache_key=cache_key)
+
+
+async def _prepare_power_view_async(
+    start,
+    end,
+    request_id: int,
+    render_quality: str,
+    cache_key: tuple[object, ...],
+    power_section: str,
+    doc,
+) -> None:
+    """Build a custom Power figure off the event loop and publish it safely."""
+    started = perf_counter()
+    try:
+        loop = asyncio.get_running_loop()
+        prepare = partial(
+            _prepare_stacked_timeseries_figure,
+            "power",
+            start,
+            end,
+            render_quality,
+            power_section=power_section,
+        )
+        fig, metrics = await loop.run_in_executor(_BACKGROUND_PREPARATION_EXECUTOR, prepare)
+    except asyncio.CancelledError:
+        _perf_log(
+            "power_background_prepare",
+            instrument="power",
+            request_id=request_id,
+            status="cancelled",
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+        raise
+    except Exception as exc:
+        _perf_log(
+            "power_background_prepare",
+            instrument="power",
+            request_id=request_id,
+            status="error",
+            error=str(exc),
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+
+        def publish_error() -> None:
+            if _render_request_active(request_id):
+                fallback = _empty_interactive_figure(
+                    "power",
+                    "The Power view could not be prepared.",
+                    start=start,
+                    end=end,
+                    detail="The previous chart is retained while the next refresh is attempted.",
+                )
+                _publish_plot_if_current(fallback, "power", request_id, cache_key=cache_key)
+                _clear_interactive_loading()
+
+        doc.add_next_tick_callback(publish_error)
+        return
+    finally:
+        _BACKGROUND_RENDER_TASKS.pop(request_id, None)
+
+    _perf_log(
+        "power_background_prepare",
+        instrument="power",
+        request_id=request_id,
+        status=str(metrics.get("status", "ok")),
+        duration_ms=round((perf_counter() - started) * 1000, 3),
+        **metrics,
+    )
+
+    def publish() -> None:
+        if not _render_request_active(request_id):
+            return
+        _publish_plot_if_current(fig, "power", request_id, cache_key=cache_key)
+        _clear_interactive_loading()
+
+    doc.add_next_tick_callback(publish)
+
+
+def _start_background_power_prepare(
+    start,
+    end,
+    request_id: int | None,
+    render_quality: str,
+    cache_key: tuple[object, ...],
+) -> bool:
+    """Schedule Power preparation when a live Panel event loop is available."""
+    if request_id is None or pn.state.curdoc is None:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    task = loop.create_task(
+        _prepare_power_view_async(
+            start,
+            end,
+            request_id,
+            render_quality,
+            cache_key,
+            power_view_select.value,
+            pn.state.curdoc,
+        )
+    )
+    _BACKGROUND_RENDER_TASKS[request_id] = task
+    return True
 
 
 def _render_interactive_view(
@@ -5663,6 +5816,20 @@ def _render_interactive_view(
         lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument,
         render_quality=render_quality,
     )
+    if instrument == "power" and _start_background_power_prepare(
+        start,
+        end,
+        request_id,
+        render_quality,
+        cache_key,
+    ):
+        _perf_log(
+            "power_background_prepare_scheduled",
+            instrument="power",
+            request_id=request_id,
+            render_quality=render_quality,
+        )
+        return
     try:
       with _timed_perf(
           "interactive_view_update",
