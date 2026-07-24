@@ -486,10 +486,14 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
       let firstPlotSent = false;
       let firstPlotTimer = null;
       const checkFirstPlot = () => {
-        if (firstPlotSent || firstPlotTimer !== null) return;
-        firstPlotTimer = window.setTimeout(() => {
-          firstPlotTimer = null;
+        if (firstPlotSent) return;
+        if (firstPlotTimer === null) {
+          const started = performance.now();
+          firstPlotTimer = window.setInterval(() => {
           const nodes = plots();
+          if (!nodes.length && performance.now() - started < 20000) return;
+          window.clearInterval(firstPlotTimer);
+          firstPlotTimer = null;
           if (!nodes.length) return;
           firstPlotSent = true;
           emit("browser_first_power_plot", performance.now(), {
@@ -498,7 +502,8 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
               (total, node) => total + (Array.isArray(node.data) ? node.data.length : 0), 0
             ),
           });
-        }, 50);
+          }, 100);
+        }
       };
 
       let switchTimer = null;
@@ -531,8 +536,10 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
       };
 
       document.addEventListener("click", onClick, true);
-      const observer = new MutationObserver(checkFirstPlot);
-      observer.observe(document.documentElement, { childList: true, subtree: true });
+      // Panel nests figures inside several shadow roots. Poll briefly while
+      // the initial document hydrates; a document-only MutationObserver does
+      // not observe mutations made inside those nested component roots.
+      checkFirstPlot();
       checkFirstPlot();
 
       marker.remove = (() => {
