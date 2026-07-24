@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -513,6 +514,7 @@ def overview() -> dict[str, Any]:
         _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
+        *_environmental_signal_cards(),
     ]
     return {
         "serverTime": utc_now_iso(),
@@ -520,6 +522,74 @@ def overview() -> dict[str, Any]:
         "instrumentPower": _instrument_power_states(snapshot),
         "activeAlerts": status["alerts"],
     }
+
+
+def _environmental_signal_cards() -> list[dict[str, Any]]:
+    """Return the latest lightweight station-environment measurements.
+
+    These cards intentionally read only the final sample of the existing
+    meteorology and ASFS logger products.  They provide operational context on
+    the overview without loading a chart or a full science data window.
+    """
+    meteorology = _latest_zarr_sample(
+        env_path("VAISALAMET_ZARR_PATH", "/data/aurora/products/vaisalamet/vaisalamet.zarr"),
+        ("t2_t",),
+    )
+    radiation = _latest_zarr_sample(
+        env_path("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"),
+        ("sr30_swd_Irr_Avg", "kt15_tem_Avg", "metek_x_out_Avg", "metek_y_out_Avg"),
+    )
+
+    cards: list[dict[str, Any]] = []
+    if (sample := radiation.get("sr30_swd_Irr_Avg")) is not None:
+        cards.append(_environmental_overview_card("shortwave-down", "Shortwave radiation down", sample, radiation["time"], "W/m2", "SR30 downwelling"))
+    if (sample := radiation.get("metek_x_out_Avg")) is not None and (other := radiation.get("metek_y_out_Avg")) is not None:
+        cards.append(_environmental_overview_card("wind-speed", "Wind speed", math.hypot(sample, other), radiation["time"], "m/s", "Metek horizontal wind"))
+    if (sample := meteorology.get("t2_t")) is not None:
+        cards.append(_environmental_overview_card("air-temperature", "2 m temperature", sample, meteorology["time"], "C", "Vaisala MET"))
+    if (sample := radiation.get("kt15_tem_Avg")) is not None:
+        cards.append(_environmental_overview_card("kt15", "KT15 surface temperature", sample, radiation["time"], "C", "KT15 surface sensor"))
+    return cards
+
+
+def _environmental_overview_card(card_id: str, title: str, value: float, sample_time: str, unit: str, source: str) -> dict[str, Any]:
+    return _overview_card(
+        card_id,
+        title,
+        f"{value:.1f} {unit}",
+        _age_level(sample_time, 30, 120),
+        sample_time,
+        f"{source}; {_power_age_text(sample_time).removeprefix('Updated ')}",
+    )
+
+
+def _latest_zarr_sample(path: Path, variables: tuple[str, ...]) -> dict[str, Any]:
+    """Read finite values from the final sample of a compact operational Zarr."""
+    dataset = None
+    try:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        if not path.exists():
+            return {}
+        dataset = xr.open_zarr(path, consolidated=True, chunks=None)
+        if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
+            return {}
+        sample_time = pd.Timestamp(dataset["time"].values[-1]).isoformat() + "Z"
+        result: dict[str, Any] = {"time": sample_time}
+        for variable in variables:
+            if variable not in dataset or dataset[variable].dims != ("time",):
+                continue
+            value = float(np.asarray(dataset[variable].isel(time=-1).values))
+            if math.isfinite(value):
+                result[variable] = value
+        return result
+    except Exception:
+        return {}
+    finally:
+        if dataset is not None:
+            dataset.close()
 
 
 def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

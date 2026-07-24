@@ -286,16 +286,53 @@ class MobileCatalogTests(unittest.TestCase):
                     "OPS_MONITOR_ALERT_STATE": str(alerts),
                     "AURORACAM_RAW_ROOT": str(root / "camera"),
                 },
+            ), patch.object(
+                mobile_catalog,
+                "_environmental_signal_cards",
+                return_value=[
+                    {"id": "shortwave-down"},
+                    {"id": "wind-speed"},
+                    {"id": "air-temperature"},
+                    {"id": "kt15"},
+                ],
             ):
                 response = mobile_catalog.overview()
 
         self.assertEqual(
             [card["id"] for card in response["cards"]],
-            ["operations", "battery-soc", "battery-voltage", "battery-depletion", "power", "auroracam"],
+            [
+                "operations", "battery-soc", "battery-voltage", "battery-depletion", "power", "auroracam",
+                "shortwave-down", "wind-speed", "air-temperature", "kt15",
+            ],
         )
         depletion = response["cards"][3]
         self.assertEqual(depletion["value"], "10d 15h")
         self.assertIn("14.6 kWh remaining", depletion["detail"])
+
+    def test_environmental_signal_cards_derive_wind_and_preserve_source_times(self) -> None:
+        with patch.object(
+            mobile_catalog,
+            "_latest_zarr_sample",
+            side_effect=[
+                {"time": "2026-07-24T06:06:53Z", "t2_t": 10.48297},
+                {
+                    "time": "2026-07-24T06:00:00Z",
+                    "sr30_swd_Irr_Avg": 21.92821,
+                    "kt15_tem_Avg": 10.96667,
+                    "metek_x_out_Avg": -3.745334,
+                    "metek_y_out_Avg": 0.8551666,
+                },
+            ],
+        ):
+            cards = mobile_catalog._environmental_signal_cards()
+
+        by_id = {card["id"]: card for card in cards}
+        self.assertEqual(list(by_id), ["shortwave-down", "wind-speed", "air-temperature", "kt15"])
+        self.assertEqual(by_id["air-temperature"]["value"], "10.5 C")
+        self.assertEqual(by_id["shortwave-down"]["value"], "21.9 W/m2")
+        self.assertEqual(by_id["wind-speed"]["value"], "3.8 m/s")
+        self.assertEqual(by_id["kt15"]["value"], "11.0 C")
+        self.assertEqual(by_id["kt15"]["updatedAt"], "2026-07-24T06:00:00Z")
 
     def test_overview_prefers_measured_power_time_over_snapshot_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
