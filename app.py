@@ -495,7 +495,12 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
 
       let switchTimer = null;
       const onClick = (event) => {
-        const button = event.target.closest("button");
+        // Panel's button group is rendered in a shadow root. ``closest`` on
+        // the retargeted event node cannot see that button, whereas the
+        // composed path preserves the original element for this measurement.
+        const button = event.composedPath().find(
+          (node) => node instanceof HTMLElement && node.matches("button")
+        );
         if (!button) return;
         const label = button.textContent.trim();
         if (label !== "Current Conditions" && label !== "Forecast & Planning") return;
