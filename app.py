@@ -554,12 +554,10 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
       // the initial document hydrates; a document-only MutationObserver does
       // not observe mutations made inside those nested component roots.
       checkFirstPlot();
-      checkFirstPlot();
 
       marker.remove = (() => {
         const remove = marker.remove.bind(marker);
         return () => {
-          observer.disconnect();
           document.removeEventListener("click", onClick, true);
           if (firstPlotTimer !== null) window.clearTimeout(firstPlotTimer);
           if (switchTimer !== null) window.clearInterval(switchTimer);
