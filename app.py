@@ -4227,6 +4227,11 @@ async def _load_prewarmed_interactive_figure_async(
         _INTERACTIVE_RENDER_CACHE.move_to_end(cache_key)
         _show_plot(fig, instrument=inst, cache_figure=False)
         _clear_interactive_loading()
+        # Status/availability reads need the full source time index. Do not
+        # contend with a Power prewarm before its first Plotly update reaches
+        # the browser; the footer can follow shortly after first paint.
+        if inst == "power":
+            _schedule_timeout(_activate_interactive_footer_metrics, 1_500)
 
     doc.add_next_tick_callback(publish)
 
@@ -6220,7 +6225,11 @@ def _enable_browser_interactive_render() -> None:
     if pn.state.curdoc is None:
         return
     _INTERACTIVE_RENDER_ENABLED = True
-    _schedule_timeout(_activate_interactive_footer_metrics, 750)
+    # A latest Power view uses prewarmed JSON. Its status footer would open the
+    # multi-million-sample raw store while that cached figure is parsing, so it
+    # is activated by the prewarm publisher after first paint instead.
+    if instrument_select.value != "power":
+        _schedule_timeout(_activate_interactive_footer_metrics, 750)
     _schedule_timeout(_schedule_current_interactive_render, 250)
 
 
