@@ -121,12 +121,16 @@ from request_context import (
 # cacheable Panel/nginx assets rather than strings duplicated into every model.
 DASHBOARD_ASSET_PREFIX = os.environ.get("AURORA_DASHBOARD_ASSET_PREFIX", "/dashboard-assets").rstrip("/")
 DASHBOARD_STYLESHEET = f"{DASHBOARD_ASSET_PREFIX}/dashboard.css"
+# Panel 1.8 exposes external stylesheets through ``config.css_files``. This
+# keeps the asset out of each Bokeh document while remaining compatible with
+# the pinned runtime (``pn.extension(stylesheets=...)`` is not supported).
+if DASHBOARD_STYLESHEET not in pn.config.css_files:
+    pn.config.css_files.append(DASHBOARD_STYLESHEET)
 pn.extension(
     "plotly",
     notifications=True,
     sizing_mode="stretch_width",
     defer_load=True,
-    stylesheets=[DASHBOARD_STYLESHEET],
 )
 
 
