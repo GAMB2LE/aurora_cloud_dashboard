@@ -16,6 +16,7 @@ from grouped_timeseries import (
     PanelSpec,
     TraceSpec,
     _downsample_trace,
+    _downsample_trace_with_gap_breaks,
     _plotly_time_tick_options,
     build_power_forecast_info,
     build_summary_plotly,
@@ -50,6 +51,19 @@ def test_trace_downsampling_retains_short_extrema_within_budget() -> None:
     assert 99.0 in sampled_values
     assert -42.0 in sampled_values
     assert sampled_times.is_monotonic_increasing
+
+
+def test_trace_downsampling_preserves_real_gaps_without_artificial_breaks() -> None:
+    times = pd.date_range("2026-07-15T00:00:00", periods=40, freq="min").append(
+        pd.date_range("2026-07-15T03:00:00", periods=40, freq="min")
+    )
+    values = np.linspace(0.0, 1.0, len(times))
+
+    sampled_times, sampled_values = _downsample_trace_with_gap_breaks(times, values, max_time_samples=20)
+
+    assert len(sampled_times) <= 20
+    assert sampled_times.is_monotonic_increasing
+    assert np.isnan(sampled_values).any()
 
 
 def _power_layout_dataset() -> xr.Dataset:

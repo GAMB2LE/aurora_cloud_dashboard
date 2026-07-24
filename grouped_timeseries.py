@@ -3239,6 +3239,36 @@ def _insert_line_gap_breaks(times: pd.DatetimeIndex, values: np.ndarray) -> tupl
     return pd.DatetimeIndex(expanded_times), expanded_values[0]
 
 
+def _downsample_trace_with_gap_breaks(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    max_time_samples: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Retain real source gaps without treating downsampling gaps as outages."""
+    expanded_times, expanded_values = _insert_line_gap_breaks(times, values)
+    gap_mask = ~np.isfinite(expanded_values)
+    gap_times = expanded_times[gap_mask]
+    finite_times = expanded_times[~gap_mask]
+    finite_values = expanded_values[~gap_mask]
+    if len(gap_times) == 0:
+        return _downsample_trace(finite_times, finite_values, max_time_samples)
+
+    # Each real outage has one or two NaN markers. Keep those markers, but do
+    # not let an unusually fragmented source make a browser trace unbounded.
+    keep_count = max(2, int(max_time_samples))
+    gap_budget = max(0, keep_count - 2)
+    if len(gap_times) > gap_budget:
+        gap_times = gap_times[np.linspace(0, len(gap_times) - 1, gap_budget, dtype=int)]
+    finite_budget = max(2, keep_count - len(gap_times))
+    sampled_times, sampled_values = _downsample_trace(finite_times, finite_values, finite_budget)
+    combined_times = sampled_times.append(gap_times).sort_values()
+    combined_values = np.empty(len(combined_times), dtype=np.float64)
+    sampled_lookup = {timestamp: value for timestamp, value in zip(sampled_times, sampled_values, strict=False)}
+    for index, timestamp in enumerate(combined_times):
+        combined_values[index] = sampled_lookup.get(timestamp, np.nan)
+    return combined_times, combined_values
+
+
 def _projection_trace_values(
     times: pd.DatetimeIndex,
     values: np.ndarray,
@@ -3297,8 +3327,7 @@ def _trace_plot_values(
         trace_times = trace_times[display_mask]
         trace_values = trace_values[display_mask]
     trace_values = _smooth_trace_values(trace_times, trace_values, trace)
-    trace_times, trace_values = _downsample_trace(trace_times, trace_values, max_time_samples)
-    trace_times, trace_values = _insert_line_gap_breaks(trace_times, trace_values)
+    trace_times, trace_values = _downsample_trace_with_gap_breaks(trace_times, trace_values, max_time_samples)
     return _insert_day_breaks(trace_times, trace_values, trace)
 
 
