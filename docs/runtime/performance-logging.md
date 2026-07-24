@@ -51,6 +51,7 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_PREWARM_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_DASHBOARD_PREP_WORKERS`
 - `AURORA_POWER_PREWARM_WORKERS`
+- `AURORA_POWER_PREWARM_MAX_TIME_SAMPLES`
 - `AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_DISPLAY_SUMMARY_FREQ`
 - `AURORA_POWER_DISPLAY_ENERGY_FREQ`
@@ -77,6 +78,11 @@ without asking Swift Charts to draw thousands of points. The offline Power
 prewarm writer uses up to `AURORA_POWER_PREWARM_WORKERS` processes (default
 `2`) only for JSON serialization; it does not share or mutate live Zarr or
 Panel state.
+
+Browser Power prewarms use `AURORA_POWER_PREWARM_MAX_TIME_SAMPLES` (default
+`240`, capped at `700`) per trace. Sampling retains the local minimum and
+maximum of each time bucket, so short load and voltage events remain visible
+while the first browser payload stays compact.
 
 `AURORA_DASHBOARD_PREP_WORKERS` defaults to `2` and is capped at `4`. It is
 used only for custom browser Power windows that cannot use prewarmed JSON.

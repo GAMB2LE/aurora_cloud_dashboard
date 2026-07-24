@@ -3169,7 +3169,29 @@ def _downsample_trace(
     if count <= max_time_samples:
         return times, values
     keep_count = max(2, int(max_time_samples))
-    keep = np.unique(np.linspace(0, count - 1, keep_count, dtype=int))
+    # A uniform stride can hide short APS load spikes and voltage dips. Keep the
+    # local extrema from each time bucket instead, while retaining chronological
+    # order and a strict trace-point budget for browser payloads.
+    bucket_count = max(1, (keep_count - 2) // 2)
+    edges = np.linspace(0, count, bucket_count + 1, dtype=int)
+    selected = [0, count - 1]
+    for left, right in zip(edges[:-1], edges[1:]):
+        if right <= left:
+            continue
+        bucket = values[left:right]
+        finite = np.flatnonzero(np.isfinite(bucket))
+        if len(finite) == 0:
+            continue
+        finite_values = bucket[finite]
+        selected.extend(
+            (
+                left + int(finite[np.argmin(finite_values)]),
+                left + int(finite[np.argmax(finite_values)]),
+            )
+        )
+    keep = np.unique(np.asarray(selected, dtype=int))
+    if len(keep) > keep_count:
+        keep = keep[np.linspace(0, len(keep) - 1, keep_count, dtype=int)]
     return times[keep], values[keep]
 
 

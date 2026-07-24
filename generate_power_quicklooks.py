@@ -45,6 +45,10 @@ PREWARM_FORECAST_JSON = PREWARM_DIR / "power_forecast_latest_interactive.json"
 PREWARM_METADATA_JSON = PREWARM_DIR / "power_prewarms_metadata.json"
 INSTRUMENT = "power"
 ASS_POWER_VAR = "watts_on_48vdc_Avg"
+POWER_PREWARM_MAX_TIME_SAMPLES = max(
+    100,
+    min(int(os.environ.get("AURORA_POWER_PREWARM_MAX_TIME_SAMPLES", "240")), 700),
+)
 
 
 def _optional_ass_power_dataset() -> xr.Dataset | None:
@@ -182,7 +186,7 @@ def generate_latest_prewarms(
             latest_summary,
             INSTRUMENT,
             title="Aurora Power Supply",
-            max_time_samples=700,
+            max_time_samples=POWER_PREWARM_MAX_TIME_SAMPLES,
             panel_groups=panel_groups or None,
         )
         jobs.append((section, path, fig.to_plotly_json()))

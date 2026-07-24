@@ -15,6 +15,7 @@ from grouped_timeseries import (
     SUMMARY_LAYOUTS,
     PanelSpec,
     TraceSpec,
+    _downsample_trace,
     _plotly_time_tick_options,
     build_power_forecast_info,
     build_summary_plotly,
@@ -35,6 +36,20 @@ def test_radiation_layout_excludes_noisy_flux_plate_b() -> None:
     assert [(trace.var, trace.label) for trace in panel.traces] == [
         ("fp_A_Wm2_Avg", "Flux Plate A"),
     ]
+
+
+def test_trace_downsampling_retains_short_extrema_within_budget() -> None:
+    times = pd.date_range("2026-07-15T00:00:00", periods=100, freq="min")
+    values = np.zeros(100)
+    values[17] = 99.0
+    values[83] = -42.0
+
+    sampled_times, sampled_values = _downsample_trace(times, values, max_time_samples=20)
+
+    assert len(sampled_times) <= 20
+    assert 99.0 in sampled_values
+    assert -42.0 in sampled_values
+    assert sampled_times.is_monotonic_increasing
 
 
 def _power_layout_dataset() -> xr.Dataset:
