@@ -80,7 +80,7 @@ prewarm writer uses up to `AURORA_POWER_PREWARM_WORKERS` processes (default
 Panel state.
 
 Browser Power prewarms use `AURORA_POWER_PREWARM_MAX_TIME_SAMPLES` (default
-`160`, capped at `700`) per trace. Sampling retains the local minimum and
+`120`, capped at `700`) per trace. Sampling retains the local minimum and
 maximum of each time bucket, so short load and voltage events remain visible
 while the first browser payload stays compact.
 
