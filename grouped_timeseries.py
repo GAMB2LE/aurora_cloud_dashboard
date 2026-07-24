@@ -3850,8 +3850,13 @@ def build_summary_plotly(
                 left_axis_values.append(trace_values)
                 left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             trace_label = _trace_display_label(ds, trace)
+            # Power's standard current view contains many independent line
+            # traces. WebGL avoids creating thousands of SVG nodes on phones
+            # and browsers, while stepped state schedules stay SVG so their
+            # horizontal/vertical transitions remain exact.
+            trace_type = go.Scattergl if instrument == "power" and not trace.step else go.Scatter
             fig.add_trace(
-                go.Scatter(
+                trace_type(
                     x=trace_times,
                     y=trace_values,
                     mode="lines",
