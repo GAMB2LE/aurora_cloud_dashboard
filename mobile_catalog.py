@@ -29,6 +29,7 @@ APP_DIR = Path(__file__).resolve().parent
 DATE_TOKEN_RE = re.compile(r"(20\d{6})")
 WXCAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 AURORACAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
+MOBILE_POWER_MAX_POINTS = max(100, min(int(os.environ.get("AURORA_MOBILE_POWER_MAX_POINTS", "160")), 160))
 
 
 WXCAM_STREAMS = {
@@ -161,6 +162,30 @@ def power_prewarm_path(section: str) -> Path | None:
         return None
     root = env_path("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm")
     return root / f"power_{section}_latest_interactive.json"
+
+
+def _representative_power_indices(values, maximum: int = MOBILE_POWER_MAX_POINTS):
+    """Keep endpoints and local extrema without overloading native Charts."""
+    import numpy as np
+
+    count = len(values)
+    if count <= maximum:
+        return np.arange(count, dtype=int)
+    # Two extrema per bucket retain peaks/dips that uniform stride sampling can
+    # hide, while bounding every native trace to the mobile contract.
+    bucket_count = max(1, (maximum - 2) // 2)
+    edges = np.linspace(0, count, bucket_count + 1, dtype=int)
+    selected = {0, count - 1}
+    for left, right in zip(edges[:-1], edges[1:], strict=True):
+        if right <= left:
+            continue
+        bucket = values[left:right]
+        selected.add(left + int(np.argmin(bucket)))
+        selected.add(left + int(np.argmax(bucket)))
+    indices = np.asarray(sorted(selected), dtype=int)
+    if len(indices) <= maximum:
+        return indices
+    return indices[np.linspace(0, len(indices) - 1, maximum, dtype=int)]
 
 
 def power_operating_scenario_paths() -> tuple[Path, ...]:
@@ -1038,8 +1063,8 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                     mask &= values <= float(trace.valid_max)
                 selected_times = times[mask]
                 selected_values = values[mask] * float(trace.scale)
-                if len(selected_times) > 260:
-                    selected = np.linspace(0, len(selected_times) - 1, 260, dtype=int)
+                if len(selected_times) > MOBILE_POWER_MAX_POINTS:
+                    selected = _representative_power_indices(selected_values)
                     selected_times = selected_times[selected]
                     selected_values = selected_values[selected]
                 if not len(selected_times):

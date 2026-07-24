@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import os
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import xarray as xr
 
 from grouped_timeseries import (
@@ -125,6 +127,18 @@ def _atomic_write_figure_json(fig, path: Path) -> None:
     temporary.replace(path)
 
 
+def _write_prewarm_json_worker(section: str, path_text: str, figure_spec: dict) -> tuple[str, str]:
+    """Serialize one immutable Plotly payload in an offline worker process."""
+    # The worker only receives a plain figure specification and returns an
+    # atomically published file path. It never opens a Zarr store or touches a
+    # live Panel document.
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    path = Path(path_text)
+    _atomic_write_figure_json(go.Figure(figure_spec), path)
+    return section, str(path)
+
+
 def _latest_prewarm_window(time_index: pd.DatetimeIndex) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Return the live 24-hour browser window, ending at current UTC time.
 
@@ -162,7 +176,7 @@ def generate_latest_prewarms(
         "current": (PREWARM_CURRENT_JSON, {"observed"}),
         "forecast": (PREWARM_FORECAST_JSON, {"forecast_24h", "forecast_96h", "verification"}),
     }
-    written: dict[str, Path] = {}
+    jobs: list[tuple[str, Path, dict]] = []
     for section, (path, panel_groups) in figures.items():
         fig = build_summary_plotly(
             latest_summary,
@@ -171,7 +185,24 @@ def generate_latest_prewarms(
             max_time_samples=700,
             panel_groups=panel_groups or None,
         )
-        _atomic_write_figure_json(fig, path)
+        jobs.append((section, path, fig.to_plotly_json()))
+
+    worker_count = max(1, min(int(os.environ.get("AURORA_POWER_PREWARM_WORKERS", "2")), 2))
+    written: dict[str, Path] = {}
+    if worker_count == 1:
+        results = [_write_prewarm_json_worker(section, str(path), spec) for section, path, spec in jobs]
+    else:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            results = list(
+                executor.map(
+                    _write_prewarm_json_worker,
+                    (section for section, _path, _spec in jobs),
+                    (str(path) for _section, path, _spec in jobs),
+                    (spec for _section, _path, spec in jobs),
+                )
+            )
+    for section, path_text in results:
+        path = Path(path_text)
         written[section] = path
         print(f"Wrote {path}")
 

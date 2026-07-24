@@ -169,10 +169,18 @@ class DashboardShellTests(TestCase):
         self.assertEqual(app.power_tab_host.objects, [])
 
     def test_desktop_tab_labels_scroll_without_abbreviating(self) -> None:
-        self.assertIn(":host(.desktop-tabs) .bk-header", app.css)
-        self.assertIn("overflow-x: auto", app.css)
-        self.assertIn(":host(.desktop-tabs) .bk-tab", app.css)
-        self.assertIn("white-space: nowrap", app.css)
+        stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
+        css = stylesheet.read_text(encoding="utf-8")
+        self.assertIn(":host(.desktop-tabs) .bk-header", css)
+        self.assertIn("overflow-x: auto", css)
+        self.assertIn(":host(.desktop-tabs) .bk-tab", css)
+        self.assertIn("white-space: nowrap", css)
+
+    def test_dashboard_stylesheet_is_a_single_cacheable_static_asset(self) -> None:
+        stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
+
+        self.assertTrue(stylesheet.is_file())
+        self.assertEqual(app.DASHBOARD_STYLESHEET, "/dashboard-assets/dashboard.css")
 
     def test_desktop_controls_keep_compact_navigation_rows(self) -> None:
         controls_body = app.controls.objects[0]

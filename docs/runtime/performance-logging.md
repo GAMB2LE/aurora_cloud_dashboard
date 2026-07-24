@@ -64,10 +64,17 @@ Operations Dashboard **Overall** action state or the health report's
 per-session heartbeat logging. That avoids keeping mobile browser sessions
 alive on the server after the phone has backgrounded or killed the tab.
 
-The dashboard logo is served as a normal static asset under
-`AURORA_DASHBOARD_ASSET_PREFIX`, rather than being embedded in every HTML
-document. This lets browsers cache it independently of the live dashboard
-document.
+The dashboard logo and shared stylesheet are served as normal static assets
+under `AURORA_DASHBOARD_ASSET_PREFIX`, rather than being embedded in every HTML
+document. This lets browsers cache them independently of the live dashboard
+document and prevents the same CSS from being repeated in Panel models.
+
+The native Power API bounds each trace to `AURORA_MOBILE_POWER_MAX_POINTS`
+(default `160`) using per-bucket extrema, preserving visible peaks and dips
+without asking Swift Charts to draw thousands of points. The offline Power
+prewarm writer uses up to `AURORA_POWER_PREWARM_WORKERS` processes (default
+`2`) only for JSON serialization; it does not share or mutate live Zarr or
+Panel state.
 
 ## Useful commands
 

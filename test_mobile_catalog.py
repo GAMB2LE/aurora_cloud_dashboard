@@ -12,6 +12,21 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_power_trace_sampling_is_bounded_and_preserves_extrema(self) -> None:
+        import numpy as np
+
+        values = np.zeros(1_000)
+        values[333] = 99.0
+        values[777] = -42.0
+
+        indices = mobile_catalog._representative_power_indices(values)
+
+        self.assertLessEqual(len(indices), mobile_catalog.MOBILE_POWER_MAX_POINTS)
+        self.assertIn(0, indices)
+        self.assertIn(len(values) - 1, indices)
+        self.assertIn(333, indices)
+        self.assertIn(777, indices)
+
     def test_manifest_contains_native_sections_and_visible_instruments(self) -> None:
         with patch.dict(
             os.environ,

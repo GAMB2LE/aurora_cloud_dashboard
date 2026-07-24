@@ -5,6 +5,7 @@ from __future__ import annotations
 import mimetypes
 import os
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -28,7 +29,9 @@ async def cache_read_only_payloads(request: Request, call_next):
     exposed by this API.  A private response avoids sharing authenticated
     payloads in intermediary caches.
     """
+    started = perf_counter()
     response = await call_next(request)
+    response.headers.setdefault("Server-Timing", f"app;dur={(perf_counter() - started) * 1000:.1f}")
     if request.method == "GET" and not request.url.path.startswith("/media/"):
         response.headers.setdefault("Cache-Control", "private, max-age=30, stale-while-revalidate=60")
     return response
