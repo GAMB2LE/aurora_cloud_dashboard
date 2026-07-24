@@ -420,6 +420,16 @@ _BROWSER_PERF_EVENTS = {
 }
 
 
+def _browser_rum_enabled() -> bool:
+    """Return whether development browser measurements are enabled."""
+    return os.environ.get("AURORA_BROWSER_RUM_ENABLED", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 class BrowserPerformanceProbe(pn.custom.JSComponent):
     """Report real browser milestones to the development performance log."""
 
@@ -582,13 +592,7 @@ class BrowserPerformanceProbe(pn.custom.JSComponent):
 
 
 def _browser_performance_probe() -> BrowserPerformanceProbe | None:
-    enabled = os.environ.get("AURORA_BROWSER_RUM_ENABLED", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if SITE_ENV != "development" or not enabled:
+    if SITE_ENV != "development" or not _browser_rum_enabled():
         return None
     # A real 1 px box keeps Panel's global deferred loader from skipping the
     # probe while remaining visually imperceptible.
@@ -6841,6 +6845,50 @@ def _log_session_loaded() -> None:
     _perf_log("session_loaded", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
 
 
+def _log_serialized_document_size() -> None:
+    """Record the actual Bokeh document payload size after first render.
+
+    Panel sends this model graph through its websocket.  Measure it only for
+    development RUM sessions and after the initial chart is already visible,
+    so the diagnostic cannot affect first-paint timing.
+    """
+    if SITE_ENV != "development" or not _browser_rum_enabled():
+        return
+    doc = pn.state.curdoc
+    if doc is None:
+        return
+    started = perf_counter()
+    try:
+        # ``to_json`` is the server-side representation Bokeh uses to create
+        # the client document. Compact separators make this a byte count, not
+        # a pretty-print estimate.
+        payload_bytes = len(json.dumps(doc.to_json(), separators=(",", ":")).encode("utf-8"))
+    except Exception as exc:
+        _perf_log(
+            "browser_document_model_size",
+            instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT,
+            status="error",
+            error_type=type(exc).__name__,
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+        return
+    _perf_log(
+        "browser_document_model_size",
+        instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT,
+        status="ok",
+        document_bytes=payload_bytes,
+        duration_ms=round((perf_counter() - started) * 1000, 3),
+        request_path=_request_path(),
+    )
+
+
+def _schedule_serialized_document_size() -> None:
+    """Defer development-only document accounting until after first paint."""
+    if SITE_ENV != "development" or not _browser_rum_enabled() or pn.state.curdoc is None:
+        return
+    pn.state.curdoc.add_timeout_callback(_log_serialized_document_size, 5_000)
+
+
 def _log_session_heartbeat() -> None:
     fields = _selection_snapshot_safe()
     fields.update(
@@ -6952,6 +7000,7 @@ wxcam_calendar_state.param.watch(
     "selected_hour_path",
 )
 pn.state.onload(_log_session_loaded)
+pn.state.onload(_schedule_serialized_document_size)
 pn.state.on_session_destroyed(_log_session_destroyed)
 _session_heartbeat_cb = None
 if SESSION_HEARTBEAT_MS > 0:
