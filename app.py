@@ -9977,6 +9977,18 @@ def _mobile_overview_markup() -> str:
         _mobile_status_card_markup("Power Data", power_latest.strftime("%H:%M UTC") if power_latest else "No data", power_meta, power_level),
         _mobile_status_card_markup("AURORACam", camera_value, camera_meta, camera_level),
     ]
+    try:
+        cards.extend(
+            _mobile_status_card_markup(
+                str(card["title"]),
+                str(card["value"]),
+                str(card.get("detail") or "Latest station measurement"),
+                _mobile_level(card.get("level")),
+            )
+            for card in mobile_catalog.environmental_signal_cards()
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not load overview environmental signals: %s", exc)
     return (
         "<div class='mobile-shell'>"
         "<div><div class='mobile-section-title'>AURORA Overview</div>"

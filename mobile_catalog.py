@@ -552,6 +552,11 @@ def _environmental_signal_cards() -> list[dict[str, Any]]:
     return cards
 
 
+def environmental_signal_cards() -> list[dict[str, Any]]:
+    """Return overview-ready station-environment cards for browser consumers."""
+    return _environmental_signal_cards()
+
+
 def _environmental_overview_card(card_id: str, title: str, value: float, sample_time: str, unit: str, source: str) -> dict[str, Any]:
     return _overview_card(
         card_id,
