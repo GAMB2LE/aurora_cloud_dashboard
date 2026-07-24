@@ -1463,6 +1463,41 @@ def _instrument_time_index(inst: str) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(times[valid])
 
 
+def _power_display_observed_time_index() -> pd.DatetimeIndex:
+    """Return observed Power timestamps from the compact display product.
+
+    The Power footer only needs freshness and coverage. Opening the full raw
+    Power Zarr just to build those small status widgets defeats the standard
+    view prewarm, so prefer the compact display-summary product. A raw-store
+    fallback keeps the existing degraded-data behaviour when that product has
+    not yet been built.
+    """
+    try:
+        ds = _get_power_display_summary_dataset()
+    except Exception:
+        ds = None
+    if ds is None or "time" not in ds:
+        return _instrument_time_index("power")
+
+    times = pd.DatetimeIndex(ds["time"].values)
+    if not len(times):
+        return pd.DatetimeIndex([])
+    observed = np.zeros(len(times), dtype=bool)
+    for name in ("BatterySOC", "BatteryWatts", "DCInverterVolts", "ACOutputWatts"):
+        if name not in ds:
+            continue
+        values = np.asarray(ds[name].values, dtype=np.float64)
+        if values.shape[0] == len(times):
+            observed |= np.isfinite(values)
+    now = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
+    return times[observed & (times <= now)]
+
+
+def _status_time_index(inst: str) -> pd.DatetimeIndex:
+    """Use compact Power metadata for status widgets; use raw indexes elsewhere."""
+    return _power_display_observed_time_index() if inst == "power" else _instrument_time_index(inst)
+
+
 def _format_status_time(dt: datetime | None) -> str:
     if dt is None:
         return "No data"
@@ -7158,7 +7193,7 @@ def _current_interactive_status_markup() -> str:
         return _status_strip_markup(items)
     latest = _dataset_time_bounds(inst)[1]
     lag = datetime.now() - latest if latest is not None else None
-    times = _instrument_time_index(inst)
+    times = _status_time_index(inst)
     bits, missing, total = _hourly_coverage_summary(times, _ensure_utc(range_start.value), _ensure_utc(range_end.value))
     items = [
         ("Last sample", _format_status_time(latest), "info"),
@@ -7193,7 +7228,7 @@ def _current_interactive_availability_markup() -> str:
         )
     start = _ensure_utc(range_start.value)
     end = _ensure_utc(range_end.value)
-    bits = _binned_time_coverage(_instrument_time_index(inst), start, end, segments=72)
+    bits = _binned_time_coverage(_status_time_index(inst), start, end, segments=72)
     start_label = start.strftime("%m-%d %H:%M") if start else "--"
     end_label = end.strftime("%m-%d %H:%M") if end else "--"
     return _availability_bar_markup(
