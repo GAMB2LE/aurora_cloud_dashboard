@@ -4282,7 +4282,12 @@ async def _load_prewarmed_interactive_figure_async(
     """Read cached JSON off the Tornado loop and publish only when still current."""
     try:
         with _timed_perf("interactive_prewarm_load_async", instrument=inst, path=str(path)) as perf:
-            fig = await asyncio.to_thread(_read_prewarmed_interactive_figure, path)
+            loop = asyncio.get_running_loop()
+            fig = await loop.run_in_executor(
+                _BACKGROUND_PREPARATION_EXECUTOR,
+                _read_prewarmed_interactive_figure,
+                path,
+            )
             perf["status"] = "ok"
             perf["trace_count"] = len(fig.data)
     except asyncio.CancelledError:
