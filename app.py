@@ -5148,10 +5148,11 @@ _auroracam_date_options = _auroracam_day_options()
 auroracam_date = pn.widgets.Select(name="Date", options=_auroracam_date_options)
 if _auroracam_date_options:
     auroracam_date.value = _auroracam_date_options[-1]
-_auroracam_initial_time_options = _auroracam_time_options(auroracam_date.value)
-auroracam_time = pn.widgets.Select(name="Time (UTC)", options=_auroracam_initial_time_options)
-if _auroracam_initial_time_options:
-    auroracam_time.value = _auroracam_initial_time_options[-1]
+# Reading every camera record to populate historic frame times is expensive and
+# irrelevant until AURORACam is opened. Populate the full list lazily, while
+# retaining a pending share-link selection for the first camera activation.
+_AURORACAM_PENDING_TIME_QUERY: str | None = None
+auroracam_time = pn.widgets.Select(name="Time (UTC)", options=["Latest"], value="Latest")
 auroracam_latest = pn.widgets.Button(name="Latest", button_type="primary")
 auroracam_prev = pn.widgets.Button(name="Previous Day", button_type="default")
 auroracam_next = pn.widgets.Button(name="Next Day", button_type="default")
@@ -5185,10 +5186,14 @@ for _auroracam_card_id, _auroracam_card in auroracam_cards.items():
 
 
 def _refresh_auroracam_time_options(preserve_current: bool = True) -> None:
+    global _AURORACAM_PENDING_TIME_QUERY
     current = auroracam_time.value if preserve_current else None
     opts = _auroracam_time_options(auroracam_date.value)
     auroracam_time.options = opts
-    if not opts:
+    if _AURORACAM_PENDING_TIME_QUERY in opts:
+        auroracam_time.value = _AURORACAM_PENDING_TIME_QUERY
+        _AURORACAM_PENDING_TIME_QUERY = None
+    elif not opts:
         auroracam_time.value = None
     elif preserve_current and current in opts:
         auroracam_time.value = current
@@ -7783,8 +7788,14 @@ def _apply_query_state() -> None:
         auroracam_camera.value = args["auroracam_camera"]
     if args.get("auroracam_date") in list(auroracam_date.options):
         auroracam_date.value = args["auroracam_date"]
-    if args.get("auroracam_time") in list(auroracam_time.options):
-        auroracam_time.value = args["auroracam_time"]
+    requested_auroracam_time = args.get("auroracam_time")
+    if requested_auroracam_time in list(auroracam_time.options):
+        auroracam_time.value = requested_auroracam_time
+    elif requested_auroracam_time:
+        # Historic times are loaded only when the camera tab is activated.
+        # Hold this value so direct/share URLs still select their frame then.
+        global _AURORACAM_PENDING_TIME_QUERY
+        _AURORACAM_PENDING_TIME_QUERY = requested_auroracam_time
     if args.get("uas_window") in list(uas_window.options):
         uas_window.value = args["uas_window"]
     if args.get("power_view") in {"current", "forecast"}:
@@ -8041,17 +8052,27 @@ def _custom_cl61_plan_view(start_value, duration_value, kit_value, _live_refresh
     return _build_custom_cl61_plan_view(start_value, duration_value, kit_value)
 
 
-power_plan_editor = pn.Card(
-    _operating_decision_audit_view_reactive,
-    pn.Row(custom_plan_instrument, custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-    _custom_cl61_plan_view,
-    title="Custom Instrument Operating Plan",
-    collapsible=True,
-    collapsed=False,
-    sizing_mode="stretch_width",
-    visible=CURRENT_INSTRUMENT == "power",
-    css_classes=["small-card", "operating-plan-card"],
-)
+# Constructing this card evaluates the learned operating-plan product. It is a
+# Forecast-only tool, so defer the work until the Forecast pane is requested.
+power_plan_editor: pn.Card | None = None
+
+
+def _get_power_plan_editor() -> pn.Card:
+    global power_plan_editor
+    if power_plan_editor is None:
+        power_plan_editor = pn.Card(
+            _operating_decision_audit_view_reactive,
+            pn.Row(custom_plan_instrument, custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+            _custom_cl61_plan_view,
+            title="Custom Instrument Operating Plan",
+            collapsible=True,
+            collapsed=False,
+            sizing_mode="stretch_width",
+            css_classes=["small-card", "operating-plan-card"],
+        )
+    return power_plan_editor
+
+
 power_plan_editor_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
 
 mobile_custom_cl61_start = pn.widgets.DatetimePicker(
@@ -8085,16 +8106,23 @@ def _mobile_custom_cl61_plan_view(start_value, duration_value, kit_value, _live_
     return _build_custom_cl61_plan_view(start_value, duration_value, kit_value)
 
 
-mobile_power_plan_editor = pn.Card(
-    _operating_decision_audit_view_reactive,
-    pn.Column(mobile_custom_plan_instrument, mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
-    _mobile_custom_cl61_plan_view,
-    title="Custom Instrument Operating Plan",
-    collapsible=True,
-    collapsed=True,
-    sizing_mode="stretch_width",
-    css_classes=["operating-plan-card"],
-)
+mobile_power_plan_editor: pn.Card | None = None
+
+
+def _get_mobile_power_plan_editor() -> pn.Card:
+    global mobile_power_plan_editor
+    if mobile_power_plan_editor is None:
+        mobile_power_plan_editor = pn.Card(
+            _operating_decision_audit_view_reactive,
+            pn.Column(mobile_custom_plan_instrument, mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
+            _mobile_custom_cl61_plan_view,
+            title="Custom Instrument Operating Plan",
+            collapsible=True,
+            collapsed=True,
+            sizing_mode="stretch_width",
+            css_classes=["operating-plan-card"],
+        )
+    return mobile_power_plan_editor
 
 
 
@@ -8343,7 +8371,7 @@ def _sync_power_section_visibility() -> None:
         if not power_browser_guidance_container.objects and callable(guidance):
             power_browser_guidance_container[:] = [guidance]
         if not power_plan_editor_container.objects:
-            power_plan_editor_container[:] = [power_plan_editor]
+            power_plan_editor_container[:] = [_get_power_plan_editor()]
     else:
         power_browser_guidance_container.clear()
         power_plan_editor_container.clear()
@@ -9077,7 +9105,7 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
         forecast_content = [
             pn.pane.HTML(_power_forecast_status_markup(ds), sizing_mode="stretch_width", margin=0),
             pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
-            mobile_power_plan_editor,
+            _get_mobile_power_plan_editor(),
         ]
     return pn.Column(
         *forecast_content,
