@@ -9,7 +9,6 @@ that role's versioned health contract.
 from __future__ import annotations
 
 import argparse
-import csv
 from datetime import datetime, timezone
 import json
 import math
@@ -208,12 +207,6 @@ PROCESSING_UNITS = (
     "aurora-ops-monitor-quicklooks.service",
 )
 
-SOURCE_RECENT_THRESHOLD_MINUTES = 90.0
-SOURCE_RECENT_THRESHOLD_OVERRIDES_MINUTES = {
-    # HATPRO publishes as hourly batches. Wait for two missed batches before
-    # marking the source stale so normal batch/manifest timing does not alert.
-    "hatprog5": 180.0,
-}
 HEALTH_LEVELS = {"green": 0, "amber": 1, "red": 2, "gray": -1}
 
 
@@ -299,29 +292,6 @@ def _cl61_ssh_base() -> list[str]:
     ]
 
 
-def _gws_ssh_base() -> list[str]:
-    key_path = os.environ.get("GWS_SSH_PRIVATE_KEY", "/home/aurora/.ssh/id_rsa_jasmin_20200514")
-    return [
-        "ssh",
-        "-i",
-        key_path,
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "IdentitiesOnly=yes",
-        "-o",
-        "ConnectTimeout=15",
-        "-o",
-        "ServerAliveInterval=15",
-        "-o",
-        "ServerAliveCountMax=4",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        f"UserKnownHostsFile={KNOWN_HOSTS}",
-    ]
-
-
 def _remote_df(base_cmd: list[str], target: str, path: str) -> dict[str, Any]:
     quoted = json.dumps(path)
     remote = (
@@ -387,58 +357,16 @@ def _read_summary(summary_path: Path) -> dict[str, Any]:
         return {}
 
 
-def _manifest_stats(path: Path) -> dict[str, float | int | None]:
-    if not path.exists():
-        return {"count": 0, "size_bytes": 0, "latest_mtime": None}
-    count = 0
-    size_bytes = 0
-    latest_mtime: int | None = None
-    with path.open("r", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        for row in reader:
-            count += 1
-            try:
-                size = int(row.get("size", "0") or 0)
-            except Exception:
-                size = 0
-            try:
-                mtime = int(row.get("mtime", "0") or 0)
-            except Exception:
-                mtime = 0
-            size_bytes += size
-            if mtime and (latest_mtime is None or mtime > latest_mtime):
-                latest_mtime = mtime
-    return {"count": count, "size_bytes": size_bytes, "latest_mtime": latest_mtime}
-
-
-def _coverage_pct(numerator: float | int | None, denominator: float | int | None) -> float | None:
-    if numerator is None or denominator in (None, 0):
-        return None
-    return 100.0 * float(numerator) / float(denominator)
-
-
-def _lag_minutes(source_mtime: int | None, mirror_mtime: int | None) -> float | None:
-    if source_mtime is None or mirror_mtime is None:
-        return None
-    return max(float(source_mtime - mirror_mtime), 0.0) / 60.0
-
-
 def _age_minutes(now_epoch: float, sample_epoch: int | None) -> float | None:
     if sample_epoch is None:
         return None
     return max(now_epoch - float(sample_epoch), 0.0) / 60.0
 
 
-def _recent_state(age_minutes: float | None, threshold_minutes: float = SOURCE_RECENT_THRESHOLD_MINUTES) -> int:
+def _recent_state(age_minutes: float | None, threshold_minutes: float) -> int:
     if age_minutes is None:
         return 0
     return 1 if age_minutes <= threshold_minutes else 0
-
-
-def _source_recent_threshold_minutes(stream_name: str) -> float:
-    return SOURCE_RECENT_THRESHOLD_OVERRIDES_MINUTES.get(stream_name, SOURCE_RECENT_THRESHOLD_MINUTES)
-
-
 def _file_freshness(path: Path, now_epoch: float, *, recent_threshold_minutes: float) -> dict[str, float | int | str | None]:
     if not path.exists():
         return {
