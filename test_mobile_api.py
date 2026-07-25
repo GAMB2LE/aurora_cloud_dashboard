@@ -28,14 +28,24 @@ class MobileAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(mobile_api.app)
 
-    def test_health_is_public_and_reports_token_configuration(self) -> None:
+    def test_health_is_public_without_disclosing_token_configuration(self) -> None:
         with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False):
             response = self.client.get("/health")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
         self.assertTrue(response.json()["authRequired"])
-        self.assertTrue(response.json()["tokenConfigured"])
+        self.assertNotIn("tokenConfigured", response.json())
+
+    def test_legacy_public_mode_does_not_bypass_authentication(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"AURORA_MOBILE_API_TOKEN": "secret", "AURORA_MOBILE_API_ALLOW_PUBLIC": "true"},
+            clear=False,
+        ):
+            response = self.client.get("/manifest")
+
+        self.assertEqual(response.status_code, 401)
 
     def test_manifest_requires_bearer_token(self) -> None:
         with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False):

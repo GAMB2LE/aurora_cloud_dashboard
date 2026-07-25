@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import secrets
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated
@@ -52,18 +53,12 @@ def _token() -> str | None:
     return None
 
 
-def _allow_public() -> bool:
-    return os.environ.get("AURORA_MOBILE_API_ALLOW_PUBLIC", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def require_auth(authorization: Annotated[str | None, Header()] = None) -> None:
-    if _allow_public():
-        return
     expected = _token()
     if not expected:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Mobile API token is not configured")
     scheme, _, value = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or value != expected:
+    if scheme.lower() != "bearer" or not secrets.compare_digest(value, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid mobile API token")
 
 
@@ -91,8 +86,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "serverTime": catalog.utc_now_iso(),
-        "authRequired": not _allow_public(),
-        "tokenConfigured": bool(_token()),
+        "authRequired": True,
     }
 
 
