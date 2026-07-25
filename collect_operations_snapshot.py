@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Collect Aurora source-host and transfer health metrics into daily JSONL snapshots."""
+"""Collect dashboard-facing host, processing, and product health snapshots.
+
+Archive movement, parity, object-store coverage, and retention safety are
+authoritatively evaluated by aurora-cloud-infra.  This collector only consumes
+that role's versioned health contract.
+"""
 
 from __future__ import annotations
 
@@ -23,8 +28,7 @@ import xarray as xr
 
 RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
 HEALTH_OUTPUT_ROOT_DEFAULT = Path("/data/aurora/products/ops_monitor/health")
-MANIFEST_ROOT_DEFAULT = Path("/data/aurora/internal/mirror_manifests")
-GWS_PATH_DEFAULT = Path("/gws/ssde/j25b/gamb2le")
+ARCHIVE_HEALTH_DEFAULT = Path("/data/aurora/internal/archive_status/health-v1.json")
 POWER_ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 POWER_SOC_FORECAST_ZARR_DEFAULT = Path("/data/aurora/products/power/power_soc_forecast.zarr")
 ECMWF_SHADOW_REPORT_DEFAULT = Path("/data/aurora/products/power/ecmwf_provider_shadow.json")
@@ -59,10 +63,6 @@ GUARDED_HEAVY_UNITS = (
     "aurora-power-append.service",
     "aurora-radar-append.service",
     "aurora-wxcam-append.service",
-    "aurora-gws-rsync-products-wxcam.service",
-    "aurora-gws-rsync-products.service",
-    "aurora-gws-rsync-raw.service",
-    "aurora-mirror-verify.service",
 )
 
 SOURCE_HOSTS = {
@@ -129,8 +129,6 @@ STREAM_PREFIXES = {
     "pdu": "pdu",
     "wxcam": "wxcam",
 }
-
-BACKFILL_STREAMS = {"wxcam"}
 
 SOURCE_SYNC_UNITS = (
     "aurora-cl61-source-sync.timer",
@@ -210,22 +208,7 @@ PROCESSING_UNITS = (
     "aurora-ops-monitor-quicklooks.service",
 )
 
-TRANSFER_UNITS = (
-    "aurora-gws-rsync-raw.timer",
-    "aurora-gws-rsync-raw.service",
-    "aurora-gws-rsync-products.timer",
-    "aurora-gws-rsync-products.service",
-    "aurora-gws-rsync-products-wxcam.timer",
-    "aurora-gws-rsync-products-wxcam.service",
-    "aurora-gws-rsync-manifests.timer",
-    "aurora-gws-rsync-manifests.service",
-    "aurora-mirror-verify.timer",
-    "aurora-mirror-verify.service",
-)
 SOURCE_RECENT_THRESHOLD_MINUTES = 90.0
-MIRROR_SUMMARY_RECENT_THRESHOLD_MINUTES = float(
-    os.environ.get("MIRROR_SUMMARY_RECENT_THRESHOLD_MINUTES", "30")
-)
 SOURCE_RECENT_THRESHOLD_OVERRIDES_MINUTES = {
     # HATPRO publishes as hourly batches. Wait for two missed batches before
     # marking the source stale so normal batch/manifest timing does not alert.
@@ -1010,21 +993,42 @@ def _collect_unit_metrics(units: tuple[str, ...], record: dict[str, Any]) -> tup
     return failures, enabled_count
 
 
-def _probe_gws(gws_path: Path) -> tuple[str | None, dict[str, float] | None]:
-    hosts = [host.strip() for host in os.environ.get("GWS_TRANSFER_HOSTS", "xfer-vm-03.jasmin.ac.uk,xfer-vm-01.jasmin.ac.uk,xfer-vm-02.jasmin.ac.uk").split(",") if host.strip()]
-    username = os.environ.get("GWS_USERNAME", "rrniii")
-    base_cmd = _gws_ssh_base()
-    for host in hosts:
-        target = f"{username}@{host}"
+def _merge_archive_health(record: dict[str, Any], health_path: Path, now: datetime) -> None:
+    """Merge the infrastructure-owned archive health contract without probing."""
+    health = _read_summary(health_path)
+    record["archive_health_contract_path"] = str(health_path)
+    record["archive_health_contract_available_state"] = 1 if health else 0
+    if not health:
+        record["archive_health_level"] = "red"
+        record["archive_health_failures"] = ["archive_health_contract_missing"]
+        return
+
+    record["archive_health_schema_version"] = health.get("schema_version")
+    record["archive_health_level"] = health.get("overall_level", "red")
+    record["archive_health_failures"] = health.get("failures", [])
+    generated = health.get("generated_at")
+    if generated:
         try:
-            metrics = _remote_df(base_cmd, target, str(gws_path))
-            return host, metrics
-        except Exception:
-            continue
-    return None, None
+            generated_time = datetime.fromisoformat(str(generated).replace("Z", "+00:00"))
+            if generated_time.tzinfo is None:
+                generated_time = generated_time.replace(tzinfo=timezone.utc)
+            age_min = max((now - generated_time).total_seconds(), 0.0) / 60.0
+            record["archive_health_age_min"] = age_min
+            # Compatibility fields for presentation and alert consumers. Their
+            # values now describe the infrastructure contract, not a dashboard
+            # read of verifier manifests.
+            record["mirror_summary_age_min"] = age_min
+            record["mirror_summary_recent_state"] = 1 if age_min <= 30.0 else 0
+        except (TypeError, ValueError):
+            record["mirror_summary_recent_state"] = 0
+    for key, value in health.get("metrics", {}).items():
+        record[key] = value
+    verifier_ok = bool(record.get("mirror_verify_service_healthy_state"))
+    record["gws_probe_ok_state"] = 1 if verifier_ok else 0
+    record["gws_available_state"] = 1 if verifier_ok else 0
 
 
-def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
+def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     now_epoch = now.timestamp()
     record: dict[str, Any] = {
@@ -1033,24 +1037,7 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         "snapshot_epoch": now_epoch,
     }
 
-    summary_path = manifest_root / "latest" / "summary.json"
-    summary = _read_summary(summary_path)
-    summary_generated = summary.get("generated_at")
-    if summary_generated:
-        try:
-            summary_time = datetime.fromisoformat(summary_generated)
-            if summary_time.tzinfo is None:
-                summary_time = summary_time.replace(tzinfo=timezone.utc)
-            mirror_summary_age_min = max((now - summary_time).total_seconds(), 0.0) / 60.0
-            record["mirror_summary_age_min"] = mirror_summary_age_min
-            record["mirror_summary_recent_state"] = _recent_state(
-                mirror_summary_age_min,
-                MIRROR_SUMMARY_RECENT_THRESHOLD_MINUTES,
-            )
-        except Exception:
-            record["mirror_summary_recent_state"] = 0
-    else:
-        record["mirror_summary_recent_state"] = 0
+    _merge_archive_health(record, archive_health_path, now)
 
     host_reachability: dict[str, bool] = {}
     for prefix, cfg in SOURCE_HOSTS.items():
@@ -1166,12 +1153,6 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
         record,
     )
 
-    gws_host, gws_metrics = _probe_gws(gws_path)
-    record["gws_available_state"] = 1 if gws_metrics else 0
-    if gws_metrics:
-        for key, value in gws_metrics.items():
-            record[f"gws_storage_{key}"] = value
-
     battery_voltage, battery_time = _latest_finite_zarr_value(
         _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
         "DCInverterVolts",
@@ -1245,112 +1226,13 @@ def build_snapshot(manifest_root: Path, gws_path: Path) -> dict[str, Any]:
     else:
         record["aps_internal_humidity_available_state"] = 0
 
-    streams = summary.get("streams", {})
-    local_issue_count = 0
-    gws_issue_count = 0
-    prune_ready_count = 0
-    product_gate_ok_count = 0
-    backfill_pending_count = 0
-    source_stale_count = 0
-    source_recent_count = 0
-    for stream_name, prefix in STREAM_PREFIXES.items():
-        stream_dir = manifest_root / "latest" / stream_name
-        source_stats = _manifest_stats(stream_dir / "source.tsv")
-        local_stats = _manifest_stats(stream_dir / "local.tsv")
-        gws_stats = _manifest_stats(stream_dir / "gws.tsv")
-        stream_summary = streams.get(stream_name, {})
-
-        source_count = int(source_stats["count"])
-        local_count = int(local_stats["count"])
-        gws_count = int(gws_stats["count"]) if (stream_dir / "gws.tsv").exists() else None
-
-        record[f"{prefix}_source_count"] = source_count
-        record[f"{prefix}_local_count"] = local_count
-        record[f"{prefix}_gws_count"] = gws_count
-
-        record[f"{prefix}_source_size_gb"] = float(source_stats["size_bytes"]) / (1024.0 ** 3)
-        record[f"{prefix}_local_size_gb"] = float(local_stats["size_bytes"]) / (1024.0 ** 3)
-        if gws_count is not None:
-            record[f"{prefix}_gws_size_gb"] = float(gws_stats["size_bytes"]) / (1024.0 ** 3)
-
-        record[f"{prefix}_local_coverage_pct"] = _coverage_pct(local_count, source_count)
-        record[f"{prefix}_gws_coverage_pct"] = _coverage_pct(gws_count, source_count) if gws_count is not None else None
-        record[f"{prefix}_local_lag_min"] = _lag_minutes(source_stats["latest_mtime"], local_stats["latest_mtime"])
-        if gws_count is not None:
-            record[f"{prefix}_gws_lag_min"] = _lag_minutes(source_stats["latest_mtime"], gws_stats["latest_mtime"])
-        manifest_recent = bool(record.get("mirror_summary_recent_state"))
-        source_age_min = _age_minutes(now_epoch, source_stats["latest_mtime"]) if manifest_recent else None
-        source_recent_state = (
-            _recent_state(source_age_min, _source_recent_threshold_minutes(stream_name))
-            if manifest_recent
-            else None
-        )
-        record[f"{prefix}_source_age_min"] = source_age_min
-        record[f"{prefix}_source_recent_state"] = source_recent_state
-        if source_recent_state == 1:
-            source_recent_count += 1
-        elif source_recent_state == 0:
-            source_stale_count += 1
-
-        local_missing = stream_summary.get("local_missing_count")
-        local_mismatch = stream_summary.get("local_mismatch_count")
-        gws_missing = stream_summary.get("gws_missing_count")
-        gws_mismatch = stream_summary.get("gws_mismatch_count")
-        prune_ready = stream_summary.get("prune_ready")
-        product_gate_ok = stream_summary.get("product_gate_ok")
-
-        record[f"{prefix}_local_missing_count"] = local_missing
-        record[f"{prefix}_local_mismatch_count"] = local_mismatch
-        record[f"{prefix}_gws_missing_count"] = gws_missing
-        record[f"{prefix}_gws_mismatch_count"] = gws_mismatch
-        record[f"{prefix}_prune_ready_state"] = 1 if prune_ready else 0
-        record[f"{prefix}_product_gate_ok_state"] = 1 if product_gate_ok else 0
-
-        backfill_pending = False
-        if stream_name in BACKFILL_STREAMS:
-            local_coverage = record.get(f"{prefix}_local_coverage_pct")
-            local_lag = record.get(f"{prefix}_local_lag_min")
-            if (
-                local_coverage is not None
-                and local_coverage < 99.9
-                and local_lag is not None
-                and local_lag <= 1.0
-            ):
-                backfill_pending = True
-        record[f"{prefix}_backfill_pending_state"] = 1 if backfill_pending else 0
-        if backfill_pending:
-            backfill_pending_count += 1
-            continue
-
-        if (local_missing or 0) > 0 or (local_mismatch or 0) > 0:
-            local_issue_count += 1
-        if gws_metrics and (((gws_missing or 0) > 0) or ((gws_mismatch or 0) > 0)):
-            gws_issue_count += 1
-        if prune_ready:
-            prune_ready_count += 1
-        if product_gate_ok:
-            product_gate_ok_count += 1
-
-    record["streams_local_issue_count"] = local_issue_count
-    record["streams_gws_issue_count"] = gws_issue_count
-    record["streams_prune_ready_count"] = prune_ready_count
-    record["streams_product_gate_ok_count"] = product_gate_ok_count
-    record["streams_backfill_pending_count"] = backfill_pending_count
-    record["streams_source_stale_count"] = source_stale_count
-    record["streams_source_recent_count"] = source_recent_count
-    record["streams_target_count"] = max(0, len(STREAM_PREFIXES) - backfill_pending_count)
-
     failed_source_sync, source_sync_timer_enabled = _collect_unit_metrics(SOURCE_SYNC_UNITS, record)
     failed_processing, processing_timer_enabled = _collect_unit_metrics(PROCESSING_UNITS, record)
-    failed_transfer, transfer_timer_enabled = _collect_unit_metrics(TRANSFER_UNITS, record)
     _collect_batch_resource_metrics(record, now_epoch)
     record["failed_source_sync_unit_count"] = failed_source_sync
     record["failed_processing_unit_count"] = failed_processing
-    record["failed_transfer_unit_count"] = failed_transfer
     record["source_sync_enabled_count"] = source_sync_timer_enabled
     record["processing_timer_enabled_count"] = processing_timer_enabled
-    record["transfer_timer_enabled_count"] = transfer_timer_enabled
-    record["gws_probe_ok_state"] = 1 if gws_host else 0
 
     return {key: _float_or_none(value) if isinstance(value, (int, float)) and key != "time_utc" else value for key, value in record.items()}
 
@@ -1587,6 +1469,22 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         affects_overall=False,
     )
 
+    archive_level = str(snapshot.get("archive_health_level", "red")).lower()
+    if archive_level not in HEALTH_LEVELS:
+        archive_level = "red"
+    archive_failures = snapshot.get("archive_health_failures", [])
+    _health_check(
+        checks,
+        archive_level,
+        "archive",
+        "Infrastructure archive health",
+        details=(
+            f"contract={snapshot.get('archive_health_schema_version', 'missing')}, "
+            f"age={_fmt(_value(snapshot, 'archive_health_age_min'), ' min')}, "
+            f"failures={'; '.join(str(item) for item in archive_failures) or 'none'}"
+        ),
+    )
+
     for prefix, label in (
         ("host_celine_source", "CL61 root disk"),
         ("host_celine_data", "CL61 data disk"),
@@ -1695,7 +1593,7 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
             ),
         )
 
-    for unit in (*SOURCE_SYNC_UNITS, *PROCESSING_UNITS, *TRANSFER_UNITS):
+    for unit in (*SOURCE_SYNC_UNITS, *PROCESSING_UNITS):
         slug = _unit_slug(unit)
         if unit.endswith(".timer"):
             level = _level_from_bool(_state(snapshot, f"{slug}_active_state"))
@@ -1895,13 +1793,16 @@ def main() -> None:
     parser.add_argument("--env-file", type=Path, default=_path_from_env("AURORA_DASHBOARD_ENV_FILE", ENV_FILE_DEFAULT))
     parser.add_argument("--output-root", type=Path, default=_path_from_env("OPS_MONITOR_RAW_ROOT", RAW_ROOT_DEFAULT))
     parser.add_argument("--health-output-root", type=Path, default=_path_from_env("OPS_MONITOR_HEALTH_ROOT", HEALTH_OUTPUT_ROOT_DEFAULT))
-    parser.add_argument("--manifest-root", type=Path, default=_path_from_env("GWS_MANIFEST_ROOT", MANIFEST_ROOT_DEFAULT))
-    parser.add_argument("--gws-path", type=Path, default=_path_from_env("GWS_PATH", GWS_PATH_DEFAULT))
+    parser.add_argument(
+        "--archive-health",
+        type=Path,
+        default=_path_from_env("ARCHIVE_HEALTH_PATH", ARCHIVE_HEALTH_DEFAULT),
+    )
     args = parser.parse_args()
 
     _load_env_file(args.env_file)
 
-    snapshot = build_snapshot(args.manifest_root, args.gws_path)
+    snapshot = build_snapshot(args.archive_health)
     path = write_snapshot(args.output_root, snapshot)
     print(f"Wrote {path}")
     health_json, health_report = write_health_outputs(args.health_output_root, snapshot, path)

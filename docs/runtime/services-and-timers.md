@@ -32,8 +32,8 @@ Panel websocket.
 ## Resource Tuning
 
 The deployed host uses systemd drop-ins to keep the interactive dashboard
-responsive when appenders, quicklook generators, mirror verification, and GWS
-syncs overlap.
+responsive when product builders and infrastructure-managed archive jobs
+overlap.
 
 - `aurora-dashboard.service` gets higher CPU and IO weights plus a modest
   scheduling priority increase.
@@ -42,11 +42,11 @@ syncs overlap.
   lower CPU/IO weights. The slice also has a soft `MemoryHigh=6G` pressure
   limit so large products do not squeeze the dashboard as aggressively on the
   current 8 GB droplet.
-- Heavier jobs such as appenders, quicklook generation, WXcam daily video
-  builds, mirror verification, and GWS rsync get lower priority inside that
-  batch slice.
-- Append, quicklook, mirror, and rsync timers have randomized delays so they
-  are less likely to start in one burst.
+- Heavier dashboard jobs such as appenders, quicklook generation, and WXcam
+  daily video builds get lower priority inside that batch slice. Archive-job
+  resource policy is managed by `aurora-cloud-infra`.
+- Append and quicklook timers have randomized delays so they are less likely
+  to start in one burst.
 - The guarded runner `/usr/local/bin/aurora-run-guarded` adds lightweight
   mutexes for the heaviest job classes. Quicklook-heavy and video-heavy jobs
   run one at a time; append/rsync IO jobs allow two concurrent jobs. If a slot
@@ -212,36 +212,26 @@ summary by the Power quicklook pipeline when available.
 - `aurora-ops-monitor-append.timer`
 - `aurora-ops-monitor-alerts.timer`
 - `aurora-ops-monitor-quicklooks.timer`
-- `aurora-mirror-verify.timer`
 
 `aurora-ops-monitor-collect.timer` is observe-only. It writes raw JSONL
 snapshots under `/project/aurora/raw/ops_monitor` and compact health outputs
 under `/data/aurora/products/ops_monitor/health`; it does not restart services,
 delete files, rebuild data products, or change code.
+It reads `/data/aurora/internal/archive_status/health-v1.json` as a versioned
+contract. It does not SSH to JASMIN, inspect verifier manifests, or decide
+whether source data may be pruned.
 
 `aurora-ops-monitor-alerts.timer` evaluates the latest operations snapshot
 after collection and sends threshold email alerts through `mailx` backed by an
 outbound relay such as `msmtp`.
 
-## JASMIN GWS Sync
+## Archive services
 
-- `aurora-gws-rsync-raw.timer`
-- `aurora-gws-rsync-products.timer` for non-WXcam products
-- `aurora-gws-rsync-products-wxcam.timer` for the larger WXcam product tree
-- `aurora-gws-rsync-manifests.timer`
-
-The products sync is intentionally split so the large WXcam media/Zarr tree can
-run independently from the smaller Zarr and quicklook products.
-
-The mirror verifier compares HATPRO files by basename. That is deliberate:
-newer HATPRO source paths are arranged under dated `Y2026/Mxx/Dxx`
-directories, while older local and GWS mirrors include a legacy flat layout.
-Basename comparison keeps the prune/coverage audit focused on whether the
-files are present without forcing a risky raw-data reshuffle.
-
-The HATPRO source sync also uses a three-day mtime lookback. HATPRO files can
-arrive after the previous sync while retaining an older file timestamp, and the
-lookback prevents those late files from being skipped permanently.
+GWS and object-store writers, verification, archive health, and retention are
+owned and documented by `aurora-cloud-infra`. The dashboard repository owns
+only their read-only presentation. Use that repository's
+`docs/ARCHIVE_SERVICES.md` for service names, evidence paths, and recovery
+policy.
 
 ## Useful commands
 

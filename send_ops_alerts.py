@@ -225,6 +225,25 @@ def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bo
             storage_alerts[storage_key] = rule
     alerts.extend(storage_alerts.values())
 
+    archive_level = str(snapshot.get("archive_health_level") or "").lower()
+    if archive_level == "red":
+        failures = snapshot.get("archive_health_failures")
+        if not isinstance(failures, list):
+            failures = []
+        alerts.append(
+            AlertRule(
+                id="archive:health_red",
+                title="Archive health is red",
+                message=(
+                    "The infrastructure-owned archive health contract is red. "
+                    + ("; ".join(str(item) for item in failures) if failures else "No failure detail was supplied.")
+                ),
+                value=len(failures),
+                threshold="archive health level = red",
+                hold_minutes=STREAM_HOLD_MINUTES,
+            )
+        )
+
     manifest_age = _float(snapshot.get("mirror_summary_age_min"))
     manifest_recent = _bool_state(snapshot.get("mirror_summary_recent_state"))
     if manifest_recent is False:

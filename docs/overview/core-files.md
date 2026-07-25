@@ -76,9 +76,10 @@ but is not the live dashboard product tree.
 
 ## Operations monitoring
 
-- `collect_operations_snapshot.py` - collects source-host, storage, mirror,
-  systemd, dashboard endpoint, and git health into raw JSONL snapshots plus
-  observe-only health JSON and Markdown reports
+- `collect_operations_snapshot.py` - collects dashboard-facing source-host,
+  storage, processing, endpoint, and git health, and consumes the
+  infrastructure-owned `health-v1` archive contract without probing GWS or
+  deriving retention safety
 - `send_ops_alerts.py` - evaluates the latest operations snapshot and sends
   threshold email alerts with stateful repeat and recovery handling
 - `append_new_ops_monitor_to_zarr.py` - appends or rebuilds the monitoring Zarr
