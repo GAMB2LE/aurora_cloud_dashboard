@@ -329,6 +329,12 @@ QUICKLOOK_TRIM_THRESHOLD_PX = int(os.environ.get("AURORA_QUICKLOOK_TRIM_THRESHOL
 QUICKLOOK_TRIM_PADDING_PX = int(os.environ.get("AURORA_QUICKLOOK_TRIM_PADDING_PX", "24"))
 QUICKLOOK_WHITE_THRESHOLD = int(os.environ.get("AURORA_QUICKLOOK_WHITE_THRESHOLD", "250"))
 OPS_SNAPSHOT_PATH = Path(os.environ.get("OPS_MONITOR_SNAPSHOT_PATH", "/project/aurora/raw/ops_monitor/latest.json"))
+ARCHIVE_HEALTH_PATH = Path(
+    os.environ.get(
+        "ARCHIVE_HEALTH_PATH",
+        "/data/aurora/internal/archive_status/health-v1.json",
+    )
+)
 PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
 PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
@@ -1784,11 +1790,22 @@ def _ops_snapshot_path() -> Path:
 def _ops_read_snapshot() -> dict:
     path = _ops_snapshot_path()
     if not path.exists():
-        return {"_missing": True, "_path": str(path)}
+        snapshot = {"_missing": True}
+    else:
+        try:
+            snapshot = json.loads(path.read_text())
+        except Exception as exc:
+            snapshot = {"_error": str(exc)}
     try:
-        snapshot = json.loads(path.read_text())
+        archive = json.loads(ARCHIVE_HEALTH_PATH.read_text(encoding="utf-8"))
+        metrics = archive.get("metrics", {})
+        if isinstance(metrics, dict):
+            snapshot.update(metrics)
+        snapshot["_archive_health"] = archive
+    except FileNotFoundError:
+        snapshot["_archive_health_missing"] = str(ARCHIVE_HEALTH_PATH)
     except Exception as exc:
-        return {"_error": str(exc), "_path": str(path)}
+        snapshot["_archive_health_error"] = str(exc)
     snapshot["_path"] = str(path)
     return snapshot
 

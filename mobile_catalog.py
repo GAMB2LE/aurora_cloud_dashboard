@@ -210,6 +210,13 @@ def operations_health_path() -> Path:
     return env_path("OPS_MONITOR_LATEST_HEALTH", "/data/aurora/products/ops_monitor/health/latest_health.json")
 
 
+def archive_health_path() -> Path:
+    return env_path(
+        "ARCHIVE_HEALTH_PATH",
+        "/data/aurora/internal/archive_status/health-v1.json",
+    )
+
+
 def operations_alert_state_path() -> Path:
     return env_path("OPS_MONITOR_ALERT_STATE", "/data/aurora/products/ops_monitor/alerts/state.json")
 
@@ -358,11 +365,19 @@ def manifest() -> dict[str, Any]:
 def operations() -> dict[str, Any]:
     health = read_json_file(operations_health_path())
     snapshot = read_json_file(operations_snapshot_path())
+    archive_health = read_json_file(archive_health_path())
+    archive_metrics = archive_health.get("metrics", {})
+    if isinstance(archive_metrics, dict):
+        snapshot.update(archive_metrics)
     alert_state = read_json_file(operations_alert_state_path())
 
     health_error = health.get("_error")
     snapshot_error = snapshot.get("_error")
-    overall = normalize_level(health.get("overall_level") or snapshot.get("overall_level"))
+    overall = normalize_level(
+        archive_health.get("overall_level")
+        or health.get("overall_level")
+        or snapshot.get("overall_level")
+    )
 
     stream_states = [_stream_state(snapshot, spec) for spec in OPERATIONS_STREAMS]
     if overall == "unknown":
@@ -387,6 +402,7 @@ def operations() -> dict[str, Any]:
         "sources": {
             "health": {**file_record(operations_health_path()), "path": str(operations_health_path())},
             "snapshot": {**file_record(operations_snapshot_path()), "path": str(operations_snapshot_path())},
+            "archiveHealth": {**file_record(archive_health_path()), "path": str(archive_health_path())},
         },
     }
 

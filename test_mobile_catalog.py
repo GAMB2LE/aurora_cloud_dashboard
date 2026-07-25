@@ -12,6 +12,36 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_operations_prefers_and_merges_archive_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot.json"
+            health = root / "health.json"
+            archive = root / "archive.json"
+            alerts = root / "alerts.json"
+            snapshot.write_text('{"overall_level":"green","cl61_gws_missing_count":9}')
+            health.write_text('{"overall_level":"green"}')
+            archive.write_text(
+                '{"overall_level":"red","metrics":{"cl61_gws_missing_count":0}}'
+            )
+            alerts.write_text("{}")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_SNAPSHOT_PATH": str(snapshot),
+                    "OPS_HEALTH_PATH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_ALERT_STATE_PATH": str(alerts),
+                },
+            ):
+                response = mobile_catalog.operations()
+
+        self.assertEqual(response["overallLevel"], "red")
+        self.assertEqual(
+            response["sources"]["archiveHealth"]["path"],
+            str(archive),
+        )
+
     def test_power_trace_sampling_is_bounded_and_preserves_extrema(self) -> None:
         import numpy as np
 
