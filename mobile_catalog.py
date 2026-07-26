@@ -48,6 +48,7 @@ PDU_INSTRUMENTS = tuple(
 )
 PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
+SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
 
 # These Science-tab products have no individual PDU outlet state. Their mobile
 # status is therefore collection freshness, never an inferred power state.
@@ -598,6 +599,21 @@ def overview() -> dict[str, Any]:
     # freshness; preserve the snapshot value only for legacy/missing products.
     latest_power_time = _latest_power_time() or snapshot.get("power_latest_time_utc")
     depletion_value, depletion_detail = _battery_depletion_text(snapshot)
+    environmental_cards = _environmental_signal_cards()
+    science_source_times = {
+        "vaisalamet": next(
+            (card.get("updatedAt") for card in environmental_cards if card.get("id") == "air-temperature"),
+            None,
+        ),
+        "asfs-logger": next(
+            (
+                card.get("updatedAt")
+                for card in environmental_cards
+                if card.get("id") in {"shortwave-down", "wind-speed", "kt15"}
+            ),
+            None,
+        ),
+    }
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
         _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
@@ -605,12 +621,12 @@ def overview() -> dict[str, Any]:
         _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
-        *_environmental_signal_cards(),
+        *environmental_cards,
     ]
     return {
         "serverTime": utc_now_iso(),
         "cards": cards,
-        "instrumentPower": _instrument_power_states(snapshot),
+        "instrumentPower": _instrument_power_states(snapshot, science_source_times),
         "activeAlerts": status["alerts"],
     }
 
@@ -688,9 +704,13 @@ def _latest_zarr_sample(path: Path, variables: tuple[str, ...]) -> dict[str, Any
             dataset.close()
 
 
-def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def _instrument_power_states(
+    snapshot: dict[str, Any],
+    science_source_times: dict[str, str | None] | None = None,
+) -> list[dict[str, Any]]:
     """Return PDU power states plus collection states for DC science streams."""
     states, detail = _pdu_power_snapshot()
+    science_source_times = science_source_times or {}
 
     pdu_rows = [
         _pdu_instrument_status(instrument_id, states, detail)
@@ -700,6 +720,11 @@ def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for instrument_id, title, icon, prefix in SCIENCE_DC_INSTRUMENTS:
         source_age = _metric_value(snapshot, (f"{prefix}_source_age_min",))
         recent = snapshot.get(f"{prefix}_source_recent_state")
+        if source_age is None:
+            source_time = _parse_utc(science_source_times.get(instrument_id))
+            if source_time is not None:
+                source_age = max((datetime.now(UTC) - source_time).total_seconds() / 60, 0)
+                recent = int(source_age <= SCIENCE_COLLECTION_FRESHNESS_MINUTES)
         if recent == 1:
             state, level = "Collecting", "green"
         elif recent == 0:

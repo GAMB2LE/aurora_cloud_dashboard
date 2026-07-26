@@ -445,6 +445,21 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual((meteorology["state"], meteorology["level"]), ("Collecting", "green"))
         self.assertEqual((radiation["state"], radiation["level"]), ("No recent data", "red"))
 
+    def test_collection_states_fall_back_to_environmental_sample_times(self) -> None:
+        rows = mobile_catalog._instrument_power_states(
+            {},
+            {
+                "vaisalamet": mobile_catalog.utc_now_iso(),
+                "asfs-logger": mobile_catalog.utc_now_iso(),
+            },
+        )
+
+        meteorology = next(row for row in rows if row["id"] == "vaisalamet")
+        radiation = next(row for row in rows if row["id"] == "asfs-logger")
+        self.assertEqual((meteorology["state"], meteorology["level"]), ("Collecting", "green"))
+        self.assertEqual((radiation["state"], radiation["level"]), ("Collecting", "green"))
+        self.assertIn("Source sample", meteorology["detail"])
+
     def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
