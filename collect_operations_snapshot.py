@@ -129,29 +129,6 @@ STREAM_PREFIXES = {
     "wxcam": "wxcam",
 }
 
-SOURCE_SYNC_UNITS = (
-    "aurora-cl61-source-sync.timer",
-    "aurora-cl61-source-sync.service",
-    "aurora-radar-source-sync.timer",
-    "aurora-radar-source-sync.service",
-    "aurora-hatpro-source-sync.timer",
-    "aurora-hatpro-source-sync.service",
-    "aurora-vaisalamet-source-sync.timer",
-    "aurora-vaisalamet-source-sync.service",
-    "aurora-asfs-logger-source-sync.timer",
-    "aurora-asfs-logger-source-sync.service",
-    "aurora-asfs-fast-sonic-source-sync.timer",
-    "aurora-asfs-fast-sonic-source-sync.service",
-    "aurora-asfs-fast-gas-source-sync.timer",
-    "aurora-asfs-fast-gas-source-sync.service",
-    "aurora-power-source-sync.timer",
-    "aurora-power-source-sync.service",
-    "aurora-pdu-source-sync.timer",
-    "aurora-pdu-source-sync.service",
-    "aurora-wxcam-source-sync.timer",
-    "aurora-wxcam-source-sync.service",
-)
-
 PROCESSING_UNITS = (
     "aurora-ceilometer-append.timer",
     "aurora-ceilometer-append.service",
@@ -1154,12 +1131,9 @@ def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[s
     else:
         record["aps_internal_humidity_available_state"] = 0
 
-    failed_source_sync, source_sync_timer_enabled = _collect_unit_metrics(SOURCE_SYNC_UNITS, record)
     failed_processing, processing_timer_enabled = _collect_unit_metrics(PROCESSING_UNITS, record)
     _collect_batch_resource_metrics(record, now_epoch)
-    record["failed_source_sync_unit_count"] = failed_source_sync
     record["failed_processing_unit_count"] = failed_processing
-    record["source_sync_enabled_count"] = source_sync_timer_enabled
     record["processing_timer_enabled_count"] = processing_timer_enabled
 
     return {key: _float_or_none(value) if isinstance(value, (int, float)) and key != "time_utc" else value for key, value in record.items()}
