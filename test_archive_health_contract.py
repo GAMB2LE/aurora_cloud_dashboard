@@ -17,6 +17,10 @@ def test_archive_health_contract_is_consumed_without_manifest_or_gws_inputs(tmp_
                     "hatpro_gws_missing_count": 0,
                     "radar_prune_ready_state": 0,
                     "mirror_verify_service_healthy_state": 1,
+                    "cl61_source_sync_service_healthy_state": 1,
+                    "cl61_source_sync_timer_active_state": 1,
+                    "failed_source_sync_unit_count": 0,
+                    "source_sync_enabled_count": 11,
                 },
             }
         ),
@@ -38,6 +42,10 @@ def test_archive_health_contract_is_consumed_without_manifest_or_gws_inputs(tmp_
     assert record["mirror_summary_age_min"] == 5
     assert record["mirror_summary_recent_state"] == 1
     assert record["gws_probe_ok_state"] == 1
+    assert record["cl61_source_sync_service_healthy_state"] == 1
+    assert record["cl61_source_sync_timer_active_state"] == 1
+    assert record["failed_source_sync_unit_count"] == 0
+    assert record["source_sync_enabled_count"] == 11
 
 
 def test_missing_archive_health_contract_fails_closed(tmp_path):
