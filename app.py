@@ -3405,7 +3405,7 @@ _instrument_guard = False
 _instrument_change_origin = "interactive"
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
-_base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=True)
+_base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=False)
 
 
 def _last_24h_utc_window() -> tuple[datetime, datetime]:
@@ -3808,7 +3808,7 @@ def _auto_refresh():
 
 
 # Kick off periodic live refresh.
-_live_cb = _safe_periodic_callback(_auto_refresh, period=LIVE_REFRESH_MS, start=True)
+_live_cb = _safe_periodic_callback(_auto_refresh, period=LIVE_REFRESH_MS, start=False)
 
 
 def _shift_previous(_event=None):
@@ -4958,7 +4958,7 @@ def _refresh_wxcam_latest_if_needed():
     return
 
 
-_wxcam_ql_timer = _safe_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
+_wxcam_ql_timer = _safe_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=False)
 
 
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
@@ -6788,7 +6788,7 @@ def _refresh_latest_if_needed():
         ql_date.param.trigger("value")
 
 
-_ql_timer = _safe_periodic_callback(_refresh_latest_if_needed, period=300_000, start=True)
+_ql_timer = _safe_periodic_callback(_refresh_latest_if_needed, period=300_000, start=False)
 
 
 def _refresh_hk_latest_if_needed():
@@ -6799,7 +6799,7 @@ def _refresh_hk_latest_if_needed():
         hk_date.param.trigger("value")
 
 
-_hk_timer = _safe_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=True)
+_hk_timer = _safe_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=False)
 
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
@@ -9496,6 +9496,32 @@ def _sync_browser_tab_instrument(active: str) -> None:
 
 def _ensure_active_tab_loaded(slug: str | None = None) -> None:
     active = _normalize_tab_slug(slug or ACTIVE_TAB_SLUG)
+    timer_groups = {
+        "interactive": (_base_dataset_timer, _live_cb),
+        "power": (_base_dataset_timer, _live_cb),
+        "science": (_ql_timer, _wxcam_ql_timer),
+        "housekeeping": (_hk_timer,),
+        "auroracam": (_auroracam_timer,),
+        "uas": (_uas_timer,),
+        "operations": (_operations_timer,),
+    }
+    active_timers = set(timer_groups.get(active, ()))
+    for timers in timer_groups.values():
+        for timer in timers:
+            try:
+                if timer in active_timers:
+                    if not getattr(timer, "running", False):
+                        try:
+                            asyncio.get_running_loop()
+                        except RuntimeError:
+                            continue
+                        timer.start()
+                elif getattr(timer, "running", False):
+                    timer.stop()
+            except RuntimeError:
+                # Plain imports and sessions shutting down do not have a live
+                # event loop. The session-destroyed hook still stops all timers.
+                pass
     if active == "overview":
         _refresh_browser_overview()
     elif active in {"interactive", "power"}:
@@ -9512,26 +9538,14 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         _LOADED_TABS.add("housekeeping")
     elif active == "auroracam":
         _refresh_auroracam_latest_if_needed()
-        try:
-            _auroracam_timer.start()
-        except RuntimeError:
-            pass
     elif active == "uas" and "uas" not in _LOADED_TABS:
         uas_container[:] = [pn.Column(uas_status_pane, uas_plot_pane, uas_table_pane, sizing_mode="stretch_width", css_classes=["uas-shell"])]
         _refresh_uas_dashboard()
         _LOADED_TABS.add("uas")
-        try:
-            _uas_timer.start()
-        except RuntimeError:
-            pass
     elif active == "operations" and "operations" not in _LOADED_TABS:
         operations_container[:] = [operations_dashboard]
         _refresh_operations_dashboard()
         _LOADED_TABS.add("operations")
-        try:
-            _operations_timer.start()
-        except RuntimeError:
-            pass
 
 
 def _set_active_tab(slug: str | None) -> None:

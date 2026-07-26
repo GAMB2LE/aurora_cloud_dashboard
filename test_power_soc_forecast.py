@@ -11,6 +11,7 @@ import xarray as xr
 
 from generate_power_soc_forecast import (
     _apply_soc_bias_corrections,
+    _atomic_write_archive,
     _extend_irradiance_with_diurnal_persistence,
     _load_mode_signature,
     _mode_learning_status,
@@ -83,6 +84,29 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
+
+    def test_archive_writer_coerces_mixed_object_metadata_to_text(self) -> None:
+        archive = xr.Dataset(
+            {
+                "LoadMode": (("issue_time",), np.asarray(["dc_only", 109], dtype=object)),
+                "BatterySOCForecast": (
+                    ("issue_time", "forecast_step"),
+                    np.asarray([[90.0], [89.0]], dtype=np.float32),
+                ),
+            },
+            coords={
+                "issue_time": np.asarray(
+                    ["2026-07-25T00:00:00", "2026-07-25T03:00:00"],
+                    dtype="datetime64[ns]",
+                ),
+                "forecast_step": np.asarray([0], dtype=np.int32),
+            },
+        )
+
+        _atomic_write_archive(archive, self.tmp_archive_path)
+        written = xr.open_zarr(self.tmp_archive_path, consolidated=True).load()
+
+        self.assertEqual(written["LoadMode"].values.tolist(), ["dc_only", "109"])
 
     def test_ssrd_accumulation_converts_to_irradiance(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=4, freq="3h")

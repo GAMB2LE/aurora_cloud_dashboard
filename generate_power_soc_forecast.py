@@ -159,6 +159,15 @@ def _write_state(path: Path, state: dict[str, object]) -> None:
 
 
 def _atomic_write_archive(ds: xr.Dataset, output_zarr: Path) -> None:
+    # Mixed Python values can leave an object-typed archive variable even
+    # after xarray concatenation. Zarr's VLenUTF8 codec then fails when an
+    # integer appears in a nominally textual chunk. Materialize only those
+    # small metadata variables as fixed-width Unicode before writing.
+    object_variables = [name for name, var in ds.variables.items() if var.dtype.kind == "O"]
+    if object_variables:
+        ds = ds.copy()
+        for name in object_variables:
+            ds[name] = ds[name].astype(str).load()
     output_zarr.parent.mkdir(parents=True, exist_ok=True)
     tmp = output_zarr.with_name(f"{output_zarr.name}.tmp")
     if tmp.exists():
