@@ -7028,7 +7028,15 @@ pn.state.onload(_schedule_serialized_document_size)
 pn.state.on_session_destroyed(_log_session_destroyed)
 _session_heartbeat_cb = None
 if SESSION_HEARTBEAT_MS > 0:
-    _session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
+    _session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=False)
+
+
+def _start_session_heartbeat() -> None:
+    if _session_heartbeat_cb is not None and not _session_heartbeat_cb.running:
+        _session_heartbeat_cb.start()
+
+
+pn.state.onload(_start_session_heartbeat)
 
 
 def _sync_wxcam_calendar_hour(*_events):
@@ -9511,6 +9519,8 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
             try:
                 if timer in active_timers:
                     if not getattr(timer, "running", False):
+                        if _APP_BOOTSTRAPPING:
+                            continue
                         try:
                             asyncio.get_running_loop()
                         except RuntimeError:
@@ -9624,6 +9634,7 @@ else:
 _APP_BOOTSTRAPPING = False
 if not _MOBILE_LAYOUT_ACTIVE:
     pn.state.onload(_enable_browser_interactive_render)
+pn.state.onload(lambda: _ensure_active_tab_loaded(ACTIVE_TAB_SLUG))
 
 site_env_banner = _site_env_banner_pane()
 browser_performance_probe = _browser_performance_probe()
