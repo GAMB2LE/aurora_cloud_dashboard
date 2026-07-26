@@ -212,7 +212,10 @@ class DashboardShellTests(TestCase):
         stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
 
         self.assertTrue(stylesheet.is_file())
-        self.assertEqual(app.DASHBOARD_STYLESHEET, "/dashboard-assets/dashboard.css")
+        self.assertRegex(
+            app.DASHBOARD_STYLESHEET,
+            r"^/dashboard-assets/dashboard\.css\?v=[0-9a-f]{12}$",
+        )
 
     def test_desktop_controls_keep_compact_navigation_rows(self) -> None:
         controls_body = app.controls.objects[0]

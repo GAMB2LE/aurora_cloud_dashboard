@@ -123,7 +123,12 @@ from request_context import (
 # Keep common artwork and CSS out of the server-rendered document. They are
 # cacheable Panel/nginx assets rather than strings duplicated into every model.
 DASHBOARD_ASSET_PREFIX = os.environ.get("AURORA_DASHBOARD_ASSET_PREFIX", "/dashboard-assets").rstrip("/")
-DASHBOARD_STYLESHEET = f"{DASHBOARD_ASSET_PREFIX}/dashboard.css"
+DASHBOARD_STYLESHEET_PATH = Path(__file__).resolve().parent / "assets" / "dashboard.css"
+try:
+    DASHBOARD_STYLESHEET_VERSION = hashlib.sha256(DASHBOARD_STYLESHEET_PATH.read_bytes()).hexdigest()[:12]
+except OSError:
+    DASHBOARD_STYLESHEET_VERSION = "unavailable"
+DASHBOARD_STYLESHEET = f"{DASHBOARD_ASSET_PREFIX}/dashboard.css?v={DASHBOARD_STYLESHEET_VERSION}"
 # Panel 1.8 exposes external stylesheets through ``config.css_files``. This
 # keeps the asset out of each Bokeh document while remaining compatible with
 # the pinned runtime (``pn.extension(stylesheets=...)`` is not supported).
