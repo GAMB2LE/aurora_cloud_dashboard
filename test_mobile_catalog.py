@@ -22,7 +22,14 @@ class MobileCatalogTests(unittest.TestCase):
             snapshot.write_text('{"overall_level":"green","cl61_gws_missing_count":9}')
             health.write_text('{"overall_level":"green"}')
             archive.write_text(
-                '{"overall_level":"red","metrics":{"cl61_gws_missing_count":0}}'
+                json.dumps(
+                    {
+                        "generated_at": "2026-07-25T20:00:00Z",
+                        "overall_level": "red",
+                        "failures": ["object_store_raw_missing=3"],
+                        "metrics": {"cl61_gws_missing_count": 0},
+                    }
+                )
             )
             alerts.write_text("{}")
             with patch.dict(
@@ -37,6 +44,20 @@ class MobileCatalogTests(unittest.TestCase):
                 response = mobile_catalog.operations()
 
         self.assertEqual(response["overallLevel"], "red")
+        self.assertEqual(response["updatedAt"], "2026-07-25T20:00:00Z")
+        archive_alert = next(
+            alert
+            for alert in response["alerts"]
+            if alert["id"] == "archive:health_red"
+        )
+        self.assertIn("object_store_raw_missing=3", archive_alert["detail"])
+        archive_group = next(
+            group
+            for group in response["rootCauseGroups"]
+            if group["id"] == "archive"
+        )
+        self.assertEqual(archive_group["level"], "red")
+        self.assertEqual(response["checkCounts"]["red"], 1)
         self.assertEqual(
             response["sources"]["archiveHealth"]["path"],
             str(archive),

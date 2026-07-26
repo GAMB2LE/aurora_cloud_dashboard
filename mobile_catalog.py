@@ -369,6 +369,8 @@ def operations() -> dict[str, Any]:
     archive_metrics = archive_health.get("metrics", {})
     if isinstance(archive_metrics, dict):
         snapshot.update(archive_metrics)
+    snapshot["archive_health_level"] = archive_health.get("overall_level")
+    snapshot["archive_health_failures"] = archive_health.get("failures", [])
     alert_state = read_json_file(operations_alert_state_path())
 
     health_error = health.get("_error")
@@ -386,15 +388,47 @@ def operations() -> dict[str, Any]:
         elif any(stream["level"] == "green" for stream in stream_states):
             overall = "green"
 
-    updated_at = health.get("time_utc") or health.get("snapshot_time_utc") or snapshot.get("time_utc") or snapshot.get("snapshot_time_utc")
+    updated_at = (
+        archive_health.get("generated_at")
+        or health.get("time_utc")
+        or health.get("snapshot_time_utc")
+        or snapshot.get("time_utc")
+        or snapshot.get("snapshot_time_utc")
+    )
     active_alerts = _active_alerts(alert_state)
+    if normalize_level(archive_health.get("overall_level")) == "red":
+        failures = archive_health.get("failures")
+        if not isinstance(failures, list):
+            failures = []
+        if failures or archive_health:
+            active_alerts = [
+                {
+                    "id": "archive:health_red",
+                    "title": "Archive health is red",
+                    "level": "red",
+                    "detail": (
+                        "; ".join(str(item) for item in failures)
+                        or "No failure detail was supplied."
+                    ),
+                },
+                *[
+                    alert
+                    for alert in active_alerts
+                    if alert.get("id") != "archive:health_red"
+                ],
+            ]
+
+    check_counts = _check_counts(health, stream_states)
+    archive_level = normalize_level(archive_health.get("overall_level"))
+    if archive_level in check_counts:
+        check_counts[archive_level] = check_counts.get(archive_level, 0) + 1
 
     return {
         "serverTime": utc_now_iso(),
         "updatedAt": updated_at,
         "overallLevel": overall,
         "summary": _operations_summary(overall, stream_states, health_error, snapshot_error),
-        "checkCounts": _check_counts(health, stream_states),
+        "checkCounts": check_counts,
         "streamStates": stream_states,
         "rootCauseGroups": _root_cause_groups(snapshot, stream_states),
         "alerts": active_alerts,
@@ -472,10 +506,26 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
     service_issues = [stream["title"] for stream in streams if stream["level"] == "red" and stream["title"] not in source_issues]
     storage_level = "red" if any(float(snapshot.get(key, 0) or 0) >= 80 for key in ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")) else "green" if snapshot else "unknown"
     dashboard_level = level_from_booleans([snapshot.get("dashboard_http_healthy_state"), snapshot.get("primary_dashboard_http_healthy_state"), snapshot.get("standby_dashboard_http_healthy_state")])
+    archive_level = normalize_level(snapshot.get("archive_health_level"))
+    archive_failures = snapshot.get("archive_health_failures")
+    if not isinstance(archive_failures, list):
+        archive_failures = []
     return [
         {"id": "source", "title": "Source freshness", "level": "red" if source_issues else "green" if snapshot else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "No source freshness issues"},
         {"id": "processing", "title": "Local processing", "level": "red" if service_issues else "green" if snapshot else "unknown", "detail": ", ".join(service_issues[:4]) if service_issues else "Append, catalog, and quicklook services healthy"},
         {"id": "storage", "title": "Storage pressure", "level": storage_level, "detail": "Storage is below alert thresholds" if storage_level == "green" else "Storage needs attention"},
+        {
+            "id": "archive",
+            "title": "GWS and object-store archive",
+            "level": archive_level,
+            "detail": (
+                "; ".join(str(item) for item in archive_failures)
+                if archive_failures
+                else "Archive verification is healthy"
+                if archive_level == "green"
+                else "Archive verification evidence is unavailable"
+            ),
+        },
         {"id": "dashboard", "title": "Public dashboard", "level": dashboard_level, "detail": "Dashboard endpoint probes are healthy" if dashboard_level == "green" else "Dashboard endpoint probe needs attention"},
     ]
 
