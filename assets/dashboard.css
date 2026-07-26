@@ -1341,6 +1341,36 @@ html, body, .bk {
 .verification-guidance__status--learning { color: #5f6c7b; }
 @media (max-width: 420px) { .verification-guidance__metrics { grid-template-columns: 1fr; } }
 .power-browser-guidance { margin: 8px 0; }
+.desktop-power-plot-card {
+    margin: 0 0 14px;
+    padding: 12px 14px 8px;
+    border: 1px solid #d9e4e8;
+    border-radius: 6px;
+    background: #fff;
+    box-sizing: border-box;
+}
+.desktop-power-plot-card .forecast-plot-info-control {
+    margin-bottom: 4px;
+}
+.desktop-power-plot-card .forecast-plot-info__title {
+    color: #22313f;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 30px;
+}
+.desktop-power-plot-card .mobile-plot-card__legend {
+    margin: 2px 0 4px;
+    font-size: 11px;
+}
+.desktop-power-plot-card .mobile-plot-card__legend-item {
+    flex-basis: auto;
+}
+.desktop-power-figure {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
 .power-view-select { max-width: 620px; margin: 8px auto 4px; }
 .power-view-select .bk-btn { min-height: 38px; font-weight: 650; }
 .power-section-intro {

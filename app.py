@@ -8501,6 +8501,7 @@ def _sync_power_section_visibility() -> None:
     power_view_select_container.visible = is_power
     power_section_intro_container.visible = is_power
     power_browser_guidance_container.visible = is_forecast
+    interactive_content.visible = not is_forecast
     power_plan_editor_container.visible = is_forecast
     if is_forecast:
         guidance = globals().get("_browser_power_briefing")
@@ -8515,7 +8516,7 @@ def _sync_power_section_visibility() -> None:
 
 def _on_power_view_change(_event) -> None:
     _sync_power_section_visibility()
-    if instrument_select.value == "power":
+    if instrument_select.value == "power" and power_view_select.value != "forecast":
         # A section-specific prewarm is normally available. Start directly so
         # the tab can replace the visible figure without a placeholder flash.
         _start_interactive_render(
@@ -9001,7 +9002,7 @@ def _forecast_plot_info_control(panel, ds: xr.Dataset, *, mobile: bool = False):
     )
 
 
-def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
+def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None:
     forecast_panel_keys = {
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
@@ -9085,39 +9086,59 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
             )
     if not fig.data:
         return None
-    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "110"))
+    plot_height = (
+        int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "110"))
+        if mobile
+        else int(os.environ.get("AURORA_DESKTOP_POWER_PLOT_HEIGHT", "300"))
+    )
     layout = dict(
         height=plot_height,
         autosize=True,
-        margin=dict(l=27, r=27 if has_right_axis else 6, t=3, b=22),
+        margin=(
+            dict(l=27, r=27 if has_right_axis else 6, t=3, b=22)
+            if mobile
+            else dict(l=62, r=62 if has_right_axis else 24, t=12, b=54)
+        ),
         showlegend=False,
         paper_bgcolor="white",
         plot_bgcolor="white",
-        font=dict(size=8, color=THEME_TEXT),
+        font=dict(size=8 if mobile else 12, color=THEME_TEXT),
         xaxis=dict(
             showgrid=True,
             gridcolor=THEME_GRID,
-            tickfont=dict(size=7),
+            tickfont=dict(size=7 if mobile else 11),
             tickformat="%d %b<br>%H:%M UTC",
-            title=None,
-            nticks=4,
+            title=None if mobile else "Forecast Time (UTC)",
+            nticks=4 if mobile else 8,
         ),
-        yaxis=dict(title=None, tickfont=dict(size=7), showgrid=True, gridcolor=THEME_GRID, nticks=4),
+        yaxis=dict(
+            title=None if mobile else panel.left_axis_label,
+            tickfont=dict(size=7 if mobile else 11),
+            showgrid=True,
+            gridcolor=THEME_GRID,
+            nticks=4 if mobile else 6,
+        ),
     )
     if has_right_axis:
         layout["yaxis2"] = dict(
-            title=None,
-            tickfont=dict(size=7),
+            title=None if mobile else panel.right_axis_label,
+            tickfont=dict(size=7 if mobile else 11),
             overlaying="y",
             side="right",
             showgrid=False,
-            nticks=4,
+            nticks=4 if mobile else 6,
         )
     fig.update_layout(**layout)
     guidance = _verification_guidance_markup(build_power_verification_guidance(panel.key, ds))
-    info_control = _forecast_plot_info_control(panel, ds, mobile=True)
+    info_control = _forecast_plot_info_control(panel, ds, mobile=mobile)
+    card_class = "mobile-plot-card" if mobile else "desktop-power-plot-card"
+    figure_class = "mobile-figure" if mobile else "desktop-power-figure"
     return pn.Column(
-        *([info_control] if info_control is not None else [pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0)]),
+        *(
+            [info_control]
+            if info_control is not None
+            else [pn.pane.HTML(f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(panel.label)}</div>", margin=0)]
+        ),
         *(
             [pn.pane.HTML(f"<div class='mobile-plot-card__note'>{escape(panel.description)}</div>", margin=0)]
             if panel.description
@@ -9125,10 +9146,34 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         ),
         *([pn.pane.HTML(guidance, margin=0)] if guidance else []),
         pn.pane.HTML(f"<div class='mobile-plot-card__legend'>{''.join(legend_items)}</div>", margin=0),
-        pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=plot_height + 8, css_classes=["mobile-figure"]),
+        pn.pane.Plotly(
+            fig,
+            config={"displayModeBar": not mobile, "displaylogo": False, "responsive": True},
+            sizing_mode="stretch_width",
+            height=plot_height + 8,
+            css_classes=[figure_class],
+        ),
         sizing_mode="stretch_width",
-        css_classes=["mobile-plot-card"],
+        css_classes=[card_class],
     )
+
+
+def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
+    return _power_plot_card(ds, panel, mobile=True)
+
+
+def _desktop_power_forecast_cards(ds: xr.Dataset) -> list[pn.Column]:
+    forecast_groups = {"forecast_24h", "forecast_96h", "verification"}
+    panels = [
+        panel
+        for panel in SUMMARY_LAYOUTS["power"]
+        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in forecast_groups
+    ]
+    return [
+        card
+        for card in (_power_plot_card(ds, panel, mobile=False) for panel in panels)
+        if card is not None
+    ]
 
 
 def _power_forecast_status_markup(ds: xr.Dataset) -> str:
@@ -9182,29 +9227,22 @@ def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
     )
 
 
-@pn.depends(instrument_select.param.value, range_end.param.value)
-def _browser_power_briefing(instrument, _live_refresh_anchor):
+@pn.depends(instrument_select.param.value, range_start.param.value, range_end.param.value)
+def _browser_power_briefing(instrument, start, end):
     if str(instrument) != "power":
         return pn.Spacer(height=0)
-    ds = _get_power_display_summary_dataset()
+    ds = _open_power_display_summary_window(start, end, section="forecast")
     if ds is None or "time" not in ds:
         return pn.pane.Alert("Power forecast data is not available.", alert_type="warning")
-    forecast_groups = {"forecast_24h", "forecast_96h", "verification"}
-    info_controls = [
-        _forecast_plot_info_control(panel, ds)
-        for panel in SUMMARY_LAYOUTS["power"]
-        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in forecast_groups
-    ]
-    info_controls = [control for control in info_controls if control is not None]
-    info_card = pn.Card(
-        *info_controls,
-        title="Forecast plot information",
-        sizing_mode="stretch_width",
-        css_classes=["small-card", "forecast-guidance-card"],
-    )
+    ds.attrs[SUMMARY_DISPLAY_START_ATTR] = _as_naive_utc_datetime(start).isoformat()
+    ds.attrs[SUMMARY_DISPLAY_END_ATTR] = _as_naive_utc_datetime(end).isoformat()
+    ds = prepare_summary_dataset(ds, "power")
+    cards = _desktop_power_forecast_cards(ds)
+    if not cards:
+        return pn.pane.Alert("No plottable Power forecast panels are available.", alert_type="warning")
     return pn.Column(
         pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
-        info_card,
+        *cards,
         sizing_mode="stretch_width",
         css_classes=["power-browser-guidance"],
     )

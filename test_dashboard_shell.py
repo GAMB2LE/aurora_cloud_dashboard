@@ -169,6 +169,29 @@ class DashboardShellTests(TestCase):
         self.assertIsNotNone(control)
         self.assertEqual(control.objects[0].objects[-1].name, "Info")
 
+    def test_desktop_forecast_plot_card_keeps_info_with_its_plot(self) -> None:
+        panel = next(
+            panel
+            for panel in app.SUMMARY_LAYOUTS["power"]
+            if panel.key == "soc_ecmwf_forecast"
+        )
+        times = pd.date_range("2026-07-20T00:00:00", periods=4, freq="1h")
+        dataset = xr.Dataset(
+            {
+                trace.var: (("time",), np.linspace(90.0, 80.0, len(times)))
+                for trace in panel.traces
+            },
+            coords={"time": times},
+        )
+
+        card = app._power_plot_card(dataset, panel, mobile=False)
+
+        self.assertIsNotNone(card)
+        self.assertIn("desktop-power-plot-card", card.css_classes)
+        self.assertIn("forecast-plot-info-control", card.objects[0].css_classes)
+        self.assertIsInstance(card.objects[-1], app.pn.pane.Plotly)
+        self.assertIn("desktop-power-figure", card.objects[-1].css_classes)
+
     def test_desktop_shell_has_full_named_tabs(self) -> None:
         labels = [label for label, _slug, _panel in app.DESKTOP_TAB_SPECS]
 
