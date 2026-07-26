@@ -93,6 +93,11 @@ Override `AURORA_ZRAM_SIZE`, `AURORA_ZRAM_ALGORITHM`, or
 `AURORA_ZRAM_PRIORITY` in the service environment before starting it if the VM
 size changes.
 
+In the instrument lists below, every `*-source-sync.*` unit and the radar and
+AURORACam historical backfill lanes are installed by `aurora-cloud-infra`.
+They are listed here only to explain runtime ordering with dashboard-owned
+appenders, quicklooks, catalogues, and indexes.
+
 ## CL61
 
 - `aurora-cl61-source-sync.timer`
@@ -219,7 +224,8 @@ under `/data/aurora/products/ops_monitor/health`; it does not restart services,
 delete files, rebuild data products, or change code.
 It reads `/data/aurora/internal/archive_status/health-v1.json` as a versioned
 contract. It does not SSH to JASMIN, inspect verifier manifests, or decide
-whether source data may be pruned.
+whether source data may be pruned. Source-sync and historical backfill unit
+states are copied from that contract rather than probed by dashboard code.
 
 `aurora-ops-monitor-alerts.timer` evaluates the latest operations snapshot
 after collection and sends threshold email alerts through `mailx` backed by an
