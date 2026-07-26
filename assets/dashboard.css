@@ -1343,13 +1343,30 @@ html, body, .bk {
 .power-browser-guidance { margin: 8px 0; }
 .power-view-select { max-width: 620px; margin: 8px auto 4px; }
 .power-view-select .bk-btn { min-height: 38px; font-weight: 650; }
-.power-section-intro { margin: 2px 0 8px; padding: 8px 12px; border-bottom: 1px solid #d9e4e8; }
+.power-section-intro {
+    margin: 2px 0 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #d9e4e8;
+    visibility: visible !important;
+}
 .power-section-intro__title { color: #22313f; font-size: 17px; font-weight: 700; }
 .power-section-intro__detail { margin-top: 2px; color: #5f6c7b; font-size: 12px; line-height: 1.35; }
-.power-browser-briefing { margin: 0 0 8px; padding: 10px 12px; border: 1px solid #d9e4e8; border-left: 4px solid #0b7285; background: #f8fbfc; color: #344154; }
+.power-browser-briefing {
+    margin: 0 0 8px;
+    padding: 10px 12px;
+    border: 1px solid #d9e4e8;
+    border-left: 4px solid #0b7285;
+    background: #f8fbfc;
+    color: #344154;
+    visibility: visible !important;
+}
 .power-browser-briefing__title { color: #22313f; font-size: 14px; font-weight: 700; }
 .power-browser-briefing__copy { margin-top: 4px; font-size: 12px; line-height: 1.35; }
 .power-browser-briefing__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 6px; font-size: 12px; line-height: 1.35; }
+.forecast-plot-info__title,
+.forecast-plot-info {
+    visibility: visible !important;
+}
 @media (max-width: 760px) {
     .power-view-select { max-width: none; margin: 4px 0; }
     .power-view-select .bk-btn { min-height: 34px; padding: 4px 6px; font-size: 12px; }
