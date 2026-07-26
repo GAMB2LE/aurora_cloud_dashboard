@@ -20,7 +20,7 @@ def test_archive_health_contract_is_consumed_without_manifest_or_gws_inputs(tmp_
                     "cl61_source_sync_service_healthy_state": 1,
                     "cl61_source_sync_timer_active_state": 1,
                     "failed_source_sync_unit_count": 0,
-                    "source_sync_enabled_count": 11,
+                    "source_sync_enabled_count": 13,
                 },
             }
         ),
@@ -45,7 +45,7 @@ def test_archive_health_contract_is_consumed_without_manifest_or_gws_inputs(tmp_
     assert record["cl61_source_sync_service_healthy_state"] == 1
     assert record["cl61_source_sync_timer_active_state"] == 1
     assert record["failed_source_sync_unit_count"] == 0
-    assert record["source_sync_enabled_count"] == 11
+    assert record["source_sync_enabled_count"] == 13
 
 
 def test_missing_archive_health_contract_fails_closed(tmp_path):
