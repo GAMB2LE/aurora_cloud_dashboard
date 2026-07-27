@@ -369,7 +369,7 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
         if mode:
             maturity = str(ds.attrs.get("operating_current_mode_maturity", "")).strip()
             suffix = f" ({maturity})" if maturity else ""
-            return f"Current Mode: {mode}{suffix}"
+            return f"Current load / system as-is: {mode}{suffix}"
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -609,10 +609,11 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         },
         "operating_plan_scenarios": {
             "title": "Suggested instrument-mode SOC forecasts",
-            "summary": "Seven explicit combinations of CL61, Cloud Radar, and HATPRO using one common solar and battery forecast.",
-            "implementation": "Each line includes the station DC baseline plus the named instruments. Instrument loads come from the learned component model; all scenarios use the same forecast issue time, initial SOC, solar ensemble, battery capacity, and efficiency assumptions. They are advisory comparisons and do not operate PDU outlets.",
+            "summary": "The current-load system-as-is forecast is the reference, followed by seven explicit combinations of CL61, Cloud Radar, and HATPRO.",
+            "implementation": "The system-as-is line holds the latest detected station load and instrument state fixed. Each comparison line includes the station DC baseline plus the named instruments. Instrument loads come from the learned component model; all lines use the same forecast issue time, initial SOC, solar ensemble, battery capacity, and efficiency assumptions. They are advisory comparisons and do not operate PDU outlets.",
             "metrics": [
                 {"label": "P50", "detail": "The median SOC path for each named instrument combination."},
+                {"label": "Current load", "detail": "Reference SOC path if the latest detected system load and instrument state continue."},
                 {"label": "Common basis", "detail": "Every line starts from the same measured SOC and uses the same weather forecast."},
                 {"label": "Loads", "detail": "DC baseline plus the learned load of each instrument named in the scenario."},
             ],
@@ -1497,6 +1498,14 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "SOC [%]",
             None,
             (
+                TraceSpec(
+                    "OperatingCurrentSOCP50",
+                    "Current load / system as-is",
+                    COLOR["black"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=3.2,
+                ),
                 TraceSpec("OperatingSuggested1SOCP50", "CL61", COLOR["red"], valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested2SOCP50", "CL61 + Radar", COLOR["blue"], valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested3SOCP50", "CL61 + HATPRO", COLOR["purple"], valid_min=0.0, valid_max=100.0, line_width=2.1),

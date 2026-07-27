@@ -1214,7 +1214,7 @@ def _forecast_panel_start(dataset, times, panel):
         "soc_24h_forecast": ("BatterySOCForecast",),
         "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
-        "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
+        "operating_plan_scenarios": ("OperatingCurrentSOCP50", "OperatingCL61OptimizedSOCP50"),
         "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
     }
     fields = preferred_fields.get(panel.key, tuple(trace.var for trace in panel.traces))
