@@ -1495,7 +1495,9 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
             ),
         )
 
-    for unit in (*SOURCE_SYNC_UNITS, *PROCESSING_UNITS):
+    # Source-sync health is owned by the infrastructure-published archive
+    # contract. Keep only dashboard-owned processing units in this collector.
+    for unit in PROCESSING_UNITS:
         slug = _unit_slug(unit)
         if unit.endswith(".timer"):
             level = _level_from_bool(_state(snapshot, f"{slug}_active_state"))

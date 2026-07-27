@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
 
-from collect_operations_snapshot import _merge_archive_health
+from collect_operations_snapshot import _merge_archive_health, build_health_assessment
 
 
 def test_archive_health_contract_is_consumed_without_manifest_or_gws_inputs(tmp_path):
@@ -60,3 +60,15 @@ def test_missing_archive_health_contract_fails_closed(tmp_path):
     assert record["archive_health_contract_available_state"] == 0
     assert record["archive_health_level"] == "red"
     assert record["archive_health_failures"] == ["archive_health_contract_missing"]
+
+
+def test_health_assessment_does_not_require_legacy_source_sync_units():
+    health = build_health_assessment({"time_utc": "2026-07-27T00:00:00Z"})
+
+    systemd_names = {
+        check["message"]
+        for check in health["checks"]
+        if check["component"] == "systemd"
+    }
+    assert "aurora-radar-source-sync.service" not in systemd_names
+    assert "aurora-radar-append.service" in systemd_names
