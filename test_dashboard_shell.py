@@ -286,6 +286,46 @@ class DashboardShellTests(TestCase):
 
         refresh.assert_called_once_with()
 
+    def test_overview_refresh_is_idempotent_after_initial_render(self) -> None:
+        original_loaded = app._BROWSER_OVERVIEW_LOADED
+        try:
+            app._BROWSER_OVERVIEW_LOADED = True
+            with patch.object(app, "_mobile_overview", side_effect=AssertionError("overview rebuilt")):
+                app._refresh_browser_overview()
+        finally:
+            app._BROWSER_OVERVIEW_LOADED = original_loaded
+
+    def test_overview_selection_does_not_enable_interactive_rendering(self) -> None:
+        original_bootstrapping = app._APP_BOOTSTRAPPING
+        try:
+            app._APP_BOOTSTRAPPING = False
+            with (
+                patch.object(app, "_refresh_browser_overview"),
+                patch.object(app, "_enable_browser_interactive_render") as enable,
+            ):
+                app._ensure_active_tab_loaded("overview")
+        finally:
+            app._APP_BOOTSTRAPPING = original_bootstrapping
+
+        enable.assert_not_called()
+
+    def test_interactive_selection_enables_renderer_on_demand(self) -> None:
+        original_bootstrapping = app._APP_BOOTSTRAPPING
+        original_enabled = app._INTERACTIVE_RENDER_ENABLED
+        try:
+            app._APP_BOOTSTRAPPING = False
+            app._INTERACTIVE_RENDER_ENABLED = False
+            with (
+                patch.object(app, "_sync_browser_tab_instrument"),
+                patch.object(app, "_enable_browser_interactive_render") as enable,
+            ):
+                app._ensure_active_tab_loaded("interactive")
+        finally:
+            app._APP_BOOTSTRAPPING = original_bootstrapping
+            app._INTERACTIVE_RENDER_ENABLED = original_enabled
+
+        enable.assert_called_once_with()
+
     def test_empty_pdu_instrument_view_explains_intentional_power_off(self) -> None:
         with patch.object(
             app.mobile_catalog,

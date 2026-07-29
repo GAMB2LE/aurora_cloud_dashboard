@@ -8811,8 +8811,13 @@ browser_overview_container = pn.Column(
 browser_overview_refresh = pn.widgets.Button(name="Refresh station snapshot", button_type="primary", icon="refresh")
 
 
-def _refresh_browser_overview(_event=None) -> None:
+def _refresh_browser_overview(_event=None, *, force: bool = False) -> None:
     global _BROWSER_OVERVIEW_LOADED
+    # The initial tab selection happens before the document is attached and an
+    # onload hook runs once the websocket opens. Replacing the same models in
+    # both phases causes Bokeh to drop patches and can leave Overview blank.
+    if _BROWSER_OVERVIEW_LOADED and _event is None and not force:
+        return
     browser_overview_container[:] = [
         _mobile_overview(),
         pn.pane.HTML(_browser_overview_instrument_markup(), sizing_mode="stretch_width", margin=(8, 0, 0, 0)),
@@ -9579,6 +9584,8 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         _refresh_browser_overview()
     elif active in {"interactive", "power"}:
         _sync_browser_tab_instrument(active)
+        if not _APP_BOOTSTRAPPING and not _INTERACTIVE_RENDER_ENABLED:
+            _enable_browser_interactive_render()
     elif active == "science" and "science" not in _LOADED_TABS:
         science_quicklook_container[:] = [_science_quicklook_image]
         science_status_container[:] = [science_status]
@@ -9675,8 +9682,6 @@ else:
     _set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
     _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
-if not _MOBILE_LAYOUT_ACTIVE:
-    pn.state.onload(_enable_browser_interactive_render)
 pn.state.onload(lambda: _ensure_active_tab_loaded(ACTIVE_TAB_SLUG))
 
 site_env_banner = _site_env_banner_pane()
