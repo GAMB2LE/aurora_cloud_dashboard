@@ -298,7 +298,7 @@ class DashboardShellTests(TestCase):
     def test_overview_uses_cached_power_timestamp_without_opening_display_zarr(self) -> None:
         snapshot = {
             "time_utc": "2026-07-29T12:00:00Z",
-            "power_latest_time_utc": "2026-07-29T11:58:00Z",
+            "aps_battery_power_time_utc": "2026-07-29T11:58:00Z",
         }
         with (
             patch.object(app, "_ops_read_snapshot", return_value=snapshot),

@@ -8765,7 +8765,19 @@ def _mobile_overview_markup() -> str:
     # The operations snapshot already records the latest measured power
     # timestamp. Opening the 271-variable display Zarr here made every
     # Overview session wait several seconds before its first paint.
-    power_latest = _ops_timestamp(snapshot.get("power_latest_time_utc"))
+    power_latest = next(
+        (
+            moment
+            for key in (
+                "power_latest_time_utc",
+                "aps_battery_power_time_utc",
+                "aps_battery_soc_time_utc",
+                "aps_battery_voltage_time_utc",
+            )
+            if (moment := _ops_timestamp(snapshot.get(key))) is not None
+        ),
+        None,
+    )
     if power_latest is None:
         power_latest = _mobile_power_latest_measured_time()
     power_latest_utc = power_latest.replace(tzinfo=timezone.utc) if power_latest and power_latest.tzinfo is None else power_latest

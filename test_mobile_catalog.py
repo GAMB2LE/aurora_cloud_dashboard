@@ -407,7 +407,7 @@ class MobileCatalogTests(unittest.TestCase):
             health = root / "latest_health.json"
             alerts = root / "state.json"
             snapshot.write_text(
-                json.dumps({"power_latest_time_utc": "2026-07-21T20:40:00Z"}),
+                json.dumps({"aps_battery_power_time_utc": "2026-07-21T20:40:00Z"}),
                 encoding="utf-8",
             )
             health.write_text(json.dumps({}), encoding="utf-8")

@@ -597,7 +597,19 @@ def overview() -> dict[str, Any]:
     # with the battery metrics. Opening the wide display Zarr here added several
     # seconds to every Overview/API request. Keep the direct read only as a
     # compatibility fallback for older snapshots.
-    latest_power_time = snapshot.get("power_latest_time_utc") or _latest_power_time()
+    latest_power_time = next(
+        (
+            snapshot.get(key)
+            for key in (
+                "power_latest_time_utc",
+                "aps_battery_power_time_utc",
+                "aps_battery_soc_time_utc",
+                "aps_battery_voltage_time_utc",
+            )
+            if snapshot.get(key)
+        ),
+        None,
+    ) or _latest_power_time()
     depletion_value, depletion_detail = _battery_depletion_text(snapshot)
     environmental_cards = _environmental_signal_cards()
     science_source_times = {
