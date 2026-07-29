@@ -39,6 +39,7 @@ from generate_power_soc_ensemble import (
 )
 from grouped_timeseries import (
     PDU_WATT_FIELDS,
+    SOC_FORECAST_ANCHOR_LABEL,
     SUMMARY_LAYOUTS,
     _active_panels,
     _trace_plot_values,
@@ -1169,6 +1170,26 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(len(references), 4)
         for trace in references:
             np.testing.assert_allclose(trace.y, MINIMUM_OPERATIONAL_SOC_PCT)
+
+    def test_soc_forecast_panels_mark_the_measured_starting_soc(self) -> None:
+        times = pd.date_range("2026-07-29T16:00:00", periods=4, freq="1h")
+        ds = xr.Dataset(
+            {
+                "BatterySOCForecast": (("time",), [100.0, 98.0, 97.0, 99.0]),
+                "BatterySOCForecastP10": (("time",), [100.0, 94.0, 91.0, 93.0]),
+                "BatterySOCForecastP90": (("time",), [100.0, 99.0, 99.0, 100.0]),
+                "OperatingCurrentSOCP50": (("time",), [100.0, 96.0, 92.0, 90.0]),
+            },
+            coords={"time": times},
+        )
+
+        figure = build_summary_plotly(ds, "power")
+
+        anchors = [trace for trace in figure.data if trace.name == SOC_FORECAST_ANCHOR_LABEL]
+        self.assertEqual(len(anchors), 3)
+        for anchor in anchors:
+            self.assertEqual(list(anchor.y), [100.0])
+            self.assertEqual(pd.Timestamp(anchor.x[0]), times[0])
 
     def test_unavailable_operating_product_removes_baked_stale_recommendations(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=3, freq="1h")

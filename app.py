@@ -74,6 +74,8 @@ from grouped_timeseries import (
     POWER_DISPLAY_SUMMARY_FIELDS,
     POWER_SOC_FORECAST_FIELDS,
     POWER_FUTURE_DISPLAY_FIELDS,
+    SOC_FORECAST_ANCHOR_LABEL,
+    SOC_FORECAST_ANCHOR_TRACE_BY_PANEL,
     prepare_summary_dataset,
     widget_group_options,
 )
@@ -9059,6 +9061,7 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
     fig = go.Figure()
     has_right_axis = panel.right_axis_label is not None
     legend_items: list[str] = []
+    soc_anchor: tuple[pd.Timestamp, float] | None = None
     for trace in panel.traces:
         if trace.projection_lookback_minutes is not None:
             continue
@@ -9090,6 +9093,37 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
                 hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.4g}}<extra></extra>",
                 connectgaps=False,
             )
+        )
+        if trace.var == SOC_FORECAST_ANCHOR_TRACE_BY_PANEL.get(panel.key) and soc_anchor is None:
+            finite = np.flatnonzero(np.isfinite(values))
+            if finite.size:
+                anchor_index = int(finite[0])
+                soc_anchor = (pd.Timestamp(times[anchor_index]), float(values[anchor_index]))
+    if soc_anchor is not None:
+        anchor_time, anchor_value = soc_anchor
+        fig.add_trace(
+            go.Scatter(
+                x=[anchor_time],
+                y=[anchor_value],
+                mode="markers",
+                name=SOC_FORECAST_ANCHOR_LABEL,
+                marker=dict(color=THEME_ACCENT, size=9, line=dict(color="white", width=2)),
+                hovertemplate=f"{SOC_FORECAST_ANCHOR_LABEL}=%{{y:.1f}}%<br>Time=%{{x}}<extra></extra>",
+                showlegend=False,
+            )
+        )
+        fig.add_annotation(
+            x=anchor_time,
+            y=anchor_value,
+            text=f"Measured SOC {anchor_value:.0f}%",
+            showarrow=True,
+            arrowhead=0,
+            ax=52,
+            ay=22,
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor=THEME_ACCENT,
+            borderwidth=1,
+            font=dict(color=THEME_TEXT, size=9),
         )
     if panel.key in {"operating_plan_scenarios", "ecmwf_solar_forecast"} and "OperatingCL61OptimizedModeCode" in ds:
         schedule_times = pd.DatetimeIndex(ds["time"].values)

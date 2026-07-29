@@ -359,6 +359,14 @@ class PanelSpec:
     description: str | None = None
 
 
+SOC_FORECAST_ANCHOR_TRACE_BY_PANEL = {
+    "soc_24h_forecast": "BatterySOCForecast",
+    "soc_ecmwf_forecast": "BatterySOCForecast",
+    "operating_plan_scenarios": "OperatingCurrentSOCP50",
+}
+SOC_FORECAST_ANCHOR_LABEL = "Measured SOC at forecast start"
+
+
 def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
     if trace.var == "ForecastLoadWatts":
         mode = str(ds.attrs.get("forecast_load_mode", ds.attrs.get("load_mode", ""))).strip()
@@ -3830,6 +3838,7 @@ def build_summary_plotly(
         right_axis_has_finite_data = False
         panel_time_start: pd.Timestamp | None = None
         panel_time_end: pd.Timestamp | None = None
+        soc_anchor: tuple[pd.Timestamp, float] | None = None
         panel_time_group = _power_panel_time_group(panel.key) if instrument == "power" else "observed"
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
@@ -3859,6 +3868,15 @@ def build_summary_plotly(
                 left_axis_values.append(trace_values)
                 left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             trace_label = _trace_display_label(ds, trace)
+            if (
+                instrument == "power"
+                and trace.var == SOC_FORECAST_ANCHOR_TRACE_BY_PANEL.get(panel.key)
+                and soc_anchor is None
+            ):
+                finite = np.flatnonzero(np.isfinite(trace_values))
+                if finite.size:
+                    anchor_index = int(finite[0])
+                    soc_anchor = (pd.Timestamp(trace_times[anchor_index]), float(trace_values[anchor_index]))
             # Power's standard current view contains many independent line
             # traces. WebGL avoids creating thousands of SVG nodes on phones
             # and browsers, while stepped state schedules stay SVG so their
@@ -3880,6 +3898,37 @@ def build_summary_plotly(
                 row=row_index,
                 col=1,
                 secondary_y=secondary,
+            )
+        if soc_anchor is not None:
+            anchor_time, anchor_value = soc_anchor
+            fig.add_trace(
+                go.Scatter(
+                    x=[anchor_time],
+                    y=[anchor_value],
+                    mode="markers",
+                    name=SOC_FORECAST_ANCHOR_LABEL,
+                    marker=dict(color=COLOR["green"], size=10, line=dict(color="white", width=2)),
+                    hovertemplate=f"{SOC_FORECAST_ANCHOR_LABEL}=%{{y:.1f}}%<br>Time=%{{x}}<extra></extra>",
+                    showlegend=False,
+                ),
+                row=row_index,
+                col=1,
+                secondary_y=False,
+            )
+            fig.add_annotation(
+                x=anchor_time,
+                y=anchor_value,
+                text=f"Measured SOC {anchor_value:.0f}%",
+                showarrow=True,
+                arrowhead=0,
+                ax=58,
+                ay=24,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor=COLOR["green"],
+                borderwidth=1,
+                font=dict(color=PLOT_TEXT, size=10),
+                row=row_index,
+                col=1,
             )
         if instrument == "power" and panel.key in OPERATING_SCHEDULE_SHADE_PANELS:
             _add_operating_schedule_bands(fig, ds, row=row_index)

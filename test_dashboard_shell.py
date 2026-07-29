@@ -203,6 +203,13 @@ class DashboardShellTests(TestCase):
         self.assertIn("forecast-plot-info-control", card.objects[0].css_classes)
         self.assertIsInstance(card.objects[-1], app.pn.pane.Plotly)
         self.assertIn("desktop-power-figure", card.objects[-1].css_classes)
+        anchors = [
+            trace
+            for trace in card.objects[-1].object.data
+            if trace.name == app.SOC_FORECAST_ANCHOR_LABEL
+        ]
+        self.assertEqual(len(anchors), 1)
+        self.assertEqual(list(anchors[0].y), [90.0])
 
     def test_desktop_shell_has_full_named_tabs(self) -> None:
         labels = [label for label, _slug, _panel in app.DESKTOP_TAB_SPECS]
