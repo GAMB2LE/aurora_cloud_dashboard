@@ -14,6 +14,18 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_auroracam_detail_panes_refresh_without_rebuilding_thumbnail_grid(self) -> None:
+        with patch.object(app, "_auroracam_viewer_markup", return_value="<div>selected camera</div>") as render:
+            app._refresh_auroracam_detail()
+
+        render.assert_called_once_with(
+            app.auroracam_camera.value,
+            app.auroracam_date.value,
+            app.auroracam_time.value,
+        )
+        self.assertEqual(app.auroracam_detail.object, "<div>selected camera</div>")
+        self.assertEqual(app.mobile_auroracam_detail.object, "<div>selected camera</div>")
+
     def test_browser_performance_probe_is_development_only(self) -> None:
         with (
             patch.object(app, "SITE_ENV", "development"),

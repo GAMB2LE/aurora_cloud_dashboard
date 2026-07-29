@@ -5250,6 +5250,26 @@ auroracam_cards = {
     )
     for camera_id, spec in AURORACAM_CAMERAS.items()
 }
+auroracam_detail = pn.pane.HTML(
+    _auroracam_viewer_markup(auroracam_camera.value, auroracam_date.value, auroracam_time.value),
+    sizing_mode="stretch_width",
+    margin=0,
+)
+mobile_auroracam_detail = pn.pane.HTML(
+    auroracam_detail.object,
+    sizing_mode="stretch_width",
+    margin=0,
+)
+
+
+def _refresh_auroracam_detail(_event=None) -> None:
+    markup = _auroracam_viewer_markup(
+        auroracam_camera.value,
+        auroracam_date.value,
+        auroracam_time.value,
+    )
+    auroracam_detail.object = markup
+    mobile_auroracam_detail.object = markup
 
 
 def _select_auroracam_camera(camera_id: str) -> None:
@@ -5266,6 +5286,9 @@ for _auroracam_card_id, _auroracam_card in auroracam_cards.items():
         lambda _event, camera_id=_auroracam_card_id: _select_auroracam_camera(camera_id),
         "clicked",
     )
+
+for _auroracam_control in (auroracam_camera, auroracam_date, auroracam_time):
+    _auroracam_control.param.watch(_refresh_auroracam_detail, "value")
 
 
 def _refresh_auroracam_time_options(preserve_current: bool = True) -> None:
@@ -5385,7 +5408,6 @@ def _auroracam_browser(selected_day, selected_time, camera_id):
         perf["status"] = "ok"
         return pn.Column(
             _auroracam_grid(selected_day, selected_time, camera_id),
-            pn.pane.HTML(_auroracam_viewer_markup(camera_id, selected_day, selected_time), sizing_mode="stretch_width", margin=0),
             sizing_mode="stretch_width",
             css_classes=["auroracam-browser"],
         )
@@ -8590,6 +8612,7 @@ auroracam_tab = pn.Column(
         css_classes=["small-card", "auroracam-toolbar"],
     ),
     _auroracam_browser,
+    auroracam_detail,
     auroracam_footer,
     sizing_mode="stretch_width",
 )
@@ -9375,7 +9398,6 @@ def _mobile_auroracam_browser(selected_day, selected_time, camera_id):
         )
     return pn.Column(
         _mobile_auroracam_grid(selected_day, selected_time, camera_id),
-        pn.pane.HTML(_auroracam_viewer_markup(camera_id, selected_day, selected_time), sizing_mode="stretch_width", margin=0),
         sizing_mode="stretch_width",
         css_classes=["auroracam-browser"],
     )
@@ -9399,6 +9421,7 @@ def _mobile_camera_tab() -> pn.Column:
             css_classes=["small-card", "auroracam-toolbar"],
         ),
         _mobile_auroracam_browser,
+        mobile_auroracam_detail,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell"],
     )
