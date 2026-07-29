@@ -400,7 +400,7 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(by_id["kt15"]["value"], "11.0 C")
         self.assertEqual(by_id["kt15"]["updatedAt"], "2026-07-24T06:00:00Z")
 
-    def test_overview_prefers_measured_power_time_over_snapshot_hint(self) -> None:
+    def test_overview_prefers_cached_measured_power_time_without_opening_display(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             snapshot = root / "latest.json"
@@ -421,13 +421,13 @@ class MobileCatalogTests(unittest.TestCase):
                     "AURORACAM_RAW_ROOT": str(root / "camera"),
                 },
             ), patch.object(
-                mobile_catalog, "_latest_power_time", return_value="2026-07-22T04:45:15Z"
+                mobile_catalog, "_latest_power_time", side_effect=AssertionError("display Zarr opened")
             ):
                 response = mobile_catalog.overview()
 
         power = next(card for card in response["cards"] if card["id"] == "power")
-        self.assertEqual(power["updatedAt"], "2026-07-22T04:45:15Z")
-        self.assertEqual(power["value"], "04:45 UTC")
+        self.assertEqual(power["updatedAt"], "2026-07-21T20:40:00Z")
+        self.assertEqual(power["value"], "20:40 UTC")
 
     def test_overview_includes_meteorology_and_radiation_collection_states(self) -> None:
         rows = mobile_catalog._instrument_power_states(

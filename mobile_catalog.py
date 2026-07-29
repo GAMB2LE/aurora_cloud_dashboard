@@ -593,11 +593,11 @@ def overview() -> dict[str, Any]:
     latest_cameras = auroracam("latest")
     camera_times = [record.get("timeUTC") for record in latest_cameras["frames"] if record.get("timeUTC")]
     latest_camera_time = max(camera_times) if camera_times else None
-    # The operations snapshot can retain an older convenience timestamp while
-    # its battery metrics are refreshed from the same current power stream.
-    # Prefer the measured display product so the overview reports actual data
-    # freshness; preserve the snapshot value only for legacy/missing products.
-    latest_power_time = _latest_power_time() or snapshot.get("power_latest_time_utc")
+    # Use the cached measured timestamp that the operations collector publishes
+    # with the battery metrics. Opening the wide display Zarr here added several
+    # seconds to every Overview/API request. Keep the direct read only as a
+    # compatibility fallback for older snapshots.
+    latest_power_time = snapshot.get("power_latest_time_utc") or _latest_power_time()
     depletion_value, depletion_detail = _battery_depletion_text(snapshot)
     environmental_cards = _environmental_signal_cards()
     science_source_times = {

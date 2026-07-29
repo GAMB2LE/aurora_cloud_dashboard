@@ -295,6 +295,21 @@ class DashboardShellTests(TestCase):
         finally:
             app._BROWSER_OVERVIEW_LOADED = original_loaded
 
+    def test_overview_uses_cached_power_timestamp_without_opening_display_zarr(self) -> None:
+        snapshot = {
+            "time_utc": "2026-07-29T12:00:00Z",
+            "power_latest_time_utc": "2026-07-29T11:58:00Z",
+        }
+        with (
+            patch.object(app, "_ops_read_snapshot", return_value=snapshot),
+            patch.object(app, "_mobile_power_latest_measured_time", side_effect=AssertionError("display Zarr opened")),
+            patch.object(app, "_mobile_auroracam_freshness", return_value=("Radar", "2m ago", "green")),
+            patch.object(app.mobile_catalog, "environmental_signal_cards", return_value=[]),
+        ):
+            markup = app._mobile_overview_markup()
+
+        self.assertIn("11:58 UTC", markup)
+
     def test_overview_selection_does_not_enable_interactive_rendering(self) -> None:
         original_bootstrapping = app._APP_BOOTSTRAPPING
         try:

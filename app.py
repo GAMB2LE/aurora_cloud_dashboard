@@ -8762,7 +8762,12 @@ def _mobile_overview_markup() -> str:
     battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
     depletion_value, depletion_meta = _ops_battery_depletion_text(snapshot)
     camera_value, camera_meta, camera_level = _mobile_auroracam_freshness()
-    power_latest = _mobile_power_latest_measured_time()
+    # The operations snapshot already records the latest measured power
+    # timestamp. Opening the 271-variable display Zarr here made every
+    # Overview session wait several seconds before its first paint.
+    power_latest = _ops_timestamp(snapshot.get("power_latest_time_utc"))
+    if power_latest is None:
+        power_latest = _mobile_power_latest_measured_time()
     power_latest_utc = power_latest.replace(tzinfo=timezone.utc) if power_latest and power_latest.tzinfo is None else power_latest
     power_meta = _humanize_age(power_latest_utc)
     power_level = _ops_level_from_age_minutes(max((datetime.now(timezone.utc) - power_latest_utc).total_seconds() / 60.0, 0.0) if power_latest_utc else None)
