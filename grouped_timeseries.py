@@ -391,6 +391,15 @@ class PanelSpec:
     display_horizon_hours: float | None = None
 
 
+SOC_FORECAST_ANCHOR_TRACE_BY_PANEL = {
+    "soc_24h_forecast": "BatterySOCForecast",
+    "soc_ecmwf_forecast": "BatterySOCForecast",
+    "operating_plan_scenarios": "OperatingCurrentSOCP50",
+    "uas_tier_scenarios": "OperatingUASTier1SOCP50",
+}
+SOC_FORECAST_ANCHOR_LABEL = "Measured SOC at forecast start"
+
+
 @dataclass(frozen=True)
 class CL61SchedulePresentation:
     status: str
@@ -899,7 +908,7 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         "uas_tier_scenarios": {
             "title": "UAS tier SOC forecasts",
             "summary": "The five standard Menapia tiers are compared while the current non-UAS station configuration is held fixed.",
-            "implementation": "Every tier starts from the same measured APS SOC and uses the same ECMWF solar ensemble, battery assumptions, and current non-UAS kit combination. Only the UAS tier load changes. A tier uses its learned load quantiles after at least three independent episodes and six observed hours; before then it is marked provisional and uses the documented fallback distribution. Tier 5 represents no station-side UAS draw because the docks rely on their internal batteries; this does not imply indefinite dock endurance. Diagnostic tiers 11 and 12 are omitted because they mimic tiers 1 and 2. These curves are advisory and never issue Menapia or PDU commands.",
+            "implementation": "Every tier starts from the same measured APS SOC and uses the same ECMWF solar ensemble, battery assumptions, and current non-UAS kit combination. Only the UAS tier load changes. A tier uses its learned load quantiles after two proxy episodes for tiers 1-2 or three direct episodes for tiers 3-5, plus six observed hours; before then it is marked provisional and uses the documented fallback distribution. Tier 5 represents no station-side UAS draw because the docks rely on their internal batteries; this does not imply indefinite dock endurance. Diagnostic tiers 11 and 12 are omitted because they mimic tiers 1 and 2. These curves are advisory and never issue Menapia or PDU commands.",
             "metrics": [
                 {"label": "P50", "detail": "Median SOC path for each standard UAS tier."},
                 {"label": "Common basis", "detail": "The SOC anchor, weather, battery model, and non-UAS station loads are identical across all five traces."},
@@ -4483,6 +4492,7 @@ def build_summary_plotly(
         right_axis_has_finite_data = False
         panel_time_start: pd.Timestamp | None = None
         panel_time_end: pd.Timestamp | None = None
+        soc_anchor: tuple[pd.Timestamp, float] | None = None
         panel_time_group = _power_panel_time_group(panel.key) if instrument == "power" else "observed"
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
@@ -4518,6 +4528,15 @@ def build_summary_plotly(
                 left_axis_values.append(trace_values)
                 left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             trace_label = power_trace_label(ds, trace)
+            if (
+                instrument == "power"
+                and trace.var == SOC_FORECAST_ANCHOR_TRACE_BY_PANEL.get(panel.key)
+                and soc_anchor is None
+            ):
+                finite = np.flatnonzero(np.isfinite(trace_values))
+                if finite.size:
+                    anchor_index = int(finite[0])
+                    soc_anchor = (pd.Timestamp(trace_times[anchor_index]), float(trace_values[anchor_index]))
             # Power's standard current view contains many independent line
             # traces. WebGL avoids creating thousands of SVG nodes on phones
             # and browsers, while stepped state schedules stay SVG so their
@@ -4548,6 +4567,37 @@ def build_summary_plotly(
                 row=row_index,
                 col=1,
                 secondary_y=secondary,
+            )
+        if soc_anchor is not None:
+            anchor_time, anchor_value = soc_anchor
+            fig.add_trace(
+                go.Scatter(
+                    x=[anchor_time],
+                    y=[anchor_value],
+                    mode="markers",
+                    name=SOC_FORECAST_ANCHOR_LABEL,
+                    marker=dict(color=COLOR["green"], size=10, line=dict(color="white", width=2)),
+                    hovertemplate=f"{SOC_FORECAST_ANCHOR_LABEL}=%{{y:.1f}}%<br>Time=%{{x}}<extra></extra>",
+                    showlegend=False,
+                ),
+                row=row_index,
+                col=1,
+                secondary_y=False,
+            )
+            fig.add_annotation(
+                x=anchor_time,
+                y=anchor_value,
+                text=f"Measured SOC {anchor_value:.0f}%",
+                showarrow=True,
+                arrowhead=0,
+                ax=58,
+                ay=24,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor=COLOR["green"],
+                borderwidth=1,
+                font=dict(color=PLOT_TEXT, size=10),
+                row=row_index,
+                col=1,
             )
         if instrument == "power" and panel.key in OPERATING_SCHEDULE_SHADE_PANELS:
             _add_operating_schedule_bands(fig, ds, row=row_index)
