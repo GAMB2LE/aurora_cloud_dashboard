@@ -29,13 +29,59 @@ class MobileAPITests(unittest.TestCase):
         self.client = TestClient(mobile_api.app)
 
     def test_health_is_public_without_disclosing_token_configuration(self) -> None:
-        with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"AURORA_MOBILE_API_TOKEN": "secret", "AURORA_MOBILE_API_AUTH_MODE": "required"},
+            clear=False,
+        ):
             response = self.client.get("/health")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
         self.assertTrue(response.json()["authRequired"])
+        self.assertEqual(response.json()["accessMode"], "required")
         self.assertNotIn("tokenConfigured", response.json())
+
+    def test_public_read_only_mode_allows_app_reads_with_a_stale_token(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AURORA_MOBILE_API_TOKEN": "secret",
+                "AURORA_MOBILE_API_AUTH_MODE": "public_read_only",
+            },
+            clear=False,
+        ):
+            health = self.client.get("/health")
+            manifest = self.client.get(
+                "/manifest",
+                headers={"Authorization": "Bearer stale-testflight-token"},
+            )
+
+        self.assertFalse(health.json()["authRequired"])
+        self.assertEqual(health.json()["accessMode"], "public_read_only")
+        self.assertEqual(manifest.status_code, 200)
+        self.assertEqual(
+            manifest.headers["Cache-Control"],
+            "public, max-age=30, stale-while-revalidate=60",
+        )
+
+    def test_public_read_only_mode_keeps_artifact_inventory_protected(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AURORA_MOBILE_API_TOKEN": "secret",
+                "AURORA_MOBILE_API_AUTH_MODE": "public_read_only",
+            },
+            clear=False,
+        ):
+            unauthorized = self.client.get("/artifacts/manifest")
+            authorized = self.client.get(
+                "/artifacts/manifest",
+                headers={"Authorization": "Bearer secret"},
+            )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
 
     def test_legacy_public_mode_does_not_bypass_authentication(self) -> None:
         with patch.dict(

@@ -35,15 +35,19 @@ https://data.gamb2le.co.uk/mobile/v1
 
 ## Authentication
 
-All data and media endpoints require:
+Authentication is required by default:
 
 ```text
 Authorization: Bearer <AURORA_MOBILE_API_TOKEN>
 ```
 
 `GET /health` is intentionally unauthenticated so the iOS app can report whether
-the service is reachable and whether a token is configured. Local development
-can set `AURORA_MOBILE_API_ALLOW_PUBLIC=1` to bypass auth.
+the service is reachable. A public dashboard host may explicitly set
+`AURORA_MOBILE_API_AUTH_MODE=public_read_only`. That mode allows only `GET` and
+`HEAD` requests to the bounded app payloads and media already displayed on the
+public dashboard. The derived-artifact inventory remains token-protected,
+unknown mode values fail closed, and the legacy
+`AURORA_MOBILE_API_ALLOW_PUBLIC` variable has no effect.
 
 ## Endpoints
 
