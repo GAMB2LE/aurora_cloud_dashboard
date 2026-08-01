@@ -9265,8 +9265,8 @@ def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
         "<div class='power-browser-briefing'>"
         "<div class='power-browser-briefing__title'>Forecast scenarios</div>"
         "<div class='power-browser-briefing__grid'>"
-        "<div><strong>System as-is</strong><br>ECMWF ensemble forecast using the current station load and instrument state. P10/P90 show the uncertainty range.</div>"
-        f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and uses the same ECMWF solar forecast.</div>"
+        "<div><strong>System as-is</strong><br>ECMWF ensemble forecast anchored to the recent measured whole-station load. P10/P90 include weather, load-residual, and bounded battery-parameter uncertainty.</div>"
+        f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and shares the same calibrated solar and battery model. UAS tier 3 remains provisional until repeated operating evidence is available.</div>"
         "<div><strong>Safety rule</strong><br>The recommended schedule is advisory only and aims to keep P10 SOC at or above the 40% operational minimum.</div>"
         "</div></div>"
     )

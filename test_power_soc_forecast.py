@@ -26,7 +26,9 @@ from generate_power_soc_forecast import (
     calibrated_solar_factor_profile,
     evaluate_forecast_archive,
     evaluate_independent_forecast_archive,
+    forecast_publication_signature,
     resolve_ecmwf_cycle_hour,
+    solar_calibration_contract_id,
     solar_irradiance_from_ssrd,
     validate_power_input_freshness,
 )
@@ -264,8 +266,15 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertGreaterEqual(float(forecast["BatterySOCForecast"].min()), 0.0)
         self.assertLessEqual(float(forecast["BatterySOCForecast"].max()), 100.0)
         self.assertEqual(forecast.attrs["forecast_horizon_hours"], "12")
-        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v5")
-        self.assertEqual(forecast.attrs["load_model_version"], "5")
+        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v7")
+        self.assertEqual(forecast.attrs["load_model_version"], "7")
+        self.assertIn("battery_charge_efficiency", forecast.attrs)
+        self.assertIn("battery_discharge_efficiency", forecast.attrs)
+        self.assertEqual(
+            forecast.attrs["load_anchor_method"],
+            "median_latest_30_minutes_whole_station_balance",
+        )
+        self.assertTrue(forecast.attrs["solar_calibration_contract_id"].startswith("solar-calibration-v1-"))
         self.assertEqual(float(forecast.attrs["minimum_operational_soc_pct"]), 40.0)
         self.assertEqual(forecast.attrs["scenario_loads_w"], "100,200,300,400,500,600")
         self.assertEqual(forecast.attrs["scenario_solar_mode"], "ecmwf")
@@ -275,6 +284,61 @@ class PowerSocForecastTests(unittest.TestCase):
         for load_w in (100, 200, 300, 400, 500, 600):
             self.assertIn(f"BatterySOCForecast_Load{load_w}W", forecast)
             self.assertAlmostEqual(float(forecast[f"BatterySOCForecast_Load{load_w}W"].values[0]), 70.0)
+
+    def test_forecast_publication_signature_ignores_generation_time(self) -> None:
+        forecast = xr.Dataset(
+            {"BatterySOCForecast": (("time",), [80.0, 79.0])},
+            coords={"time": pd.date_range("2026-07-20", periods=2, freq="1h")},
+            attrs={
+                "initial_soc_time": "2026-07-20T00:04:00",
+                "initial_soc_pct": "80",
+                "forecast_load_w": "500",
+                "load_mode": "DC + CL61",
+                "solar_calibration_contract_id": "solar-a",
+                "battery_usable_capacity_kwh": "26",
+                "battery_charge_efficiency": "0.92",
+                "battery_discharge_efficiency": "0.92",
+                "load_model_version": "7",
+                "generated_at_utc": "2026-07-20T00:05:00+00:00",
+            },
+        )
+        first = forecast_publication_signature(forecast)
+        forecast.attrs["generated_at_utc"] = "2099-01-01T00:00:00+00:00"
+
+        self.assertEqual(forecast_publication_signature(forecast), first)
+        forecast.attrs["forecast_load_w"] = "550"
+        self.assertNotEqual(forecast_publication_signature(forecast), first)
+
+    def test_forecast_publication_signature_tracks_battery_power_limits(self) -> None:
+        forecast = xr.Dataset(
+            attrs={
+                "initial_soc_time": "2026-07-20T00:00:00",
+                "initial_soc_pct": "80",
+                "forecast_load_w": "700",
+                "load_mode_signature": "dc_cl61",
+                "ecmwf_cycle_time": "2026-07-20T00:00:00",
+                "solar_calibration_contract_id": "solar-v1",
+                "battery_usable_capacity_kwh": "26",
+                "battery_charge_efficiency": "0.92",
+                "battery_discharge_efficiency": "0.92",
+                "battery_parasitic_load_w": "0",
+                "battery_max_charge_w": "1800",
+                "battery_max_discharge_w": "1200",
+                "load_model_version": "7",
+            }
+        )
+        first = forecast_publication_signature(forecast)
+
+        forecast.attrs["battery_max_discharge_w"] = "1500"
+
+        self.assertNotEqual(forecast_publication_signature(forecast), first)
+
+    def test_solar_calibration_contract_is_stable_and_input_sensitive(self) -> None:
+        first = solar_calibration_contract_id(2.0, {"0_6h": 1.0, "6_24h": 0.9})
+        reordered = solar_calibration_contract_id(2.0, {"6_24h": 0.9, "0_6h": 1.0})
+
+        self.assertEqual(first, reordered)
+        self.assertNotEqual(first, solar_calibration_contract_id(2.1, {"0_6h": 1.0, "6_24h": 0.9}))
 
     def test_load_scenarios_decline_with_higher_loads(self) -> None:
         power_times = pd.date_range("2026-07-09T00:00:00", periods=25, freq="1h")
@@ -345,8 +409,8 @@ class PowerSocForecastTests(unittest.TestCase):
         load = build_historical_load_forecast(frame, forecast_times, end=times[-1], calibration_days=10)
 
         np.testing.assert_allclose(load.to_numpy(), 9.0)
-        self.assertEqual(load.attrs["load_model"], "mode_conditioned_energy_balance_v5")
-        self.assertEqual(load.attrs["load_model_version"], 5)
+        self.assertEqual(load.attrs["load_model"], "mode_conditioned_energy_balance_v7")
+        self.assertEqual(load.attrs["load_model_version"], 7)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
         self.assertEqual(load.attrs["load_regime"], "DC-Only")
         self.assertGreater(float(load.attrs["load_regime_threshold_w"]), 9.0)
@@ -373,7 +437,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
         np.testing.assert_allclose(load.to_numpy(), 220.0)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
-        self.assertEqual(load.attrs["load_measurement"], "battery_discharge_when_solar_zero")
+        self.assertEqual(load.attrs["load_measurement"], "solar_generation_minus_battery_power")
         self.assertEqual(load.attrs["load_balance_measurement"], "solar_generation_minus_battery_power")
 
     def test_active_pdu_kit_names_the_learned_mode(self) -> None:
@@ -531,7 +595,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(float(forecast.attrs["load_bias_correction_w"]), 0.0)
         self.assertAlmostEqual(float(forecast["ForecastLoadWatts"].median()), 250.0)
-        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v5")
+        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v7")
         self.assertIn("ForecastLoadBiasRecent", forecast)
 
     def test_stale_negative_load_bias_cannot_zero_ac_dc_load_forecast(self) -> None:
@@ -658,7 +722,7 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={
                 "initial_soc_time": new_issue.isoformat(),
                 "ecmwf_cycle_time": new_issue.isoformat(),
-                "load_model_version": "5",
+                "load_model_version": "7",
             },
         )
         archive = append_forecast_archive(new_forecast, self.tmp_archive_path)
@@ -682,7 +746,7 @@ class PowerSocForecastTests(unittest.TestCase):
         finite_mae = skill["ForecastLoadMAE24h"].dropna("time")
         self.assertTrue(len(finite_mae))
         self.assertAlmostEqual(float(finite_mae.values[-1]), 10.0)
-        self.assertEqual(skill.attrs["load_model_version"], "5")
+        self.assertEqual(skill.attrs["load_model_version"], "7")
 
     def test_hindcast_selects_fixed_lead_forecasts(self) -> None:
         issue = pd.Timestamp("2026-07-10T00:00:00")
@@ -826,7 +890,7 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(ensemble.attrs["scenario_scope"], "current_system_only")
         self.assertEqual(
             ensemble.attrs["load_uncertainty"],
-            "mode-conditioned recent load residuals plus ECMWF solar ensemble",
+            "independently paired mode-conditioned load residuals plus ECMWF solar ensemble",
         )
 
     def test_ensemble_reanchors_when_soc_or_load_mode_changes_within_same_cycle(self) -> None:
@@ -1159,6 +1223,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "OperatingSuggested5SOCP50": (("time",), [60.0, 51.0, 42.0, 33.0]),
                 "OperatingSuggested6SOCP50": (("time",), [60.0, 54.0, 48.0, 42.0]),
                 "OperatingSuggested7SOCP50": (("time",), [60.0, 53.0, 46.0, 39.0]),
+                "OperatingSuggested8SOCP50": (("time",), [60.0, 43.0, 25.0, 7.0]),
             },
             coords={"time": times},
         )
@@ -1169,6 +1234,9 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(len(references), 4)
         for trace in references:
             np.testing.assert_allclose(trace.y, MINIMUM_OPERATIONAL_SOC_PCT)
+
+        scenario_panel = next(trace for trace in figure.data if trace.name == "All instruments + UAS tier 3")
+        np.testing.assert_allclose(scenario_panel.y, [60.0, 43.0, 25.0, 7.0])
 
     def test_unavailable_operating_product_removes_baked_stale_recommendations(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=3, freq="1h")

@@ -1278,7 +1278,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
         # baked operating traces with the standalone contract, which rejects a
         # plan whose SOC anchor differs from the current ensemble forecast.
         scenarios = None
-        if section == "all":
+        if section in {"all", "forecast"}:
             for scenario_path in power_operating_scenario_paths():
                 if not scenario_path.exists():
                     continue

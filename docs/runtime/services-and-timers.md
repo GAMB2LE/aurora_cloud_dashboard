@@ -158,8 +158,8 @@ quicklooks for LI-COR continuity. It does not contain radiation variables.
 - `aurora-power-soc-forecast.timer`
 - `aurora-power-soc-forecast-learn.timer`
 - `aurora-power-soc-ensemble.timer`
-- `aurora-power-soc-planning-forecast.timer` (development only)
-- `aurora-power-operating-scenarios.timer` (development only)
+- `aurora-power-soc-planning-forecast.timer`
+- `aurora-power-operating-scenarios.timer`
 - `aurora-power-quicklooks.timer`
 
 `aurora-power-quicklooks.service` regenerates the compact APS display summary
@@ -179,10 +179,17 @@ UTC deterministic cycle twice daily and writes a 240-hour forecast under
 `/data/aurora/dev-products/power`.
 `aurora-power-operating-scenarios.service` runs every five minutes. It learns
 new mode/component evidence and regenerates named and optimized plans from
-current SOC. The app merges that compact product into the mirrored display
-summary at read time; it does not rebuild the full Power summary every five
-minutes. These two timers are enabled only on `data-ocean`; their production
-units remain disabled.
+current SOC. It also aligns the mirrored UAS MQTT log so tier-specific loads
+can be learned and the all-instruments/UAS-tier-3 scenario can be evaluated.
+The app merges that compact product into the display summary at read time; it
+does not rebuild the full Power summary every five minutes. Both environments
+run these advisory products: production writes under `/data/aurora/products`,
+while development writes independently under `/data/aurora/dev-products`.
+
+The deterministic and scenario jobs use semantic publication signatures.
+When a timer run has the same physical SOC/load anchor, mode, ECMWF cycle,
+solar contract, battery parameters, and model version, it advances state and
+health without rewriting the public Zarr or duplicating an archive issue.
 
 ## ASS PDU
 

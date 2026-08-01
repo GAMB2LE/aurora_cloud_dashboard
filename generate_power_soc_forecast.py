@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ from ecmwf_forecast_provider import (
     validate_provider,
 )
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+from power_battery_model import BatteryModel, fit_battery_model, soc_delta_percent
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 POWER_SOC_FORECAST_ZARR_PATH = Path(
@@ -81,8 +83,8 @@ DEFAULT_OPEN_DATA_SOURCE = os.environ.get("AURORA_POWER_ECMWF_OPEN_DATA_SOURCE",
 DEFAULT_SKILL_WINDOW_HOURS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_WINDOW_HOURS", "24"))
 DEFAULT_SKILL_RETENTION_DAYS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_RETENTION_DAYS", "7"))
 ECMWF_PARAM = "ssrd"
-LOAD_MODEL_NAME = "mode_conditioned_energy_balance_v5"
-LOAD_MODEL_VERSION = 5
+LOAD_MODEL_NAME = "mode_conditioned_energy_balance_v7"
+LOAD_MODEL_VERSION = 7
 PDU_OUTLET_KIT_NAMES = {
     4: "UAS",
     5: "CL61",
@@ -129,6 +131,51 @@ DEFAULT_MAX_POWER_INPUT_AGE_MINUTES = float(
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def solar_calibration_contract_id(base_factor: float, mos_by_bucket: dict[str, float]) -> str:
+    """Return a stable identity shared by every product using this calibration."""
+    payload = {
+        "schema": 1,
+        "base_factor": round(float(base_factor), 8),
+        "lead_mos": {name: round(float(value), 8) for name, value in sorted(mos_by_bucket.items())},
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return f"solar-calibration-v1-{digest}"
+
+
+def forecast_publication_signature(forecast: xr.Dataset) -> str:
+    """Hash operationally meaningful inputs while ignoring run-time metadata."""
+    attrs = forecast.attrs
+    anchor = pd.to_datetime(attrs.get("initial_soc_time"), errors="coerce")
+    anchor_bucket = "" if pd.isna(anchor) else pd.Timestamp(anchor).floor("30min").isoformat()
+
+    def stepped(name: str, step: float) -> float | None:
+        try:
+            value = float(attrs.get(name, np.nan))
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(value):
+            return None
+        return round(value / step) * step
+
+    payload = {
+        "schema": 1,
+        "anchor_30min": anchor_bucket,
+        "soc_pct": stepped("initial_soc_pct", 1.0),
+        "load_w": stepped("forecast_load_w", 25.0),
+        "load_mode": str(attrs.get("load_mode_signature", attrs.get("load_mode", ""))),
+        "ecmwf_cycle": str(attrs.get("ecmwf_cycle_time", "")),
+        "solar_contract": str(attrs.get("solar_calibration_contract_id", "")),
+        "battery_capacity_kwh": stepped("battery_usable_capacity_kwh", 0.25),
+        "battery_charge_efficiency": stepped("battery_charge_efficiency", 0.01),
+        "battery_discharge_efficiency": stepped("battery_discharge_efficiency", 0.01),
+        "battery_parasitic_load_w": stepped("battery_parasitic_load_w", 10.0),
+        "battery_max_charge_w": stepped("battery_max_charge_w", 25.0),
+        "battery_max_discharge_w": stepped("battery_max_discharge_w", 25.0),
+        "model_version": str(attrs.get("load_model_version", "")),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
 
 
 def _atomic_write_zarr(ds: xr.Dataset, output_zarr: Path) -> None:
@@ -432,25 +479,18 @@ def build_historical_load_forecast(
     level_start = end - pd.Timedelta(hours=float(DEFAULT_LOAD_MODE_LEVEL_HOURS))
     level_samples = current_run[current_run.index >= level_start]
     measurement = _load_measurement_name(frame)
+    # Dark-period discharge is useful for learning the DC-only component, but
+    # it is not the current whole-station load when powered instruments are on.
+    # The operational forecast must remain anchored to the latest stable
+    # solar-minus-battery balance for the detected mode.
     level_measurement = measurement
-    solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
-    if measurement == "solar_generation_minus_battery_power" and len(solar_fields) == 3:
-        solar_total = frame[solar_fields].sum(axis=1, min_count=3).resample("15min").median()
-        battery_power = frame["BatteryWatts"].resample("15min").median()
-        solar_total = solar_total.reindex(samples.index, method="nearest", tolerance=pd.Timedelta(minutes=10))
-        battery_power = battery_power.reindex(samples.index, method="nearest", tolerance=pd.Timedelta(minutes=10))
-        dark_mask = (solar_total <= DEFAULT_ZERO_SOLAR_THRESHOLD_W) & (battery_power < 0.0)
-        dark_load = (-battery_power[dark_mask]).dropna()
-        dark_run = dark_load[dark_load.index >= current_run.index[0]]
-        dark_run = dark_run[dark_run.index >= end - pd.Timedelta(hours=float(DEFAULT_DARK_LOAD_LOOKBACK_HOURS))]
-        if len(dark_run) >= 4:
-            level_samples = dark_run
-            level_measurement = "battery_discharge_when_solar_zero"
     if len(level_samples) < 4:
         level_samples = same_mode[same_mode.index >= level_start]
     if level_samples.empty:
         level_samples = state_window
-    level = float(level_samples.median()) if not level_samples.empty else float(default_load_w)
+    learned_level = float(level_samples.median()) if not level_samples.empty else float(default_load_w)
+    recent_anchor = state_window.tail(3).dropna()
+    level = float(recent_anchor.median()) if len(recent_anchor) >= 2 else learned_level
     level = max(level, 0.0) if np.isfinite(level) else float(default_load_w)
     run_hours = max(float((end - current_run.index[0]) / pd.Timedelta(hours=1)), 0.0) if len(current_run) else 0.0
     forecast = pd.Series(np.full(len(forecast_times), level, dtype=np.float64), index=forecast_times)
@@ -468,6 +508,9 @@ def build_historical_load_forecast(
             "load_regime": mode_name,
             "load_regime_threshold_w": split_w,
             "load_regime_level_w": level,
+            "load_recent_anchor_w": level,
+            "load_learned_reference_w": learned_level,
+            "load_anchor_method": "median_latest_30_minutes_whole_station_balance",
             "load_regime_run_hours": run_hours,
             "load_regime_sample_count": int(len(level_samples)),
         }
@@ -1520,6 +1563,8 @@ def build_soc_hindcast_dataset(
         tolerance=pd.Timedelta(minutes=10),
     )
     series: list[pd.Series] = [observed.rename("BatterySOCObservedHindcast")]
+    if records.empty:
+        records = pd.DataFrame(columns=("valid_time", "lead_hour", "issue_time", "forecast_value"))
     for target in lead_hours:
         selected = records[
             (records["valid_time"] >= observed_start)
@@ -1577,8 +1622,11 @@ def append_forecast_archive(
         combined = combined.isel(issue_time=~combined.indexes["issue_time"].duplicated(keep="last"))
     else:
         combined = row
-    cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=float(retention_days))
     issue_times = pd.DatetimeIndex(combined["issue_time"].values)
+    # Retention is relative to the newest archived issue, not wall-clock time.
+    # This preserves delayed field-data backfills and keeps historical fixtures
+    # usable while still bounding the archive to the requested rolling span.
+    cutoff = issue_times.max() - pd.Timedelta(days=float(retention_days))
     combined = combined.isel(issue_time=np.asarray(issue_times >= cutoff))
     _atomic_write_archive(combined, archive_zarr)
     return combined
@@ -1779,6 +1827,7 @@ def integrate_soc_forecast(
     solar_factor: float | pd.Series,
     load_w: float | pd.Series,
     capacity_kwh: float = DEFAULT_BATTERY_CAPACITY_KWH,
+    battery_model: BatteryModel | None = None,
 ) -> pd.DataFrame:
     """Integrate SOC forward from ECMWF solar and expected load."""
     if irradiance.empty:
@@ -1816,6 +1865,14 @@ def integrate_soc_forecast(
         load = np.clip(load_values, 0.0, None)
     else:
         load = np.full(len(times), max(float(load_w), 0.0), dtype=np.float64)
+    model = battery_model or BatteryModel(
+        usable_capacity_kwh=capacity_kwh,
+        charge_efficiency=1.0,
+        discharge_efficiency=1.0,
+        max_charge_w=20_000.0,
+        max_discharge_w=20_000.0,
+    )
+    model = model.validated()
     soc = np.full(len(times), np.nan, dtype=np.float64)
     soc[0] = float(np.clip(initial_soc, 0.0, 100.0))
     for idx in range(1, len(times)):
@@ -1823,8 +1880,8 @@ def integrate_soc_forecast(
         interval_solar_w = solar_w[idx]
         if not np.isfinite(interval_solar_w):
             interval_solar_w = 0.0
-        net_kwh = (interval_solar_w - load[idx]) * dt_hours / 1000.0
-        soc[idx] = np.clip(soc[idx - 1] + 100.0 * net_kwh / float(capacity_kwh), 0.0, 100.0)
+        delta_soc = soc_delta_percent(interval_solar_w - load[idx], dt_hours, model)
+        soc[idx] = np.clip(soc[idx - 1] + float(delta_soc), 0.0, 100.0)
     return pd.DataFrame(
         {
             "BatterySOCForecast": soc,
@@ -1880,6 +1937,11 @@ def build_forecast_dataset(
     if frame.empty or "BatterySOC" not in frame:
         raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
     latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    battery_model = fit_battery_model(
+        frame.assign(ObservedLoadWatts=_observed_load_w(frame)),
+        nominal_capacity_kwh=capacity_kwh,
+        lookback_days=calibration_days,
+    )
     state = dict(state or {})
     # Only independent ECMWF cycles are allowed to tune the live model. The
     # full archive remains available for audit, but repeated same-cycle
@@ -1918,6 +1980,7 @@ def build_forecast_dataset(
         pd.DatetimeIndex(irradiance.index),
         issue_time=latest_time,
     )
+    solar_contract_id = solar_calibration_contract_id(factor, solar_mos_by_bucket)
     raw_load_profile = build_historical_load_forecast(
         frame,
         pd.DatetimeIndex(irradiance.index),
@@ -1957,7 +2020,10 @@ def build_forecast_dataset(
         # A newly observed signature is informative but not yet a calibrated
         # mode. Keep the measured current level until the robust mode median
         # has enough separated stable observations.
-        load_w = learned_load_w if learned_count >= DEFAULT_MODE_MIN_OBSERVATIONS else raw_load_w
+        if learned_count >= DEFAULT_MODE_MIN_OBSERVATIONS and abs(learned_load_w - raw_load_w) <= max(75.0, 0.25 * raw_load_w):
+            load_w = learned_load_w
+        else:
+            load_w = raw_load_w
     else:
         mode_entry = load_mode_registry.get(load_mode, {})
         try:
@@ -1966,12 +2032,25 @@ def build_forecast_dataset(
         except Exception:
             learned_level_w = np.nan
             learned_observations = 0
-        if np.isfinite(learned_level_w) and learned_observations >= DEFAULT_MODE_MIN_OBSERVATIONS:
+        if (
+            np.isfinite(learned_level_w)
+            and learned_observations >= DEFAULT_MODE_MIN_OBSERVATIONS
+            and abs(learned_level_w - raw_load_w) <= max(75.0, 0.25 * raw_load_w)
+        ):
             load_w = learned_level_w
-        elif mode_source == "pdu_signature" and np.isfinite(pdu_active_watts) and clean_dc_only_level_w is not None:
-            load_w = float(clean_dc_only_level_w) + float(pdu_active_watts)
         else:
             load_w = raw_load_w
+    learned_reference_w = float(load_w)
+    # The operational system-as-is forecast is always anchored to the recent
+    # measured whole-station balance. Learned mode/component levels are
+    # diagnostics and scenario inputs, not replacements for the physical load.
+    load_w = raw_load_w
+    component_load_w = (
+        float(clean_dc_only_level_w) + float(pdu_active_watts)
+        if mode_source == "pdu_signature" and np.isfinite(pdu_active_watts) and clean_dc_only_level_w is not None
+        else np.nan
+    )
+    load_anchor_disagreement_w = float(component_load_w - raw_load_w) if np.isfinite(component_load_w) else np.nan
     mode_entry = load_mode_registry.get(load_mode, {})
     learning_observations = int(mode_entry.get("observation_count", 0) or 0)
     load_diagnostics.update(
@@ -1988,6 +2067,10 @@ def build_forecast_dataset(
             "load_mode_minimum_observations": DEFAULT_MODE_MIN_OBSERVATIONS,
             "load_regime": load_mode,
             "load_regime_level_w": load_w,
+            "load_component_estimate_w": component_load_w,
+            "load_anchor_disagreement_w": load_anchor_disagreement_w,
+            "load_learned_reference_w": learned_reference_w,
+            "load_anchor_method": "median_latest_30_minutes_whole_station_balance",
         }
     )
     # Bias learned by retired load models is not transferable across operating
@@ -2000,7 +2083,8 @@ def build_forecast_dataset(
         irradiance=irradiance,
         solar_factor=solar_factor_profile,
         load_w=load_profile,
-        capacity_kwh=capacity_kwh,
+        capacity_kwh=battery_model.usable_capacity_kwh,
+        battery_model=battery_model,
     )
     for scenario_load_w in SCENARIO_LOADS_W:
         scenario = integrate_soc_forecast(
@@ -2009,7 +2093,8 @@ def build_forecast_dataset(
             irradiance=irradiance,
             solar_factor=solar_factor_profile,
             load_w=float(scenario_load_w),
-            capacity_kwh=capacity_kwh,
+            capacity_kwh=battery_model.usable_capacity_kwh,
+            battery_model=battery_model,
         )
         forecast[scenario_soc_field(scenario_load_w)] = scenario["BatterySOCForecast"]
     soc_bias_corrections = _soc_bias_corrections(
@@ -2053,6 +2138,7 @@ def build_forecast_dataset(
             "raw_solar_calibration_factor_w_per_wm2": f"{factor_raw:.6g}",
             "solar_mos_factor_by_lead_bucket": json.dumps(solar_mos_by_bucket, sort_keys=True),
             "solar_calibration": "physical panel factor plus independent-cycle lead-specific MOS",
+            "solar_calibration_contract_id": solar_contract_id,
             "forecast_load_w": f"{load_w:.6g}",
             "raw_forecast_load_w": f"{raw_load_w:.6g}",
             "load_bias_correction_w": f"{load_bias_correction:.6g}",
@@ -2071,12 +2157,16 @@ def build_forecast_dataset(
             "load_measurement": str(load_diagnostics.get("load_measurement", "unknown")),
             "load_balance_measurement": str(load_diagnostics.get("load_balance_measurement", "unknown")),
             "load_mode_registry": json.dumps(load_mode_registry, sort_keys=True),
+            "load_anchor_method": str(load_diagnostics.get("load_anchor_method", "unknown")),
+            "load_component_estimate_w": f"{float(load_diagnostics.get('load_component_estimate_w', np.nan)):.6g}",
+            "load_anchor_disagreement_w": f"{float(load_diagnostics.get('load_anchor_disagreement_w', np.nan)):.6g}",
+            "load_learned_reference_w": f"{float(load_diagnostics.get('load_learned_reference_w', np.nan)):.6g}",
             "load_regime": str(load_diagnostics.get("load_regime", "unknown")),
             "load_regime_threshold_w": f"{float(load_diagnostics.get('load_regime_threshold_w', np.nan)):.6g}",
             "load_regime_level_w": f"{float(load_diagnostics.get('load_regime_level_w', load_w)):.6g}",
             "load_regime_run_hours": f"{float(load_diagnostics.get('load_regime_run_hours', 0.0)):.6g}",
             "load_regime_sample_count": str(int(load_diagnostics.get("load_regime_sample_count", 0))),
-            "battery_capacity_kwh": f"{float(capacity_kwh):.6g}",
+            **battery_model.attrs(),
             "adaptive_alpha": f"{adaptive_alpha:.6g}",
             "previous_forecast_metrics": json.dumps(previous_metrics, sort_keys=True),
             "scenario_loads_w": ",".join(str(load_w) for load_w in SCENARIO_LOADS_W),
@@ -2212,9 +2302,19 @@ def generate(
     cycle_time = _ecmwf_cycle_time(solar)
     if cycle_time is not None:
         forecast.attrs["ecmwf_cycle_time"] = cycle_time.isoformat()
-    _atomic_write_zarr(forecast, output_zarr)
+    forecast.attrs["publication_signature"] = forecast_publication_signature(forecast)
+    unchanged_publication = bool(
+        previous_forecast is not None
+        and previous_forecast.attrs.get("publication_signature") == forecast.attrs["publication_signature"]
+    )
+    if not unchanged_publication:
+        _atomic_write_zarr(forecast, output_zarr)
     if archive_forecast:
-        updated_archive = append_forecast_archive(forecast, archive_zarr)
+        updated_archive = (
+            forecast_archive
+            if unchanged_publication and forecast_archive is not None
+            else append_forecast_archive(forecast, archive_zarr)
+        )
         if skill_zarr is not None:
             skill = build_forecast_skill_dataset(updated_archive, power)
             _atomic_write_skill(skill, skill_zarr)
@@ -2244,6 +2344,19 @@ def generate(
             "load_measurement": forecast.attrs["load_measurement"],
             "load_balance_measurement": forecast.attrs["load_balance_measurement"],
             "load_mode_registry": json.loads(forecast.attrs["load_mode_registry"]),
+            "battery_model": {
+                name: forecast.attrs[name]
+                for name in (
+                    "battery_usable_capacity_kwh",
+                    "battery_charge_efficiency",
+                    "battery_discharge_efficiency",
+                    "battery_parasitic_load_w",
+                    "battery_max_charge_w",
+                    "battery_max_discharge_w",
+                    "battery_calibration_sample_count",
+                    "battery_calibration_confidence",
+                )
+            },
             "soc_bias_correction_pct_points_by_bucket": json.loads(
                 forecast.attrs["soc_bias_correction_pct_points_by_bucket"]
             ),
@@ -2260,7 +2373,10 @@ def generate(
         }
     )
     _write_state(state_path, next_state)
-    print(f"Wrote {output_zarr} with {forecast.sizes.get('time', 0)} forecast samples")
+    if unchanged_publication:
+        print(f"Skipped unchanged forecast publication for {output_zarr}")
+    else:
+        print(f"Wrote {output_zarr} with {forecast.sizes.get('time', 0)} forecast samples")
     return output_zarr
 
 

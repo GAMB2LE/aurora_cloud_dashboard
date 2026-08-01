@@ -591,7 +591,7 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         "soc_ecmwf_forecast": {
             "title": "SOC 96 h forecast",
             "summary": "The system-as-is ECMWF ensemble outlook for battery SOC and the risk of crossing the operational minimum.",
-            "implementation": "Every ECMWF member starts from the latest valid APS SOC with the detected current system mode and load held fixed. P10, central, and P90 therefore represent solar-weather uncertainty only, not alternative instrument schedules.",
+            "implementation": "Every member starts from the latest valid APS SOC and recent measured whole-station load. The ensemble combines ECMWF solar weather, recent load residuals, and bounded battery-capacity and efficiency uncertainty. These are system-as-is outcomes, not alternative instrument schedules.",
             "metrics": [
                 {"label": "P10", "detail": "Lower-end SOC outcome across ECMWF solar members; use it for conservative planning."},
                 {"label": "Central / P90", "detail": "Central estimate and upper-end solar outcome for the same system-as-is load."},
@@ -609,13 +609,14 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         },
         "operating_plan_scenarios": {
             "title": "Suggested instrument-mode SOC forecasts",
-            "summary": "The current-load system-as-is forecast is the reference, followed by seven explicit combinations of CL61, Cloud Radar, and HATPRO.",
-            "implementation": "The system-as-is line holds the latest detected station load and instrument state fixed. Each comparison line includes the station DC baseline plus the named instruments. Instrument loads come from the learned component model; all lines use the same forecast issue time, initial SOC, solar ensemble, battery capacity, and efficiency assumptions. They are advisory comparisons and do not operate PDU outlets.",
+            "summary": "The current-load system-as-is forecast is the reference, followed by eight explicit instrument combinations, including all instruments with UAS at tier 3.",
+            "implementation": "The system-as-is line uses the latest measured whole-station load. Each comparison line includes the unadjusted learned DC baseline plus the named instrument loads. The UAS tier-3 load is learned separately and remains provisional until at least three independent episodes and six observed hours are available. All lines share the forecast issue, initial SOC, solar ensemble, and calibrated battery assumptions. They are advisory and never operate PDU outlets.",
             "metrics": [
                 {"label": "P50", "detail": "The median SOC path for each named instrument combination."},
                 {"label": "Current load", "detail": "Reference SOC path if the latest detected system load and instrument state continue."},
                 {"label": "Common basis", "detail": "Every line starts from the same measured SOC and uses the same weather forecast."},
                 {"label": "Loads", "detail": "DC baseline plus the learned load of each instrument named in the scenario."},
+                {"label": "UAS tier 3", "detail": "Tier-specific load estimate; provisional until the minimum independent evidence gate is met."},
             ],
         },
         "operating_plan_schedule": {
@@ -1513,6 +1514,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("OperatingSuggested5SOCP50", "HATPRO + Radar", COLOR["green"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested6SOCP50", "Radar", COLOR["slate"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested7SOCP50", "HATPRO", COLOR["brown"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec(
+                    "OperatingSuggested8SOCP50",
+                    "All instruments + UAS tier 3",
+                    COLOR["teal"],
+                    dash="dashdot",
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.6,
+                ),
             ),
         ),
         PanelSpec(

@@ -24,6 +24,7 @@ from power_operating_scenarios import (
     mode_from_code,
     mode_label,
 )
+from uas_mqtt import load_uas_mqtt_log
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 PDU_ZARR_PATH = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
@@ -56,6 +57,9 @@ RECOMMENDATION_ARCHIVE_PATH = Path(
 )
 LEGACY_STATE_PATH = Path(
     os.environ.get("POWER_SOC_FORECAST_STATE_PATH", "/data/aurora/products/power/power_soc_forecast_state.json")
+)
+UAS_MQTT_LOG_PATH = Path(
+    os.environ.get("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log")
 )
 
 
@@ -347,6 +351,50 @@ def _planning_forecast_provenance(forecast: xr.Dataset) -> dict[str, str]:
     }
 
 
+def scenario_publication_signature(scenarios: xr.Dataset) -> str:
+    """Hash decision-relevant scenario content while ignoring run metadata."""
+    attrs = scenarios.attrs
+    anchor = pd.to_datetime(attrs.get("initial_soc_time"), errors="coerce")
+    anchor_bucket = "" if pd.isna(anchor) else pd.Timestamp(anchor).floor("30min").isoformat()
+
+    def quantized(name: str, step: float) -> list[int]:
+        if name not in scenarios:
+            return []
+        values = np.asarray(scenarios[name].values, dtype=np.float64)
+        finite = np.where(np.isfinite(values), values, 0.0)
+        return np.rint(finite / float(step)).astype(np.int32).ravel().tolist()
+
+    payload = {
+        "schema": 1,
+        "anchor_30min": anchor_bucket,
+        "initial_soc_pct": round(float(attrs.get("initial_soc_pct", 0.0))),
+        "model_version": str(attrs.get("model_version", "")),
+        "current_mode": str(attrs.get("current_mode", "")),
+        "solar_contract": str(attrs.get("solar_calibration_contract_id", "")),
+        "planning_cycle": str(attrs.get("planning_forecast_generated_at_utc", "")),
+        "scenario_ids": [str(value) for value in scenarios.get_index("scenario")],
+        "scenario_maturity": [str(value) for value in scenarios["scenario_mode_maturity"].values],
+        "uas_tier_profiles": str(attrs.get("uas_tier_profiles", "{}")),
+        "mode_codes": quantized("ScenarioModeCode", 1.0),
+        "load_p50_25w": quantized("ScenarioLoadP50Watts", 25.0),
+        "soc_p50_1pct": quantized("ScenarioSOCP50", 1.0),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+
+
+def _existing_publication_signature(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        existing = xr.open_zarr(path, chunks={})
+        try:
+            return str(existing.attrs.get("publication_signature", ""))
+        finally:
+            existing.close()
+    except Exception:
+        return ""
+
+
 def _write_unavailable_scenarios(
     path: Path,
     *,
@@ -388,6 +436,7 @@ def generate(
     lookback_days: float = 30.0,
     events_path: Path | None = DEFAULT_EVENTS_PATH,
     max_power_age_minutes: float | None = None,
+    uas_log: Path | None = UAS_MQTT_LOG_PATH,
 ) -> tuple[Path, Path]:
     state = _read_json(model_state)
     if not state and bootstrap_state is not None:
@@ -420,7 +469,22 @@ def generate(
 
     try:
         events = load_operating_events(events_path)
-        model = fit_operating_model(power, pdu, raw_state=state, lookback_days=lookback_days, events=events)
+        uas_result = load_uas_mqtt_log(uas_log, max_lines=0) if uas_log is not None else None
+        uas_tier = None
+        if uas_result is not None and uas_result.records:
+            uas_tier = pd.Series(
+                [record.effective_tier for record in uas_result.records],
+                index=pd.DatetimeIndex([record.timestamp for record in uas_result.records]).tz_convert("UTC").tz_localize(None),
+                dtype=np.float64,
+            )
+        model = fit_operating_model(
+            power,
+            pdu,
+            raw_state=state,
+            lookback_days=lookback_days,
+            events=events,
+            uas_tier=uas_tier,
+        )
         scenarios = build_operating_scenarios(
             power,
             forecast,
@@ -438,11 +502,20 @@ def generate(
                 "planning_status": "ready",
                 "operating_events_path": str(events_path or ""),
                 "operating_event_count": str(len(events)),
+                "uas_tier_log_path": str(uas_log or ""),
+                "uas_tier_record_count": str(len(uas_result.records) if uas_result is not None else 0),
+                "uas_tier_malformed_line_count": str(len(uas_result.malformed_lines) if uas_result is not None else 0),
                 **_planning_forecast_provenance(forecast),
             }
         )
+        scenarios.attrs["publication_signature"] = scenario_publication_signature(scenarios)
+        unchanged_scenarios = (
+            _existing_publication_signature(scenario_output)
+            == scenarios.attrs["publication_signature"]
+        )
         _write_zarr_atomic(model.state_dataset, state_output)
-        _write_zarr_atomic(scenarios, scenario_output)
+        if not unchanged_scenarios:
+            _write_zarr_atomic(scenarios, scenario_output)
         _write_json_atomic(model_state, model.state)
         if recommendation_archive is not None:
             _archive_recommendation(
@@ -458,8 +531,9 @@ def generate(
             pdu.close()
         if ensemble is not None:
             ensemble.close()
+    scenario_action = "retained unchanged" if unchanged_scenarios else "wrote"
     print(
-        f"Wrote {state_output} and {scenario_output}; "
+        f"Wrote {state_output} and {scenario_action} {scenario_output}; "
         f"mode={model.current_mode} confidence={model.current_confidence:.3f}"
     )
     return state_output, scenario_output
@@ -480,6 +554,7 @@ def main() -> None:
     parser.add_argument("--optimization-hours", type=int, default=96)
     parser.add_argument("--lookback-days", type=float, default=30.0)
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument("--uas-log", type=Path, default=UAS_MQTT_LOG_PATH)
     parser.add_argument(
         "--max-power-age-minutes",
         type=float,
@@ -502,6 +577,7 @@ def main() -> None:
         lookback_days=args.lookback_days,
         events_path=args.events,
         max_power_age_minutes=args.max_power_age_minutes,
+        uas_log=args.uas_log,
     )
 
 

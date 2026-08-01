@@ -229,22 +229,20 @@ is `SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`, where
 positive battery power is charging and negative power is discharge. This
 captures the 48 V DC load that is absent from inverter idle power.
 
-The existing operational deterministic product uses
-`kit_mode_persistence_v4`. It recognises `DC-Only` when sustained AC output is
-below `25 W`. Its preferred level estimate is the median battery discharge
-`-BatteryWatts` from at least four 15-minute samples in the current mode during
-the latest 48 hours when summed solar production is at most `10 W`. This
-zero-solar estimate avoids treating inverter idle as the DC load and avoids
-daylight solar-measurement error. When dark samples are unavailable, the model
-falls back to the recent full power balance. When AC kit is on, finite PDU
-outlet power at or above `5 W` names the mode before the slower AC-state median
-changes; relay state is only a fallback when outlet watts are unavailable.
-Outlet 5 identifies `DC-Only + CL61`. A mode is recognised immediately, but its
-training level is retained only after at least 30 minutes of stable state and
-two aggregated samples. The robust current-mode level is persisted through the
-forecast horizon. Independent hourly mode observations are retained in the
-forecast state, so a mode's typical load becomes more stable each time that kit
-configuration is observed. It does not invent an hour-of-day schedule.
+The operational deterministic product uses
+`mode_conditioned_energy_balance_v7`. The system-as-is load is the median of
+the latest three finite 15-minute whole-station balance samples, normally about
+the last 30 minutes. It remains the forecast anchor for the full horizon. PDU
+signatures and learned component levels identify and explain the active mode,
+but do not replace the measured anchor. This prevents a component-model error
+from making the operational forecast contradict current station consumption.
+
+SOC is integrated with a fitted battery model containing usable capacity,
+charge/discharge efficiencies, and observed power limits. The fit excludes
+near-full/empty battery intervals, unstable load transitions, invalid timing,
+and inconsistent power/SOC direction. The explicit parasitic term is zero
+because the whole-station balance already includes those losses. Root
+attributes state whether the fit is calibrated or provisional.
 
 Before replacing the forecast, the generator scores archived forecast runs
 against newly arrived APS observations and updates an adaptive calibration state
@@ -272,12 +270,15 @@ Variables:
 Root attributes include ECMWF input file, generation time, initial SOC time and
 value, horizon, calibration window, solar calibration factor, forecast load,
 load-bias correction, SOC lead-bucket correction, adaptive alpha, and battery
-capacity. Load diagnostics include `load_model`, `load_model_version`,
+parameters. Load diagnostics include `load_model`, `load_model_version`,
 `load_mode`, `load_mode_source`, `load_measurement`,
 `load_balance_measurement`, `load_mode_registry`, `load_mode_signature`,
 `load_mode_learning_ready`, `load_mode_learning_reason`,
 `load_mode_pdu_active_watts`, `load_regime_level_w`, and
-`load_regime_run_hours`. `minimum_operational_soc_pct = "40"` identifies the
+`load_regime_run_hours`. Version 7 also records `load_anchor_method`, the
+measured and learned-reference loads, their disagreement, calibrated battery
+capacity/efficiencies/limits, `solar_calibration_contract_id`, and a semantic
+`publication_signature`. `minimum_operational_soc_pct = "40"` identifies the
 reference used by SOC risk plots and ensemble threshold verification. Scenario attributes include
 `scenario_loads_w = "100,200,300,400,500,600"`
 and `scenario_solar_mode = "ecmwf"`. The product is separate from
@@ -332,9 +333,11 @@ then deletes the temporary global GRIB. On later hourly runs within the same
 ECMWF cycle, it rebuilds the ensemble whenever the latest actual SOC, calibrated
 solar factor, learned load level, model version, or named operating mode has
 changed. These same-cycle updates use the site cache rather than downloading
-ECMWF again. Dashboard variables
-include SOC P10, P50, P90, minimum, maximum, and probability below the 40%
-minimum operational SOC threshold.
+ECMWF again. Dashboard variables include SOC P10, P50, P90, minimum, maximum,
+and probability below the 40% minimum operational SOC threshold. Ensemble
+members vary ECMWF weather, recent load residuals, and calibrated battery
+capacity and efficiencies. The deterministic, ensemble, and scenario products
+must share the same `solar_calibration_contract_id`.
 Verification includes CRPS by lead bucket, P10-P90 coverage, threshold Brier
 score, and verified ensemble-cycle count.
 
@@ -362,12 +365,16 @@ as unknown rather than carried into a new mode. The state product contains:
 - `ObservedLoadWatts` and `EstimatedModeLoadWatts`
 - `LoadInnovationWatts` and `LoadObservationOutlier`
 
-The persisted `hybrid_state_space_v6` learner combines a finite set of named
+The persisted `hybrid_state_space_v7` learner combines a finite set of named
 operating modes with robust component-regime learning for continuous loads. Its
 components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
 increment. Existing observations are reclassified on each run, but component
 parameters are updated only from timestamps newer than the saved training
 cursor. Re-running unchanged data therefore does not double count evidence.
+The UAS MQTT effective tier is aligned with these 15-minute observations and
+the state stores tier-specific load quantiles, sample count, independent
+episode count, and observed duration. A tier is mature only after three
+episodes and six hours.
 
 The scenario product carries P10, P50, and P90 SOC and load for these plans:
 
@@ -375,7 +382,20 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - DC-Only
 - DC + CL61 continuously on
 - optimized CL61 schedule
+- CL61
+- CL61 + Radar
+- CL61 + HATPRO
+- CL61 + HATPRO + Radar
+- HATPRO + Radar
+- Radar
+- HATPRO
+- all instruments + UAS tier 3
 - each additional learned kit combination
+
+The all-instruments scenario keeps CL61, Radar, HATPRO, and UAS active and sets
+the UAS effective tier to 3 for the complete horizon. Until tier-3 evidence is
+mature it is labelled provisional and uses P10/P50/P90 fallback loads of
+`55/108/302 W`; mature observed tier-3 quantiles replace that fallback.
 
 The optimized plan maximizes CL61 collection time over the first 96 hours while
 requiring P10 SOC to remain at or above 40% across the complete 240-hour
@@ -395,6 +415,11 @@ hindcast comparison against actual SOC and PDU-detected mode: SOC MAE and bias,
 minimum actual SOC, 40% breaches, mode adherence, and coverage. These records
 are evidence for trusting future PDU control; they do not themselves actuate a
 PDU.
+
+The public deterministic and scenario products are not rewritten when a new
+timer run has the same semantic publication signature. State and health still
+advance, while forecast archives avoid duplicate issues that would inflate
+verification counts.
 
 The interactive APS summary presents `ACOutputWatts` and `DCInverterWatts` on
 separate left/right axes in the **Output Power** panel. The optional

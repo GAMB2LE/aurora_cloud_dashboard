@@ -372,6 +372,54 @@ class MobileCatalogTests(unittest.TestCase):
         for trace in panel["traces"]:
             self.assertTrue(all(point["time"] >= "2026-07-20T07:00:00" for point in trace["points"]))
 
+    def test_forecast_group_merges_latest_uas_tier3_operating_scenario(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            display_path = root / "power_forecast_display.zarr"
+            scenario_path = root / "power_operating_scenarios.zarr"
+            times = pd.date_range("2026-07-20T07:00:00", periods=4, freq="3h")
+            xr.Dataset(
+                {
+                    "BatterySOCForecastP50": (("time",), [80.0, 78.0, 76.0, 74.0]),
+                    "OperatingSuggested1SOCP50": (("time",), [99.0, 98.0, 97.0, 96.0]),
+                },
+                coords={"time": times},
+                attrs={"forecast_initial_soc_time": times[0].isoformat()},
+            ).to_zarr(display_path, mode="w", consolidated=True)
+            scenario_ids = np.asarray(["suggested_all_uas_tier3"], dtype=str)
+            xr.Dataset(
+                {
+                    "ScenarioSOCP50": (("scenario", "time"), [[80.0, 72.0, 64.0, 56.0]]),
+                    "scenario_label": (("scenario",), ["All instruments + UAS tier 3 (provisional)"]),
+                },
+                coords={"scenario": scenario_ids, "time": times},
+                attrs={
+                    "planning_status": "ready",
+                    "initial_soc_time": times[0].isoformat(),
+                },
+            ).to_zarr(scenario_path, mode="w", consolidated=True)
+            with patch.dict(
+                os.environ,
+                {
+                    "POWER_FORECAST_DISPLAY_ZARR_PATH": str(display_path),
+                    "POWER_OPERATING_SCENARIOS_ZARR_PATH": str(scenario_path),
+                },
+            ), patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
+                response = mobile_catalog.power(window="96h", group="forecast")
+
+        panel = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_scenarios")
+        traces = {trace["id"]: trace for trace in panel["traces"]}
+        self.assertNotIn("OperatingSuggested1SOCP50", traces)
+        self.assertEqual(
+            [point["value"] for point in traces["OperatingSuggested8SOCP50"]["points"]],
+            [80.0, 72.0, 64.0, 56.0],
+        )
+
     def test_overview_matches_browser_mobile_card_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
