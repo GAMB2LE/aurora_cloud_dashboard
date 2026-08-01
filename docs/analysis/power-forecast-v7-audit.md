@@ -38,7 +38,8 @@ memory.
 6. Semantic publication signatures prevent unchanged runs from rewriting the
    forecast or inflating archive counts.
 7. Runtime invariants reject unordered quantiles, a non-positive DC baseline,
-   mismatched solar contracts, and an all-instruments tier-3 load below DC.
+   solar-contract mismatches that cannot be recalibrated from raw ensemble
+   irradiance, and an all-instruments tier-3 load below DC.
 
 ## UAS tier-3 scenario
 

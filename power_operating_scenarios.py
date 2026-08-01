@@ -818,6 +818,69 @@ def _latest_soc(power: xr.Dataset) -> tuple[pd.Timestamp, float]:
     raise ValueError("Power data do not contain a finite BatterySOC sample")
 
 
+def _align_ensemble_solar_contract(
+    deterministic: xr.Dataset,
+    ensemble: xr.Dataset | None,
+) -> tuple[xr.Dataset | None, dict[str, str]]:
+    """Reapply the planning forecast's solar calibration to raw ensemble irradiance."""
+    target_contract = str(deterministic.attrs.get("solar_calibration_contract_id", ""))
+    source_contract = str(ensemble.attrs.get("solar_calibration_contract_id", "")) if ensemble is not None else ""
+    metadata = {
+        "solar_ensemble_source_calibration_contract_id": source_contract,
+        "solar_ensemble_recalibrated": "false",
+    }
+    if ensemble is None or not target_contract or source_contract == target_contract:
+        return ensemble, metadata
+    required_deterministic = {"ForecastSolarWatts", "ECMWFSolarIrradiance"}
+    if not required_deterministic.issubset(deterministic.data_vars) or "time" not in deterministic:
+        raise ValueError(
+            "Cannot align ensemble solar calibration: planning forecast lacks raw irradiance"
+        )
+    if "ECMWFSolarIrradianceEnsemble" not in ensemble or "time" not in ensemble:
+        raise ValueError(
+            "Cannot align ensemble solar calibration: ensemble lacks raw irradiance members"
+        )
+
+    deterministic_times = pd.DatetimeIndex(deterministic["time"].values)
+    deterministic_solar = pd.Series(
+        np.asarray(deterministic["ForecastSolarWatts"].values, dtype=np.float64),
+        index=deterministic_times,
+    )
+    deterministic_irradiance = pd.Series(
+        np.asarray(deterministic["ECMWFSolarIrradiance"].values, dtype=np.float64),
+        index=deterministic_times,
+    )
+    inferred_factor = (
+        deterministic_solar
+        / deterministic_irradiance.where(deterministic_irradiance > 1.0)
+    ).replace([np.inf, -np.inf], np.nan)
+    source_times = pd.DatetimeIndex(ensemble["time"].values)
+    fallback_factor = float(
+        deterministic.attrs.get("solar_calibration_factor_w_per_wm2", 1.0)
+    )
+    factor_profile = (
+        inferred_factor.reindex(source_times, method="nearest", tolerance=pd.Timedelta(hours=2))
+        .ffill()
+        .bfill()
+        .fillna(fallback_factor)
+        .clip(lower=0.0)
+    )
+    raw = ensemble["ECMWFSolarIrradianceEnsemble"]
+    if "member" not in raw.dims or "time" not in raw.dims:
+        raise ValueError("Ensemble raw irradiance must use member and time dimensions")
+    aligned = ensemble.copy()
+    factors = xr.DataArray(
+        factor_profile.to_numpy(dtype=np.float64),
+        dims=("time",),
+        coords={"time": ensemble["time"]},
+    )
+    aligned["ForecastSolarWattsEnsemble"] = (raw * factors).clip(min=0.0)
+    aligned.attrs = dict(ensemble.attrs)
+    aligned.attrs["solar_calibration_contract_id"] = target_contract
+    metadata["solar_ensemble_recalibrated"] = "true"
+    return aligned, metadata
+
+
 def _hourly_solar_members(
     deterministic: xr.Dataset,
     ensemble: xr.Dataset | None,
@@ -1402,11 +1465,10 @@ def build_operating_scenarios(
     capacity_kwh: float | None = None,
 ) -> xr.Dataset:
     deterministic_solar_contract = str(deterministic.attrs.get("solar_calibration_contract_id", ""))
-    ensemble_solar_contract = str(ensemble.attrs.get("solar_calibration_contract_id", "")) if ensemble is not None else ""
-    if deterministic_solar_contract and ensemble_solar_contract and deterministic_solar_contract != ensemble_solar_contract:
-        raise ValueError(
-            "Deterministic and ensemble forecasts use different solar calibration contracts"
-        )
+    ensemble, solar_alignment_metadata = _align_ensemble_solar_contract(
+        deterministic,
+        ensemble,
+    )
     issue_time, initial_soc = _latest_soc(power)
     available_end = pd.Timestamp(deterministic["time"].values[-1]) if "time" in deterministic else issue_time
     available_hours = max(int((available_end - issue_time) / pd.Timedelta(hours=1)), 1)
@@ -1439,6 +1501,7 @@ def build_operating_scenarios(
             "solar_mos_factor_by_lead_bucket": str(
                 deterministic.attrs.get("solar_mos_factor_by_lead_bucket", "{}")
             ),
+            **solar_alignment_metadata,
         }
     )
     member_count = solar_members.shape[0]

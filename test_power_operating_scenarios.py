@@ -16,6 +16,7 @@ from power_operating_scenarios import (
     SCENARIO_CURRENT,
     SCENARIO_DC_ONLY,
     SCENARIO_OPTIMIZED,
+    _align_ensemble_solar_contract,
     build_operating_scenarios,
     evaluate_custom_schedule,
     fit_operating_model,
@@ -283,15 +284,40 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
         self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
 
-    def test_solar_calibration_contract_must_match_ensemble(self) -> None:
+    def test_ensemble_is_recalibrated_to_the_planning_solar_contract(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
         issue = pd.Timestamp(power["time"].values[-1])
         deterministic, ensemble = _forecast_inputs(issue)
+        deterministic["ECMWFSolarIrradiance"] = deterministic["ForecastSolarWatts"] / 2.0
+        ensemble["ECMWFSolarIrradianceEnsemble"] = ensemble["ForecastSolarWattsEnsemble"] / 4.0
+        deterministic.attrs["solar_calibration_factor_w_per_wm2"] = "2"
         deterministic.attrs["solar_calibration_contract_id"] = "solar-a"
         ensemble.attrs["solar_calibration_contract_id"] = "solar-b"
 
-        with self.assertRaisesRegex(ValueError, "different solar calibration contracts"):
+        aligned, metadata = _align_ensemble_solar_contract(deterministic, ensemble)
+        scenarios = build_operating_scenarios(power, deterministic, model, ensemble=ensemble)
+
+        self.assertIsNotNone(aligned)
+        np.testing.assert_allclose(
+            aligned["ForecastSolarWattsEnsemble"].values,
+            ensemble["ECMWFSolarIrradianceEnsemble"].values * 2.0,
+        )
+        self.assertEqual(metadata["solar_ensemble_recalibrated"], "true")
+        self.assertEqual(scenarios.attrs["solar_calibration_contract_id"], "solar-a")
+        self.assertEqual(scenarios.attrs["solar_ensemble_source_calibration_contract_id"], "solar-b")
+        self.assertEqual(scenarios.attrs["solar_ensemble_recalibrated"], "true")
+
+    def test_mismatched_solar_contract_without_raw_members_is_rejected(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        deterministic["ECMWFSolarIrradiance"] = deterministic["ForecastSolarWatts"] / 2.0
+        deterministic.attrs["solar_calibration_contract_id"] = "solar-a"
+        ensemble.attrs["solar_calibration_contract_id"] = "solar-b"
+
+        with self.assertRaisesRegex(ValueError, "ensemble lacks raw irradiance members"):
             build_operating_scenarios(power, deterministic, model, ensemble=ensemble)
 
     def test_scenario_publication_signature_ignores_generation_time(self) -> None:

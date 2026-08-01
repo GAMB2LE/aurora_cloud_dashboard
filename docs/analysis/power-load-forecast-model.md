@@ -86,9 +86,13 @@ balance already contains system losses. Estimating another parasitic load from
 the same signal would double count it.
 
 Deterministic, ensemble, and scenario products share one versioned solar
-calibration contract. The ensemble varies ECMWF weather, recent load residuals,
-and calibrated battery parameters; its P10-P90 interval is therefore no longer
-solar-only.
+calibration contract. If the planning forecast and ensemble were generated from
+different calibration snapshots, the scenario builder reapplies the planning
+factor profile to the ensemble's raw irradiance members and records both source
+and target contract IDs. It stops rather than combining products when those raw
+members are unavailable. The ensemble varies ECMWF weather, recent load
+residuals, and calibrated battery parameters; its P10-P90 interval is therefore
+no longer solar-only.
 
 Future operator choices are represented explicitly instead of guessed. Named
 plans include current mode, DC-Only, DC + CL61 continuously on, an optimized
