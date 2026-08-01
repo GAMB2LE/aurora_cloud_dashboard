@@ -8,7 +8,14 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import xarray as xr
 
-from generate_power_display_summary import _release_generation_lock, _section_subset, _try_generation_lock, _write_metadata, _write_zarr_atomic
+from generate_power_display_summary import (
+    _open_optional_zarr,
+    _release_generation_lock,
+    _section_subset,
+    _try_generation_lock,
+    _write_metadata,
+    _write_zarr_atomic,
+)
 from grouped_timeseries import POWER_PANEL_TIME_GROUP_BY_KEY, SUMMARY_LAYOUTS
 
 
@@ -80,6 +87,26 @@ class PowerDisplaySummaryMetadataTests(unittest.TestCase):
                 self.assertEqual(opened.sizes["time"], 2)
             finally:
                 opened.close()
+
+    def test_eager_optional_store_is_stable_after_source_replacement(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "forecast.zarr"
+            first = xr.Dataset(
+                {"soc": (("scenario", "time"), np.asarray([[90.0, 91.0]]))},
+                coords={"scenario": ["current"], "time": [0, 1]},
+            )
+            second = xr.Dataset(
+                {"soc": (("scenario", "time"), np.asarray([[80.0, 81.0, 82.0]]))},
+                coords={"scenario": ["current"], "time": [0, 1, 2]},
+            )
+            first.to_zarr(output, mode="w", consolidated=True)
+            snapshot = _open_optional_zarr(output, "forecast", eager=True)
+            self.assertIsNotNone(snapshot)
+
+            _write_zarr_atomic(second, output, chunk_time=3)
+
+            np.testing.assert_array_equal(snapshot["soc"].values, [[90.0, 91.0]])
+            self.assertEqual(snapshot.sizes["time"], 2)
 
 
 if __name__ == "__main__":

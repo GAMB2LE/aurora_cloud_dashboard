@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -101,14 +102,34 @@ def _write_zarr_atomic(ds: xr.Dataset, output_zarr: Path, chunk_time: int = 1440
     zarr.consolidate_metadata(output_zarr)
 
 
-def _open_optional_zarr(path: Path, label: str) -> xr.Dataset | None:
+def _open_optional_zarr(
+    path: Path,
+    label: str,
+    *,
+    eager: bool = False,
+    attempts: int = 3,
+) -> xr.Dataset | None:
+    """Open an optional store, eagerly snapshotting small replace-in-place products."""
     if not path.exists():
         return None
-    try:
-        return xr.open_zarr(path, chunks={})
-    except Exception as exc:
-        print(f"Could not open {label} Zarr for Power display summary: {exc}")
-        return None
+    last_error: Exception | None = None
+    for attempt in range(max(int(attempts), 1)):
+        opened: xr.Dataset | None = None
+        try:
+            opened = xr.open_zarr(path, chunks={})
+            if not eager:
+                return opened
+            loaded = opened.load()
+            opened.close()
+            return loaded
+        except Exception as exc:
+            last_error = exc
+            if opened is not None:
+                opened.close()
+            if attempt + 1 < attempts:
+                time.sleep(0.2)
+    print(f"Could not open {label} Zarr for Power display summary: {last_error}")
+    return None
 
 
 def _energy_subset(summary: xr.Dataset, freq: str) -> xr.Dataset:
@@ -220,12 +241,24 @@ def _generate_unlocked(
     power = xr.open_zarr(power_zarr, chunks={})
     ass_logger = _open_optional_zarr(ass_logger_zarr, "ASFS logger")
     pdu = _open_optional_zarr(pdu_zarr, "ASS PDU")
-    forecast = _open_optional_zarr(forecast_zarr, "Power SOC forecast")
-    forecast_skill = _open_optional_zarr(forecast_skill_zarr, "Power SOC forecast skill")
-    hindcast = _open_optional_zarr(hindcast_zarr, "Power SOC hindcast")
-    ensemble_forecast = _open_optional_zarr(ensemble_forecast_zarr, "Power SOC ensemble forecast")
-    ensemble_skill = _open_optional_zarr(ensemble_skill_zarr, "Power SOC ensemble skill")
-    operating_scenarios = _open_optional_zarr(operating_scenarios_zarr, "Power operating scenarios")
+    forecast = _open_optional_zarr(forecast_zarr, "Power SOC forecast", eager=True)
+    forecast_skill = _open_optional_zarr(forecast_skill_zarr, "Power SOC forecast skill", eager=True)
+    hindcast = _open_optional_zarr(hindcast_zarr, "Power SOC hindcast", eager=True)
+    ensemble_forecast = _open_optional_zarr(
+        ensemble_forecast_zarr,
+        "Power SOC ensemble forecast",
+        eager=True,
+    )
+    ensemble_skill = _open_optional_zarr(
+        ensemble_skill_zarr,
+        "Power SOC ensemble skill",
+        eager=True,
+    )
+    operating_scenarios = _open_optional_zarr(
+        operating_scenarios_zarr,
+        "Power operating scenarios",
+        eager=True,
+    )
     display = build_power_display_summary_dataset(
         power,
         ass_logger,
