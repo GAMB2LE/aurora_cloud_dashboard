@@ -59,7 +59,10 @@ unknown mode values fail closed, and the legacy
   reports the current site environment, public domain, data role, dashboard
   URL, and checked-out revision.
 - `GET /operations` - latest operations health, stream states, root-cause
-  groups, active alerts, and compact trend cards.
+  groups, active alerts, and compact seven-day context cards. Current APS and
+  storage values come from the latest snapshot; source and GWS lag fall back to
+  a cached, bounded read of the operations Zarr. Lag calculations exclude
+  instruments with a fresh intentional PDU-off state.
 - `GET /overview` - the small first-load status cards and active alerts.
 - `GET /power?window=24h|96h&group=...` - bounded native-chart traces from the
   section-specific Power display product when available (at most 260 points

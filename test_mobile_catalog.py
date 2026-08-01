@@ -255,6 +255,56 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(mobile_catalog._trend_level("battery-soc", 45), "amber")
         self.assertEqual(mobile_catalog._trend_level("battery-soc", 50), "green")
 
+    def test_operations_trend_cards_use_current_aps_metric_names(self) -> None:
+        snapshot = {
+            "host_aps_data_used_pct": 74.0,
+            "aurora_data_used_pct": 77.0,
+            "aps_battery_soc_pct": 100.0,
+            "aps_battery_voltage_v": 55.6,
+        }
+        with patch.object(mobile_catalog, "_intentionally_paused_streams", return_value=set()), patch.object(
+            mobile_catalog, "_operations_trend_values", return_value={}
+        ):
+            cards = {card["id"]: card for card in mobile_catalog._trend_cards(snapshot)}
+
+        self.assertEqual(cards["storage"]["value"], 77.0)
+        self.assertEqual(cards["battery-soc"]["value"], 100.0)
+        self.assertEqual(cards["battery-voltage"]["value"], 55.6)
+
+    def test_operations_trend_history_excludes_intentionally_paused_streams(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ops_monitor.zarr"
+            times = pd.date_range(
+                datetime.now(timezone.utc) - timedelta(hours=1), periods=3, freq="30min"
+            ).tz_localize(None)
+            xr.Dataset(
+                {
+                    "aurora_data_used_pct": (("time",), np.array([75.0, 76.0, 77.0])),
+                    "aps_battery_soc_pct": (("time",), np.array([98.0, 99.0, 100.0])),
+                    "aps_battery_voltage_v": (("time",), np.array([55.0, 55.3, 55.6])),
+                    "cl61_source_age_min": (("time",), np.array([2.0, 3.0, 4.0])),
+                    "radar_source_age_min": (("time",), np.array([4.0, 6.0, 8.0])),
+                    "hatpro_source_age_min": (("time",), np.array([700.0, 800.0, 900.0])),
+                    "cl61_gws_lag_min": (("time",), np.array([1.0, 2.0, 3.0])),
+                    "radar_gws_lag_min": (("time",), np.array([2.0, 4.0, 6.0])),
+                    "hatpro_gws_lag_min": (("time",), np.array([70.0, 80.0, 90.0])),
+                },
+                coords={"time": times},
+            ).to_zarr(path, mode="w", consolidated=True)
+            mobile_catalog._OPERATIONS_TREND_CACHE.clear()
+            with patch.dict(os.environ, {"OPS_MONITOR_ZARR_PATH": str(path)}):
+                values = mobile_catalog._operations_trend_values({"hatpro"})
+
+        self.assertEqual(values["storage"], 77.0)
+        self.assertEqual(values["battery-soc"], 100.0)
+        self.assertEqual(values["battery-voltage"], 55.6)
+        self.assertEqual(values["source-lag"], 8.0)
+        self.assertEqual(values["gws-lag"], 6.0)
+
     def test_operations_excludes_recovered_alert_history(self) -> None:
         alerts = mobile_catalog._active_alerts(
             {

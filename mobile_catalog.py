@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from time import monotonic
 from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
@@ -49,6 +50,32 @@ PDU_INSTRUMENTS = tuple(
 PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
+OPERATIONS_TREND_WINDOW = timedelta(days=7)
+OPERATIONS_TREND_CACHE_SECONDS = 60.0
+
+OPERATIONS_TREND_STREAM_PREFIXES = (
+    "cl61",
+    "radar",
+    "hatpro",
+    "vaisalamet",
+    "asfs_logger",
+    "asfs_fast_sonic",
+    "power",
+    "wxcam",
+)
+OPERATIONS_PDU_STREAM_BY_OUTLET = {5: "cl61", 6: "radar", 8: "hatpro"}
+OPERATIONS_STORAGE_KEYS = (
+    "host_celine_source_used_pct",
+    "host_celine_data_used_pct",
+    "host_ass_data_used_pct",
+    "host_ass_root_used_pct",
+    "host_aps_data_used_pct",
+    "host_aps_root_used_pct",
+    "aurora_data_used_pct",
+    "aurora_root_used_pct",
+    "gws_storage_used_pct",
+)
+_OPERATIONS_TREND_CACHE: dict[str, Any] = {}
 
 # These Science-tab products have no individual PDU outlet state. Their mobile
 # status is therefore collection freshness, never an inferred power state.
@@ -220,6 +247,10 @@ def archive_health_path() -> Path:
 
 def operations_alert_state_path() -> Path:
     return env_path("OPS_MONITOR_ALERT_STATE", "/data/aurora/products/ops_monitor/alerts/state.json")
+
+
+def operations_zarr_path() -> Path:
+    return env_path("OPS_MONITOR_ZARR_PATH", "/data/aurora/products/ops_monitor/ops_monitor.zarr")
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
@@ -532,19 +563,151 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
 
 
 def _trend_cards(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    history = _operations_trend_values(_intentionally_paused_streams())
     specs = (
-        ("storage", "Worst storage use", "%", ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")),
-        ("battery-soc", "APS state of charge", "%", ("BatterySOC", "power_battery_soc")),
-        ("battery-voltage", "APS battery voltage", "V", ("DCInverterVolts", "power_battery_voltage")),
+        ("storage", "Worst storage use", "%", OPERATIONS_STORAGE_KEYS),
+        ("battery-soc", "APS state of charge", "%", ("aps_battery_soc_pct", "BatterySOC", "power_battery_soc")),
+        ("battery-voltage", "APS battery voltage", "V", ("aps_battery_voltage_v", "DCInverterVolts", "power_battery_voltage")),
         ("source-lag", "Worst source lag", "min", ("worst_source_lag_min", "source_lag_max_min")),
         ("gws-lag", "Worst GWS lag", "min", ("worst_gws_lag_min", "gws_lag_max_min")),
     )
     cards: list[dict[str, Any]] = []
     for card_id, title, unit, keys in specs:
         values = [snapshot.get(key) for key in keys if isinstance(snapshot.get(key), int | float)]
-        value = max(values) if values and "Worst" in title else values[0] if values else None
+        if values:
+            value = max(values) if card_id in {"storage", "source-lag", "gws-lag"} else values[0]
+        else:
+            value = history.get(card_id)
         cards.append({"id": card_id, "title": title, "value": value, "unit": unit, "level": _trend_level(card_id, value)})
     return cards
+
+
+def _intentionally_paused_streams() -> set[str]:
+    states, _detail = _pdu_power_snapshot()
+    return {
+        prefix
+        for outlet, prefix in OPERATIONS_PDU_STREAM_BY_OUTLET.items()
+        if states.get(outlet) is False
+    }
+
+
+def _operations_trend_values(paused_prefixes: set[str]) -> dict[str, float]:
+    """Read only the numeric tails needed by the native operations cards."""
+    path = operations_zarr_path()
+    try:
+        metadata_mtime = (path / ".zmetadata").stat().st_mtime_ns
+    except OSError:
+        return {}
+
+    cache_key = (str(path), metadata_mtime, tuple(sorted(paused_prefixes)))
+    now_monotonic = monotonic()
+    if (
+        _OPERATIONS_TREND_CACHE.get("key") == cache_key
+        and now_monotonic < float(_OPERATIONS_TREND_CACHE.get("expires_at", 0.0))
+    ):
+        return dict(_OPERATIONS_TREND_CACHE.get("values", {}))
+
+    try:
+        import numpy as np
+        import zarr
+
+        group = zarr.open_consolidated(str(path), mode="r")
+        start = _operations_trend_start_index(group, datetime.now(UTC))
+
+        def latest(name: str) -> float | None:
+            if name not in group:
+                return None
+            values = np.asarray(group[name][start:], dtype=np.float64)
+            finite = values[np.isfinite(values)]
+            return float(finite[-1]) if finite.size else None
+
+        def latest_max(names: tuple[str, ...]) -> float | None:
+            values = [value for name in names if (value := latest(name)) is not None]
+            return max(values) if values else None
+
+        active_prefixes = tuple(
+            prefix for prefix in OPERATIONS_TREND_STREAM_PREFIXES if prefix not in paused_prefixes
+        )
+        values = {
+            "storage": latest_max(OPERATIONS_STORAGE_KEYS),
+            "battery-soc": latest("aps_battery_soc_pct"),
+            "battery-voltage": latest("aps_battery_voltage_v"),
+            "source-lag": latest_max(tuple(f"{prefix}_source_age_min" for prefix in active_prefixes)),
+            "gws-lag": latest_max(tuple(f"{prefix}_gws_lag_min" for prefix in active_prefixes)),
+        }
+        result = {key: value for key, value in values.items() if value is not None}
+    except (ImportError, OSError, TypeError, ValueError, KeyError):
+        result = {}
+
+    _OPERATIONS_TREND_CACHE.update(
+        {
+            "key": cache_key,
+            "expires_at": now_monotonic + OPERATIONS_TREND_CACHE_SECONDS,
+            "values": result,
+        }
+    )
+    return dict(result)
+
+
+def _operations_trend_start_index(group: Any, now: datetime) -> int:
+    """Locate the seven-day tail without decoding the full operations dataset."""
+    import numpy as np
+
+    if "time" not in group or not group["time"].shape:
+        return 0
+    time_values = np.asarray(group["time"][:])
+    if time_values.size == 0:
+        return 0
+
+    parameters = _cf_time_parameters(str(group["time"].attrs.get("units", "")))
+    if parameters:
+        try:
+            origin, seconds_per_unit = parameters
+            cutoff = now.astimezone(UTC) - OPERATIONS_TREND_WINDOW
+            cutoff_value = (cutoff - origin).total_seconds() / seconds_per_unit
+            return int(np.searchsorted(time_values, cutoff_value, side="left"))
+        except (OverflowError, TypeError, ValueError):
+            pass
+
+    # A conservative one-minute fallback keeps at least seven days while still
+    # bounding reads when older stores use an unexpected CF-time encoding.
+    return max(0, int(time_values.size) - 7 * 24 * 60)
+
+
+def _cf_time_parameters(units: str) -> tuple[datetime, float] | None:
+    match = re.fullmatch(
+        r"(seconds|milliseconds|microseconds|nanoseconds|minutes|hours|days) since (.+)",
+        units,
+    )
+    if not match:
+        return None
+    seconds_per_unit = {
+        "nanoseconds": 1e-9,
+        "microseconds": 1e-6,
+        "milliseconds": 1e-3,
+        "seconds": 1.0,
+        "minutes": 60.0,
+        "hours": 3600.0,
+        "days": 86400.0,
+    }
+    try:
+        origin = datetime.fromisoformat(match.group(2).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if origin.tzinfo is None:
+        origin = origin.replace(tzinfo=UTC)
+    return origin.astimezone(UTC), seconds_per_unit[match.group(1)]
+
+
+def _decode_cf_time(value: Any, units: str) -> datetime | None:
+    parameters = _cf_time_parameters(units)
+    if parameters is None:
+        return None
+    origin, seconds_per_unit = parameters
+    try:
+        return origin + timedelta(seconds=float(value) * seconds_per_unit)
+    except (OverflowError, TypeError, ValueError):
+        return None
 
 
 def _trend_level(card_id: str, value: Any) -> str:
@@ -781,28 +944,24 @@ def _pdu_power_snapshot() -> tuple[dict[int, bool], str]:
     """Read one fresh PDU sample without inferring a state from stale data."""
     path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
     try:
-        import pandas as pd
-        import xarray as xr
+        import zarr
 
-        dataset = xr.open_zarr(path, consolidated=False)
-        try:
-            if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
-                raise ValueError("no PDU samples")
-            sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
-            if sample_time.tzinfo is None:
-                sample_time = sample_time.replace(tzinfo=UTC)
-            age_minutes = max((datetime.now(UTC) - sample_time.astimezone(UTC)).total_seconds() / 60, 0)
-            if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
-                raise ValueError("stale PDU sample")
-            states = {
-                outlet: float(dataset[f"PDUOutlet{outlet}State"].values[-1]) >= 0.5
-                for _id, _title, _icon, outlet in PDU_INSTRUMENTS
-                if f"PDUOutlet{outlet}State" in dataset
-            }
-            detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
-        finally:
-            dataset.close()
-    except Exception:
+        group = zarr.open_group(str(path), mode="r")
+        if "time" not in group or not group["time"].shape:
+            raise ValueError("no PDU samples")
+        sample_time = _decode_cf_time(group["time"][-1], str(group["time"].attrs.get("units", "")))
+        if sample_time is None:
+            raise ValueError("unsupported PDU time encoding")
+        age_minutes = max((datetime.now(UTC) - sample_time).total_seconds() / 60, 0)
+        if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
+            raise ValueError("stale PDU sample")
+        states = {
+            outlet: float(group[f"PDUOutlet{outlet}State"][-1]) >= 0.5
+            for _id, _title, _icon, outlet in PDU_INSTRUMENTS
+            if f"PDUOutlet{outlet}State" in group
+        }
+        detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
+    except (ImportError, KeyError, OSError, TypeError, ValueError):
         states = {}
         detail = "PDU status unavailable"
     return states, detail
