@@ -23,8 +23,11 @@ dashboard and mobile API. They report state; they do not control instruments.
 
 `aurora_cloud_dashboard` owns read paths, product builders, UI, and the mobile
 API contract. `aurora-cloud-infra` owns host configuration, systemd units,
-reverse-proxy configuration, and deployment roles. `aurora-dashboard-ios` owns
-the native client and never reads dashboard files directly.
+reverse-proxy configuration, deployment roles, GWS/object-store writers,
+verification, repair, archive health, and retention coordination.
+`aurora-edge-infra` owns the restricted exact-file deletion helper.
+`aurora-dashboard-ios` owns the native client and never reads dashboard files
+directly.
 
 `requirements-runtime.txt` is the single pinned Python environment for the
 browser dashboard and mobile API. The legacy component requirement filenames

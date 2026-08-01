@@ -3,6 +3,11 @@
 Operations monitoring has its own raw snapshots, monitoring Zarr, and archived
 quicklook products.
 
+Here, “archived quicklook” means a dated local product retained for operational
+review. Durable backup status is determined separately by the
+infrastructure-owned GWS and object-store verification contract; the dashboard
+does not make a local product safe to delete merely by indexing or plotting it.
+
 ## Raw snapshots
 
 - rolling latest snapshot:
@@ -38,7 +43,8 @@ These snapshots capture:
 - local `/project`, `/data`, and `/` filesystem usage
 - GWS usage and reachability
 - per-stream mirror coverage, lag, and mismatch counts
-- prune-gate and product-gate summaries
+- prune-gate, product-gate, object-store parity, and pending-upload summaries
+  copied from the authoritative archive-health contract
 - systemd health for source sync, processing, and transfer units
 - dashboard HTTP health and response time
 - primary and standby public dashboard endpoint health, response time, content

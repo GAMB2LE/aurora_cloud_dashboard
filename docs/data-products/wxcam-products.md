@@ -13,6 +13,12 @@ PANO streams:
 AUTO/LONG/SHORT files remain on the camera host and are not cataloged or
 archived from this VM.
 
+These in-scope HDR JPG/MP4 files are the durable WXcam source archive and are
+copied additively to both GWS and object storage. They, rather than the mutable
+pixel Zarr, provide raw-retention evidence. The catalogue, daily videos, and
+hourly thumbnails are archived separately as products after their 30-hour
+verification settle window.
+
 ## Catalog
 
 The WXcam catalog lives at:

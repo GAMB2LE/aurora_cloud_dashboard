@@ -48,6 +48,11 @@ So `/project/aurora` is the raw landing and mirror area.
 
 So `/data/aurora` is the product, work, and output area.
 
+Long-term backups are not defined by either local filesystem alone. Production
+infrastructure copies verified raw and selected product paths additively to the
+JASMIN GWS and object storage. The dashboard only consumes their health
+contract; see [Archive health](archive-health.md).
+
 ## Why the split matters
 
 - raw files stay separate from regenerated products

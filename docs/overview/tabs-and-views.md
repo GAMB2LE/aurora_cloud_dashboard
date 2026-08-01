@@ -152,6 +152,8 @@ It shows:
 - Aurora Power Supply internal temperature from `InternalTemperature`,
   scored green below `40 C`, amber from `40-45 C`, and red at `45 C` or above
 - storage cards for the source hosts, the local Aurora host, and the JASMIN GWS
+- object-store parity, pending-upload, and verifier-progress state from the
+  infrastructure-owned archive-health contract
 - per-stream archive and prune-readiness status
 
 For the archived operations products, see

@@ -230,8 +230,8 @@ outbound relay such as `msmtp`.
 GWS and object-store writers, verification, archive health, and retention are
 owned and documented by `aurora-cloud-infra`. The dashboard repository owns
 only their read-only presentation. Use that repository's
-`docs/ARCHIVE_SERVICES.md` for service names, evidence paths, and recovery
-policy.
+`docs/ARCHIVE_SERVICES.md` for what is backed up, service names, settle windows,
+pending-upload semantics, evidence paths, repair, and retention policy.
 
 ## Useful commands
 

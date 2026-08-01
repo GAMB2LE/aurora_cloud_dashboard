@@ -254,7 +254,9 @@ interval coverage, and threshold Brier score remain pending until verifying
 observations have arrived.
 
 These are display-time optimizations and derived operational forecasts. Raw
-APS ingest and retention are unchanged.
+APS ingest and backup are unchanged: production copies APS Power data
+additively to both GWS and object storage, but APS is explicitly non-prunable
+until a separate source-retention policy is approved.
 
 ## Quicklooks
 
