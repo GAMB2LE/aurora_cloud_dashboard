@@ -515,3 +515,31 @@ def test_iceland_panel_uses_collocated_deployment_and_production_overlap(tmp_pat
     assert "CL61 backscatter" in html
     assert "production-eligible" in html
     assert "depolarisation remains observation-only" in html
+
+
+def test_cloudnet_backbone_panel_selects_requested_day() -> None:
+    module = _load_model_evaluation_module()
+    index = {
+        "days": [
+            {
+                "day": "2026-07-06",
+                "cloudnet_backbone_status": "ready",
+                "cloudnet_instrument_source_common_overlap_hours": 3.998889,
+                "cloudnet_instrument_source_common_overlap_start": "2026-07-06T19:59:59Z",
+                "cloudnet_instrument_source_common_overlap_end": "2026-07-06T23:59:55Z",
+            },
+            {
+                "day": "2026-08-01",
+                "cloudnet_backbone_status": "ready",
+                "cloudnet_instrument_source_common_overlap_hours": 23.900556,
+                "cloudnet_instrument_source_common_overlap_start": "2026-08-01T00:00:01Z",
+                "cloudnet_instrument_source_common_overlap_end": "2026-08-01T23:56:10Z",
+            },
+        ]
+    }
+
+    html = module._cloudnet_backbone_review_panel(index, "2026-08-01")
+
+    assert "23.900556 h" in html
+    assert "2026-08-01T00:00:01Z to 2026-08-01T23:56:10Z" in html
+    assert "2026-07-06" not in html

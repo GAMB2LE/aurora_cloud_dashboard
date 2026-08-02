@@ -2557,13 +2557,24 @@ def _daily_review_queue_table(index: dict[str, object] | None) -> str:
     )
 
 
-def _cloudnet_backbone_review_panel(index: dict[str, object] | None) -> str:
+def _cloudnet_backbone_review_panel(
+    index: dict[str, object] | None,
+    day: str | None = None,
+) -> str:
     if not isinstance(index, dict):
         return ""
     days = index.get("days")
     if not isinstance(days, list) or not days:
         return ""
-    latest = next((day for day in days if isinstance(day, dict)), None)
+    latest = next(
+        (
+            item
+            for item in days
+            if isinstance(item, dict)
+            and (day is None or str(item.get("day")) == day)
+        ),
+        None,
+    )
     if not latest:
         return ""
     missing_types = latest.get("cloudnet_observed_product_missing_types")
@@ -6668,7 +6679,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"{_iceland_readiness_panel()}"
         f"{_review_tracks_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
-        f"{_cloudnet_backbone_review_panel(index)}"
+        f"{_cloudnet_backbone_review_panel(index, latest_day)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_daily_review_queue_table(index)}"
         f"{_evaluation_schematic()}"
