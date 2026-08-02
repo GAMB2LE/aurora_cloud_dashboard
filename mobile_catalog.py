@@ -52,6 +52,7 @@ PDU_STATE_FRESHNESS_MINUTES = 30.0
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
 OPERATIONS_TREND_CACHE_SECONDS = 60.0
+OPERATIONS_TREND_FRESHNESS = timedelta(minutes=30)
 
 OPERATIONS_TREND_STREAM_PREFIXES = (
     "cl61",
@@ -394,31 +395,124 @@ def manifest() -> dict[str, Any]:
     }
 
 
+def _archive_operator_status(archive_health: dict[str, Any]) -> dict[str, str]:
+    """Translate the fail-closed archive contract into operator language.
+
+    Infrastructure deliberately stays red whenever fresh verification evidence
+    is unavailable so retention cannot delete anything.  When the only problem
+    is a failed inventory listing, the previous complete report is clean, and
+    all measured gap counters are zero, the operator-facing state is amber: the
+    archive is not known to be incomplete, but new pruning remains paused.
+    """
+    contract_level = normalize_level(archive_health.get("overall_level"))
+    failures = archive_health.get("failures")
+    if not isinstance(failures, list):
+        failures = []
+    failure_text = [str(item) for item in failures]
+    metrics = archive_health.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    evidence = archive_health.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    gate = evidence.get("object_store_gate")
+    if not isinstance(gate, dict):
+        gate = {}
+    progress = evidence.get("object_store_inventory_progress")
+    if not isinstance(progress, dict):
+        progress = {}
+
+    gap_keys = (
+        "streams_gws_issue_count",
+        "object_store_all_missing_count",
+        "object_store_all_mismatch_count",
+        "gws_all_missing_count",
+        "gws_all_mismatch_count",
+    )
+    measured_gap_free = all(
+        isinstance(metrics.get(key), int | float) and float(metrics[key]) == 0
+        for key in gap_keys
+    )
+    last_complete_clean = bool(gate.get("clean")) and bool(
+        gate.get("stable_parity")
+    )
+    verification_only = bool(failure_text) and all(
+        item.startswith("object_store_evidence_stale_hours=")
+        or item.startswith("object_store_inventory_progress_stale_minutes=")
+        or item
+        == "archive_service_unhealthy=aurora-object-store-inventory.service"
+        for item in failure_text
+    )
+    inventory_failed = progress.get("state") == "failed"
+
+    if (
+        contract_level == "red"
+        and measured_gap_free
+        and last_complete_clean
+        and verification_only
+        and inventory_failed
+    ):
+        error = str(progress.get("error") or "")
+        if "asfs_fast_gas" in error:
+            target = "ASFS fast-gas products"
+        else:
+            target = "archive products"
+        return {
+            "level": "amber",
+            "title": "Archive verification failed",
+            "detail": (
+                f"JASMIN object-store listing timed out for {target}. "
+                "Last complete verification was clean. New pruning is paused "
+                "until verification succeeds."
+            ),
+        }
+
+    if contract_level == "green":
+        return {
+            "level": "green",
+            "title": "Archive verification is healthy",
+            "detail": "Archive verification is healthy",
+        }
+    return {
+        "level": contract_level,
+        "title": (
+            "Archive health is red"
+            if contract_level == "red"
+            else "Archive verification is unavailable"
+        ),
+        "detail": "; ".join(failure_text) or "No failure detail was supplied.",
+    }
+
+
 def operations() -> dict[str, Any]:
     health = read_json_file(operations_health_path())
     snapshot = read_json_file(operations_snapshot_path())
     archive_health = read_json_file(archive_health_path())
+    archive_status = _archive_operator_status(archive_health)
     archive_metrics = archive_health.get("metrics", {})
     if isinstance(archive_metrics, dict):
         snapshot.update(archive_metrics)
-    snapshot["archive_health_level"] = archive_health.get("overall_level")
+    snapshot["archive_contract_level"] = archive_health.get("overall_level")
+    snapshot["archive_health_level"] = archive_status["level"]
     snapshot["archive_health_failures"] = archive_health.get("failures", [])
+    snapshot["archive_health_detail"] = archive_status["detail"]
     alert_state = read_json_file(operations_alert_state_path())
 
     health_error = health.get("_error")
     snapshot_error = snapshot.get("_error")
     overall = normalize_level(
-        archive_health.get("overall_level")
-        or health.get("overall_level")
-        or snapshot.get("overall_level")
+        archive_status["level"]
+        if archive_health
+        else health.get("overall_level") or snapshot.get("overall_level")
     )
 
     stream_states = [_stream_state(snapshot, spec) for spec in OPERATIONS_STREAMS]
-    if overall == "unknown":
-        if any(stream["level"] == "red" for stream in stream_states):
-            overall = "red"
-        elif any(stream["level"] == "green" for stream in stream_states):
-            overall = "green"
+    if any(stream["level"] == "red" for stream in stream_states):
+        overall = "red"
+    elif overall == "unknown" and any(
+        stream["level"] == "green" for stream in stream_states
+    ):
+        overall = "green"
 
     updated_at = (
         archive_health.get("generated_at")
@@ -429,19 +523,13 @@ def operations() -> dict[str, Any]:
     )
     active_alerts = _active_alerts(alert_state)
     if normalize_level(archive_health.get("overall_level")) == "red":
-        failures = archive_health.get("failures")
-        if not isinstance(failures, list):
-            failures = []
-        if failures or archive_health:
+        if archive_health:
             active_alerts = [
                 {
                     "id": "archive:health_red",
-                    "title": "Archive health is red",
-                    "level": "red",
-                    "detail": (
-                        "; ".join(str(item) for item in failures)
-                        or "No failure detail was supplied."
-                    ),
+                    "title": archive_status["title"],
+                    "level": archive_status["level"],
+                    "detail": archive_status["detail"],
                 },
                 *[
                     alert
@@ -451,7 +539,7 @@ def operations() -> dict[str, Any]:
             ]
 
     check_counts = _check_counts(health, stream_states)
-    archive_level = normalize_level(archive_health.get("overall_level"))
+    archive_level = normalize_level(archive_status["level"])
     if archive_level in check_counts:
         check_counts[archive_level] = check_counts.get(archive_level, 0) + 1
 
@@ -459,7 +547,13 @@ def operations() -> dict[str, Any]:
         "serverTime": utc_now_iso(),
         "updatedAt": updated_at,
         "overallLevel": overall,
-        "summary": _operations_summary(overall, stream_states, health_error, snapshot_error),
+        "summary": _operations_summary(
+            overall,
+            stream_states,
+            health_error,
+            snapshot_error,
+            archive_status,
+        ),
         "checkCounts": check_counts,
         "streamStates": stream_states,
         "rootCauseGroups": _root_cause_groups(snapshot, stream_states),
@@ -505,7 +599,13 @@ def _stream_state(snapshot: dict[str, Any], spec: dict[str, Any]) -> dict[str, A
     }
 
 
-def _operations_summary(overall: str, streams: list[dict[str, Any]], health_error: Any, snapshot_error: Any) -> str:
+def _operations_summary(
+    overall: str,
+    streams: list[dict[str, Any]],
+    health_error: Any,
+    snapshot_error: Any,
+    archive_status: dict[str, str],
+) -> str:
     if health_error:
         return f"Health JSON error: {health_error}"
     if snapshot_error:
@@ -516,6 +616,8 @@ def _operations_summary(overall: str, streams: list[dict[str, Any]], health_erro
         return f"{red_count} stream group{'s' if red_count != 1 else ''} need attention"
     if unknown_count == len(streams):
         return "No operations snapshot available"
+    if archive_status.get("level") == "amber":
+        return "Archive verification is delayed; the last complete check was clean"
     if overall == "green":
         return "All visible stream groups are healthy"
     return "Operations status is partially available"
@@ -542,6 +644,7 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
     archive_failures = snapshot.get("archive_health_failures")
     if not isinstance(archive_failures, list):
         archive_failures = []
+    archive_detail = snapshot.get("archive_health_detail")
     return [
         {"id": "source", "title": "Source freshness", "level": "red" if source_issues else "green" if snapshot else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "No source freshness issues"},
         {"id": "processing", "title": "Local processing", "level": "red" if service_issues else "green" if snapshot else "unknown", "detail": ", ".join(service_issues[:4]) if service_issues else "Append, catalog, and quicklook services healthy"},
@@ -551,7 +654,9 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
             "title": "GWS and object-store archive",
             "level": archive_level,
             "detail": (
-                "; ".join(str(item) for item in archive_failures)
+                str(archive_detail)
+                if archive_detail
+                else "; ".join(str(item) for item in archive_failures)
                 if archive_failures
                 else "Archive verification is healthy"
                 if archive_level == "green"
@@ -612,14 +717,28 @@ def _operations_trend_values(paused_prefixes: set[str]) -> dict[str, float]:
         import zarr
 
         group = zarr.open_consolidated(str(path), mode="r")
-        start = _operations_trend_start_index(group, datetime.now(UTC))
+        now = datetime.now(UTC)
+        start = _operations_trend_start_index(group, now)
+        time_array = group.get("time")
+        latest_time = (
+            _decode_cf_time(time_array[-1], str(time_array.attrs.get("units", "")))
+            if time_array is not None and time_array.shape
+            else None
+        )
+        if latest_time is None or now - latest_time > OPERATIONS_TREND_FRESHNESS:
+            raise ValueError("latest operations trend sample is stale")
 
         def latest(name: str) -> float | None:
             if name not in group:
                 return None
-            values = np.asarray(group[name][start:], dtype=np.float64)
-            finite = values[np.isfinite(values)]
-            return float(finite[-1]) if finite.size else None
+            latest_index = max(start, len(group[name]) - 1)
+            values = np.asarray(
+                group[name][latest_index:],
+                dtype=np.float64,
+            )
+            if not values.size or not np.isfinite(values[-1]):
+                return None
+            return float(values[-1])
 
         def latest_max(names: tuple[str, ...]) -> float | None:
             values = [value for name in names if (value := latest(name)) is not None]

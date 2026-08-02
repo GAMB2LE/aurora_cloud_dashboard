@@ -35,10 +35,10 @@ class MobileCatalogTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "OPS_SNAPSHOT_PATH": str(snapshot),
-                    "OPS_HEALTH_PATH": str(health),
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
                     "ARCHIVE_HEALTH_PATH": str(archive),
-                    "OPS_ALERT_STATE_PATH": str(alerts),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
                 },
             ):
                 response = mobile_catalog.operations()
@@ -62,6 +62,93 @@ class MobileCatalogTests(unittest.TestCase):
             response["sources"]["archiveHealth"]["path"],
             str(archive),
         )
+
+    def test_operations_presents_clean_inventory_timeout_as_amber(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot.json"
+            health = root / "health.json"
+            archive = root / "archive.json"
+            alerts = root / "alerts.json"
+            snapshot_payload: dict[str, int | str] = {
+                "time_utc": "2026-08-02T07:09:00Z"
+            }
+            for spec in mobile_catalog.OPERATIONS_STREAMS:
+                snapshot_payload[str(spec["source"])] = 1
+                for service in spec["services"]:
+                    snapshot_payload[str(service)] = 1
+            snapshot.write_text(json.dumps(snapshot_payload), encoding="utf-8")
+            health.write_text('{"overall_level":"red"}', encoding="utf-8")
+            archive.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-08-02T07:09:34Z",
+                        "overall_level": "red",
+                        "failures": [
+                            "object_store_evidence_stale_hours=9.81",
+                            "archive_service_unhealthy=aurora-object-store-inventory.service",
+                        ],
+                        "metrics": {
+                            "streams_gws_issue_count": 0,
+                            "object_store_all_missing_count": 0,
+                            "object_store_all_mismatch_count": 0,
+                            "gws_all_missing_count": 0,
+                            "gws_all_mismatch_count": 0,
+                        },
+                        "evidence": {
+                            "object_store_gate": {
+                                "clean": True,
+                                "stable_parity": True,
+                            },
+                            "object_store_inventory_progress": {
+                                "state": "failed",
+                                "current_job": "products",
+                                "error": (
+                                    "CalledProcessError: rclone lsjson "
+                                    "gamb2le-o/data/output/aurora-cloud/products/"
+                                    "asfs_fast_gas"
+                                ),
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            alerts.write_text("{}", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                },
+            ):
+                response = mobile_catalog.operations()
+
+        archive_alert = next(
+            alert
+            for alert in response["alerts"]
+            if alert["id"] == "archive:health_red"
+        )
+        self.assertEqual(response["overallLevel"], "amber")
+        self.assertEqual(response["checkCounts"]["amber"], 1)
+        self.assertEqual(archive_alert["level"], "amber")
+        self.assertEqual(archive_alert["title"], "Archive verification failed")
+        self.assertEqual(
+            archive_alert["detail"],
+            "JASMIN object-store listing timed out for ASFS fast-gas products. "
+            "Last complete verification was clean. New pruning is paused until "
+            "verification succeeds.",
+        )
+        archive_group = next(
+            group
+            for group in response["rootCauseGroups"]
+            if group["id"] == "archive"
+        )
+        self.assertEqual(archive_group["level"], "amber")
+        self.assertEqual(archive_group["detail"], archive_alert["detail"])
+        self.assertIn("last complete check was clean", response["summary"])
 
     def test_power_trace_sampling_is_bounded_and_preserves_extrema(self) -> None:
         import numpy as np
@@ -304,6 +391,35 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(values["battery-voltage"], 55.6)
         self.assertEqual(values["source-lag"], 8.0)
         self.assertEqual(values["gws-lag"], 6.0)
+
+    def test_operations_trend_does_not_reuse_an_old_finite_source_lag(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ops_monitor.zarr"
+            times = pd.date_range(
+                datetime.now(timezone.utc) - timedelta(minutes=10),
+                periods=2,
+                freq="10min",
+            ).tz_localize(None)
+            xr.Dataset(
+                {
+                    "cl61_source_age_min": (
+                        ("time",),
+                        np.array([12_760.2, np.nan]),
+                    ),
+                    "cl61_gws_lag_min": (("time",), np.array([4.0, 5.6])),
+                },
+                coords={"time": times},
+            ).to_zarr(path, mode="w", consolidated=True)
+            mobile_catalog._OPERATIONS_TREND_CACHE.clear()
+            with patch.dict(os.environ, {"OPS_MONITOR_ZARR_PATH": str(path)}):
+                values = mobile_catalog._operations_trend_values(set())
+
+        self.assertNotIn("source-lag", values)
+        self.assertEqual(values["gws-lag"], 5.6)
 
     def test_operations_excludes_recovered_alert_history(self) -> None:
         alerts = mobile_catalog._active_alerts(
