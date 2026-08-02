@@ -16,7 +16,7 @@ import pandas as pd
 from power_load_contract import ControlledLoadEstimate, controlled_load_member_levels
 
 
-LOAD_PHASE_SCHEMA_VERSION = 2
+LOAD_PHASE_SCHEMA_VERSION = 3
 PHASE_STEADY = "steady"
 PHASE_STARTUP = "startup"
 PHASE_FAN_LOW = "fan_low"
@@ -30,6 +30,7 @@ PHASE_CODES = {
 DEFAULT_CHANGE_THRESHOLD_W = 20.0
 DEFAULT_RELATIVE_CHANGE = 0.08
 DEFAULT_MIN_PHASE_SAMPLES = 4
+DEFAULT_MIN_PHASE_OCCURRENCES = 2
 DEFAULT_MAX_STARTUP_MINUTES = 12.0 * 60.0
 
 
@@ -253,6 +254,33 @@ def _debounce_labels(labels: np.ndarray, *, minimum_samples: int = 2) -> np.ndar
     return result
 
 
+def _steady_phase_segment_counts(
+    run_details: Sequence[tuple[pd.DataFrame, int]],
+    profiles: Mapping[str, LoadDistribution],
+) -> tuple[dict[str, int], str]:
+    names = [name for name in (PHASE_FAN_LOW, PHASE_FAN_HIGH, PHASE_STEADY) if name in profiles]
+    centres = np.asarray([profiles[name].p50_w for name in names], dtype=np.float64)
+    counts = {name: 0 for name in names}
+    latest_phase = names[0]
+    for run, boundary in run_details:
+        values = run["load_w"].to_numpy(dtype=np.float64)[boundary:]
+        if not values.size:
+            continue
+        distances = np.abs(values[:, None] - centres[None, :])
+        labels = _debounce_labels(
+            np.asarray([names[index] for index in np.argmin(distances, axis=1)], dtype=object)
+        )
+        start = 0
+        while start < len(labels):
+            stop = start + 1
+            while stop < len(labels) and labels[stop] == labels[start]:
+                stop += 1
+            counts[str(labels[start])] += 1
+            start = stop
+        latest_phase = str(labels[-1])
+    return counts, latest_phase
+
+
 def learn_state_load_dynamics(
     observations: pd.DataFrame,
     state: str,
@@ -297,11 +325,20 @@ def learn_state_load_dynamics(
             steady_values.extend(values)
     if not steady_values:
         steady_values = [float(value) for value in frame.loc[frame["mode"] == state, "load_w"]]
-    steady_profiles, _ = _split_steady_phases(np.asarray(steady_values, dtype=np.float64))
+    steady_array = np.asarray(steady_values, dtype=np.float64)
+    steady_profiles, pooled_labels = _split_steady_phases(steady_array)
+    if PHASE_FAN_LOW in steady_profiles and PHASE_FAN_HIGH in steady_profiles:
+        segment_counts, latest_steady_phase = _steady_phase_segment_counts(run_details, steady_profiles)
+        if any(
+            segment_counts.get(name, 0) < DEFAULT_MIN_PHASE_OCCURRENCES
+            for name in (PHASE_FAN_LOW, PHASE_FAN_HIGH)
+        ):
+            retained = steady_array[pooled_labels == latest_steady_phase]
+            steady_profiles = {PHASE_STEADY: LoadDistribution.from_values(retained)}
     phase_profiles = dict(steady_profiles)
-    if startup_values and _material_difference(
+    if len(startup_durations) >= DEFAULT_MIN_PHASE_OCCURRENCES and _material_difference(
         np.asarray(startup_values, dtype=np.float64),
-        np.asarray(steady_values, dtype=np.float64),
+        steady_array,
     ):
         phase_profiles[PHASE_STARTUP] = LoadDistribution.from_values(startup_values)
     else:

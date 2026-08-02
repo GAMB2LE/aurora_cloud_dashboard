@@ -234,7 +234,7 @@ class OperatingScenarioTests(unittest.TestCase):
 
         rebuilt = second.state["mode_load_profiles"][MODE_DC_ONLY]
         self.assertEqual(second.state["new_observation_count"], 0)
-        self.assertEqual(rebuilt["schema_version"], 2)
+        self.assertEqual(rebuilt["schema_version"], 3)
         self.assertLess(rebuilt["phase_profiles"]["steady"]["p90_w"], 300.0)
 
     def test_saved_state_does_not_retrain_the_same_observations(self) -> None:
@@ -713,7 +713,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "9")
+                self.assertEqual(state.attrs["model_version"], "10")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
                 scenario_ids = [str(value) for value in scenarios["scenario"].values]
