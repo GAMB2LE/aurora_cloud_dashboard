@@ -4,8 +4,9 @@ Audit date: 2026-08-01.
 
 This is a historical audit of version 7. Version 8 replaced its uncontrolled
 load trajectory with a confirmed finite operating state. The current successor
-is `finite_controlled_state_phases_v9`, which preserves that exact-state
-boundary while representing learned startup and fan phases within the state.
+is `finite_controlled_state_phases_v10`, which preserves that exact-state
+boundary while representing only recurrent startup and fan phases within the
+state.
 
 ## Why the model changed
 

@@ -11,6 +11,7 @@ from power_load_dynamics import (
     PHASE_FAN_HIGH,
     PHASE_FAN_LOW,
     PHASE_STARTUP,
+    PHASE_STEADY,
     build_controlled_load_profile,
     controlled_load_member_profiles,
     learn_state_load_dynamics,
@@ -70,10 +71,60 @@ class StateLoadDynamicsTests(unittest.TestCase):
         self.assertNotIn(PHASE_STARTUP, dynamics.phase_profiles)
         self.assertEqual(dynamics.startup_duration_p50_minutes, 0.0)
 
+    def test_one_off_historical_level_is_not_a_recurring_fan_phase(self) -> None:
+        times = pd.date_range("2026-07-11T06:00:00", periods=60, freq="15min")
+        observations = pd.DataFrame(
+            {
+                "direct_mode": ["dc_only"] * len(times),
+                "load_w": [230.0] * 20 + [128.0] * 20 + [230.0] * 20,
+            },
+            index=times,
+        )
+
+        dynamics = learn_state_load_dynamics(observations, "dc_only")
+
+        self.assertIsNotNone(dynamics)
+        assert dynamics is not None
+        self.assertEqual(set(dynamics.phase_profiles), {PHASE_STEADY})
+        self.assertGreater(dynamics.phase_profiles[PHASE_STEADY].p10_w, 200.0)
+
+    def test_latest_sustained_change_becomes_the_current_steady_load(self) -> None:
+        times = pd.date_range("2026-07-20", periods=60, freq="15min")
+        observations = pd.DataFrame(
+            {
+                "direct_mode": ["dc_only"] * len(times),
+                "load_w": [230.0] * 40 + [310.0] * 20,
+            },
+            index=times,
+        )
+
+        dynamics = learn_state_load_dynamics(observations, "dc_only")
+
+        self.assertIsNotNone(dynamics)
+        assert dynamics is not None
+        self.assertEqual(set(dynamics.phase_profiles), {PHASE_STEADY})
+        self.assertAlmostEqual(dynamics.phase_profiles[PHASE_STEADY].p50_w, 310.0)
+
+    def test_single_startup_episode_does_not_define_startup_uncertainty(self) -> None:
+        times = pd.date_range("2026-07-20", periods=40, freq="15min")
+        observations = pd.DataFrame(
+            {
+                "direct_mode": ["dc_cl61"] * len(times),
+                "load_w": [470.0] * 8 + [275.0] * 32,
+            },
+            index=times,
+        )
+
+        dynamics = learn_state_load_dynamics(observations, "dc_cl61")
+
+        self.assertIsNotNone(dynamics)
+        assert dynamics is not None
+        self.assertNotIn(PHASE_STARTUP, dynamics.phase_profiles)
+        self.assertEqual(dynamics.startup_duration_p50_minutes, 0.0)
+        self.assertLess(dynamics.phase_profiles[PHASE_STEADY].p90_w, 300.0)
+
     def test_profile_transitions_from_startup_without_changing_state(self) -> None:
-        observations = self._observations().iloc[:58]
-        observations.iloc[-2:, observations.columns.get_loc("direct_mode")] = "dc_cl61"
-        observations.iloc[-2:, observations.columns.get_loc("load_w")] = 468.0
+        observations = self._observations()
         dynamics = learn_state_load_dynamics(observations, "dc_cl61")
         assert dynamics is not None
         dynamics = type(dynamics)(

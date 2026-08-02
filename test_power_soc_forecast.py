@@ -268,8 +268,8 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertGreaterEqual(float(forecast["BatterySOCForecast"].min()), 0.0)
         self.assertLessEqual(float(forecast["BatterySOCForecast"].max()), 100.0)
         self.assertEqual(forecast.attrs["forecast_horizon_hours"], "12")
-        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v9")
-        self.assertEqual(forecast.attrs["load_model_version"], "9")
+        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v10")
+        self.assertEqual(forecast.attrs["load_model_version"], "10")
         self.assertIn("battery_charge_efficiency", forecast.attrs)
         self.assertIn("battery_discharge_efficiency", forecast.attrs)
         self.assertEqual(
@@ -329,7 +329,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "load_mode_signature": "dc_cl61",
                 "load_current_phase": "fan_low",
                 "load_state_dynamics": '{"phase_profiles":{"fan_low":{"p50_w":275}}}',
-                "load_model_version": "9",
+                "load_model_version": "10",
             }
         )
         first = forecast_publication_signature(forecast)
@@ -440,8 +440,8 @@ class PowerSocForecastTests(unittest.TestCase):
         load = build_historical_load_forecast(frame, forecast_times, end=times[-1], calibration_days=10)
 
         np.testing.assert_allclose(load.to_numpy(), 9.0)
-        self.assertEqual(load.attrs["load_model"], "finite_controlled_state_phases_v9")
-        self.assertEqual(load.attrs["load_model_version"], 9)
+        self.assertEqual(load.attrs["load_model"], "finite_controlled_state_phases_v10")
+        self.assertEqual(load.attrs["load_model_version"], 10)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
         self.assertEqual(load.attrs["load_regime"], "DC-Only")
         self.assertGreater(float(load.attrs["load_regime_threshold_w"]), 9.0)
@@ -665,7 +665,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(float(forecast.attrs["load_bias_correction_w"]), 0.0)
         self.assertAlmostEqual(float(forecast["ForecastLoadWatts"].median()), 250.0)
-        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v9")
+        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v10")
         self.assertIn("ForecastLoadBiasRecent", forecast)
 
     def test_stale_negative_load_bias_cannot_zero_ac_dc_load_forecast(self) -> None:
@@ -750,7 +750,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "ForecastLoadPhaseCode": (("time",), [1, 2, 3]),
             },
             coords={"time": times},
-            attrs={"initial_soc_time": issue_time.isoformat(), "load_model_version": "9"},
+            attrs={"initial_soc_time": issue_time.isoformat(), "load_model_version": "10"},
         )
 
         archive = append_forecast_archive(forecast, self.tmp_archive_path)
@@ -818,7 +818,7 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={
                 "initial_soc_time": new_issue.isoformat(),
                 "ecmwf_cycle_time": new_issue.isoformat(),
-                "load_model_version": "9",
+                "load_model_version": "10",
             },
         )
         archive = append_forecast_archive(new_forecast, self.tmp_archive_path)
@@ -842,7 +842,7 @@ class PowerSocForecastTests(unittest.TestCase):
         finite_mae = skill["ForecastLoadMAE24h"].dropna("time")
         self.assertTrue(len(finite_mae))
         self.assertAlmostEqual(float(finite_mae.values[-1]), 10.0)
-        self.assertEqual(skill.attrs["load_model_version"], "9")
+        self.assertEqual(skill.attrs["load_model_version"], "10")
 
     def test_hindcast_selects_fixed_lead_forecasts(self) -> None:
         issue = pd.Timestamp("2026-07-10T00:00:00")
@@ -1052,7 +1052,7 @@ class PowerSocForecastTests(unittest.TestCase):
             coords={"number": [1, 2, 3, 4, 5], "time": forecast_times},
         )
         dynamics = {
-            "schema_version": 2,
+            "schema_version": 3,
             "state": "dc_cl61",
             "current_phase": "startup",
             "state_started_at": power_times[-1].isoformat(),
@@ -1078,8 +1078,8 @@ class PowerSocForecastTests(unittest.TestCase):
                 "forecast_load_p10_w": "260",
                 "forecast_load_p50_w": "275",
                 "forecast_load_p90_w": "500",
-                "load_model": "finite_controlled_state_phases_v9",
-                "load_model_version": "9",
+                "load_model": "finite_controlled_state_phases_v10",
+                "load_model_version": "10",
                 "load_mode": "DC-Only + CL61",
                 "load_state_contract": "finite_operating_state_phases_v2",
                 "load_state_hold_policy": "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition",

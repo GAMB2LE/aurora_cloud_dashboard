@@ -28,7 +28,7 @@ move to Earthkit after an equivalent bounded-memory benchmark passes.
 
 ## Decision
 
-The operational load model is `finite_controlled_state_phases_v9`. Its
+The operational load model is `finite_controlled_state_phases_v10`. Its
 observed target is the APS energy balance:
 
 `load = SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`
@@ -54,10 +54,16 @@ whole-station value and its disagreement with the state estimate remain in the
 metadata as diagnostics. Recent material changes are evaluated only after the
 PDU state is fixed. Repeated episodes then supply phase-specific P10, median,
 and P90 load, startup-duration quantiles, fan-phase occupancy, and fan-phase
-dwell time. They do not silently turn the forecast into an uncontrolled
-historical-load trajectory.
+dwell time. A startup or fan level must recur at least twice before it is
+forecast as uncertainty: startup needs two state-entry episodes, while a fan
+level needs two non-contiguous segments. A one-off historical level is
+excluded, and the latest confirmed steady level is retained. These rules
+prevent an old configuration from silently becoming an uncontrolled
+historical-load trajectory. Detection does not wait for recurrence: a new
+sustained latest level immediately becomes the current steady forecast, while
+its repeatable phase uncertainty remains unlearned until the second occurrence.
 
-The scenario learner is `hybrid_state_space_phases_v9`. Its discrete part is an
+The scenario learner is `hybrid_state_space_phases_v10`. Its discrete part is an
 HMM-like finite-state classifier. Fresh PDU outlet watts provide direct
 evidence for CL61, Radar, HATPRO, UAS, and their combinations; the APS AC
 output and learned total-load level provide secondary evidence. Stale PDU data
@@ -123,7 +129,7 @@ model has learned. The fixed comparison set also includes CL61, CL61 + Radar,
 CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, HATPRO, and **all
 instruments + UAS tier 3**. The old `100-600 W` plot is retained only as a
 backwards-compatible data contract and is no longer the operating interface.
-The current-mode scenario reuses the same version-9 system-as-is load
+The current-mode scenario reuses the same version-10 system-as-is load
 distribution, so the two panels cannot disagree about the current state.
 
 ## Evidence
@@ -190,7 +196,7 @@ marginal, or unsafe from its minimum P10 SOC.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
 skill only use rows from a matching model version, preventing retired model
-errors from contaminating the improvement loop. Version 9 therefore starts a
+errors from contaminating the improvement loop. Version 10 therefore starts a
 fresh verification series. SOC MAE is reported by lead bucket; solar and load
 MAE/bias diagnose the two principal error sources. Skill is measured against
 persistence, and the fixed-lead hindcast shows what the dashboard would have

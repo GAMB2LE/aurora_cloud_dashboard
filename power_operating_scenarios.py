@@ -36,10 +36,10 @@ from power_scenario_catalog import (
 )
 from power_battery_model import BatteryModel
 
-MODEL_NAME = "hybrid_state_space_phases_v9"
-MODEL_VERSION = 9
-STATE_SCHEMA_VERSION = 5
-SCENARIO_SCHEMA_VERSION = 7
+MODEL_NAME = "hybrid_state_space_phases_v10"
+MODEL_VERSION = 10
+STATE_SCHEMA_VERSION = 6
+SCENARIO_SCHEMA_VERSION = 8
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}

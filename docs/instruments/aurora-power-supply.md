@@ -194,10 +194,14 @@ radiation forecast data, converts the accumulated `J m-2` field to interval
 `W m-2`, calibrates expected solar charging from recent APS solar production,
 and derives total station load from solar generation minus signed battery
 power. This includes the 48 V DC system load that is not represented by the
-roughly `9 W` inverter-idle value. Version 9 identifies the latest finite
+roughly `9 W` inverter-idle value. Version 10 identifies the latest finite
 operating state and holds that state through the horizon. Within that exact
-state it can represent learned startup and low/high fan phases, including their
-load and duration uncertainty. Fresh PDU components plus the clean DC-only
+state it can represent recurrent startup and low/high fan phases, including
+their load and duration uncertainty. Startup needs two state-entry episodes and
+a fan level needs two non-contiguous segments; one-off historical levels are
+not forecast as repeatable behavior. A new sustained latest level still updates
+the current steady forecast immediately.
+Fresh PDU components plus the clean DC-only
 baseline are preferred; an exact-state learned distribution is the next
 choice. The latest whole-station balance is used only to bootstrap a state with
 insufficient direct or learned evidence.
@@ -208,7 +212,7 @@ forecast immediately, while durable mode learning waits for 30 minutes of
 stable AC/DC state and at least two aggregated samples. The learner then stores
 independent hourly load observations and persists the recognised mode's robust
 level; it does not infer a daily schedule. The mode name is included in the
-forecast-load legend. This version-9 model refreshes with every 15-minute
+forecast-load legend. This version-10 model refreshes with every 15-minute
 learning run and uses calibrated battery capacity, directional efficiencies,
 and power limits for SOC integration.
 This product is operational guidance only and is stored separately from

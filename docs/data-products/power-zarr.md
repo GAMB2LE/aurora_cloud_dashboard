@@ -165,7 +165,7 @@ described below. It always includes seven stable comparisons: CL61, CL61 +
 Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, and HATPRO.
 
 The **SOC 96 h Forecast** P10/P90 traces describe the current system as-is,
-not different future instrument schedules. Version 9 varies ECMWF weather,
+not different future instrument schedules. Version 10 varies ECMWF weather,
 calibrated battery parameters, and the learned P10-P90 startup/fan behavior for
 the one detected operating state. Every member keeps that exact state through
 the horizon. Planned instrument combinations are shown separately in the
@@ -233,14 +233,19 @@ positive battery power is charging and negative power is discharge. This
 captures the 48 V DC load that is absent from inverter idle power.
 
 The operational deterministic product uses
-`finite_controlled_state_phases_v9` under the
+`finite_controlled_state_phases_v10` under the
 `finite_operating_state_phases_v2` contract. It identifies the latest confirmed
 PDU/APS operating state and holds that exact state through the forecast horizon.
 Load comes from fresh PDU components plus the clean DC-only baseline where
 possible, otherwise from a mature distribution learned for that exact state.
 Within the state, the model can detect and learn startup, steady, and low/high
 fan phases. It publishes phase-specific load quantiles and learned startup
-duration rather than forcing one wattage across a real transient. The latest
+duration rather than forcing one wattage across a real transient. Startup needs
+two state-entry episodes and a fan level needs two non-contiguous segments
+before its uncertainty is published. One-off historical operating levels are
+excluded in favour of the latest confirmed steady level. A new sustained latest
+level therefore updates the central load immediately, but does not add a
+recurring phase band until it occurs again. The latest
 whole-station balance is used only to bootstrap a state that does not yet have
 component or exact-state evidence. A load change without either an explicit
 state transition or a learned within-state phase transition is rejected during
@@ -300,7 +305,7 @@ parameters. Load diagnostics include `load_model`, `load_model_version`,
 `load_balance_measurement`, `load_mode_registry`, `load_mode_signature`,
 `load_mode_learning_ready`, `load_mode_learning_reason`,
 `load_mode_pdu_active_watts`, `load_regime_level_w`, and
-`load_regime_run_hours`. Version 9 also records `load_anchor_method`,
+`load_regime_run_hours`. Version 10 also records `load_anchor_method`,
 `load_state_contract`, `load_state_hold_policy`, the state P10/P50/P90 load,
 the measured and learned-reference loads, their disagreement, calibrated
 battery capacity/efficiencies/limits, `solar_calibration_contract_id`, and a semantic
@@ -400,7 +405,7 @@ The state product contains:
 - `ObservedLoadWatts` and `EstimatedModeLoadWatts`
 - `LoadInnovationWatts` and `LoadObservationOutlier`
 
-The persisted `hybrid_state_space_phases_v9` learner combines a finite set of
+The persisted `hybrid_state_space_phases_v10` learner combines a finite set of
 named operating modes with robust component and exact-state phase learning. Its
 components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
 increment. Existing observations are reclassified on each run, but component
