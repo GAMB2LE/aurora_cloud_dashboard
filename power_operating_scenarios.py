@@ -22,6 +22,7 @@ from power_load_contract import (
     validate_state_held_load,
 )
 from power_load_dynamics import (
+    LOAD_PHASE_SCHEMA_VERSION,
     PHASE_CODES,
     PHASE_STEADY,
     StateLoadDynamics,
@@ -35,10 +36,10 @@ from power_scenario_catalog import (
 )
 from power_battery_model import BatteryModel
 
-MODEL_NAME = "hybrid_state_space_phases_v8"
-MODEL_VERSION = 8
-STATE_SCHEMA_VERSION = 4
-SCENARIO_SCHEMA_VERSION = 6
+MODEL_NAME = "hybrid_state_space_phases_v9"
+MODEL_VERSION = 9
+STATE_SCHEMA_VERSION = 5
+SCENARIO_SCHEMA_VERSION = 7
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -269,20 +270,23 @@ def build_observation_frame(
     mode_values: list[str] = []
     evidence_values: list[str] = []
     confidence_values: list[float] = []
+    confirmed_values: list[bool] = []
     for _, row in observed.iterrows():
         active: list[str] = []
-        has_pdu_evidence = False
+        pdu_evidence_count = 0
         for kit in KIT_ORDER:
             watts = row.get(f"{kit}_watts", np.nan)
             state = row.get(f"{kit}_state", np.nan)
             if np.isfinite(watts):
-                has_pdu_evidence = True
+                pdu_evidence_count += 1
                 if float(watts) >= PDU_ACTIVE_W:
                     active.append(kit)
             elif np.isfinite(state):
-                has_pdu_evidence = True
+                pdu_evidence_count += 1
                 if float(state) >= 0.5:
                     active.append(kit)
+        has_pdu_evidence = pdu_evidence_count > 0
+        direct_state_confirmed = pdu_evidence_count == len(KIT_ORDER)
         ac_active = bool(np.isfinite(row.get("ACOutputWatts", np.nan)) and row["ACOutputWatts"] > AC_ACTIVE_W)
         if active:
             selected = mode_id(active)
@@ -303,9 +307,11 @@ def build_observation_frame(
         mode_values.append(selected)
         evidence_values.append(evidence)
         confidence_values.append(confidence)
+        confirmed_values.append(direct_state_confirmed)
     observed["direct_mode"] = mode_values
     observed["mode_evidence"] = evidence_values
     observed["direct_confidence"] = confidence_values
+    observed["direct_state_confirmed"] = confirmed_values
     observed["operator_event"] = ""
     observed["operator_event_agreement"] = np.nan
     tolerance = pd.Timedelta(minutes=5)
@@ -331,7 +337,14 @@ def _default_component_means(observations: pd.DataFrame) -> np.ndarray:
     means = np.array([200.0, 220.0, 300.0, 250.0, 200.0, 250.0], dtype=np.float64)
     if observations.empty:
         return means
-    dc = observations.loc[observations["direct_mode"] == MODE_DC_ONLY, "load_w"].dropna()
+    confirmed = observations.get(
+        "direct_state_confirmed",
+        pd.Series(False, index=observations.index, dtype=bool),
+    ).fillna(False).astype(bool)
+    dc = observations.loc[
+        confirmed & (observations["direct_mode"] == MODE_DC_ONLY),
+        "load_w",
+    ].dropna()
     if not dc.empty:
         means[COMPONENT_INDEX["DC"]] = max(float(dc.median()), 0.0)
     for kit in KIT_ORDER:
@@ -343,11 +356,23 @@ def _default_component_means(observations: pd.DataFrame) -> np.ndarray:
     return means
 
 
+def _state_is_compatible(raw_state: Mapping[str, Any] | None) -> bool:
+    if not isinstance(raw_state, Mapping):
+        return False
+    try:
+        return (
+            int(raw_state.get("model_version", 0) or 0) == MODEL_VERSION
+            and int(raw_state.get("schema_version", 0) or 0) == STATE_SCHEMA_VERSION
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _bootstrap_components(raw_state: Mapping[str, Any] | None, observations: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     means = _default_component_means(observations)
     covariance = np.diag(np.array([60.0, 100.0, 150.0, 120.0, 100.0, 150.0]) ** 2)
     counts = np.zeros(len(COMPONENTS), dtype=np.int64)
-    if not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
+    if not _state_is_compatible(raw_state):
         return means, covariance, counts
     component_state = raw_state.get("components")
     if isinstance(component_state, Mapping):
@@ -445,7 +470,14 @@ def _component_regimes(observations: pd.DataFrame) -> dict[str, list[dict[str, f
     That preserves the CL61 high/low regimes while rejecting the single UAS spike.
     """
     regimes: dict[str, list[dict[str, float]]] = {}
-    dc_values = observations.loc[observations["direct_mode"] == MODE_DC_ONLY, "load_w"].to_numpy(dtype=np.float64)
+    confirmed = observations.get(
+        "direct_state_confirmed",
+        pd.Series(False, index=observations.index, dtype=bool),
+    ).fillna(False).astype(bool)
+    dc_values = observations.loc[
+        confirmed & (observations["direct_mode"] == MODE_DC_ONLY),
+        "load_w",
+    ].to_numpy(dtype=np.float64)
     for component in COMPONENTS:
         if component == "DC":
             values = dc_values
@@ -576,10 +608,11 @@ def fit_operating_model(
     )
     if observations.empty:
         raise ValueError("No APS/PDU observations are available for operating-state learning")
+    compatible_state = _state_is_compatible(raw_state)
     mean, covariance, counts = _bootstrap_components(raw_state, observations)
     process_variance = np.array([1.0, 4.0, 6.0, 5.0, 4.0, 8.0], dtype=np.float64)
     last_trained = pd.NaT
-    if isinstance(raw_state, Mapping):
+    if compatible_state:
         candidate = pd.to_datetime(raw_state.get("last_observation_time_utc"), errors="coerce")
         if not pd.isna(candidate):
             last_trained = pd.Timestamp(candidate)
@@ -589,7 +622,7 @@ def fit_operating_model(
 
     mode_names = _mode_catalog()
     posterior = np.full(len(mode_names), 1.0 / len(mode_names), dtype=np.float64)
-    previous_mode = str(raw_state.get("current_mode", MODE_DC_ONLY)) if isinstance(raw_state, Mapping) else MODE_DC_ONLY
+    previous_mode = str(raw_state.get("current_mode", MODE_DC_ONLY)) if compatible_state else MODE_DC_ONLY
     if previous_mode in mode_names:
         posterior[:] = 0.02 / max(len(mode_names) - 1, 1)
         posterior[mode_names.index(previous_mode)] = 0.98
@@ -634,15 +667,16 @@ def fit_operating_model(
         estimated_load = float(design @ mean)
         innovation = np.nan
         clipped = False
-        if finite_load and should_train:
+        if finite_load and should_train and bool(row.get("direct_state_confirmed", False)):
+            training_design = _mode_design(direct_mode)
             mean, covariance, innovation, clipped = _kalman_update(
                 mean,
                 covariance,
-                design,
+                training_design,
                 float(row["load_w"]),
                 75.0**2,
             )
-            counts[np.flatnonzero(design)] += 1
+            counts[np.flatnonzero(training_design)] += 1
         for kit in KIT_ORDER:
             field = f"{kit}_watts"
             if not should_train or field not in row or not np.isfinite(row[field]) or float(row[field]) < PDU_ACTIVE_W:
@@ -680,34 +714,42 @@ def fit_operating_model(
     }
     learned_modes = tuple(value for value in observed_modes if mode_maturity[value] in {"calibrated", "reliable"})
     new_observation_count = int(np.count_nonzero(train_mask))
-    saved_regimes = raw_state.get("component_regimes") if isinstance(raw_state, Mapping) else None
+    saved_regimes = raw_state.get("component_regimes") if compatible_state else None
     component_regimes = (
         {str(name): list(values) for name, values in saved_regimes.items()}
         if new_observation_count == 0 and isinstance(saved_regimes, Mapping)
         else _component_regimes(observations)
     )
-    saved_mode_profiles = raw_state.get("mode_load_profiles") if isinstance(raw_state, Mapping) else None
+    saved_mode_profiles = raw_state.get("mode_load_profiles") if compatible_state else None
     mode_load_profiles: dict[str, StateLoadDynamics] = {}
     if new_observation_count == 0 and isinstance(saved_mode_profiles, Mapping):
         for name, value in saved_mode_profiles.items():
             if not isinstance(value, Mapping):
                 continue
             try:
-                mode_load_profiles[str(name)] = StateLoadDynamics.from_dict(value)
+                profile = StateLoadDynamics.from_dict(value)
+                if profile.state == str(name):
+                    mode_load_profiles[str(name)] = profile
             except (KeyError, TypeError, ValueError):
                 continue
-    else:
-        for name in sorted(set(str(value) for value in observations["direct_mode"])):
-            profile = learn_state_load_dynamics(observations, name)
-            if profile is not None and profile.sample_count >= 8:
-                mode_load_profiles[name] = profile
-    saved_tier_profiles = raw_state.get("uas_tier_profiles") if isinstance(raw_state, Mapping) else None
+    phase_observations = observations.loc[observations["direct_state_confirmed"].fillna(False).astype(bool)]
+    confirmed_modes = sorted(
+        set(str(value) for value in phase_observations["direct_mode"])
+        - {MODE_UNKNOWN_AC}
+    )
+    for name in confirmed_modes:
+        if new_observation_count == 0 and name in mode_load_profiles:
+            continue
+        profile = learn_state_load_dynamics(phase_observations, name)
+        if profile is not None and profile.sample_count >= 8:
+            mode_load_profiles[name] = profile
+    saved_tier_profiles = raw_state.get("uas_tier_profiles") if compatible_state else None
     uas_tier_profiles = (
         {str(name): dict(values) for name, values in saved_tier_profiles.items()}
         if new_observation_count == 0 and isinstance(saved_tier_profiles, Mapping)
         else _uas_tier_profiles(observations)
     )
-    if new_observation_count > 0 or not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
+    if new_observation_count > 0 or not compatible_state:
         for name, index in COMPONENT_INDEX.items():
             moment = _regime_component_moments(component_regimes, name)
             if moment is None:
@@ -729,6 +771,10 @@ def fit_operating_model(
             "EstimatedModeLoadWatts": (("time",), np.asarray(estimated_loads, dtype=np.float32)),
             "LoadInnovationWatts": (("time",), np.asarray(innovations, dtype=np.float32)),
             "LoadObservationOutlier": (("time",), np.asarray(outliers, dtype=np.float32)),
+            "DirectStateConfirmed": (
+                ("time",),
+                observations["direct_state_confirmed"].to_numpy(dtype=np.uint8),
+            ),
             "OperatingEventAgreement": (("time",), observations["operator_event_agreement"].to_numpy(dtype=np.float32)),
             "OperatingModeProbability": (("time", "mode"), probabilities.astype(np.float32)),
             "ComponentRegimeMeanWatts": (("component", "regime"), np.asarray([
@@ -766,6 +812,7 @@ def fit_operating_model(
             "schema_version": str(STATE_SCHEMA_VERSION),
             "model": MODEL_NAME,
             "model_version": str(MODEL_VERSION),
+            "load_phase_schema_version": str(LOAD_PHASE_SCHEMA_VERSION),
             "generated_at_utc": _utc_now(),
             "current_mode": current_mode,
             "current_mode_label": mode_label(current_mode),
@@ -788,12 +835,19 @@ def fit_operating_model(
             "observation_frequency": OBSERVATION_FREQUENCY,
             "last_observation_time_utc": latest_observation_time.isoformat(),
             "new_observation_count": str(new_observation_count),
+            "confirmed_state_observation_count": str(int(observations["direct_state_confirmed"].sum())),
         },
     )
     state_ds["OperatingModeCode"].attrs["mode_mapping"] = json.dumps(
         {str(mode_code(value)): mode_label(value) for value in mode_names}, sort_keys=True
     )
     state_ds["OperatingModeConfidence"].attrs["units"] = "1"
+    state_ds["DirectStateConfirmed"].attrs.update(
+        {
+            "long_name": "complete four-outlet PDU state vector available",
+            "flag_values": "0, 1",
+        }
+    )
     for name in ("ObservedLoadWatts", "EstimatedModeLoadWatts", "LoadInnovationWatts"):
         state_ds[name].attrs["units"] = "W"
 
@@ -801,11 +855,13 @@ def fit_operating_model(
         "schema_version": STATE_SCHEMA_VERSION,
         "model": MODEL_NAME,
         "model_version": MODEL_VERSION,
+        "load_phase_schema_version": LOAD_PHASE_SCHEMA_VERSION,
         "updated_at_utc": _utc_now(),
         "current_mode": current_mode,
         "current_mode_confidence": current_confidence,
         "last_observation_time_utc": latest_observation_time.isoformat(),
         "new_observation_count": new_observation_count,
+        "confirmed_state_observation_count": int(observations["direct_state_confirmed"].sum()),
         "learned_modes": list(learned_modes),
         "observed_modes": list(observed_modes),
         "mode_maturity": mode_maturity,
@@ -1875,6 +1931,7 @@ def build_operating_scenarios(
             "schema_version": str(SCENARIO_SCHEMA_VERSION),
             "model": MODEL_NAME,
             "model_version": str(MODEL_VERSION),
+            "load_phase_schema_version": str(LOAD_PHASE_SCHEMA_VERSION),
             "generated_at_utc": _utc_now(),
             "initial_soc_time": issue_time.isoformat(),
             "initial_soc_pct": f"{initial_soc:.6g}",

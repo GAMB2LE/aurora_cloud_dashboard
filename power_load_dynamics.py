@@ -16,7 +16,7 @@ import pandas as pd
 from power_load_contract import ControlledLoadEstimate, controlled_load_member_levels
 
 
-LOAD_PHASE_SCHEMA_VERSION = 1
+LOAD_PHASE_SCHEMA_VERSION = 2
 PHASE_STEADY = "steady"
 PHASE_STARTUP = "startup"
 PHASE_FAN_LOW = "fan_low"
@@ -98,6 +98,15 @@ class StateLoadDynamics:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "StateLoadDynamics":
+        try:
+            schema_version = int(value.get("schema_version", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError("State load dynamics have an invalid schema version") from error
+        if schema_version != LOAD_PHASE_SCHEMA_VERSION:
+            raise ValueError(
+                "State load dynamics use schema "
+                f"{schema_version}; expected {LOAD_PHASE_SCHEMA_VERSION}"
+            )
         profiles = {
             str(name): LoadDistribution.from_dict(profile)
             for name, profile in dict(value.get("phase_profiles", {})).items()

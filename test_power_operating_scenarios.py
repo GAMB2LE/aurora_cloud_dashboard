@@ -18,6 +18,7 @@ from power_operating_scenarios import (
     SCENARIO_OPTIMIZED,
     _align_ensemble_solar_contract,
     _validate_scenario_invariants,
+    build_observation_frame,
     build_operating_scenarios,
     evaluate_custom_schedule,
     fit_operating_model,
@@ -58,8 +59,14 @@ def _training_data() -> tuple[xr.Dataset, xr.Dataset]:
     )
     pdu = xr.Dataset(
         {
+            "PDUOutlet4Watts": (("time",), np.zeros(len(times))),
+            "PDUOutlet4State": (("time",), np.zeros(len(times))),
             "PDUOutlet5Watts": (("time",), np.where(cl61_active, 220.0, 0.0)),
             "PDUOutlet5State": (("time",), cl61_active.astype(float)),
+            "PDUOutlet6Watts": (("time",), np.zeros(len(times))),
+            "PDUOutlet6State": (("time",), np.zeros(len(times))),
+            "PDUOutlet8Watts": (("time",), np.zeros(len(times))),
+            "PDUOutlet8State": (("time",), np.zeros(len(times))),
         },
         coords={"time": times},
     )
@@ -173,6 +180,62 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(result.component_mean[COMPONENT_INDEX["CL61"]], 220.0, delta=20.0)
         probabilities = result.state_dataset["OperatingModeProbability"].values
         np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
+
+    def test_exact_state_confirmation_requires_all_assigned_pdu_outlets(self) -> None:
+        power, pdu = _training_data()
+        partial_pdu = pdu[["PDUOutlet5Watts", "PDUOutlet5State"]]
+
+        observations = build_observation_frame(power, partial_pdu, lookback_days=2)
+
+        self.assertFalse(observations["direct_state_confirmed"].any())
+
+    def test_unconfirmed_high_load_does_not_contaminate_dc_only_profile(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=32, freq="15min")
+        load = np.r_[np.full(12, 200.0), np.full(20, 750.0)]
+        power = xr.Dataset(
+            {
+                "BatterySOC": (("time",), np.linspace(90.0, 86.0, len(times))),
+                "BatteryWatts": (("time",), -load),
+                "SolarWatts_East": (("time",), np.zeros(len(times))),
+                "SolarWatts_South": (("time",), np.zeros(len(times))),
+                "SolarWatts_West": (("time",), np.zeros(len(times))),
+                "ACOutputWatts": (("time",), np.zeros(len(times))),
+                "DCInverterWatts": (("time",), np.full(len(times), 8.0)),
+            },
+            coords={"time": times},
+        )
+        pdu_times = times[:12]
+        pdu = xr.Dataset(
+            {
+                f"PDUOutlet{outlet}{metric}": (("time",), np.zeros(len(pdu_times)))
+                for outlet in (4, 5, 6, 8)
+                for metric in ("Watts", "State")
+            },
+            coords={"time": pdu_times},
+        )
+
+        result = fit_operating_model(power, pdu, lookback_days=2)
+
+        profile = result.mode_load_profiles[MODE_DC_ONLY]
+        self.assertLess(max(value.p90_w for value in profile.phase_profiles.values()), 300.0)
+        self.assertLess(result.component_mean[COMPONENT_INDEX["DC"]], 300.0)
+        self.assertGreater(result.state["confirmed_state_observation_count"], 8)
+
+    def test_incompatible_saved_phase_profile_is_relearned(self) -> None:
+        power, pdu = _training_data()
+        first = fit_operating_model(power, pdu, lookback_days=2)
+        poisoned = json.loads(json.dumps(first.state))
+        saved = poisoned["mode_load_profiles"][MODE_DC_ONLY]
+        saved["schema_version"] = 1
+        for phase in saved["phase_profiles"].values():
+            phase.update({"p10_w": 850.0, "p50_w": 900.0, "p90_w": 950.0})
+
+        second = fit_operating_model(power, pdu, raw_state=poisoned, lookback_days=2)
+
+        rebuilt = second.state["mode_load_profiles"][MODE_DC_ONLY]
+        self.assertEqual(second.state["new_observation_count"], 0)
+        self.assertEqual(rebuilt["schema_version"], 2)
+        self.assertLess(rebuilt["phase_profiles"]["steady"]["p90_w"], 300.0)
 
     def test_saved_state_does_not_retrain_the_same_observations(self) -> None:
         power, pdu = _training_data()
@@ -650,7 +713,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "8")
+                self.assertEqual(state.attrs["model_version"], "9")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
                 scenario_ids = [str(value) for value in scenarios["scenario"].values]

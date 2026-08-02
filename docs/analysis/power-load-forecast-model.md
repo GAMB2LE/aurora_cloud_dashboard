@@ -57,7 +57,7 @@ and P90 load, startup-duration quantiles, fan-phase occupancy, and fan-phase
 dwell time. They do not silently turn the forecast into an uncontrolled
 historical-load trajectory.
 
-The scenario learner is `hybrid_state_space_phases_v8`. Its discrete part is an
+The scenario learner is `hybrid_state_space_phases_v9`. Its discrete part is an
 HMM-like finite-state classifier. Fresh PDU outlet watts provide direct
 evidence for CL61, Radar, HATPRO, UAS, and their combinations; the APS AC
 output and learned total-load level provide secondary evidence. Stale PDU data
@@ -67,22 +67,27 @@ probability supplies a dashboard confidence value.
 
 The continuous part combines a robust Kalman learner over additive components
 with an exact-state phase learner. The components are DC, CL61, Radar, HATPRO,
-UAS, and Unknown AC. Every observation supplies a total power-balance equation
-and fresh PDU outlet watts can additionally constrain an individual kit
-component. Innovation clipping prevents a transition spike or a bad sample
-from moving the learned level arbitrarily. Within each exact state, robust
-change detection requires at least `20 W`, `8%` of load, and three robust noise
-scales before it accepts a phase boundary. A phase needs at least four samples;
-an exact state needs at least eight samples before its phase profile is used.
+UAS, and Unknown AC. A whole-station power-balance observation can train a
+controlled state only when UAS, CL61, Radar, and HATPRO each have direct PDU
+evidence at that timestamp. Direct outlet watts can still constrain their own
+instrument component. This prevents a high-load interval with a partial or
+missing PDU vector from becoming a false `DC-Only` fan regime. Innovation
+clipping prevents a transition spike or bad sample from moving the learned
+level arbitrarily. Within each exact state, robust change detection requires at
+least `20 W`, `8%` of load, and three robust noise scales before it accepts a
+phase boundary. A phase needs at least four samples; an exact state needs at
+least eight samples before its phase profile is used.
 
 Recognition and durable learning remain separate. The latest state can change
 as soon as fresh PDU and APS data identify it, but saved component parameters
 advance only for timestamps newer than the previous training cursor. This makes
 the five-minute process incremental and idempotent. Zero-solar battery
-discharge remains the strongest evidence for the DC component because it
-measures the complete battery-side load. The learner does not shift the DC
-component to make all components add up to a fixed target; that earlier
-adjustment could create an impossible zero-watt DC baseline.
+discharge with a complete PDU state vector remains the strongest evidence for
+the DC component because it measures the complete battery-side load. The
+learner uses the directly confirmed PDU mode, rather than the smoothed
+classifier state, for that update. It does not shift the DC component to make
+all components add up to a fixed target; that earlier adjustment could create
+an impossible zero-watt DC baseline.
 
 The UAS MQTT log is aligned to the same 15-minute operating-state timeline.
 UAS load is learned by effective tier. A tier becomes a reliable learned input
