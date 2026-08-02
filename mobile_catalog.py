@@ -132,7 +132,6 @@ OPERATIONS_STREAMS = (
         "title": "WXcam",
         "source": "wxcam_source_sync_service_healthy_state",
         "services": (
-            "wxcam_append_service_healthy_state",
             "wxcam_catalog_service_healthy_state",
             "wxcam_daily_videos_service_healthy_state",
         ),
@@ -404,6 +403,14 @@ def _archive_operator_status(archive_health: dict[str, Any]) -> dict[str, str]:
     all measured gap counters are zero, the operator-facing state is amber: the
     archive is not known to be incomplete, but new pruning remains paused.
     """
+    supplied = archive_health.get("operator_status")
+    if isinstance(supplied, dict):
+        level = normalize_level(supplied.get("level"))
+        title = str(supplied.get("title") or "").strip()
+        detail = str(supplied.get("detail") or "").strip()
+        if level in {"green", "amber", "red"} and title and detail:
+            return {"level": level, "title": title, "detail": detail}
+
     contract_level = normalize_level(archive_health.get("overall_level"))
     failures = archive_health.get("failures")
     if not isinstance(failures, list):
@@ -521,21 +528,21 @@ def operations() -> dict[str, Any]:
         or snapshot.get("time_utc")
         or snapshot.get("snapshot_time_utc")
     )
-    active_alerts = _active_alerts(alert_state)
-    if normalize_level(archive_health.get("overall_level")) == "red":
+    active_alerts = [
+        alert
+        for alert in _active_alerts(alert_state)
+        if alert.get("id") not in {"archive:health_red", "archive:verification"}
+    ]
+    if normalize_level(archive_status["level"]) in {"amber", "red"}:
         if archive_health:
             active_alerts = [
                 {
-                    "id": "archive:health_red",
+                    "id": "archive:verification",
                     "title": archive_status["title"],
                     "level": archive_status["level"],
                     "detail": archive_status["detail"],
                 },
-                *[
-                    alert
-                    for alert in active_alerts
-                    if alert.get("id") != "archive:health_red"
-                ],
+                *active_alerts,
             ]
 
     check_counts = _check_counts(health, stream_states)
@@ -557,6 +564,7 @@ def operations() -> dict[str, Any]:
         "checkCounts": check_counts,
         "streamStates": stream_states,
         "rootCauseGroups": _root_cause_groups(snapshot, stream_states),
+        "archiveDelivery": _archive_delivery(archive_health, snapshot),
         "alerts": active_alerts,
         "trendCards": _trend_cards(snapshot),
         "sources": {
@@ -645,6 +653,32 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
     if not isinstance(archive_failures, list):
         archive_failures = []
     archive_detail = snapshot.get("archive_health_detail")
+    delivery_pending = int(snapshot.get("archive_delivery_pending_count") or 0)
+    delivery_gws = int(snapshot.get("archive_delivery_gws_pending_count") or 0)
+    delivery_object = int(
+        snapshot.get("archive_delivery_object_store_pending_count") or 0
+    )
+    delivery_oldest = float(
+        snapshot.get("archive_delivery_oldest_pending_age_minutes") or 0
+    )
+    if delivery_pending:
+        delivery_detail = (
+            f"Newest-first live queue: {delivery_pending:,} files pending "
+            f"(GWS {delivery_gws:,}, object store {delivery_object:,}); "
+            f"oldest {delivery_oldest:.1f} min."
+        )
+    elif snapshot:
+        delivery_detail = "Newest-first live delivery queue is clear."
+    else:
+        delivery_detail = "Live delivery queue is unavailable."
+    archive_root_detail = " ".join(
+        part
+        for part in (
+            delivery_detail,
+            str(archive_detail or "").strip(),
+        )
+        if part
+    )
     return [
         {"id": "source", "title": "Source freshness", "level": "red" if source_issues else "green" if snapshot else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "No source freshness issues"},
         {"id": "processing", "title": "Local processing", "level": "red" if service_issues else "green" if snapshot else "unknown", "detail": ", ".join(service_issues[:4]) if service_issues else "Append, catalog, and quicklook services healthy"},
@@ -654,8 +688,8 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
             "title": "GWS and object-store archive",
             "level": archive_level,
             "detail": (
-                str(archive_detail)
-                if archive_detail
+                archive_root_detail
+                if archive_root_detail
                 else "; ".join(str(item) for item in archive_failures)
                 if archive_failures
                 else "Archive verification is healthy"
@@ -665,6 +699,42 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
         },
         {"id": "dashboard", "title": "Public dashboard", "level": dashboard_level, "detail": "Dashboard endpoint probes are healthy" if dashboard_level == "green" else "Dashboard endpoint probe needs attention"},
     ]
+
+
+def _archive_delivery(
+    archive_health: dict[str, Any], snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    evidence = archive_health.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    progress = evidence.get("object_store_inventory_progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    return {
+        "mode": "newest-first",
+        "pendingFiles": int(snapshot.get("archive_delivery_pending_count") or 0),
+        "pendingBytes": int(snapshot.get("archive_delivery_pending_bytes") or 0),
+        "gwsPendingFiles": int(
+            snapshot.get("archive_delivery_gws_pending_count") or 0
+        ),
+        "objectStorePendingFiles": int(
+            snapshot.get("archive_delivery_object_store_pending_count") or 0
+        ),
+        "oldestPendingAgeMinutes": float(
+            snapshot.get("archive_delivery_oldest_pending_age_minutes") or 0
+        ),
+        "lastSuccessAgeMinutes": snapshot.get(
+            "archive_delivery_last_success_age_minutes"
+        ),
+        "strictAudit": {
+            "state": progress.get("state"),
+            "completedJobs": progress.get("completed_jobs", []),
+            "totalJobs": int(progress.get("total_jobs") or 0),
+            "currentJobs": progress.get("current_jobs")
+            or ([progress.get("current_job")] if progress.get("current_job") else []),
+            "phase": progress.get("phase"),
+        },
+    }
 
 
 def _trend_cards(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

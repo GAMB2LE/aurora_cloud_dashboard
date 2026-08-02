@@ -15,6 +15,12 @@ The cloud archive monitor publishes:
 the mobile catalog. It must not infer pruning safety from display artifacts
 or enable, stop, or repair archive writers.
 
+The mobile response also exposes `operations.archiveDelivery`. This is
+presentation-only telemetry for the newest-first raw queue: total pending
+files and bytes, independent GWS/object-store pending counts, oldest pending
+age, last successful delivery, and the current strict-audit job/phase. Queue
+receipts are never interpreted as pruning evidence.
+
 ## What the status means
 
 The production backup path is edge source -> cloud raw mirror -> two
@@ -28,12 +34,26 @@ The contract deliberately separates current delivery from archive failure:
 | Contract state | Dashboard meaning |
 | --- | --- |
 | `*_pending_upload_count` | Product files are inside their 30-hour settle window and are not yet required for parity. Treat as pending/in progress, not red parity. |
+| `archive_delivery_*_pending_count` | Newly landed raw files are queued for one or both destinations. Show as delivery progress; it is not yet independent parity proof. |
 | `*_missing_count` or `*_mismatch_count` | Settled archive data is absent or differs. This is a real archive problem. |
 | inventory running with a recent progress heartbeat | The sharded verifier is making progress; report age alone is not a stall. |
 | running with a heartbeat older than five minutes | Inventory is stalled. |
 | clean streak `1` | One clean complete report; stable parity still requires another distinct report. |
 | `object_store_stable_parity_state=1` | Two complete clean reports established the global stability gate. |
 | `*_prune_ready_state=1` | One raw stream has age-bounded candidates; this is not permission by itself. |
+
+The dashboard renders the infrastructure contract's `operator_status` rather
+than rebuilding severity from raw metric names:
+
+- green means delivery and the latest complete strict audit are healthy;
+- amber means verification is running or delayed while the last complete
+  report was clean and no measured gaps exist; pruning is paused;
+- red means a settled file is missing or mismatched, a required writer failed,
+  or the last complete evidence is unsafe.
+
+For example, a JASMIN object-store listing timeout after a clean report is
+shown as “Archive verification failed” with the affected job and a clear
+statement that new pruning is paused. It is not labelled as archive loss.
 
 Raw object parity remains strict for files older than six hours. Products and
 quicklooks younger than 30 hours are excluded from stable parity and reported

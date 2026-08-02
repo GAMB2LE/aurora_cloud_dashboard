@@ -75,6 +75,22 @@ def test_red_archive_contract_generates_one_authoritative_alert():
     assert "object_store_raw_missing=3" in archive[0].message
 
 
+def test_red_archive_alert_uses_operator_wording():
+    alerts = evaluate_alerts(
+        {
+            "archive_health_level": "red",
+            "archive_health_title": "Archive delivery needs action",
+            "archive_health_detail": "Object storage is missing 3 settled raw files.",
+            "archive_health_failures": ["object_store_raw_missing=3"],
+            "mirror_summary_recent_state": 1,
+        }
+    )
+
+    archive = next(alert for alert in alerts if alert.id == "archive:health_red")
+    assert archive.title == "Archive delivery needs action"
+    assert archive.message == "Object storage is missing 3 settled raw files."
+
+
 def test_recent_manifest_preserves_real_stream_staleness():
     ids = _ids(
         {

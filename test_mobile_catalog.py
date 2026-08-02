@@ -48,7 +48,7 @@ class MobileCatalogTests(unittest.TestCase):
         archive_alert = next(
             alert
             for alert in response["alerts"]
-            if alert["id"] == "archive:health_red"
+            if alert["id"] == "archive:verification"
         )
         self.assertIn("object_store_raw_missing=3", archive_alert["detail"])
         archive_group = next(
@@ -129,7 +129,7 @@ class MobileCatalogTests(unittest.TestCase):
         archive_alert = next(
             alert
             for alert in response["alerts"]
-            if alert["id"] == "archive:health_red"
+            if alert["id"] == "archive:verification"
         )
         self.assertEqual(response["overallLevel"], "amber")
         self.assertEqual(response["checkCounts"]["amber"], 1)
@@ -147,8 +147,73 @@ class MobileCatalogTests(unittest.TestCase):
             if group["id"] == "archive"
         )
         self.assertEqual(archive_group["level"], "amber")
-        self.assertEqual(archive_group["detail"], archive_alert["detail"])
+        self.assertIn(archive_alert["detail"], archive_group["detail"])
+        self.assertIn("Newest-first live delivery queue is clear", archive_group["detail"])
         self.assertIn("last complete check was clean", response["summary"])
+
+    def test_operations_uses_infrastructure_operator_status_while_audit_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot.json"
+            health = root / "health.json"
+            archive = root / "archive.json"
+            alerts = root / "alerts.json"
+            snapshot.write_text('{"time_utc":"2026-08-02T12:00:00Z"}')
+            health.write_text('{"overall_level":"green"}')
+            archive.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-08-02T12:00:00Z",
+                        "overall_level": "amber",
+                        "failures": ["object_store_evidence_stale_hours=14.5"],
+                        "operator_status": {
+                            "level": "amber",
+                            "title": "Archive verification is running",
+                            "detail": (
+                                "Strict audit 4 of 5 families complete; checking manifests. "
+                                "Last complete verification was clean. New pruning is paused."
+                            ),
+                            "pruning_paused": True,
+                        },
+                        "metrics": {
+                            "archive_delivery_pending_count": 12,
+                            "archive_delivery_gws_pending_count": 0,
+                            "archive_delivery_object_store_pending_count": 12,
+                        },
+                    }
+                )
+            )
+            alerts.write_text(
+                json.dumps(
+                    {
+                        "active": {
+                            "archive:health_red": {
+                                "active": True,
+                                "title": "Archive health is red",
+                                "level": "red",
+                            }
+                        }
+                    }
+                )
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                },
+            ):
+                response = mobile_catalog.operations()
+
+        self.assertEqual(response["overallLevel"], "amber")
+        archive_alerts = [
+            alert for alert in response["alerts"] if alert["id"].startswith("archive:")
+        ]
+        self.assertEqual(len(archive_alerts), 1)
+        self.assertEqual(archive_alerts[0]["id"], "archive:verification")
+        self.assertEqual(archive_alerts[0]["title"], "Archive verification is running")
 
     def test_power_trace_sampling_is_bounded_and_preserves_extrema(self) -> None:
         import numpy as np

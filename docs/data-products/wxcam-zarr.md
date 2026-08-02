@@ -4,7 +4,8 @@ Path:
 
 - `/data/aurora/products/wxcam/wxcam.zarr`
 
-The active WXcam pixel Zarr is a local mutable working product. It is excluded
+The WXcam pixel Zarr was a local mutable working product. Production no longer
+appends to it. It is excluded
 from both GWS and object-store product writers because it can be rebuilt from
 the archived HDR JPG imagery. It is not a canonical backup and is never
 accepted as raw-retention evidence.
@@ -14,8 +15,10 @@ accepted as raw-retention evidence.
 The WXcam Zarr contains HDR JPG image data only. MP4 products are stored
 separately.
 
-The active store starts at `2026-07-04T00:00:00Z`; earlier WXcam media are
-left in raw/catalog products and are not decoded into this Zarr.
+The retired store started at `2026-07-04T00:00:00Z`; earlier WXcam media were
+left in raw/catalog products and were not decoded into this Zarr. A guarded
+infrastructure cleanup may remove the local directory only after fresh strict
+GWS/object-store verification is green and the appender timer is disabled.
 
 ## Root attributes
 
@@ -51,8 +54,8 @@ Each group stores one xarray dataset with:
 ## Group geometry
 
 Expected geometry is `3120 x 3040` for `fish_hdr` and `2880 x 750` for
-`pano_hdr`. The time count and coverage advance as the local appender runs and
-must be inspected live rather than copied from an old GWS snapshot.
+`pano_hdr`. The final time count and coverage are historical implementation
+details. They do not advance after the production appender is disabled.
 
 ## Important note
 
@@ -64,3 +67,7 @@ The dashboard does not render WXcam directly from this Zarr:
 The retained source archive is the immutable FISH/PANO HDR JPG and MP4 tree in
 the cloud raw mirror, GWS, and object storage. The SQLite catalog, daily
 videos, and hourly thumbnails are separately archived products.
+
+No dashboard feature depends on the pixel Zarr. Recreate it from canonical HDR
+media in a separate working path if a future analysis needs array access; do
+not restore the production appender merely to satisfy archive monitoring.

@@ -68,7 +68,6 @@ STREAM_SERVICE_KEYS = {
     "WXcam": (
         "wxcam_source_sync_service_healthy_state",
         "wxcam_catalog_service_healthy_state",
-        "wxcam_append_service_healthy_state",
         "wxcam_daily_videos_service_healthy_state",
     ),
 }
@@ -233,10 +232,17 @@ def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bo
         alerts.append(
             AlertRule(
                 id="archive:health_red",
-                title="Archive health is red",
+                title=str(
+                    snapshot.get("archive_health_title")
+                    or "Archive delivery or verification needs action"
+                ),
                 message=(
-                    "The infrastructure-owned archive health contract is red. "
-                    + ("; ".join(str(item) for item in failures) if failures else "No failure detail was supplied.")
+                    str(snapshot.get("archive_health_detail") or "").strip()
+                    or (
+                        "; ".join(str(item) for item in failures)
+                        if failures
+                        else "No failure detail was supplied."
+                    )
                 ),
                 value=len(failures),
                 threshold="archive health level = red",

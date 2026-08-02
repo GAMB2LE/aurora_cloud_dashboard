@@ -195,8 +195,6 @@ PROCESSING_UNITS = (
     "aurora-power-soc-ensemble.service",
     "aurora-wxcam-catalog.timer",
     "aurora-wxcam-catalog.service",
-    "aurora-wxcam-append.timer",
-    "aurora-wxcam-append.service",
     "aurora-wxcam-daily-videos.timer",
     "aurora-wxcam-daily-videos.service",
     "aurora-ops-monitor-append.timer",
@@ -932,8 +930,19 @@ def _merge_archive_health(record: dict[str, Any], health_path: Path, now: dateti
         return
 
     record["archive_health_schema_version"] = health.get("schema_version")
-    record["archive_health_level"] = health.get("overall_level", "red")
+    operator = health.get("operator_status")
+    if not isinstance(operator, dict):
+        operator = {}
+    record["archive_contract_level"] = health.get("overall_level", "red")
+    record["archive_health_level"] = operator.get(
+        "level", health.get("overall_level", "red")
+    )
     record["archive_health_failures"] = health.get("failures", [])
+    record["archive_health_title"] = operator.get("title", "")
+    record["archive_health_detail"] = operator.get("detail", "")
+    record["archive_pruning_paused_state"] = int(
+        bool(operator.get("pruning_paused"))
+    )
     generated = health.get("generated_at")
     if generated:
         try:
