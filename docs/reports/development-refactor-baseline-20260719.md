@@ -1,6 +1,7 @@
 # Development dashboard refactor baseline
 
-Recorded on 19 July 2026 before the staged internal simplification.
+Recorded on 19 July 2026 before the staged internal simplification. This is a
+historical regression baseline, not a description of the current deployment.
 
 ## Release
 

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
 import sqlite3
+from time import monotonic
 from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
+from display_artifact_manifest import load_manifest
 from uas_mqtt import load_uas_mqtt_log
 from instrument_registry import (
     INSTRUMENTS,
@@ -27,6 +30,7 @@ APP_DIR = Path(__file__).resolve().parent
 DATE_TOKEN_RE = re.compile(r"(20\d{6})")
 WXCAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 AURORACAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
+MOBILE_POWER_MAX_POINTS = max(100, min(int(os.environ.get("AURORA_MOBILE_POWER_MAX_POINTS", "160")), 160))
 
 
 WXCAM_STREAMS = {
@@ -45,6 +49,34 @@ PDU_INSTRUMENTS = tuple(
 )
 PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
+SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
+OPERATIONS_TREND_WINDOW = timedelta(days=7)
+OPERATIONS_TREND_CACHE_SECONDS = 60.0
+OPERATIONS_TREND_FRESHNESS = timedelta(minutes=30)
+
+OPERATIONS_TREND_STREAM_PREFIXES = (
+    "cl61",
+    "radar",
+    "hatpro",
+    "vaisalamet",
+    "asfs_logger",
+    "asfs_fast_sonic",
+    "power",
+    "wxcam",
+)
+OPERATIONS_PDU_STREAM_BY_OUTLET = {5: "cl61", 6: "radar", 8: "hatpro"}
+OPERATIONS_STORAGE_KEYS = (
+    "host_celine_source_used_pct",
+    "host_celine_data_used_pct",
+    "host_ass_data_used_pct",
+    "host_ass_root_used_pct",
+    "host_aps_data_used_pct",
+    "host_aps_root_used_pct",
+    "aurora_data_used_pct",
+    "aurora_root_used_pct",
+    "gws_storage_used_pct",
+)
+_OPERATIONS_TREND_CACHE: dict[str, Any] = {}
 
 # These Science-tab products have no individual PDU outlet state. Their mobile
 # status is therefore collection freshness, never an inferred power state.
@@ -144,6 +176,47 @@ def power_display_summary_path() -> Path:
     return env_path("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr")
 
 
+def power_display_section_path(section: str) -> Path:
+    """Return the compact Power product used by one presentation section."""
+    if section == "current":
+        return env_path("POWER_CURRENT_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_current_display.zarr")
+    if section == "forecast":
+        return env_path("POWER_FORECAST_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_forecast_display.zarr")
+    return power_display_summary_path()
+
+
+def power_prewarm_path(section: str) -> Path | None:
+    """Return the published Plotly JSON for one Power section, if valid."""
+    if section not in {"current", "forecast"}:
+        return None
+    root = env_path("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm")
+    return root / f"power_{section}_latest_interactive.json"
+
+
+def _representative_power_indices(values, maximum: int = MOBILE_POWER_MAX_POINTS):
+    """Keep endpoints and local extrema without overloading native Charts."""
+    import numpy as np
+
+    count = len(values)
+    if count <= maximum:
+        return np.arange(count, dtype=int)
+    # Two extrema per bucket retain peaks/dips that uniform stride sampling can
+    # hide, while bounding every native trace to the mobile contract.
+    bucket_count = max(1, (maximum - 2) // 2)
+    edges = np.linspace(0, count, bucket_count + 1, dtype=int)
+    selected = {0, count - 1}
+    for left, right in zip(edges[:-1], edges[1:], strict=True):
+        if right <= left:
+            continue
+        bucket = values[left:right]
+        selected.add(left + int(np.argmin(bucket)))
+        selected.add(left + int(np.argmax(bucket)))
+    indices = np.asarray(sorted(selected), dtype=int)
+    if len(indices) <= maximum:
+        return indices
+    return indices[np.linspace(0, len(indices) - 1, maximum, dtype=int)]
+
+
 def power_operating_scenario_paths() -> tuple[Path, ...]:
     """Locate the authoritative operating-plan product for native clients."""
     configured = env_path(
@@ -166,8 +239,19 @@ def operations_health_path() -> Path:
     return env_path("OPS_MONITOR_LATEST_HEALTH", "/data/aurora/products/ops_monitor/health/latest_health.json")
 
 
+def archive_health_path() -> Path:
+    return env_path(
+        "ARCHIVE_HEALTH_PATH",
+        "/data/aurora/internal/archive_status/health-v1.json",
+    )
+
+
 def operations_alert_state_path() -> Path:
     return env_path("OPS_MONITOR_ALERT_STATE", "/data/aurora/products/ops_monitor/alerts/state.json")
+
+
+def operations_zarr_path() -> Path:
+    return env_path("OPS_MONITOR_ZARR_PATH", "/data/aurora/products/ops_monitor/ops_monitor.zarr")
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
@@ -193,6 +277,11 @@ def file_record(path: Path) -> dict[str, Any]:
         "sizeBytes": stat_result.st_size,
         "modifiedAt": datetime.fromtimestamp(stat_result.st_mtime, UTC).isoformat().replace("+00:00", "Z"),
     }
+
+
+def display_artifacts() -> dict[str, Any]:
+    """Return the latest publishable dashboard-artifact manifest when present."""
+    return load_manifest()
 
 
 def normalize_level(value: Any) -> str:
@@ -306,31 +395,166 @@ def manifest() -> dict[str, Any]:
     }
 
 
+def _archive_operator_status(archive_health: dict[str, Any]) -> dict[str, str]:
+    """Translate the fail-closed archive contract into operator language.
+
+    Infrastructure deliberately stays red whenever fresh verification evidence
+    is unavailable so retention cannot delete anything.  When the only problem
+    is a failed inventory listing, the previous complete report is clean, and
+    all measured gap counters are zero, the operator-facing state is amber: the
+    archive is not known to be incomplete, but new pruning remains paused.
+    """
+    contract_level = normalize_level(archive_health.get("overall_level"))
+    failures = archive_health.get("failures")
+    if not isinstance(failures, list):
+        failures = []
+    failure_text = [str(item) for item in failures]
+    metrics = archive_health.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    evidence = archive_health.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    gate = evidence.get("object_store_gate")
+    if not isinstance(gate, dict):
+        gate = {}
+    progress = evidence.get("object_store_inventory_progress")
+    if not isinstance(progress, dict):
+        progress = {}
+
+    gap_keys = (
+        "streams_gws_issue_count",
+        "object_store_all_missing_count",
+        "object_store_all_mismatch_count",
+        "gws_all_missing_count",
+        "gws_all_mismatch_count",
+    )
+    measured_gap_free = all(
+        isinstance(metrics.get(key), int | float) and float(metrics[key]) == 0
+        for key in gap_keys
+    )
+    last_complete_clean = bool(gate.get("clean")) and bool(
+        gate.get("stable_parity")
+    )
+    verification_only = bool(failure_text) and all(
+        item.startswith("object_store_evidence_stale_hours=")
+        or item.startswith("object_store_inventory_progress_stale_minutes=")
+        or item
+        == "archive_service_unhealthy=aurora-object-store-inventory.service"
+        for item in failure_text
+    )
+    inventory_failed = progress.get("state") == "failed"
+
+    if (
+        contract_level == "red"
+        and measured_gap_free
+        and last_complete_clean
+        and verification_only
+        and inventory_failed
+    ):
+        error = str(progress.get("error") or "")
+        if "asfs_fast_gas" in error:
+            target = "ASFS fast-gas products"
+        else:
+            target = "archive products"
+        return {
+            "level": "amber",
+            "title": "Archive verification failed",
+            "detail": (
+                f"JASMIN object-store listing timed out for {target}. "
+                "Last complete verification was clean. New pruning is paused "
+                "until verification succeeds."
+            ),
+        }
+
+    if contract_level == "green":
+        return {
+            "level": "green",
+            "title": "Archive verification is healthy",
+            "detail": "Archive verification is healthy",
+        }
+    return {
+        "level": contract_level,
+        "title": (
+            "Archive health is red"
+            if contract_level == "red"
+            else "Archive verification is unavailable"
+        ),
+        "detail": "; ".join(failure_text) or "No failure detail was supplied.",
+    }
+
+
 def operations() -> dict[str, Any]:
     health = read_json_file(operations_health_path())
     snapshot = read_json_file(operations_snapshot_path())
+    archive_health = read_json_file(archive_health_path())
+    archive_status = _archive_operator_status(archive_health)
+    archive_metrics = archive_health.get("metrics", {})
+    if isinstance(archive_metrics, dict):
+        snapshot.update(archive_metrics)
+    snapshot["archive_contract_level"] = archive_health.get("overall_level")
+    snapshot["archive_health_level"] = archive_status["level"]
+    snapshot["archive_health_failures"] = archive_health.get("failures", [])
+    snapshot["archive_health_detail"] = archive_status["detail"]
     alert_state = read_json_file(operations_alert_state_path())
 
     health_error = health.get("_error")
     snapshot_error = snapshot.get("_error")
-    overall = normalize_level(health.get("overall_level") or snapshot.get("overall_level"))
+    overall = normalize_level(
+        archive_status["level"]
+        if archive_health
+        else health.get("overall_level") or snapshot.get("overall_level")
+    )
 
     stream_states = [_stream_state(snapshot, spec) for spec in OPERATIONS_STREAMS]
-    if overall == "unknown":
-        if any(stream["level"] == "red" for stream in stream_states):
-            overall = "red"
-        elif any(stream["level"] == "green" for stream in stream_states):
-            overall = "green"
+    if any(stream["level"] == "red" for stream in stream_states):
+        overall = "red"
+    elif overall == "unknown" and any(
+        stream["level"] == "green" for stream in stream_states
+    ):
+        overall = "green"
 
-    updated_at = health.get("time_utc") or health.get("snapshot_time_utc") or snapshot.get("time_utc") or snapshot.get("snapshot_time_utc")
+    updated_at = (
+        archive_health.get("generated_at")
+        or health.get("time_utc")
+        or health.get("snapshot_time_utc")
+        or snapshot.get("time_utc")
+        or snapshot.get("snapshot_time_utc")
+    )
     active_alerts = _active_alerts(alert_state)
+    if normalize_level(archive_health.get("overall_level")) == "red":
+        if archive_health:
+            active_alerts = [
+                {
+                    "id": "archive:health_red",
+                    "title": archive_status["title"],
+                    "level": archive_status["level"],
+                    "detail": archive_status["detail"],
+                },
+                *[
+                    alert
+                    for alert in active_alerts
+                    if alert.get("id") != "archive:health_red"
+                ],
+            ]
+
+    check_counts = _check_counts(health, stream_states)
+    archive_level = normalize_level(archive_status["level"])
+    if archive_level in check_counts:
+        check_counts[archive_level] = check_counts.get(archive_level, 0) + 1
 
     return {
         "serverTime": utc_now_iso(),
         "updatedAt": updated_at,
         "overallLevel": overall,
-        "summary": _operations_summary(overall, stream_states, health_error, snapshot_error),
-        "checkCounts": _check_counts(health, stream_states),
+        "summary": _operations_summary(
+            overall,
+            stream_states,
+            health_error,
+            snapshot_error,
+            archive_status,
+        ),
+        "checkCounts": check_counts,
         "streamStates": stream_states,
         "rootCauseGroups": _root_cause_groups(snapshot, stream_states),
         "alerts": active_alerts,
@@ -338,6 +562,7 @@ def operations() -> dict[str, Any]:
         "sources": {
             "health": {**file_record(operations_health_path()), "path": str(operations_health_path())},
             "snapshot": {**file_record(operations_snapshot_path()), "path": str(operations_snapshot_path())},
+            "archiveHealth": {**file_record(archive_health_path()), "path": str(archive_health_path())},
         },
     }
 
@@ -374,7 +599,13 @@ def _stream_state(snapshot: dict[str, Any], spec: dict[str, Any]) -> dict[str, A
     }
 
 
-def _operations_summary(overall: str, streams: list[dict[str, Any]], health_error: Any, snapshot_error: Any) -> str:
+def _operations_summary(
+    overall: str,
+    streams: list[dict[str, Any]],
+    health_error: Any,
+    snapshot_error: Any,
+    archive_status: dict[str, str],
+) -> str:
     if health_error:
         return f"Health JSON error: {health_error}"
     if snapshot_error:
@@ -385,6 +616,8 @@ def _operations_summary(overall: str, streams: list[dict[str, Any]], health_erro
         return f"{red_count} stream group{'s' if red_count != 1 else ''} need attention"
     if unknown_count == len(streams):
         return "No operations snapshot available"
+    if archive_status.get("level") == "amber":
+        return "Archive verification is delayed; the last complete check was clean"
     if overall == "green":
         return "All visible stream groups are healthy"
     return "Operations status is partially available"
@@ -407,28 +640,193 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
     service_issues = [stream["title"] for stream in streams if stream["level"] == "red" and stream["title"] not in source_issues]
     storage_level = "red" if any(float(snapshot.get(key, 0) or 0) >= 80 for key in ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")) else "green" if snapshot else "unknown"
     dashboard_level = level_from_booleans([snapshot.get("dashboard_http_healthy_state"), snapshot.get("primary_dashboard_http_healthy_state"), snapshot.get("standby_dashboard_http_healthy_state")])
+    archive_level = normalize_level(snapshot.get("archive_health_level"))
+    archive_failures = snapshot.get("archive_health_failures")
+    if not isinstance(archive_failures, list):
+        archive_failures = []
+    archive_detail = snapshot.get("archive_health_detail")
     return [
         {"id": "source", "title": "Source freshness", "level": "red" if source_issues else "green" if snapshot else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "No source freshness issues"},
         {"id": "processing", "title": "Local processing", "level": "red" if service_issues else "green" if snapshot else "unknown", "detail": ", ".join(service_issues[:4]) if service_issues else "Append, catalog, and quicklook services healthy"},
         {"id": "storage", "title": "Storage pressure", "level": storage_level, "detail": "Storage is below alert thresholds" if storage_level == "green" else "Storage needs attention"},
+        {
+            "id": "archive",
+            "title": "GWS and object-store archive",
+            "level": archive_level,
+            "detail": (
+                str(archive_detail)
+                if archive_detail
+                else "; ".join(str(item) for item in archive_failures)
+                if archive_failures
+                else "Archive verification is healthy"
+                if archive_level == "green"
+                else "Archive verification evidence is unavailable"
+            ),
+        },
         {"id": "dashboard", "title": "Public dashboard", "level": dashboard_level, "detail": "Dashboard endpoint probes are healthy" if dashboard_level == "green" else "Dashboard endpoint probe needs attention"},
     ]
 
 
 def _trend_cards(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    history = _operations_trend_values(_intentionally_paused_streams())
     specs = (
-        ("storage", "Worst storage use", "%", ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")),
-        ("battery-soc", "APS state of charge", "%", ("BatterySOC", "power_battery_soc")),
-        ("battery-voltage", "APS battery voltage", "V", ("DCInverterVolts", "power_battery_voltage")),
+        ("storage", "Worst storage use", "%", OPERATIONS_STORAGE_KEYS),
+        ("battery-soc", "APS state of charge", "%", ("aps_battery_soc_pct", "BatterySOC", "power_battery_soc")),
+        ("battery-voltage", "APS battery voltage", "V", ("aps_battery_voltage_v", "DCInverterVolts", "power_battery_voltage")),
         ("source-lag", "Worst source lag", "min", ("worst_source_lag_min", "source_lag_max_min")),
         ("gws-lag", "Worst GWS lag", "min", ("worst_gws_lag_min", "gws_lag_max_min")),
     )
     cards: list[dict[str, Any]] = []
     for card_id, title, unit, keys in specs:
         values = [snapshot.get(key) for key in keys if isinstance(snapshot.get(key), int | float)]
-        value = max(values) if values and "Worst" in title else values[0] if values else None
+        if values:
+            value = max(values) if card_id in {"storage", "source-lag", "gws-lag"} else values[0]
+        else:
+            value = history.get(card_id)
         cards.append({"id": card_id, "title": title, "value": value, "unit": unit, "level": _trend_level(card_id, value)})
     return cards
+
+
+def _intentionally_paused_streams() -> set[str]:
+    states, _detail = _pdu_power_snapshot()
+    return {
+        prefix
+        for outlet, prefix in OPERATIONS_PDU_STREAM_BY_OUTLET.items()
+        if states.get(outlet) is False
+    }
+
+
+def _operations_trend_values(paused_prefixes: set[str]) -> dict[str, float]:
+    """Read only the numeric tails needed by the native operations cards."""
+    path = operations_zarr_path()
+    try:
+        metadata_mtime = (path / ".zmetadata").stat().st_mtime_ns
+    except OSError:
+        return {}
+
+    cache_key = (str(path), metadata_mtime, tuple(sorted(paused_prefixes)))
+    now_monotonic = monotonic()
+    if (
+        _OPERATIONS_TREND_CACHE.get("key") == cache_key
+        and now_monotonic < float(_OPERATIONS_TREND_CACHE.get("expires_at", 0.0))
+    ):
+        return dict(_OPERATIONS_TREND_CACHE.get("values", {}))
+
+    try:
+        import numpy as np
+        import zarr
+
+        group = zarr.open_consolidated(str(path), mode="r")
+        now = datetime.now(UTC)
+        start = _operations_trend_start_index(group, now)
+        time_array = group.get("time")
+        latest_time = (
+            _decode_cf_time(time_array[-1], str(time_array.attrs.get("units", "")))
+            if time_array is not None and time_array.shape
+            else None
+        )
+        if latest_time is None or now - latest_time > OPERATIONS_TREND_FRESHNESS:
+            raise ValueError("latest operations trend sample is stale")
+
+        def latest(name: str) -> float | None:
+            if name not in group:
+                return None
+            latest_index = max(start, len(group[name]) - 1)
+            values = np.asarray(
+                group[name][latest_index:],
+                dtype=np.float64,
+            )
+            if not values.size or not np.isfinite(values[-1]):
+                return None
+            return float(values[-1])
+
+        def latest_max(names: tuple[str, ...]) -> float | None:
+            values = [value for name in names if (value := latest(name)) is not None]
+            return max(values) if values else None
+
+        active_prefixes = tuple(
+            prefix for prefix in OPERATIONS_TREND_STREAM_PREFIXES if prefix not in paused_prefixes
+        )
+        values = {
+            "storage": latest_max(OPERATIONS_STORAGE_KEYS),
+            "battery-soc": latest("aps_battery_soc_pct"),
+            "battery-voltage": latest("aps_battery_voltage_v"),
+            "source-lag": latest_max(tuple(f"{prefix}_source_age_min" for prefix in active_prefixes)),
+            "gws-lag": latest_max(tuple(f"{prefix}_gws_lag_min" for prefix in active_prefixes)),
+        }
+        result = {key: value for key, value in values.items() if value is not None}
+    except (ImportError, OSError, TypeError, ValueError, KeyError):
+        result = {}
+
+    _OPERATIONS_TREND_CACHE.update(
+        {
+            "key": cache_key,
+            "expires_at": now_monotonic + OPERATIONS_TREND_CACHE_SECONDS,
+            "values": result,
+        }
+    )
+    return dict(result)
+
+
+def _operations_trend_start_index(group: Any, now: datetime) -> int:
+    """Locate the seven-day tail without decoding the full operations dataset."""
+    import numpy as np
+
+    if "time" not in group or not group["time"].shape:
+        return 0
+    time_values = np.asarray(group["time"][:])
+    if time_values.size == 0:
+        return 0
+
+    parameters = _cf_time_parameters(str(group["time"].attrs.get("units", "")))
+    if parameters:
+        try:
+            origin, seconds_per_unit = parameters
+            cutoff = now.astimezone(UTC) - OPERATIONS_TREND_WINDOW
+            cutoff_value = (cutoff - origin).total_seconds() / seconds_per_unit
+            return int(np.searchsorted(time_values, cutoff_value, side="left"))
+        except (OverflowError, TypeError, ValueError):
+            pass
+
+    # A conservative one-minute fallback keeps at least seven days while still
+    # bounding reads when older stores use an unexpected CF-time encoding.
+    return max(0, int(time_values.size) - 7 * 24 * 60)
+
+
+def _cf_time_parameters(units: str) -> tuple[datetime, float] | None:
+    match = re.fullmatch(
+        r"(seconds|milliseconds|microseconds|nanoseconds|minutes|hours|days) since (.+)",
+        units,
+    )
+    if not match:
+        return None
+    seconds_per_unit = {
+        "nanoseconds": 1e-9,
+        "microseconds": 1e-6,
+        "milliseconds": 1e-3,
+        "seconds": 1.0,
+        "minutes": 60.0,
+        "hours": 3600.0,
+        "days": 86400.0,
+    }
+    try:
+        origin = datetime.fromisoformat(match.group(2).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if origin.tzinfo is None:
+        origin = origin.replace(tzinfo=UTC)
+    return origin.astimezone(UTC), seconds_per_unit[match.group(1)]
+
+
+def _decode_cf_time(value: Any, units: str) -> datetime | None:
+    parameters = _cf_time_parameters(units)
+    if parameters is None:
+        return None
+    origin, seconds_per_unit = parameters
+    try:
+        return origin + timedelta(seconds=float(value) * seconds_per_unit)
+    except (OverflowError, TypeError, ValueError):
+        return None
 
 
 def _trend_level(card_id: str, value: Any) -> str:
@@ -477,8 +875,39 @@ def overview() -> dict[str, Any]:
     latest_cameras = auroracam("latest")
     camera_times = [record.get("timeUTC") for record in latest_cameras["frames"] if record.get("timeUTC")]
     latest_camera_time = max(camera_times) if camera_times else None
-    latest_power_time = snapshot.get("power_latest_time_utc") or _latest_power_time()
+    # Use the cached measured timestamp that the operations collector publishes
+    # with the battery metrics. Opening the wide display Zarr here added several
+    # seconds to every Overview/API request. Keep the direct read only as a
+    # compatibility fallback for older snapshots.
+    latest_power_time = next(
+        (
+            snapshot.get(key)
+            for key in (
+                "power_latest_time_utc",
+                "aps_battery_power_time_utc",
+                "aps_battery_soc_time_utc",
+                "aps_battery_voltage_time_utc",
+            )
+            if snapshot.get(key)
+        ),
+        None,
+    ) or _latest_power_time()
     depletion_value, depletion_detail = _battery_depletion_text(snapshot)
+    environmental_cards = _environmental_signal_cards()
+    science_source_times = {
+        "vaisalamet": next(
+            (card.get("updatedAt") for card in environmental_cards if card.get("id") == "air-temperature"),
+            None,
+        ),
+        "asfs-logger": next(
+            (
+                card.get("updatedAt")
+                for card in environmental_cards
+                if card.get("id") in {"shortwave-down", "wind-speed", "kt15"}
+            ),
+            None,
+        ),
+    }
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
         _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
@@ -486,18 +915,96 @@ def overview() -> dict[str, Any]:
         _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
+        *environmental_cards,
     ]
     return {
         "serverTime": utc_now_iso(),
         "cards": cards,
-        "instrumentPower": _instrument_power_states(snapshot),
+        "instrumentPower": _instrument_power_states(snapshot, science_source_times),
         "activeAlerts": status["alerts"],
     }
 
 
-def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def _environmental_signal_cards() -> list[dict[str, Any]]:
+    """Return the latest lightweight station-environment measurements.
+
+    These cards intentionally read only the final sample of the existing
+    meteorology and ASFS logger products.  They provide operational context on
+    the overview without loading a chart or a full science data window.
+    """
+    meteorology = _latest_zarr_sample(
+        env_path("VAISALAMET_ZARR_PATH", "/data/aurora/products/vaisalamet/vaisalamet.zarr"),
+        ("t2_t",),
+    )
+    radiation = _latest_zarr_sample(
+        env_path("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"),
+        ("sr30_swd_Irr_Avg", "kt15_tem_Avg", "metek_x_out_Avg", "metek_y_out_Avg"),
+    )
+
+    cards: list[dict[str, Any]] = []
+    if (sample := radiation.get("sr30_swd_Irr_Avg")) is not None:
+        cards.append(_environmental_overview_card("shortwave-down", "Shortwave radiation down", sample, radiation["time"], "W/m2", "SR30 downwelling"))
+    if (sample := radiation.get("metek_x_out_Avg")) is not None and (other := radiation.get("metek_y_out_Avg")) is not None:
+        cards.append(_environmental_overview_card("wind-speed", "Wind speed", math.hypot(sample, other), radiation["time"], "m/s", "Metek horizontal wind"))
+    if (sample := meteorology.get("t2_t")) is not None:
+        cards.append(_environmental_overview_card("air-temperature", "2 m temperature", sample, meteorology["time"], "C", "Vaisala MET"))
+    if (sample := radiation.get("kt15_tem_Avg")) is not None:
+        cards.append(_environmental_overview_card("kt15", "KT15 surface temperature", sample, radiation["time"], "C", "KT15 surface sensor"))
+    return cards
+
+
+def environmental_signal_cards() -> list[dict[str, Any]]:
+    """Return overview-ready station-environment cards for browser consumers."""
+    return _environmental_signal_cards()
+
+
+def _environmental_overview_card(card_id: str, title: str, value: float, sample_time: str, unit: str, source: str) -> dict[str, Any]:
+    return _overview_card(
+        card_id,
+        title,
+        f"{value:.1f} {unit}",
+        _age_level(sample_time, 30, 120),
+        sample_time,
+        f"{source}; {_power_age_text(sample_time).removeprefix('Updated ')}",
+    )
+
+
+def _latest_zarr_sample(path: Path, variables: tuple[str, ...]) -> dict[str, Any]:
+    """Read finite values from the final sample of a compact operational Zarr."""
+    dataset = None
+    try:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        if not path.exists():
+            return {}
+        dataset = xr.open_zarr(path, consolidated=True, chunks=None)
+        if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
+            return {}
+        sample_time = pd.Timestamp(dataset["time"].values[-1]).isoformat() + "Z"
+        result: dict[str, Any] = {"time": sample_time}
+        for variable in variables:
+            if variable not in dataset or dataset[variable].dims != ("time",):
+                continue
+            value = float(np.asarray(dataset[variable].isel(time=-1).values))
+            if math.isfinite(value):
+                result[variable] = value
+        return result
+    except Exception:
+        return {}
+    finally:
+        if dataset is not None:
+            dataset.close()
+
+
+def _instrument_power_states(
+    snapshot: dict[str, Any],
+    science_source_times: dict[str, str | None] | None = None,
+) -> list[dict[str, Any]]:
     """Return PDU power states plus collection states for DC science streams."""
     states, detail = _pdu_power_snapshot()
+    science_source_times = science_source_times or {}
 
     pdu_rows = [
         _pdu_instrument_status(instrument_id, states, detail)
@@ -507,6 +1014,11 @@ def _instrument_power_states(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for instrument_id, title, icon, prefix in SCIENCE_DC_INSTRUMENTS:
         source_age = _metric_value(snapshot, (f"{prefix}_source_age_min",))
         recent = snapshot.get(f"{prefix}_source_recent_state")
+        if source_age is None:
+            source_time = _parse_utc(science_source_times.get(instrument_id))
+            if source_time is not None:
+                source_age = max((datetime.now(UTC) - source_time).total_seconds() / 60, 0)
+                recent = int(source_age <= SCIENCE_COLLECTION_FRESHNESS_MINUTES)
         if recent == 1:
             state, level = "Collecting", "green"
         elif recent == 0:
@@ -551,28 +1063,24 @@ def _pdu_power_snapshot() -> tuple[dict[int, bool], str]:
     """Read one fresh PDU sample without inferring a state from stale data."""
     path = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
     try:
-        import pandas as pd
-        import xarray as xr
+        import zarr
 
-        dataset = xr.open_zarr(path, consolidated=False)
-        try:
-            if "time" not in dataset or dataset.sizes.get("time", 0) == 0:
-                raise ValueError("no PDU samples")
-            sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
-            if sample_time.tzinfo is None:
-                sample_time = sample_time.replace(tzinfo=UTC)
-            age_minutes = max((datetime.now(UTC) - sample_time.astimezone(UTC)).total_seconds() / 60, 0)
-            if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
-                raise ValueError("stale PDU sample")
-            states = {
-                outlet: float(dataset[f"PDUOutlet{outlet}State"].values[-1]) >= 0.5
-                for _id, _title, _icon, outlet in PDU_INSTRUMENTS
-                if f"PDUOutlet{outlet}State" in dataset
-            }
-            detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
-        finally:
-            dataset.close()
-    except Exception:
+        group = zarr.open_group(str(path), mode="r")
+        if "time" not in group or not group["time"].shape:
+            raise ValueError("no PDU samples")
+        sample_time = _decode_cf_time(group["time"][-1], str(group["time"].attrs.get("units", "")))
+        if sample_time is None:
+            raise ValueError("unsupported PDU time encoding")
+        age_minutes = max((datetime.now(UTC) - sample_time).total_seconds() / 60, 0)
+        if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
+            raise ValueError("stale PDU sample")
+        states = {
+            outlet: float(group[f"PDUOutlet{outlet}State"][-1]) >= 0.5
+            for _id, _title, _icon, outlet in PDU_INSTRUMENTS
+            if f"PDUOutlet{outlet}State" in group
+        }
+        detail = f"PDU sample {_duration_text(age_minutes / 60)} old"
+    except (ImportError, KeyError, OSError, TypeError, ValueError):
         states = {}
         detail = "PDU status unavailable"
     return states, detail
@@ -833,7 +1341,7 @@ def _prune_preview_cache(cache: Path, max_bytes: int = 50 * 1024 * 1024) -> None
 
 
 def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
-    """Return compact chart points from the existing display-summary Zarr only."""
+    """Return compact chart points without reading unrelated Power sections."""
     supported_groups = {
         "all",
         "current",
@@ -845,7 +1353,17 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     }
     if window not in {"24h", "96h"} or group not in supported_groups:
         raise KeyError("Unsupported Power window or group")
-    path = power_display_summary_path()
+    if group in {"current", "observed"}:
+        section = "current"
+    elif group in {"forecast", "forecast_24h", "forecast_96h", "verification"}:
+        section = "forecast"
+    else:
+        section = "all"
+    path = power_display_section_path(section)
+    if section != "all" and not path.exists():
+        # A mixed-version deployment can temporarily lack the new product.
+        # Retain the established combined store as a read-only fallback.
+        path = power_display_summary_path()
     payload: dict[str, Any] = {
         "serverTime": utc_now_iso(),
         "window": window,
@@ -870,26 +1388,31 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             merge_operating_scenarios_into_display_summary,
         )
 
+        now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
+        start = now - pd.Timedelta(hours=24)
+        horizon = 24 if window == "24h" else 96
+        end = now + pd.Timedelta(hours=horizon)
         dataset = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
         # The display summary can lag behind the fast planner.  Always replace
         # baked operating traces with the standalone contract, which rejects a
         # plan whose SOC anchor differs from the current ensemble forecast.
         scenarios = None
-        for scenario_path in power_operating_scenario_paths():
-            if not scenario_path.exists():
-                continue
-            try:
-                candidate = xr.open_zarr(scenario_path, chunks={}, consolidated=True)
-            except Exception:
-                continue
-            scenarios = candidate
-            break
-        dataset = merge_operating_scenarios_into_display_summary(dataset, scenarios)
+        if section in {"all", "forecast"}:
+            for scenario_path in power_operating_scenario_paths():
+                if not scenario_path.exists():
+                    continue
+                try:
+                    candidate = xr.open_zarr(scenario_path, chunks={}, consolidated=True)
+                except Exception:
+                    continue
+                scenarios = candidate
+                break
+            dataset = merge_operating_scenarios_into_display_summary(dataset, scenarios)
+        # Xarray performs a coordinate slice rather than materialising every
+        # variable in the historical display store. Only this bounded window is
+        # converted to API chart points below.
+        dataset = dataset.sel(time=slice(start, end))
         times = pd.DatetimeIndex(dataset["time"].values)
-        now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
-        start = now - pd.Timedelta(hours=24)
-        horizon = 24 if window == "24h" else 96
-        end = now + pd.Timedelta(hours=horizon)
         if group == "all":
             selected_groups = tuple(POWER_PANEL_TIME_GROUPS)
         elif group == "current":
@@ -921,8 +1444,8 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                     mask &= values <= float(trace.valid_max)
                 selected_times = times[mask]
                 selected_values = values[mask] * float(trace.scale)
-                if len(selected_times) > 260:
-                    selected = np.linspace(0, len(selected_times) - 1, 260, dtype=int)
+                if len(selected_times) > MOBILE_POWER_MAX_POINTS:
+                    selected = _representative_power_indices(selected_values)
                     selected_times = selected_times[selected]
                     selected_values = selected_values[selected]
                 if not len(selected_times):
@@ -981,7 +1504,7 @@ def _forecast_panel_start(dataset, times, panel):
         "soc_24h_forecast": ("BatterySOCForecast",),
         "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
-        "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
+        "operating_plan_scenarios": ("OperatingCurrentSOCP50", "OperatingCL61OptimizedSOCP50"),
         "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
     }
     fields = preferred_fields.get(panel.key, tuple(trace.var for trace in panel.traces))

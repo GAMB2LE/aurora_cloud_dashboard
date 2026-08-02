@@ -28,8 +28,8 @@ move to Earthkit after an equivalent bounded-memory benchmark passes.
 
 ## Decision
 
-The planning load model is `hybrid_state_space_v5`. Its observed target is
-the APS energy balance:
+The operational load model is `mode_conditioned_energy_balance_v7`. Its
+observed target is the APS energy balance:
 
 `load = SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`
 
@@ -39,12 +39,21 @@ DC load. `ACOutputWatts + DCInverterWatts` is not used as the primary target:
 in `DC-Only` it reports about `9 W` of inverter idle while the battery balance
 shows about `220-226 W` of real consumption.
 
-The discrete part is an HMM-like finite-state classifier. Fresh PDU outlet watts
-provide direct evidence for CL61, Radar, HATPRO, UAS, and their combinations;
-the APS AC output and learned total-load level provide secondary evidence.
-Stale PDU data cannot assert that a kit remains on. A transition prior prevents
-single noisy observations from making the classification oscillate, while the
-posterior probability supplies a dashboard confidence value.
+The **system-as-is** forecast is anchored to the latest robust whole-station
+load: the median of the last three finite 15-minute energy-balance samples.
+This is intentionally separate from component learning. PDU and learned-mode
+estimates explain the current load and drive what-if scenarios, but they never
+replace or force the measured system-load anchor. The forecast records both
+values and their disagreement so a bad component estimate remains visible
+without distorting the operational forecast.
+
+The scenario learner is `hybrid_state_space_v7`. Its discrete part is an
+HMM-like finite-state classifier. Fresh PDU outlet watts provide direct
+evidence for CL61, Radar, HATPRO, UAS, and their combinations; the APS AC
+output and learned total-load level provide secondary evidence. Stale PDU data
+cannot assert that a kit remains on. A transition prior prevents single noisy
+observations from making the classification oscillate, while the posterior
+probability supplies a dashboard confidence value.
 
 The continuous part is a robust Kalman learner over additive components: DC,
 CL61, Radar, HATPRO, UAS, and Unknown AC. Every observation supplies a total
@@ -58,13 +67,40 @@ as soon as fresh PDU and APS data identify it, but saved component parameters
 advance only for timestamps newer than the previous training cursor. This makes
 the five-minute process incremental and idempotent. Zero-solar battery
 discharge remains the strongest evidence for the DC component because it
-measures the complete battery-side load.
+measures the complete battery-side load. The learner does not shift the DC
+component to make all components add up to a fixed target; that earlier
+adjustment could create an impossible zero-watt DC baseline.
+
+The UAS MQTT log is aligned to the same 15-minute operating-state timeline.
+UAS load is learned by effective tier. A tier becomes a reliable learned input
+only after at least three independent episodes and six observed hours. Until
+then, the tier-3 scenario is marked provisional and uses the documented
+fallback distribution: P10 `55 W`, P50 `108 W`, P90 `302 W`.
+
+SOC integration uses a calibrated battery model fitted only to usable,
+non-saturated, stable telemetry. It estimates usable capacity, charge and
+discharge efficiency, and observed charge/discharge power limits. Capacity is
+bounded to `15-35 kWh`; efficiencies are validated before publication. The
+separate parasitic term is currently zero because the measured whole-station
+balance already contains system losses. Estimating another parasitic load from
+the same signal would double count it.
+
+Deterministic, ensemble, and scenario products share one versioned solar
+calibration contract. If the planning forecast and ensemble were generated from
+different calibration snapshots, the scenario builder reapplies the planning
+factor profile to the ensemble's raw irradiance members and records both source
+and target contract IDs. It stops rather than combining products when those raw
+members are unavailable. The ensemble varies ECMWF weather, recent load
+residuals, and calibrated battery parameters; its P10-P90 interval is therefore
+no longer solar-only.
 
 Future operator choices are represented explicitly instead of guessed. Named
 plans include current mode, DC-Only, DC + CL61 continuously on, an optimized
 CL61 schedule, a custom CL61 start/duration, and any other kit combinations the
-model has learned. The old `100-600 W` plot is retained only as a backwards-
-compatible data contract and is no longer the operating interface.
+model has learned. The fixed comparison set also includes CL61, CL61 + Radar,
+CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, HATPRO, and **all
+instruments + UAS tier 3**. The old `100-600 W` plot is retained only as a
+backwards-compatible data contract and is no longer the operating interface.
 
 ## Evidence
 
@@ -95,7 +131,8 @@ total load. Errors are in watts across 184 forecast-observation pairs.
 | `kit_mode_persistence_v2` | 131.53 | 15.62 | 275.97 |
 | `kit_mode_persistence_v3` | 131.28 | -33.53 | 232.73 |
 
-This table evaluates the version-3 predecessor. On this limited backtest,
+This table evaluates the version-3 predecessor and is retained as historical
+context. On this limited backtest,
 version 3 reduced RMSE by about 16% relative to
 version 2 and slightly reduced MAE, but its negative bias shows that a single
 `DC-Only` baseline cannot represent unlabelled higher-load operation. These are
@@ -122,15 +159,16 @@ marginal, or unsafe from its minimum P10 SOC.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
 skill only use rows from a matching model version, preventing retired model
-errors from contaminating the improvement loop. Version 5 therefore starts a
+errors from contaminating the improvement loop. Version 7 therefore starts a
 fresh verification series. SOC MAE is reported by lead bucket; solar and load
 MAE/bias diagnose the two principal error sources. Skill is measured against
 persistence, and the fixed-lead hindcast shows what the dashboard would have
 forecast 6, 24, 48, and 72 hours before each observation.
 
 The 50-member SOC ensemble also re-anchors when the deterministic forecast's
-SOC anchor, calibrated solar factor, learned load, model version, or named mode
-changes, even when ECMWF is still on the same 00/12 UTC ensemble cycle. The
+SOC anchor, calibrated solar contract, measured load anchor, battery model,
+model version, or named mode changes, even when ECMWF is still on the same
+00/12 UTC ensemble cycle. The
 cycle's accumulated SSRD values at the AURORA grid point are cached as a small
 site Zarr, so hourly re-anchoring does not redownload or reparse the global
 GRIB. This keeps the probabilistic forecast aligned with mode transitions such
@@ -141,3 +179,9 @@ updates that named mode automatically. The dashboard shows the recognised mode,
 confidence, component-aware plan curves, uncertainty, load axis, and the 40%
 minimum operational reference so operators can inspect the classification and
 risk directly.
+
+Forecast jobs compute a semantic publication signature from the physical
+anchor, load, mode, ECMWF cycle, solar contract, battery parameters, and model
+version. Repeated runs with unchanged forecast meaning update state and health
+but do not rewrite the public Zarr or create duplicate archive issues. This
+keeps verification counts independent and reduces avoidable product churn.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+from dataclasses import replace
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ from power_soc_thresholds import (
     SOC_BELOW_THRESHOLD_BRIER_FIELD,
     SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,
 )
+from power_battery_model import BatteryModel
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 POWER_SOC_FORECAST_ZARR_PATH = Path(
@@ -60,7 +62,18 @@ ENSEMBLE_INPUT_ATTRS = (
     "initial_soc_time",
     "initial_soc_pct",
     "solar_calibration_factor_w_per_wm2",
+    "solar_mos_factor_by_lead_bucket",
+    "solar_calibration_contract_id",
     "battery_capacity_kwh",
+    "battery_usable_capacity_kwh",
+    "battery_charge_efficiency",
+    "battery_discharge_efficiency",
+    "battery_parasitic_load_w",
+    "battery_max_charge_w",
+    "battery_max_discharge_w",
+    "battery_calibration_sample_count",
+    "battery_calibration_confidence",
+    "battery_energy_model",
     "load_bias_correction_w",
     "forecast_load_w",
     "load_model",
@@ -74,6 +87,12 @@ NUMERIC_ENSEMBLE_INPUT_ATTRS = {
     "initial_soc_pct",
     "solar_calibration_factor_w_per_wm2",
     "battery_capacity_kwh",
+    "battery_usable_capacity_kwh",
+    "battery_charge_efficiency",
+    "battery_discharge_efficiency",
+    "battery_parasitic_load_w",
+    "battery_max_charge_w",
+    "battery_max_discharge_w",
     "load_bias_correction_w",
     "forecast_load_w",
 }
@@ -283,6 +302,17 @@ def build_ensemble_dataset(
     member_values = np.asarray(solar_ensemble[member_dim].values)
     solar_factor = float(deterministic.attrs.get("solar_calibration_factor_w_per_wm2", 1.0))
     capacity_kwh = float(deterministic.attrs.get("battery_capacity_kwh", DEFAULT_BATTERY_CAPACITY_KWH))
+    battery_model = (
+        BatteryModel.from_attrs(deterministic.attrs, default_capacity_kwh=capacity_kwh)
+        if "battery_energy_model" in deterministic.attrs
+        else BatteryModel(
+            usable_capacity_kwh=capacity_kwh,
+            charge_efficiency=1.0,
+            discharge_efficiency=1.0,
+            max_charge_w=20_000.0,
+            max_discharge_w=20_000.0,
+        )
+    )
     correction_w = float(deterministic.attrs.get("load_bias_correction_w", 0.0))
 
     member_irradiance: list[pd.Series] = []
@@ -308,27 +338,77 @@ def build_ensemble_dataset(
     # Planned instrument schedules are evaluated by the separate operating-plan
     # product; only the ECMWF solar members may vary here.
     current_system_load = central_load.reindex(common_times).ffill().bfill().clip(lower=0.0)
+    # Keep the deterministic lead-dependent solar calibration when propagating
+    # ECMWF members. The remaining member spread then combines meteorological
+    # forcing with observed, mode-conditioned station-load variability.
+    if {"ForecastSolarWatts", "ECMWFSolarIrradiance"}.issubset(deterministic.data_vars) and "time" in deterministic:
+        deterministic_times = pd.DatetimeIndex(deterministic["time"].values)
+        deterministic_solar = pd.Series(np.asarray(deterministic["ForecastSolarWatts"].values, dtype=np.float64), index=deterministic_times)
+        deterministic_irradiance = pd.Series(np.asarray(deterministic["ECMWFSolarIrradiance"].values, dtype=np.float64), index=deterministic_times)
+        inferred_factor = (deterministic_solar / deterministic_irradiance.where(deterministic_irradiance > 1.0)).replace([np.inf, -np.inf], np.nan)
+        solar_factor_profile = inferred_factor.reindex(common_times, method="nearest", tolerance=pd.Timedelta(hours=2))
+        solar_factor_profile = solar_factor_profile.ffill().bfill().fillna(solar_factor).clip(lower=0.0)
+    else:
+        solar_factor_profile = pd.Series(float(solar_factor), index=common_times)
+    load_offsets = _load_residual_offsets(frame, end=latest_time, members=len(member_irradiance))
+    rng = np.random.default_rng(int(latest_time.value % (2**32 - 1)))
+    rng.shuffle(load_offsets)
+    parameter_spread = 0.06 if battery_model.calibration_confidence == "calibrated" else 0.10
+    capacity_rank = np.linspace(-1.0, 1.0, len(member_irradiance), dtype=np.float64)
+    charge_rank = capacity_rank.copy()
+    discharge_rank = capacity_rank.copy()
+    rng.shuffle(capacity_rank)
+    rng.shuffle(charge_rank)
+    rng.shuffle(discharge_rank)
 
     soc_rows = []
     irr_rows = []
     solar_rows = []
     load_rows = []
+    capacity_rows = []
+    charge_efficiency_rows = []
+    discharge_efficiency_rows = []
     output_times: pd.DatetimeIndex | None = None
-    for irradiance in member_irradiance:
+    for member_index, irradiance in enumerate(member_irradiance):
         irradiance = irradiance.reindex(common_times).interpolate().ffill().bfill()
+        member_load = (current_system_load + float(load_offsets[member_index])).clip(lower=0.0)
+        member_model = replace(
+            battery_model,
+            usable_capacity_kwh=battery_model.usable_capacity_kwh
+            * (1.0 + parameter_spread * float(capacity_rank[member_index])),
+            charge_efficiency=float(
+                np.clip(
+                    battery_model.charge_efficiency * (1.0 + 0.03 * float(charge_rank[member_index])),
+                    0.65,
+                    1.0,
+                )
+            ),
+            discharge_efficiency=float(
+                np.clip(
+                    battery_model.discharge_efficiency
+                    * (1.0 + 0.03 * float(discharge_rank[member_index])),
+                    0.65,
+                    1.0,
+                )
+            ),
+        ).validated()
         result = integrate_soc_forecast(
             initial_soc=latest_soc,
             initial_time=latest_time,
             irradiance=irradiance,
-            solar_factor=solar_factor,
-            load_w=current_system_load,
-            capacity_kwh=capacity_kwh,
+            solar_factor=solar_factor_profile,
+            load_w=member_load,
+            capacity_kwh=member_model.usable_capacity_kwh,
+            battery_model=member_model,
         )
         output_times = pd.DatetimeIndex(result.index)
         soc_rows.append(result["BatterySOCForecast"].to_numpy(dtype=np.float32))
         irr_rows.append(result["ECMWFSolarIrradiance"].to_numpy(dtype=np.float32))
         solar_rows.append(result["ForecastSolarWatts"].to_numpy(dtype=np.float32))
         load_rows.append(result["ForecastLoadWatts"].to_numpy(dtype=np.float32))
+        capacity_rows.append(member_model.usable_capacity_kwh)
+        charge_efficiency_rows.append(member_model.charge_efficiency)
+        discharge_efficiency_rows.append(member_model.discharge_efficiency)
     assert output_times is not None
     soc = np.asarray(soc_rows, dtype=np.float32)
     out = xr.Dataset(
@@ -337,6 +417,9 @@ def build_ensemble_dataset(
             "ECMWFSolarIrradianceEnsemble": (("member", "time"), np.asarray(irr_rows, dtype=np.float32)),
             "ForecastSolarWattsEnsemble": (("member", "time"), np.asarray(solar_rows, dtype=np.float32)),
             "ForecastLoadWattsEnsemble": (("member", "time"), np.asarray(load_rows, dtype=np.float32)),
+            "BatteryUsableCapacityKWhEnsemble": (("member",), np.asarray(capacity_rows, dtype=np.float32)),
+            "BatteryChargeEfficiencyEnsemble": (("member",), np.asarray(charge_efficiency_rows, dtype=np.float32)),
+            "BatteryDischargeEfficiencyEnsemble": (("member",), np.asarray(discharge_efficiency_rows, dtype=np.float32)),
             "BatterySOCForecastP10": (("time",), np.nanquantile(soc, 0.10, axis=0).astype(np.float32)),
             "BatterySOCForecastP50": (("time",), np.nanquantile(soc, 0.50, axis=0).astype(np.float32)),
             "BatterySOCForecastP90": (("time",), np.nanquantile(soc, 0.90, axis=0).astype(np.float32)),
@@ -352,7 +435,13 @@ def build_ensemble_dataset(
             "forecast_horizon_hours": str(int(horizon_hours)),
             "ensemble_members": str(int(soc.shape[0])),
             "solar_calibration_factor_w_per_wm2": f"{solar_factor:.6g}",
-            "battery_capacity_kwh": f"{capacity_kwh:.6g}",
+            "solar_mos_factor_by_lead_bucket": str(
+                deterministic.attrs.get("solar_mos_factor_by_lead_bucket", "{}")
+            ),
+            "solar_calibration_contract_id": str(
+                deterministic.attrs.get("solar_calibration_contract_id", "")
+            ),
+            **battery_model.attrs(),
             "load_bias_correction_w": f"{correction_w:.6g}",
             "forecast_load_w": str(deterministic.attrs.get("forecast_load_w", "")),
             "load_model": str(deterministic.attrs.get("load_model", "kit_mode_persistence_v4")),
@@ -361,7 +450,8 @@ def build_ensemble_dataset(
             "load_mode_source": str(deterministic.attrs.get("load_mode_source", "unknown")),
             "load_mode_active_kits": str(deterministic.attrs.get("load_mode_active_kits", "")),
             "load_mode_signature": str(deterministic.attrs.get("load_mode_signature", "")),
-            "load_uncertainty": "fixed current-system load; ECMWF solar ensemble only",
+            "load_uncertainty": "independently paired mode-conditioned load residuals plus ECMWF solar ensemble",
+            "battery_parameter_uncertainty": f"member-wise usable-capacity spread plus or minus {100.0 * parameter_spread:.0f}% and efficiency spread plus or minus 3%",
             "scenario_scope": "current_system_only",
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
             "source": "ECMWF IFS perturbed ssrd members plus APS power history",
@@ -437,8 +527,9 @@ def append_ensemble_archive(forecast: xr.Dataset, path: Path, *, retention_days:
         combined = combined.isel(issue_time=~combined.indexes["issue_time"].duplicated(keep="last"))
     else:
         combined = row
-    cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=retention_days)
-    combined = combined.isel(issue_time=pd.DatetimeIndex(combined.issue_time.values) >= cutoff)
+    issue_times = pd.DatetimeIndex(combined.issue_time.values)
+    cutoff = issue_times.max() - pd.Timedelta(days=retention_days)
+    combined = combined.isel(issue_time=issue_times >= cutoff)
     tmp = path.with_name(f"{path.name}.tmp")
     if tmp.exists():
         shutil.rmtree(tmp)

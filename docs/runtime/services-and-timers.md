@@ -7,18 +7,22 @@ Systemd services are installed system-wide under `/etc/systemd/system/`.
 - `aurora-dashboard.service`
 
 The deployed dashboard service runs Panel with websocket keepalives and a
-short unused-session lifetime so mobile browsers do not leave large stale
-documents behind on the single-process Panel server:
+short, host-specific unused-session lifetime so mobile browsers do not leave
+large stale documents behind on the single-process Panel server:
 
 - `--keep-alive=15000`
-- `--check-unused-sessions=60000`
-- `--unused-session-lifetime=600000`
+- `--check-unused-sessions=15000`
+- production `--unused-session-lifetime=120000` (2 minutes)
+- development `--unused-session-lifetime=60000` (1 minute)
 - `--session-token-expiration=86400`
+
+These values are inventory settings in `aurora-cloud-infra`; this page records
+the current contract rather than configuring the service.
 
 This does not stop a mobile operating system from killing a background browser
 tab. The app mirrors view state into the URL so a killed tab can reload into
-the same tab, instrument, and key controls without retaining old server-side
-documents for an hour.
+the same tab, instrument, and key controls after the old server-side document
+has been cleaned up.
 
 The service also exposes camera media as static routes:
 
@@ -32,8 +36,8 @@ Panel websocket.
 ## Resource Tuning
 
 The deployed host uses systemd drop-ins to keep the interactive dashboard
-responsive when appenders, quicklook generators, mirror verification, and GWS
-syncs overlap.
+responsive when product builders and infrastructure-managed archive jobs
+overlap.
 
 - `aurora-dashboard.service` gets higher CPU and IO weights plus a modest
   scheduling priority increase.
@@ -42,11 +46,11 @@ syncs overlap.
   lower CPU/IO weights. The slice also has a soft `MemoryHigh=6G` pressure
   limit so large products do not squeeze the dashboard as aggressively on the
   current 8 GB droplet.
-- Heavier jobs such as appenders, quicklook generation, WXcam daily video
-  builds, mirror verification, and GWS rsync get lower priority inside that
-  batch slice.
-- Append, quicklook, mirror, and rsync timers have randomized delays so they
-  are less likely to start in one burst.
+- Heavier dashboard jobs such as appenders, quicklook generation, and WXcam
+  daily video builds get lower priority inside that batch slice. Archive-job
+  resource policy is managed by `aurora-cloud-infra`.
+- Append and quicklook timers have randomized delays so they are less likely
+  to start in one burst.
 - The guarded runner `/usr/local/bin/aurora-run-guarded` adds lightweight
   mutexes for the heaviest job classes. Quicklook-heavy and video-heavy jobs
   run one at a time; append/rsync IO jobs allow two concurrent jobs. If a slot
@@ -158,8 +162,8 @@ quicklooks for LI-COR continuity. It does not contain radiation variables.
 - `aurora-power-soc-forecast.timer`
 - `aurora-power-soc-forecast-learn.timer`
 - `aurora-power-soc-ensemble.timer`
-- `aurora-power-soc-planning-forecast.timer` (development only)
-- `aurora-power-operating-scenarios.timer` (development only)
+- `aurora-power-soc-planning-forecast.timer`
+- `aurora-power-operating-scenarios.timer`
 - `aurora-power-quicklooks.timer`
 
 `aurora-power-quicklooks.service` regenerates the compact APS display summary
@@ -179,10 +183,17 @@ UTC deterministic cycle twice daily and writes a 240-hour forecast under
 `/data/aurora/dev-products/power`.
 `aurora-power-operating-scenarios.service` runs every five minutes. It learns
 new mode/component evidence and regenerates named and optimized plans from
-current SOC. The app merges that compact product into the mirrored display
-summary at read time; it does not rebuild the full Power summary every five
-minutes. These two timers are enabled only on `data-ocean`; their production
-units remain disabled.
+current SOC. It also aligns the mirrored UAS MQTT log so tier-specific loads
+can be learned and the all-instruments/UAS-tier-3 scenario can be evaluated.
+The app merges that compact product into the display summary at read time; it
+does not rebuild the full Power summary every five minutes. Both environments
+run these advisory products: production writes under `/data/aurora/products`,
+while development writes independently under `/data/aurora/dev-products`.
+
+The deterministic and scenario jobs use semantic publication signatures.
+When a timer run has the same physical SOC/load anchor, mode, ECMWF cycle,
+solar contract, battery parameters, and model version, it advances state and
+health without rewriting the public Zarr or duplicating an archive issue.
 
 ## ASS PDU
 
@@ -212,36 +223,26 @@ summary by the Power quicklook pipeline when available.
 - `aurora-ops-monitor-append.timer`
 - `aurora-ops-monitor-alerts.timer`
 - `aurora-ops-monitor-quicklooks.timer`
-- `aurora-mirror-verify.timer`
 
 `aurora-ops-monitor-collect.timer` is observe-only. It writes raw JSONL
 snapshots under `/project/aurora/raw/ops_monitor` and compact health outputs
 under `/data/aurora/products/ops_monitor/health`; it does not restart services,
 delete files, rebuild data products, or change code.
+It reads `/data/aurora/internal/archive_status/health-v1.json` as a versioned
+contract. It does not SSH to JASMIN, inspect verifier manifests, or decide
+whether source data may be pruned.
 
 `aurora-ops-monitor-alerts.timer` evaluates the latest operations snapshot
 after collection and sends threshold email alerts through `mailx` backed by an
 outbound relay such as `msmtp`.
 
-## JASMIN GWS Sync
+## Archive services
 
-- `aurora-gws-rsync-raw.timer`
-- `aurora-gws-rsync-products.timer` for non-WXcam products
-- `aurora-gws-rsync-products-wxcam.timer` for the larger WXcam product tree
-- `aurora-gws-rsync-manifests.timer`
-
-The products sync is intentionally split so the large WXcam media/Zarr tree can
-run independently from the smaller Zarr and quicklook products.
-
-The mirror verifier compares HATPRO files by basename. That is deliberate:
-newer HATPRO source paths are arranged under dated `Y2026/Mxx/Dxx`
-directories, while older local and GWS mirrors include a legacy flat layout.
-Basename comparison keeps the prune/coverage audit focused on whether the
-files are present without forcing a risky raw-data reshuffle.
-
-The HATPRO source sync also uses a three-day mtime lookback. HATPRO files can
-arrive after the previous sync while retaining an older file timestamp, and the
-lookback prevents those late files from being skipped permanently.
+GWS and object-store writers, verification, archive health, and retention are
+owned and documented by `aurora-cloud-infra`. The dashboard repository owns
+only their read-only presentation. Use that repository's
+`docs/ARCHIVE_SERVICES.md` for what is backed up, service names, settle windows,
+pending-upload semantics, evidence paths, repair, and retention policy.
 
 ## Useful commands
 

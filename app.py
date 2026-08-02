@@ -13,9 +13,10 @@ height as blank page space after browser scaling.
 import asyncio
 from base64 import b64encode
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, time
-from functools import lru_cache
+from functools import lru_cache, partial
 import hashlib
 from html import escape
 import json
@@ -23,6 +24,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
+from threading import RLock
 from time import perf_counter
 from urllib.parse import quote, urlencode
 
@@ -30,6 +32,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import param
+from bokeh.core.json_encoder import serialize_json
 from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -117,25 +120,32 @@ from request_context import (
     total_session_count as _total_session_count,
 )
 
-pn.extension("plotly", notifications=True, sizing_mode="stretch_width")
+# Keep common artwork and CSS out of the server-rendered document. They are
+# cacheable Panel/nginx assets rather than strings duplicated into every model.
+DASHBOARD_ASSET_PREFIX = os.environ.get("AURORA_DASHBOARD_ASSET_PREFIX", "/dashboard-assets").rstrip("/")
+DASHBOARD_STYLESHEET_PATH = Path(__file__).resolve().parent / "assets" / "dashboard.css"
+try:
+    DASHBOARD_STYLESHEET_VERSION = hashlib.sha256(DASHBOARD_STYLESHEET_PATH.read_bytes()).hexdigest()[:12]
+except OSError:
+    DASHBOARD_STYLESHEET_VERSION = "unavailable"
+DASHBOARD_STYLESHEET = f"{DASHBOARD_ASSET_PREFIX}/dashboard.css?v={DASHBOARD_STYLESHEET_VERSION}"
+# Panel 1.8 exposes external stylesheets through ``config.css_files``. This
+# keeps the asset out of each Bokeh document while remaining compatible with
+# the pinned runtime (``pn.extension(stylesheets=...)`` is not supported).
+if DASHBOARD_STYLESHEET not in pn.config.css_files:
+    pn.config.css_files.append(DASHBOARD_STYLESHEET)
+pn.extension(
+    "plotly",
+    notifications=True,
+    sizing_mode="stretch_width",
+    defer_load=True,
+)
 
 
-def _static_asset_data_uri(path: Path) -> str:
-    if not path.exists():
-        return ""
-    suffix = path.suffix.lower()
-    mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".svg": "image/svg+xml",
-        ".ico": "image/x-icon",
-    }.get(suffix, "application/octet-stream")
-    encoded = b64encode(path.read_bytes()).decode("utf-8")
-    return f"data:{mime};base64,{encoded}"
-
-
-DASHBOARD_LOGO = _static_asset_data_uri(Path(__file__).resolve().parent / "assets" / "logo.png")
+# Keep the logo out of the server-rendered document.  It is deliberately served
+# as a normal cacheable asset by Panel/nginx rather than base64-encoding a full
+# resolution PNG into every new browser session.
+DASHBOARD_LOGO = f"{DASHBOARD_ASSET_PREFIX}/logo.png"
 DASHBOARD_FAVICON = "https://gamb2le.pages.dev/assets/logo.png"
 # Dashboard palette. The supplied source values use #RRGGBBAA notation.
 THEME_TEXT = "#1e2f50"
@@ -324,6 +334,12 @@ QUICKLOOK_TRIM_THRESHOLD_PX = int(os.environ.get("AURORA_QUICKLOOK_TRIM_THRESHOL
 QUICKLOOK_TRIM_PADDING_PX = int(os.environ.get("AURORA_QUICKLOOK_TRIM_PADDING_PX", "24"))
 QUICKLOOK_WHITE_THRESHOLD = int(os.environ.get("AURORA_QUICKLOOK_WHITE_THRESHOLD", "250"))
 OPS_SNAPSHOT_PATH = Path(os.environ.get("OPS_MONITOR_SNAPSHOT_PATH", "/project/aurora/raw/ops_monitor/latest.json"))
+ARCHIVE_HEALTH_PATH = Path(
+    os.environ.get(
+        "ARCHIVE_HEALTH_PATH",
+        "/data/aurora/internal/archive_status/health-v1.json",
+    )
+)
 PERF_LOG_ENABLED = os.environ.get("AURORA_DASHBOARD_PERF_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PERF_LOG_PATH = Path(os.environ.get("AURORA_DASHBOARD_PERF_LOG", "/data/aurora/products/dashboard/dashboard_perf.jsonl"))
 PERF_LOG_MAX_BYTES = int(os.environ.get("AURORA_DASHBOARD_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
@@ -364,19 +380,24 @@ _PERF_LOGGER.setLevel(logging.INFO)
 _PERF_LOGGER.propagate = False
 _PERF_LOG_READY = False
 
-if PERF_LOG_ENABLED and not _PERF_LOGGER.handlers:
-    try:
-        PERF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _perf_handler = RotatingFileHandler(
-            PERF_LOG_PATH,
-            maxBytes=PERF_LOG_MAX_BYTES,
-            backupCount=PERF_LOG_BACKUP_COUNT,
-        )
-        _perf_handler.setFormatter(logging.Formatter("%(message)s"))
-        _PERF_LOGGER.addHandler(_perf_handler)
+if PERF_LOG_ENABLED:
+    if _PERF_LOGGER.handlers:
+        # Panel executes application modules for multiple sessions in one
+        # process. A prior session may have installed the handler already.
         _PERF_LOG_READY = True
-    except Exception as exc:
-        print(f"[perf] disabled: could not initialize {PERF_LOG_PATH}: {exc}")
+    else:
+        try:
+            PERF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _perf_handler = RotatingFileHandler(
+                PERF_LOG_PATH,
+                maxBytes=PERF_LOG_MAX_BYTES,
+                backupCount=PERF_LOG_BACKUP_COUNT,
+            )
+            _perf_handler.setFormatter(logging.Formatter("%(message)s"))
+            _PERF_LOGGER.addHandler(_perf_handler)
+            _PERF_LOG_READY = True
+        except Exception as exc:
+            print(f"[perf] disabled: could not initialize {PERF_LOG_PATH}: {exc}")
 
 
 def _perf_log(event: str, duration_ms: float | None = None, **fields) -> None:
@@ -404,6 +425,193 @@ def _perf_log(event: str, duration_ms: float | None = None, **fields) -> None:
         print(f"[perf] write failed for {event}: {exc}")
 
 
+_BROWSER_PERF_EVENTS = {
+    "browser_document_ready",
+    "browser_first_power_plot",
+    "browser_power_section_switch",
+}
+
+
+def _browser_rum_enabled() -> bool:
+    """Return whether development browser measurements are enabled."""
+    return os.environ.get("AURORA_BROWSER_RUM_ENABLED", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+class BrowserPerformanceProbe(pn.custom.JSComponent):
+    """Report real browser milestones to the development performance log."""
+
+    message = param.Dict(default={})
+
+    _esm = """
+    export function render({ model }) {
+      const marker = document.createElement("span");
+      marker.hidden = true;
+      marker.setAttribute("aria-hidden", "true");
+
+      const roots = () => {
+        const found = [document];
+        for (let index = 0; index < found.length; index += 1) {
+          const root = found[index];
+          for (const element of root.querySelectorAll("*")) {
+            if (element.shadowRoot && !found.includes(element.shadowRoot)) {
+              found.push(element.shadowRoot);
+            }
+          }
+        }
+        return found;
+      };
+      const plots = () => roots().flatMap(
+        (root) => Array.from(root.querySelectorAll(".js-plotly-plot"))
+      ).filter((node) => node.getClientRects().length > 0);
+      const plotSignature = () => {
+        const nodes = plots();
+        // Plotly stores trace metadata on the SVG renderer but not on the
+        // WebGL canvas renderer. Use the visible axis/title text as a stable
+        // render signature so Current and Forecast remain distinguishable.
+        const labels = nodes.map((node) => Array.from(node.querySelectorAll("text"))
+          .map((text) => text.textContent.trim())
+          .filter(Boolean)
+          .join("|"))
+          .join("||");
+        return `${nodes.length}:${labels}`;
+      };
+      const navigation = performance.getEntriesByType("navigation")[0] || {};
+      const emit = (event, duration, extra = {}) => {
+        const payload = {
+          event,
+          duration_ms: Math.round(Number(duration) * 1000) / 1000,
+          path: `${location.pathname}${location.search}`,
+          viewport_width: window.innerWidth,
+          viewport_height: window.innerHeight,
+          ...extra,
+        };
+        window.setTimeout(() => {
+          model.message = { ...payload, nonce: Date.now() };
+        }, 0);
+      };
+
+      // This component itself arrives with the first Bokeh document, so a
+      // paint frame is sufficient to observe the shell. The former one-second
+      // timeout inflated the reported shell latency without delaying the UI.
+      const reportDocumentReady = () => emit("browser_document_ready", performance.now(), {
+          response_start_ms: Number(navigation.responseStart || 0),
+          dom_interactive_ms: Number(navigation.domInteractive || 0),
+          load_event_end_ms: Number(navigation.loadEventEnd || 0),
+          navigation_type: String(navigation.type || "unknown"),
+        });
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(reportDocumentReady);
+      } else {
+        window.setTimeout(reportDocumentReady, 0);
+      }
+
+      let firstPlotSent = false;
+      let firstPlotTimer = null;
+      const checkFirstPlot = () => {
+        if (firstPlotSent) return;
+        if (firstPlotTimer === null) {
+          const started = performance.now();
+          firstPlotTimer = window.setInterval(() => {
+          const nodes = plots();
+          if (!nodes.length && performance.now() - started < 20000) return;
+          window.clearInterval(firstPlotTimer);
+          firstPlotTimer = null;
+          if (!nodes.length) return;
+          firstPlotSent = true;
+          emit("browser_first_power_plot", performance.now(), {
+            plot_count: nodes.length,
+            renderer: nodes.some((node) => node.querySelector("canvas")) ? "webgl" : "svg",
+          });
+          }, 100);
+        }
+      };
+
+      let switchTimer = null;
+      const onClick = (event) => {
+        // Panel's button group is rendered in a shadow root. ``closest`` on
+        // the retargeted event node cannot see that button, whereas the
+        // composed path preserves the original element for this measurement.
+        const button = event.composedPath().find(
+          (node) => node instanceof HTMLElement && node.matches("button")
+        );
+        if (!button) return;
+        const label = button.textContent.trim();
+        if (label !== "Current Conditions" && label !== "Forecast & Planning") return;
+        if (switchTimer !== null) window.clearInterval(switchTimer);
+        const started = performance.now();
+        const original = plotSignature();
+        switchTimer = window.setInterval(() => {
+          const elapsed = performance.now() - started;
+          const signature = plotSignature();
+          if (signature === original && elapsed < 20000) return;
+          window.clearInterval(switchTimer);
+          switchTimer = null;
+          emit("browser_power_section_switch", elapsed, {
+            section: label,
+            plot_signature_before: original,
+            plot_signature_after: signature,
+            timed_out: elapsed >= 20000,
+          });
+        }, 100);
+      };
+
+      document.addEventListener("click", onClick, true);
+      // Panel nests figures inside several shadow roots. Poll briefly while
+      // the initial document hydrates; a document-only MutationObserver does
+      // not observe mutations made inside those nested component roots.
+      checkFirstPlot();
+
+      marker.remove = (() => {
+        const remove = marker.remove.bind(marker);
+        return () => {
+          document.removeEventListener("click", onClick, true);
+          if (firstPlotTimer !== null) window.clearTimeout(firstPlotTimer);
+          if (switchTimer !== null) window.clearInterval(switchTimer);
+          remove();
+        };
+      })();
+      return marker;
+    }
+    """
+
+    def __init__(self, **params) -> None:
+        super().__init__(**params)
+        self.param.watch(self._handle_param_message, "message")
+
+    def _handle_param_message(self, event) -> None:
+        self._handle_msg(event.new)
+
+    def _handle_msg(self, data) -> None:
+        if not isinstance(data, dict):
+            return
+        event = str(data.get("event", ""))
+        if event not in _BROWSER_PERF_EVENTS:
+            return
+        try:
+            duration_ms = float(data.get("duration_ms"))
+        except (TypeError, ValueError):
+            return
+        fields = {
+            str(key): value
+            for key, value in data.items()
+            if key not in {"event", "duration_ms"}
+        }
+        _perf_log(event, duration_ms=duration_ms, instrument="power", **fields)
+
+
+def _browser_performance_probe() -> BrowserPerformanceProbe | None:
+    if SITE_ENV != "development" or not _browser_rum_enabled():
+        return None
+    # A real 1 px box keeps Panel's global deferred loader from skipping the
+    # probe while remaining visually imperceptible.
+    return BrowserPerformanceProbe(width=1, height=1, margin=0, sizing_mode="fixed")
+
+
 @contextmanager
 def _timed_perf(event: str, **fields):
     details = dict(fields)
@@ -416,7 +624,17 @@ def _timed_perf(event: str, **fields):
         details.setdefault("error", str(exc))
         raise
     finally:
-        _perf_log(event, duration_ms=(perf_counter() - start) * 1000.0, **details)
+        duration_ms = (perf_counter() - start) * 1000.0
+        _perf_log(event, duration_ms=duration_ms, **details)
+        if event in {"interactive_view_update", "stacked_timeseries_render"} and duration_ms > INTERACTIVE_RENDER_BUDGET_MS:
+            _perf_log(
+                "interactive_render_budget_exceeded",
+                instrument=details.get("instrument"),
+                source_event=event,
+                duration_ms=duration_ms,
+                budget_ms=INTERACTIVE_RENDER_BUDGET_MS,
+                status=details.get("status", "unknown"),
+            )
 
 
 def _path_from_env(env_name: str, default: Path) -> Path:
@@ -634,6 +852,7 @@ TIME_TARGET = 300  # target max time samples for plotting
 HEIGHT_TARGET = 200  # target max height samples for plotting
 DATA_REFRESH_MS = 300_000  # reload base dataset every 5 minutes
 RENDER_DEBOUNCE_MS = int(os.environ.get("AURORA_RENDER_DEBOUNCE_MS", "150"))
+INTERACTIVE_RENDER_BUDGET_MS = int(os.environ.get("AURORA_INTERACTIVE_RENDER_BUDGET_MS", "10000"))
 INTERACTIVE_RENDER_CACHE_SIZE = int(os.environ.get("AURORA_INTERACTIVE_RENDER_CACHE_SIZE", "12"))
 POWER_INTERACTIVE_MAX_TIME_SAMPLES = int(os.environ.get("AURORA_POWER_INTERACTIVE_MAX_TIME_SAMPLES", "700"))
 POWER_LATEST_CACHE_ROUND_MINUTES = int(os.environ.get("AURORA_POWER_LATEST_CACHE_ROUND_MINUTES", "5"))
@@ -665,12 +884,22 @@ _BASE_DS: dict[str, xr.Dataset | None] = {}
 _TIME_BOUNDS_CACHE: dict[str, dict[str, object]] = {}
 _INTERACTIVE_FIGURE_CACHE: dict[str, go.Figure] = {}
 _INTERACTIVE_RENDER_CACHE: OrderedDict[tuple[object, ...], go.Figure] = OrderedDict()
+_IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS: set[tuple[object, ...]] = set()
 _INSTRUMENT_VIEW_STATE: dict[str, dict[str, object]] = {}
 _DATASET_VERSION: dict[str, int] = {}
 _DATASET_REFRESHED_AT: dict[str, datetime] = {}
 CURRENT_INSTRUMENT = "power"
 _RENDER_REQUEST_COUNTER = 0
 _ACTIVE_RENDER_REQUEST_ID = 0
+_BACKGROUND_RENDER_TASKS: dict[int, asyncio.Task] = {}
+# Plot creation is CPU and IO bound, while Panel/Bokeh model changes must stay
+# on the document callback.  Two workers keep custom Power requests responsive
+# without multiplying the memory use of the dashboard process.
+_BACKGROUND_PREPARATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, min(int(os.environ.get("AURORA_DASHBOARD_PREP_WORKERS", "2")), 4)),
+    thread_name_prefix="aurora-dashboard-prep",
+)
+_POWER_PREPARATION_LOCK = RLock()
 _DISPLAYED_INTERACTIVE_INSTRUMENT: str | None = None
 _PENDING_INTERACTIVE_RENDER_ARGS: tuple[object, ...] | None = None
 _PENDING_INTERACTIVE_RENDER_CB = None
@@ -681,9 +910,12 @@ _POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
 _POWER_DISPLAY_SUMMARY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_SUMMARY_REFRESHED_AT: datetime | None = None
+_POWER_DISPLAY_SECTION_DS: dict[str, xr.Dataset] = {}
+_POWER_DISPLAY_SECTION_REFRESHED_AT: dict[str, datetime] = {}
 _POWER_OPERATING_SCENARIOS_DS: xr.Dataset | None = None
 _POWER_OPERATING_SCENARIOS_REFRESHED_AT: datetime | None = None
 _OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
+_SESSION_PERIODIC_CALLBACKS: list[object] = []
 
 
 def _utcnow_naive() -> datetime:
@@ -693,6 +925,7 @@ def _utcnow_naive() -> datetime:
 def _safe_periodic_callback(callback, period: int, start: bool = True):
     """Register a Panel timer, but allow plain Python imports for smoke tests."""
     timer = pn.state.add_periodic_callback(callback, period=period, start=False)
+    _SESSION_PERIODIC_CALLBACKS.append(timer)
     if start:
         try:
             asyncio.get_running_loop()
@@ -723,6 +956,19 @@ def _power_display_energy_path() -> Path:
 
 def _power_display_summary_path() -> Path:
     return Path(os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr"))
+
+
+def _power_display_section_path(section: str) -> Path:
+    """Return the compact display store for one Power browser section."""
+    if section == "current":
+        configured = os.environ.get("POWER_CURRENT_DISPLAY_ZARR_PATH", "").strip()
+        default = "/data/aurora/products/power/power_current_display.zarr"
+    elif section == "forecast":
+        configured = os.environ.get("POWER_FORECAST_DISPLAY_ZARR_PATH", "").strip()
+        default = "/data/aurora/products/power/power_forecast_display.zarr"
+    else:
+        raise ValueError(f"Unsupported Power display section: {section}")
+    return Path(configured or default)
 
 
 def _power_display_summary_metadata_path() -> Path:
@@ -772,6 +1018,9 @@ def _prewarmed_interactive_dir() -> Path:
 
 
 def _prewarmed_interactive_path(inst: str) -> Path:
+    if inst == "power":
+        section = power_view_select.value if "power_view_select" in globals() else "current"
+        return _prewarmed_interactive_dir() / f"power_{section}_latest_interactive.json"
     safe = inst.replace(" ", "_").replace("-", "_").lower()
     return _prewarmed_interactive_dir() / f"{safe}_latest_interactive.json"
 
@@ -920,7 +1169,7 @@ def _get_power_display_energy_dataset() -> xr.Dataset | None:
 
 
 def _get_power_display_summary_dataset() -> xr.Dataset | None:
-    """Open the compact Power display-summary store when it is available."""
+    """Open the legacy combined Power display store as a compatibility fallback."""
     global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
     if _POWER_DISPLAY_SUMMARY_DS is not None:
         return _POWER_DISPLAY_SUMMARY_DS
@@ -940,6 +1189,33 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
         perf["var_count"] = len(ds.data_vars)
     _POWER_DISPLAY_SUMMARY_DS = ds
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = datetime.now(timezone.utc)
+    return ds
+
+
+def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
+    """Open only the display variables required by a Power page section.
+
+    The combined store is retained for existing scripts and old deployments, but
+    normal browser renders must not open all observed and forecast fields.
+    """
+    cached = _POWER_DISPLAY_SECTION_DS.get(section)
+    if cached is not None:
+        return cached
+    path = _power_display_section_path(section)
+    if not path.exists():
+        return None
+    with _timed_perf("power_display_section_open", instrument="power", section=section, zarr_path=str(path)) as perf:
+        try:
+            ds = xr.open_zarr(path, chunks={"time": 1440}, consolidated=True)
+        except Exception as exc:
+            perf["status"] = "unavailable"
+            perf["error"] = str(exc)
+            return None
+        perf["status"] = "ok"
+        perf["dims"] = dict(ds.sizes)
+        perf["var_count"] = len(ds.data_vars)
+    _POWER_DISPLAY_SECTION_DS[section] = ds
+    _POWER_DISPLAY_SECTION_REFRESHED_AT[section] = datetime.now(timezone.utc)
     return ds
 
 
@@ -1004,6 +1280,13 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_DISPLAY_SUMMARY_DS = None
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = None
+    for ds in _POWER_DISPLAY_SECTION_DS.values():
+        try:
+            ds.close()
+        except Exception:
+            pass
+    _POWER_DISPLAY_SECTION_DS.clear()
+    _POWER_DISPLAY_SECTION_REFRESHED_AT.clear()
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
             _POWER_OPERATING_SCENARIOS_DS.close()
@@ -1022,20 +1305,23 @@ def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
     if start_dt is None or end_dt is None:
         return None
     with _timed_perf("power_display_energy_window", instrument="power", start=start_dt, end=end_dt) as perf:
-        times = pd.DatetimeIndex(ds["time"].values)
-        mask = (times >= start_dt) & (times <= end_dt)
-        perf["matched_time_count"] = int(np.count_nonzero(mask))
-        if not mask.any():
+        window = ds.sel(time=slice(start_dt, end_dt))
+        perf["matched_time_count"] = int(window.sizes.get("time", 0))
+        if not window.sizes.get("time", 0):
             perf["status"] = "empty"
             return None
-        window = ds.isel(time=mask).sortby("time")
         perf["status"] = "ok"
         perf["output_time_count"] = int(window.sizes.get("time", 0))
         return window
 
 
-def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
-    ds = _get_power_display_summary_dataset()
+def _open_power_display_summary_window(start, end, section: str | None = None) -> xr.Dataset | None:
+    """Open a bounded Power display window without scanning every forecast field."""
+    section = section or (power_view_select.value if "power_view_select" in globals() else "current")
+    ds = _get_power_display_section_dataset(section)
+    legacy = ds is None
+    if ds is None:
+        ds = _get_power_display_summary_dataset()
     if ds is None or "time" not in ds:
         return None
     start_dt = _as_naive_utc_datetime(start)
@@ -1043,21 +1329,17 @@ def _open_power_display_summary_window(start, end) -> xr.Dataset | None:
     if start_dt is None or end_dt is None:
         return None
     with _timed_perf("power_display_summary_window", instrument="power", start=start_dt, end=end_dt) as perf:
-        times = pd.DatetimeIndex(ds["time"].values)
-        mask = (times >= start_dt) & (times <= end_dt)
-        forecast_names = [name for name in POWER_FUTURE_DISPLAY_FIELDS if name in ds]
-        if forecast_names:
-            forecast_valid = np.zeros(len(times), dtype=bool)
-            for name in forecast_names:
-                forecast_valid |= np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
-            forecast_horizon = end_dt + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
-            mask |= forecast_valid & (times >= start_dt) & (times <= forecast_horizon)
-        matched = int(np.count_nonzero(mask))
+        window_end = end_dt
+        if section == "forecast":
+            window_end = end_dt + pd.Timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "96")))
+        window = ds.sel(time=slice(start_dt, window_end))
+        matched = int(window.sizes.get("time", 0))
         perf["matched_time_count"] = matched
-        if not mask.any():
+        perf["section"] = section
+        perf["legacy_store"] = legacy
+        if not matched:
             perf["status"] = "empty"
             return None
-        window = ds.isel(time=mask).sortby("time")
         perf["status"] = "ok"
         perf["output_time_count"] = int(window.sizes.get("time", 0))
         perf["var_count"] = len(window.data_vars)
@@ -1196,6 +1478,41 @@ def _instrument_time_index(inst: str) -> pd.DatetimeIndex:
         return pd.DatetimeIndex([])
     valid = _valid_time_mask(times)
     return pd.DatetimeIndex(times[valid])
+
+
+def _power_display_observed_time_index() -> pd.DatetimeIndex:
+    """Return observed Power timestamps from the compact display product.
+
+    The Power footer only needs freshness and coverage. Opening the full raw
+    Power Zarr just to build those small status widgets defeats the standard
+    view prewarm, so prefer the compact display-summary product. A raw-store
+    fallback keeps the existing degraded-data behaviour when that product has
+    not yet been built.
+    """
+    try:
+        ds = _get_power_display_summary_dataset()
+    except Exception:
+        ds = None
+    if ds is None or "time" not in ds:
+        return _instrument_time_index("power")
+
+    times = pd.DatetimeIndex(ds["time"].values)
+    if not len(times):
+        return pd.DatetimeIndex([])
+    observed = np.zeros(len(times), dtype=bool)
+    for name in ("BatterySOC", "BatteryWatts", "DCInverterVolts", "ACOutputWatts"):
+        if name not in ds:
+            continue
+        values = np.asarray(ds[name].values, dtype=np.float64)
+        if values.shape[0] == len(times):
+            observed |= np.isfinite(values)
+    now = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
+    return times[observed & (times <= now)]
+
+
+def _status_time_index(inst: str) -> pd.DatetimeIndex:
+    """Use compact Power metadata for status widgets; use raw indexes elsewhere."""
+    return _power_display_observed_time_index() if inst == "power" else _instrument_time_index(inst)
 
 
 def _format_status_time(dt: datetime | None) -> str:
@@ -1478,11 +1795,22 @@ def _ops_snapshot_path() -> Path:
 def _ops_read_snapshot() -> dict:
     path = _ops_snapshot_path()
     if not path.exists():
-        return {"_missing": True, "_path": str(path)}
+        snapshot = {"_missing": True}
+    else:
+        try:
+            snapshot = json.loads(path.read_text())
+        except Exception as exc:
+            snapshot = {"_error": str(exc)}
     try:
-        snapshot = json.loads(path.read_text())
+        archive = json.loads(ARCHIVE_HEALTH_PATH.read_text(encoding="utf-8"))
+        metrics = archive.get("metrics", {})
+        if isinstance(metrics, dict):
+            snapshot.update(metrics)
+        snapshot["_archive_health"] = archive
+    except FileNotFoundError:
+        snapshot["_archive_health_missing"] = str(ARCHIVE_HEALTH_PATH)
     except Exception as exc:
-        return {"_error": str(exc), "_path": str(path)}
+        snapshot["_archive_health_error"] = str(exc)
     snapshot["_path"] = str(path)
     return snapshot
 
@@ -3082,7 +3410,7 @@ _instrument_guard = False
 _instrument_change_origin = "interactive"
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
-_base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=True)
+_base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=False)
 
 
 def _last_24h_utc_window() -> tuple[datetime, datetime]:
@@ -3485,7 +3813,7 @@ def _auto_refresh():
 
 
 # Kick off periodic live refresh.
-_live_cb = _safe_periodic_callback(_auto_refresh, period=LIVE_REFRESH_MS, start=True)
+_live_cb = _safe_periodic_callback(_auto_refresh, period=LIVE_REFRESH_MS, start=False)
 
 
 def _shift_previous(_event=None):
@@ -3724,6 +4052,15 @@ def _begin_render_request() -> int:
     global _RENDER_REQUEST_COUNTER, _ACTIVE_RENDER_REQUEST_ID
     _RENDER_REQUEST_COUNTER += 1
     _ACTIVE_RENDER_REQUEST_ID = _RENDER_REQUEST_COUNTER
+    # Thread work cannot be forcibly interrupted safely, but cancelling its
+    # awaiting task releases the event loop and ensures an obsolete result is
+    # never published into the current Panel document.
+    for pending_id, task in tuple(_BACKGROUND_RENDER_TASKS.items()):
+        if pending_id == _ACTIVE_RENDER_REQUEST_ID:
+            continue
+        if not task.done():
+            task.cancel()
+        _BACKGROUND_RENDER_TASKS.pop(pending_id, None)
     return _ACTIVE_RENDER_REQUEST_ID
 
 
@@ -3768,6 +4105,17 @@ def _is_power_latest_window(start, end, instrument: str) -> bool:
         return False
     if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=2):
         return False
+    # A fresh development prewarm is authoritative for the live browser
+    # window. Avoid opening the raw Power Zarr merely to discover its latest
+    # sample, because that read is exactly what the prewarm removes.
+    prewarm_path = _prewarmed_interactive_path("power")
+    try:
+        prewarm_age = datetime.now(timezone.utc) - datetime.fromtimestamp(prewarm_path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        prewarm_age = None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if prewarm_age is not None and prewarm_age <= PREWARM_LATEST_CACHE_TOLERANCE:
+        return abs(end_dt - now) <= PREWARM_LATEST_CACHE_TOLERANCE
     _lower, latest = _dataset_time_bounds(instrument)
     latest_dt = _as_naive_utc_datetime(latest)
     if latest_dt is None:
@@ -3885,11 +4233,7 @@ def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) 
     if len(cache_key) < 7 or cache_key[0] != inst:
         return False
     window_mode = str(cache_key[4])
-    if inst == "power":
-        # Existing prewarmed Power figures contain every panel. Reusing one
-        # would violate the Current/Forecast section selected by the user.
-        return False
-    if inst not in {"vaisalamet", "asfs-logger"}:
+    if inst not in {"power", "vaisalamet", "asfs-logger"}:
         return False
     if str(cache_key[2]) != _interactive_final_quality(inst):
         return False
@@ -3902,7 +4246,23 @@ def _cache_key_targets_latest_prewarm(cache_key: tuple[object, ...], inst: str) 
         return False
     if abs((end_dt - start_dt) - DEFAULT_WINDOW) > timedelta(minutes=5):
         return False
-    _lower, latest = _dataset_time_bounds(inst)
+    if inst == "power":
+        # Development prewarms represent the live browser window ending now,
+        # rather than ending at the newest observed point. The latter hides a
+        # collection gap and used to force an expensive synchronous Zarr read.
+        prewarm_path = _prewarmed_interactive_path(inst)
+        if not prewarm_path.exists():
+            return False
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromtimestamp(prewarm_path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            return False
+        if age > PREWARM_LATEST_CACHE_TOLERANCE:
+            return False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return abs(end_dt - now) <= PREWARM_LATEST_CACHE_TOLERANCE
+    else:
+        _lower, latest = _dataset_time_bounds(inst)
     latest_dt = _as_naive_utc_datetime(latest)
     if latest_dt is None:
         return False
@@ -3918,7 +4278,7 @@ def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str)
         return None
     with _timed_perf("interactive_prewarm_load", instrument=inst, path=str(path)) as perf:
         try:
-            fig = go.Figure(json.loads(path.read_text()))
+            fig = _read_prewarmed_interactive_figure(path)
         except Exception as exc:
             perf["status"] = "error"
             perf["error"] = str(exc)
@@ -3926,6 +4286,70 @@ def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str)
         perf["status"] = "ok"
         perf["trace_count"] = len(fig.data)
         return fig
+
+
+def _read_prewarmed_interactive_figure(path: Path) -> go.Figure:
+    """Read immutable prewarmed JSON without touching a Panel document."""
+    return go.Figure(json.loads(path.read_text(encoding="utf-8")))
+
+
+async def _load_prewarmed_interactive_figure_async(
+    path: Path,
+    cache_key: tuple[object, ...],
+    inst: str,
+    request_id: int,
+    doc,
+    render_args: tuple[object, ...],
+) -> None:
+    """Read cached JSON off the Tornado loop and publish only when still current."""
+    try:
+        with _timed_perf("interactive_prewarm_load_async", instrument=inst, path=str(path)) as perf:
+            loop = asyncio.get_running_loop()
+            fig = await loop.run_in_executor(
+                _BACKGROUND_PREPARATION_EXECUTOR,
+                _read_prewarmed_interactive_figure,
+                path,
+            )
+            perf["status"] = "ok"
+            perf["trace_count"] = len(fig.data)
+    except asyncio.CancelledError:
+        _perf_log(
+            "interactive_prewarm_load_async",
+            instrument=inst,
+            request_id=request_id,
+            status="cancelled",
+        )
+        raise
+    except Exception as exc:
+        _perf_log("interactive_prewarm_load_async", instrument=inst, status="error", error=str(exc))
+
+        def recover() -> None:
+            _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.discard(cache_key)
+            if _render_request_active(request_id):
+                _render_interactive_view(
+                    *render_args,
+                    request_id=request_id,
+                    render_quality=_interactive_final_quality(inst),
+                )
+
+        doc.add_next_tick_callback(recover)
+        return
+
+    def publish() -> None:
+        _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.discard(cache_key)
+        if not _render_request_active(request_id):
+            return
+        _INTERACTIVE_RENDER_CACHE[cache_key] = go.Figure(fig)
+        _INTERACTIVE_RENDER_CACHE.move_to_end(cache_key)
+        _show_plot(fig, instrument=inst, cache_figure=False)
+        _clear_interactive_loading()
+        # Status/availability reads need the full source time index. Do not
+        # contend with a Power prewarm before its first Plotly update reaches
+        # the browser; the footer can follow shortly after first paint.
+        if inst == "power":
+            _schedule_timeout(_activate_interactive_footer_metrics, 1_500)
+
+    doc.add_next_tick_callback(publish)
 
 
 def _dataset_window_metrics(ds: xr.Dataset | None) -> dict[str, int]:
@@ -4539,7 +4963,7 @@ def _refresh_wxcam_latest_if_needed():
     return
 
 
-_wxcam_ql_timer = _safe_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=True)
+_wxcam_ql_timer = _safe_periodic_callback(_refresh_wxcam_latest_if_needed, period=300_000, start=False)
 
 
 @pn.depends(wxcam_date.param.value, wxcam_image_type.param.value)
@@ -4807,10 +5231,11 @@ _auroracam_date_options = _auroracam_day_options()
 auroracam_date = pn.widgets.Select(name="Date", options=_auroracam_date_options)
 if _auroracam_date_options:
     auroracam_date.value = _auroracam_date_options[-1]
-_auroracam_initial_time_options = _auroracam_time_options(auroracam_date.value)
-auroracam_time = pn.widgets.Select(name="Time (UTC)", options=_auroracam_initial_time_options)
-if _auroracam_initial_time_options:
-    auroracam_time.value = _auroracam_initial_time_options[-1]
+# Reading every camera record to populate historic frame times is expensive and
+# irrelevant until AURORACam is opened. Populate the full list lazily, while
+# retaining a pending share-link selection for the first camera activation.
+_AURORACAM_PENDING_TIME_QUERY: str | None = None
+auroracam_time = pn.widgets.Select(name="Time (UTC)", options=["Latest"], value="Latest")
 auroracam_latest = pn.widgets.Button(name="Latest", button_type="primary")
 auroracam_prev = pn.widgets.Button(name="Previous Day", button_type="default")
 auroracam_next = pn.widgets.Button(name="Next Day", button_type="default")
@@ -4825,6 +5250,26 @@ auroracam_cards = {
     )
     for camera_id, spec in AURORACAM_CAMERAS.items()
 }
+auroracam_detail = pn.pane.HTML(
+    _auroracam_viewer_markup(auroracam_camera.value, auroracam_date.value, auroracam_time.value),
+    sizing_mode="stretch_width",
+    margin=0,
+)
+mobile_auroracam_detail = pn.pane.HTML(
+    auroracam_detail.object,
+    sizing_mode="stretch_width",
+    margin=0,
+)
+
+
+def _refresh_auroracam_detail(_event=None) -> None:
+    markup = _auroracam_viewer_markup(
+        auroracam_camera.value,
+        auroracam_date.value,
+        auroracam_time.value,
+    )
+    auroracam_detail.object = markup
+    mobile_auroracam_detail.object = markup
 
 
 def _select_auroracam_camera(camera_id: str) -> None:
@@ -4842,12 +5287,19 @@ for _auroracam_card_id, _auroracam_card in auroracam_cards.items():
         "clicked",
     )
 
+for _auroracam_control in (auroracam_camera, auroracam_date, auroracam_time):
+    _auroracam_control.param.watch(_refresh_auroracam_detail, "value")
+
 
 def _refresh_auroracam_time_options(preserve_current: bool = True) -> None:
+    global _AURORACAM_PENDING_TIME_QUERY
     current = auroracam_time.value if preserve_current else None
     opts = _auroracam_time_options(auroracam_date.value)
     auroracam_time.options = opts
-    if not opts:
+    if _AURORACAM_PENDING_TIME_QUERY in opts:
+        auroracam_time.value = _AURORACAM_PENDING_TIME_QUERY
+        _AURORACAM_PENDING_TIME_QUERY = None
+    elif not opts:
         auroracam_time.value = None
     elif preserve_current and current in opts:
         auroracam_time.value = current
@@ -4956,7 +5408,6 @@ def _auroracam_browser(selected_day, selected_time, camera_id):
         perf["status"] = "ok"
         return pn.Column(
             _auroracam_grid(selected_day, selected_time, camera_id),
-            pn.pane.HTML(_auroracam_viewer_markup(camera_id, selected_day, selected_time), sizing_mode="stretch_width", margin=0),
             sizing_mode="stretch_width",
             css_classes=["auroracam-browser"],
         )
@@ -5199,6 +5650,125 @@ def _update_hatpro_view(
         return _publish_plot_if_current(fig, "Scanning Microwave Radiometer", request_id, cache_key=cache_key)
 
 
+def _prepare_stacked_timeseries_figure(
+    instrument: str,
+    start,
+    end,
+    render_quality: str,
+    *,
+    power_section: str | None = None,
+) -> tuple[go.Figure, dict[str, object]]:
+    """Prepare a summary figure without touching Panel or Bokeh state."""
+    metrics: dict[str, object] = {"source_instruments": list(summary_source_instruments(instrument))}
+    source_instruments = tuple(metrics["source_instruments"])
+    is_power = instrument == "power"
+    power_section = power_section or "current"
+    lock = _POWER_PREPARATION_LOCK if is_power else None
+
+    def prepare() -> tuple[go.Figure, dict[str, object]]:
+        power_display_summary_available = is_power and _power_display_summary_path().exists()
+        power_display_energy_available = is_power and _power_display_energy_path().exists()
+        source_render_quality = (
+            "summary_full_time"
+            if is_power and not (power_display_summary_available or power_display_energy_available)
+            else render_quality
+        )
+        metrics.update(
+            source_render_quality=source_render_quality,
+            power_display_summary_available=bool(power_display_summary_available),
+            power_display_energy_available=bool(power_display_energy_available),
+        )
+        context_start = _summary_context_start(start, instrument)
+        metrics["context_start"] = context_start
+        source_open_started = perf_counter()
+        source_windows: list[xr.Dataset | None] = []
+        if is_power:
+            display_summary_window = _open_power_display_summary_window(start, end, section=power_section)
+            if display_summary_window is not None:
+                source_windows = [display_summary_window]
+                metrics["power_display_summary"] = "used"
+                metrics["power_display_energy"] = "embedded"
+            else:
+                metrics["power_display_summary"] = "missing"
+        if not source_windows:
+            source_windows = [
+                open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
+                for source_inst in source_instruments
+            ]
+            if is_power:
+                display_window = _open_power_display_energy_window(start, end)
+                if display_window is not None:
+                    source_windows.append(display_window)
+                    metrics["power_display_energy"] = "used"
+                else:
+                    metrics["power_display_energy"] = "missing"
+        metrics["source_open_ms"] = round((perf_counter() - source_open_started) * 1000, 3)
+        source_metrics = [_dataset_window_metrics(window) for window in source_windows]
+        metrics["source_window_count"] = len(source_metrics)
+        metrics["source_window_time_counts"] = [item["time_count"] for item in source_metrics]
+        metrics["source_window_var_counts"] = [item["var_count"] for item in source_metrics]
+        combine_started = perf_counter()
+        ds = combine_summary_datasets(instrument, *source_windows)
+        metrics["combine_ms"] = round((perf_counter() - combine_started) * 1000, 3)
+        metrics["combined_var_count"] = 0 if ds is None else len(ds.data_vars)
+        if is_power and ds is not None:
+            display_start = _as_naive_utc_datetime(start)
+            display_end = _as_naive_utc_datetime(end)
+            if display_start is not None:
+                ds.attrs[SUMMARY_DISPLAY_START_ATTR] = display_start.isoformat()
+            if display_end is not None:
+                ds.attrs[SUMMARY_DISPLAY_END_ATTR] = display_end.isoformat()
+        times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
+        metrics["time_count"] = 0 if times is None else int(len(times))
+        if times is None or len(times) == 0:
+            metrics["status"] = "no_data"
+            return _empty_interactive_figure(
+                instrument,
+                "No samples were found for this selected time window.",
+                start=start,
+                end=end,
+                detail="Try a wider time range or check the Operations Dashboard source-freshness cards.",
+            ), metrics
+        try:
+            max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
+            metrics["max_time_samples"] = max_time_samples
+            metrics["plot_density_mode"] = "per_trace_display_downsampled"
+            fig_started = perf_counter()
+            fig = build_summary_plotly(
+                ds,
+                instrument,
+                title=display_name(instrument),
+                max_time_samples=max_time_samples,
+                x_limits=(start, end),
+                panel_groups=(
+                    {"observed"}
+                    if is_power and power_section == "current"
+                    else {"forecast_24h", "forecast_96h", "verification"}
+                    if is_power
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            metrics["status"] = "no_data"
+            return _empty_interactive_figure(
+                instrument,
+                "No plottable variables are available for this window.",
+                start=start,
+                end=end,
+                detail=str(exc),
+            ), metrics
+        metrics["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
+        metrics.update(_figure_metrics(fig))
+        metrics["status"] = "ok"
+        metrics["trace_count"] = len(fig.data)
+        return fig, metrics
+
+    if lock is None:
+        return prepare()
+    with lock:
+        return prepare()
+
+
 def _update_stacked_timeseries_view(
     instrument: str,
     start,
@@ -5219,106 +5789,121 @@ def _update_stacked_timeseries_view(
         if not _render_request_active(request_id):
             perf["status"] = "stale_before_start"
             return False
-        source_instruments = summary_source_instruments(instrument)
-        perf["source_instruments"] = list(source_instruments)
-        power_display_summary_available = instrument == "power" and _power_display_summary_path().exists()
-        power_display_energy_available = instrument == "power" and _power_display_energy_path().exists()
-        # Power summary traces can now come from a compact display product.
-        # Only keep full raw time detail as a fallback when compact products are
-        # absent and cumulative energy must be derived from source samples.
-        if instrument == "power" and not (power_display_summary_available or power_display_energy_available):
-            source_render_quality = "summary_full_time"
-        else:
-            source_render_quality = render_quality
-        perf["source_render_quality"] = source_render_quality
-        perf["power_display_summary_available"] = bool(power_display_summary_available)
-        perf["power_display_energy_available"] = bool(power_display_energy_available)
-        context_start = _summary_context_start(start, instrument)
-        perf["context_start"] = context_start
-        source_open_started = perf_counter()
-        source_windows: list[xr.Dataset | None] = []
-        if instrument == "power":
-            display_summary_window = _open_power_display_summary_window(start, end)
-            if display_summary_window is not None:
-                source_windows = [display_summary_window]
-                perf["power_display_summary"] = "used"
-                perf["power_display_energy"] = "embedded"
-            else:
-                perf["power_display_summary"] = "missing"
-        if not source_windows:
-            source_windows = [
-                open_window(context_start, end, instrument=source_inst, render_quality=source_render_quality)
-                for source_inst in source_instruments
-            ]
-            if instrument == "power":
-                display_window = _open_power_display_energy_window(start, end)
-                if display_window is not None:
-                    source_windows.append(display_window)
-                    perf["power_display_energy"] = "used"
-                else:
-                    perf["power_display_energy"] = "missing"
-        perf["source_open_ms"] = round((perf_counter() - source_open_started) * 1000, 3)
-        source_metrics = [_dataset_window_metrics(window) for window in source_windows]
-        perf["source_window_count"] = len(source_metrics)
-        perf["source_window_time_counts"] = [item["time_count"] for item in source_metrics]
-        perf["source_window_var_counts"] = [item["var_count"] for item in source_metrics]
-        combine_started = perf_counter()
-        ds = combine_summary_datasets(instrument, *source_windows)
-        perf["combine_ms"] = round((perf_counter() - combine_started) * 1000, 3)
-        perf["combined_var_count"] = 0 if ds is None else len(ds.data_vars)
-        if instrument == "power" and ds is not None:
-            display_start = _as_naive_utc_datetime(start)
-            display_end = _as_naive_utc_datetime(end)
-            if display_start is not None:
-                ds.attrs[SUMMARY_DISPLAY_START_ATTR] = display_start.isoformat()
-            if display_end is not None:
-                ds.attrs[SUMMARY_DISPLAY_END_ATTR] = display_end.isoformat()
-        times = pd.to_datetime(ds["time"].values) if ds is not None and "time" in ds else None
-        perf["time_count"] = 0 if times is None else int(len(times))
-        if times is None or len(times) == 0:
-            perf["status"] = "no_data"
-            empty = _empty_interactive_figure(
-                instrument,
-                "No samples were found for this selected time window.",
-                start=start,
-                end=end,
-                detail="Try a wider time range or check the Operations Dashboard source-freshness cards.",
-            )
-            return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
-        try:
-            max_time_samples = _stacked_interactive_max_time_samples(instrument, render_quality)
-            perf["max_time_samples"] = max_time_samples
-            perf["plot_density_mode"] = "per_trace_display_downsampled"
-            fig_started = perf_counter()
-            fig = build_summary_plotly(
-                ds,
-                instrument,
-                title=display_name(instrument),
-                max_time_samples=max_time_samples,
-                x_limits=(start, end),
-                panel_groups=(
-                    {"observed"}
-                    if instrument == "power" and power_view_select.value == "current"
-                    else {"forecast_24h", "forecast_96h", "verification"}
-                    if instrument == "power"
-                    else None
-                ),
-            )
-            perf["figure_build_ms"] = round((perf_counter() - fig_started) * 1000, 3)
-            perf.update(_figure_metrics(fig))
-        except ValueError as exc:
-            perf["status"] = "no_data"
-            empty = _empty_interactive_figure(
-                instrument,
-                "No plottable variables are available for this window.",
-                start=start,
-                end=end,
-                detail=str(exc),
-            )
-            return _publish_plot_if_current(empty, instrument, request_id, cache_key=cache_key)
-        perf["status"] = "ok"
-        perf["trace_count"] = len(fig.data)
+        fig, metrics = _prepare_stacked_timeseries_figure(
+            instrument,
+            start,
+            end,
+            render_quality,
+            power_section=power_view_select.value if instrument == "power" else None,
+        )
+        perf.update(metrics)
         return _publish_plot_if_current(fig, instrument, request_id, cache_key=cache_key)
+
+
+async def _prepare_power_view_async(
+    start,
+    end,
+    request_id: int,
+    render_quality: str,
+    cache_key: tuple[object, ...],
+    power_section: str,
+    doc,
+) -> None:
+    """Build a custom Power figure off the event loop and publish it safely."""
+    started = perf_counter()
+    try:
+        loop = asyncio.get_running_loop()
+        prepare = partial(
+            _prepare_stacked_timeseries_figure,
+            "power",
+            start,
+            end,
+            render_quality,
+            power_section=power_section,
+        )
+        fig, metrics = await loop.run_in_executor(_BACKGROUND_PREPARATION_EXECUTOR, prepare)
+    except asyncio.CancelledError:
+        _perf_log(
+            "power_background_prepare",
+            instrument="power",
+            request_id=request_id,
+            status="cancelled",
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+        raise
+    except Exception as exc:
+        _perf_log(
+            "power_background_prepare",
+            instrument="power",
+            request_id=request_id,
+            status="error",
+            error=str(exc),
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+
+        def publish_error() -> None:
+            if _render_request_active(request_id):
+                fallback = _empty_interactive_figure(
+                    "power",
+                    "The Power view could not be prepared.",
+                    start=start,
+                    end=end,
+                    detail="The previous chart is retained while the next refresh is attempted.",
+                )
+                _publish_plot_if_current(fallback, "power", request_id, cache_key=cache_key)
+                _clear_interactive_loading()
+
+        doc.add_next_tick_callback(publish_error)
+        return
+    finally:
+        _BACKGROUND_RENDER_TASKS.pop(request_id, None)
+
+    log_metrics = {key: value for key, value in metrics.items() if key != "status"}
+    _perf_log(
+        "power_background_prepare",
+        instrument="power",
+        request_id=request_id,
+        status=str(metrics.get("status", "ok")),
+        duration_ms=round((perf_counter() - started) * 1000, 3),
+        **log_metrics,
+    )
+
+    def publish() -> None:
+        if not _render_request_active(request_id):
+            return
+        _publish_plot_if_current(fig, "power", request_id, cache_key=cache_key)
+        _clear_interactive_loading()
+
+    doc.add_next_tick_callback(publish)
+
+
+def _start_background_power_prepare(
+    start,
+    end,
+    request_id: int | None,
+    render_quality: str,
+    cache_key: tuple[object, ...],
+) -> bool:
+    """Schedule Power preparation when a live Panel event loop is available."""
+    if request_id is None or pn.state.curdoc is None:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    task = loop.create_task(
+        _prepare_power_view_async(
+            start,
+            end,
+            request_id,
+            render_quality,
+            cache_key,
+            power_view_select.value,
+            pn.state.curdoc,
+        )
+    )
+    _BACKGROUND_RENDER_TASKS[request_id] = task
+    return True
 
 
 def _render_interactive_view(
@@ -5350,37 +5935,37 @@ def _render_interactive_view(
         CURRENT_INSTRUMENT = instrument
     start, end, cache_window_mode = _canonical_interactive_window(start, end, instrument)
     print(f"[render-view] instrument={instrument} quality={render_quality} request={request_id}")
-    with _timed_perf(
-        "interactive_view_update",
-        instrument=instrument,
-        start=start,
-        end=end,
+    cache_key = _interactive_render_cache_key(
+        start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax,
+        lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument,
         render_quality=render_quality,
-        request_id=request_id,
-    ) as perf:
+    )
+    if instrument == "power" and _start_background_power_prepare(
+        start,
+        end,
+        request_id,
+        render_quality,
+        cache_key,
+    ):
+        _perf_log(
+            "power_background_prepare_scheduled",
+            instrument="power",
+            request_id=request_id,
+            render_quality=render_quality,
+        )
+        return
+    try:
+      with _timed_perf(
+          "interactive_view_update",
+          instrument=instrument,
+          start=start,
+          end=end,
+          render_quality=render_quality,
+          request_id=request_id,
+      ) as perf:
         if not _render_request_active(request_id):
             perf["status"] = "stale_before_start"
             return
-        cache_key = _interactive_render_cache_key(
-            start,
-            end,
-            bottom_val,
-            top_val,
-            var1_name,
-            var2_name,
-            bmin,
-            bmax,
-            lmin,
-            lmax,
-            lymin,
-            lymax,
-            iymin,
-            iymax,
-            rymin,
-            rymax,
-            instrument,
-            render_quality=render_quality,
-        )
         perf["cache_window_mode"] = cache_window_mode
         perf["top_var"] = var1_name
         perf["bottom_var"] = var2_name
@@ -5646,6 +6231,8 @@ def _render_interactive_view(
             )
         elif _render_request_active(request_id):
             _clear_interactive_loading()
+    finally:
+        _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.discard(cache_key)
 
 
 def _start_interactive_render(
@@ -5697,8 +6284,55 @@ def _start_interactive_render(
         instrument,
         render_quality=final_quality,
     )
+    # A fresh latest-view prewarm is immutable JSON. Read it in a worker thread
+    # so a phone or browser session can keep handling controls while the file is
+    # parsed. The only Panel mutation happens in the document callback above.
+    prewarm_path = _prewarmed_interactive_path(instrument)
+    cached_prewarm = (
+        full_cache_key not in _INTERACTIVE_RENDER_CACHE
+        and _cache_key_targets_latest_prewarm(full_cache_key, instrument)
+        and prewarm_path.is_file()
+        and pn.state.curdoc is not None
+    )
+    if cached_prewarm:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            _set_interactive_loading(instrument, "Loading the current cached view.", phase="loading", visible=True)
+            if not _show_cached_quicklook_placeholder(instrument, start=start, end=end):
+                _show_interactive_placeholder(instrument, "Loading the current cached view.")
+            _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.add(full_cache_key)
+            render_args = (
+                start, end, bottom_val, top_val, var1_name, var2_name, bmin, bmax,
+                lmin, lmax, lymin, lymax, iymin, iymax, rymin, rymax, instrument,
+            )
+            prewarm_task = loop.create_task(
+                _load_prewarmed_interactive_figure_async(
+                    prewarm_path,
+                    full_cache_key,
+                    instrument,
+                    request_id,
+                    pn.state.curdoc,
+                    render_args,
+                )
+            )
+            _BACKGROUND_RENDER_TASKS[request_id] = prewarm_task
+
+            def finish_prewarm_task(task: asyncio.Task) -> None:
+                if _BACKGROUND_RENDER_TASKS.get(request_id) is task:
+                    _BACKGROUND_RENDER_TASKS.pop(request_id, None)
+                if task.cancelled():
+                    _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.discard(full_cache_key)
+
+            prewarm_task.add_done_callback(finish_prewarm_task)
+            return
     if _restore_exact_interactive_cache(full_cache_key, instrument):
         _clear_interactive_loading()
+        return
+    if full_cache_key in _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS:
+        _perf_log("interactive_render_deduplicated", instrument=instrument)
         return
     first_cache_key = _interactive_render_cache_key(
         start,
@@ -5731,6 +6365,7 @@ def _start_interactive_render(
         if not _show_cached_quicklook_placeholder(instrument, start=start, end=end):
             _show_interactive_placeholder(instrument, "Loading the selected window and preparing the first pass of the plot.")
 
+    _IN_FLIGHT_INTERACTIVE_RENDER_CACHE_KEYS.add(first_cache_key)
     _schedule_next_tick(
         lambda: _render_interactive_view(
             start,
@@ -5890,7 +6525,11 @@ def _enable_browser_interactive_render() -> None:
     if pn.state.curdoc is None:
         return
     _INTERACTIVE_RENDER_ENABLED = True
-    _schedule_timeout(_activate_interactive_footer_metrics, 750)
+    # A latest Power view uses prewarmed JSON. Its status footer would open the
+    # multi-million-sample raw store while that cached figure is parsing, so it
+    # is activated by the prewarm publisher after first paint instead.
+    if instrument_select.value != "power":
+        _schedule_timeout(_activate_interactive_footer_metrics, 750)
     _schedule_timeout(_schedule_current_interactive_render, 250)
 
 
@@ -6176,7 +6815,7 @@ def _refresh_latest_if_needed():
         ql_date.param.trigger("value")
 
 
-_ql_timer = _safe_periodic_callback(_refresh_latest_if_needed, period=300_000, start=True)
+_ql_timer = _safe_periodic_callback(_refresh_latest_if_needed, period=300_000, start=False)
 
 
 def _refresh_hk_latest_if_needed():
@@ -6187,7 +6826,7 @@ def _refresh_hk_latest_if_needed():
         hk_date.param.trigger("value")
 
 
-_hk_timer = _safe_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=True)
+_hk_timer = _safe_periodic_callback(_refresh_hk_latest_if_needed, period=300_000, start=False)
 
 # Ensure initial map is fresh
 _refresh_ql_options(preserve_current=True)
@@ -6251,9 +6890,54 @@ def _log_session_loaded() -> None:
             "client_ip": _client_ip(),
             "user_agent": _request_header("User-Agent"),
             "status": "loaded",
+            "app_boot_ms": round(_session_age_seconds() * 1000.0, 3),
         }
     )
     _perf_log("session_loaded", instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT, **fields)
+
+
+def _log_serialized_document_size() -> None:
+    """Record the actual Bokeh document payload size after first render.
+
+    Panel sends this model graph through its websocket.  Measure it only for
+    development RUM sessions and after the initial chart is already visible,
+    so the diagnostic cannot affect first-paint timing.
+    """
+    if SITE_ENV != "development" or not _browser_rum_enabled():
+        return
+    doc = pn.state.curdoc
+    if doc is None:
+        return
+    started = perf_counter()
+    try:
+        # ``serialize_json`` is Bokeh's own protocol serializer. Unlike the
+        # standard library encoder, it also handles NumPy and datetime values
+        # used by richer forecast figures.
+        payload_bytes = len(serialize_json(doc.to_json()).encode("utf-8"))
+    except Exception as exc:
+        _perf_log(
+            "browser_document_model_size",
+            instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT,
+            status="error",
+            error_type=type(exc).__name__,
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+        return
+    _perf_log(
+        "browser_document_model_size",
+        instrument=_safe_widget_value("instrument_select") or CURRENT_INSTRUMENT,
+        status="ok",
+        document_bytes=payload_bytes,
+        duration_ms=round((perf_counter() - started) * 1000, 3),
+        request_path=_request_path(),
+    )
+
+
+def _schedule_serialized_document_size() -> None:
+    """Defer development-only document accounting until after first paint."""
+    if SITE_ENV != "development" or not _browser_rum_enabled() or pn.state.curdoc is None:
+        return
+    pn.state.curdoc.add_timeout_callback(_log_serialized_document_size, 5_000)
 
 
 def _log_session_heartbeat() -> None:
@@ -6318,6 +7002,12 @@ def _log_session_destroyed(session_context) -> None:
     )
     current_instrument = fields.get("current_instrument") or globals().get("CURRENT_INSTRUMENT")
     perf_logger("session_destroyed", instrument=current_instrument, **fields)
+    for timer in list(globals().get("_SESSION_PERIODIC_CALLBACKS", ())):
+        try:
+            timer.stop()
+        except Exception:
+            pass
+    globals().get("_SESSION_PERIODIC_CALLBACKS", []).clear()
 
 
 instrument_select.param.watch(
@@ -6361,10 +7051,19 @@ wxcam_calendar_state.param.watch(
     "selected_hour_path",
 )
 pn.state.onload(_log_session_loaded)
+pn.state.onload(_schedule_serialized_document_size)
 pn.state.on_session_destroyed(_log_session_destroyed)
 _session_heartbeat_cb = None
 if SESSION_HEARTBEAT_MS > 0:
-    _session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=True)
+    _session_heartbeat_cb = _safe_periodic_callback(_log_session_heartbeat, period=SESSION_HEARTBEAT_MS, start=False)
+
+
+def _start_session_heartbeat() -> None:
+    if _session_heartbeat_cb is not None and not _session_heartbeat_cb.running:
+        _session_heartbeat_cb.start()
+
+
+pn.state.onload(_start_session_heartbeat)
 
 
 def _sync_wxcam_calendar_hour(*_events):
@@ -6602,7 +7301,7 @@ def _current_interactive_status_markup() -> str:
         return _status_strip_markup(items)
     latest = _dataset_time_bounds(inst)[1]
     lag = datetime.now() - latest if latest is not None else None
-    times = _instrument_time_index(inst)
+    times = _status_time_index(inst)
     bits, missing, total = _hourly_coverage_summary(times, _ensure_utc(range_start.value), _ensure_utc(range_end.value))
     items = [
         ("Last sample", _format_status_time(latest), "info"),
@@ -6637,7 +7336,7 @@ def _current_interactive_availability_markup() -> str:
         )
     start = _ensure_utc(range_start.value)
     end = _ensure_utc(range_end.value)
-    bits = _binned_time_coverage(_instrument_time_index(inst), start, end, segments=72)
+    bits = _binned_time_coverage(_status_time_index(inst), start, end, segments=72)
     start_label = start.strftime("%m-%d %H:%M") if start else "--"
     end_label = end.strftime("%m-%d %H:%M") if end else "--"
     return _availability_bar_markup(
@@ -7201,7 +7900,10 @@ def _apply_query_state() -> None:
         return
     visible_instruments = set(INSTRUMENT_OPTIONS.values())
     hk_visible_instruments = set(HK_INSTRUMENT_OPTIONS.values())
-    instrument = args.get("instrument")
+    # A direct Power URL owns the shared interactive component. Apply this
+    # before its generic instrument parameter so tab switches cannot fall back
+    # to the previous Ceilometer selection during initial callback wiring.
+    instrument = "power" if args.get("tab") == "power" else args.get("instrument")
     if instrument in visible_instruments:
         instrument_select.value = instrument
     time_state = _query_interactive_time_state(args, instrument_select.value)
@@ -7244,8 +7946,14 @@ def _apply_query_state() -> None:
         auroracam_camera.value = args["auroracam_camera"]
     if args.get("auroracam_date") in list(auroracam_date.options):
         auroracam_date.value = args["auroracam_date"]
-    if args.get("auroracam_time") in list(auroracam_time.options):
-        auroracam_time.value = args["auroracam_time"]
+    requested_auroracam_time = args.get("auroracam_time")
+    if requested_auroracam_time in list(auroracam_time.options):
+        auroracam_time.value = requested_auroracam_time
+    elif requested_auroracam_time:
+        # Historic times are loaded only when the camera tab is activated.
+        # Hold this value so direct/share URLs still select their frame then.
+        global _AURORACAM_PENDING_TIME_QUERY
+        _AURORACAM_PENDING_TIME_QUERY = requested_auroracam_time
     if args.get("uas_window") in list(uas_window.options):
         uas_window.value = args["uas_window"]
     if args.get("power_view") in {"current", "forecast"}:
@@ -7280,1662 +7988,7 @@ wxcam_calendar_state.param.watch(_refresh_share_and_download_state, "selected_ho
 
 
 ACCENT = "#003155"  # stable MaterialTemplate header; gradients are applied inside views
-css = """
-:root, :host {
-    --aurora-navy: #1e2f50ff;
-    --aurora-navy-soft: #1e2f5033;
-    --aurora-navy-muted: #1e2f5070;
-    --aurora-cream: #fdf4eaff;
-    --aurora-card: #fffaf4ff;
-    --aurora-sky: #003155ff;
-    --aurora-sky-wash: #2196d15d;
-    --aurora-sun: #f2d485ff;
-    --aurora-teal: #36b9b2ff;
-    --aurora-violet: #a66fd3ff;
-    --aurora-header: linear-gradient(112deg, var(--aurora-sky) 0%, #0b587dff 48%, var(--aurora-teal) 100%);
-    --aurora-wash: linear-gradient(120deg, #36b9b21f 0%, #2196d15d 52%, #a66fd32b 100%);
-}
 
-# Global font override for a clean, consistent look.
-html, body, .bk {
-    font-family: "SF Pro Display","SF Pro","-apple-system","BlinkMacSystemFont","Segoe UI",sans-serif;
-    font-size: 15px;
-    background: var(--aurora-cream);
-    color: var(--aurora-navy);
-}
-.pn-template,
-.pn-template .pn-main,
-.pn-template .pn-wrapper,
-.pn-template main {
-    background: var(--aurora-cream) !important;
-}
-.bk.card, .bk-panel-models-card {
-    border: 1px solid var(--aurora-navy-soft);
-    border-radius: 8px;
-    box-shadow: none;
-    background: var(--aurora-card);
-}
-.bk-btn, button.bk-btn {
-    border-radius: 6px;
-    border: 1px solid var(--aurora-navy-muted);
-    box-shadow: none;
-    background: var(--aurora-card);
-    color: var(--aurora-navy);
-}
-.bk-btn-primary, button.bk-btn-primary {
-    background: var(--aurora-header);
-    border-color: var(--aurora-sky);
-    color: #fff;
-}
-.bk-input {
-    border-radius: 6px;
-    border-color: var(--aurora-navy-muted);
-    background: var(--aurora-card);
-    color: var(--aurora-navy);
-}
-.bk-btn:hover, button.bk-btn:hover { border-color: var(--aurora-teal); background: #36b9b214; }
-.bk-btn-primary:hover, button.bk-btn-primary:hover { border-color: var(--aurora-sun); background: linear-gradient(112deg, var(--aurora-sky) 0%, var(--aurora-teal) 58%, var(--aurora-violet) 100%); }
-.mdc-top-app-bar { background: var(--aurora-header) !important; }
-.mdc-tab { color: var(--aurora-navy) !important; }
-.mdc-tab--active, .mdc-tab:hover { color: var(--aurora-sky) !important; }
-.mdc-tab-indicator__content--underline { border-color: var(--aurora-teal) !important; }
-.mobile-stack {
-    flex-wrap: wrap !important;
-    gap: 8px;
-}
-.mobile-stack > .bk {
-    flex: 1 1 220px;
-    min-width: 160px;
-}
-.small-card .bk-card-header {
-    padding: 4px 8px;
-}
-.small-card .bk-card-body {
-    padding: 6px 8px;
-}
-.quicklook-image {
-    margin-bottom: 0 !important;
-    line-height: 0;
-}
-.quicklook-image img,
-.quicklook-image__img {
-    display: block;
-    width: 100%;
-    height: auto;
-    max-width: 100%;
-}
-.status-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 4px;
-}
-.status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 999px;
-    border: 1px solid var(--aurora-navy-soft);
-    background: var(--aurora-card);
-    color: var(--aurora-navy);
-    font-size: 12px;
-    line-height: 1.2;
-}
-.status-pill--ok {
-    border-color: #b7e4dc;
-    background: #f1fbf8;
-    color: #0b6b5d;
-}
-.status-pill--warn {
-    border-color: #f1d4b5;
-    background: #fff8ef;
-    color: #9a5b16;
-}
-.status-pill--info {
-    border-color: #d8dee4;
-    background: #f8fafb;
-    color: #334155;
-}
-.interactive-loading-notice {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border: 1px solid var(--aurora-navy-soft);
-    border-radius: 8px;
-    background: var(--aurora-wash);
-}
-.interactive-loading-notice__badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 78px;
-    padding: 3px 8px;
-    border-radius: 999px;
-    background: #36b9b21f;
-    color: var(--aurora-sky);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0;
-}
-.interactive-loading-notice__text {
-    font-size: 12px;
-    color: #536171;
-    line-height: 1.35;
-}
-.interactive-loading-note,
-.lazy-tab-placeholder {
-    padding: 10px 12px;
-    border: 1px solid var(--aurora-navy-soft);
-    border-radius: 8px;
-    background: var(--aurora-card);
-    color: var(--aurora-navy);
-    font-size: 12px;
-    line-height: 1.35;
-}
-.interactive-content,
-.interactive-plot-body,
-.interactive-plot-pane {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow-x: hidden;
-}
-.interactive-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    min-height: 100%;
-    padding: 16px 18px;
-    border: 1px solid #d8e1e8;
-    border-radius: 8px;
-    background: #ffffff;
-}
-.interactive-skeleton__title {
-    font-size: 15px;
-    font-weight: 600;
-    color: #22313f;
-}
-.interactive-skeleton__subtitle {
-    font-size: 12px;
-    color: #647283;
-}
-.interactive-skeleton__plot {
-    height: 260px;
-    border-radius: 8px;
-    border: 1px solid #e5eaef;
-    background:
-        linear-gradient(90deg, rgba(248, 250, 252, 0.95), rgba(237, 242, 247, 0.75), rgba(248, 250, 252, 0.95));
-    background-size: 220% 100%;
-    animation: interactive-skeleton-shimmer 1.6s ease-in-out infinite;
-}
-.interactive-skeleton__plot--secondary {
-    height: 160px;
-}
-@keyframes interactive-skeleton-shimmer {
-    0% { background-position: 100% 0; }
-    100% { background-position: -100% 0; }
-}
-.availability-shell {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 4px;
-}
-.availability-caption {
-    font-size: 12px;
-    color: #4c5c6b;
-}
-.availability-explainer {
-    font-size: 11px;
-    color: #647283;
-    line-height: 1.35;
-}
-.availability-bar {
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(4px, 1fr);
-    gap: 2px;
-    align-items: center;
-}
-.availability-segment {
-    height: 8px;
-    border-radius: 3px;
-    border: 1px solid var(--aurora-navy-soft);
-    background: var(--aurora-card);
-}
-.availability-segment--full {
-    background: var(--aurora-teal);
-    border-color: var(--aurora-teal);
-}
-.availability-segment--partial {
-    background: var(--aurora-sun);
-    border-color: var(--aurora-sun);
-}
-.availability-segment--empty {
-    background: #1e2f5014;
-    border-color: var(--aurora-navy-soft);
-}
-.availability-scale {
-    display: flex;
-    justify-content: space-between;
-    font-size: 11px;
-    color: #6b7280;
-}
-.availability-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    font-size: 11px;
-    color: #566370;
-}
-.availability-legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-.availability-legend-swatch {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 3px;
-    border: 1px solid #d8dee4;
-}
-.availability-empty {
-    font-size: 12px;
-    color: #6b7280;
-}
-.action-row {
-    align-items: flex-end;
-    gap: 10px;
-}
-.action-row > .bk {
-    margin: 0 !important;
-}
-.action-row .bk-input-group {
-    min-width: 320px;
-}
-.action-row .bk-btn,
-.action-row button.bk-btn {
-    min-height: 38px;
-}
-.action-row .bk-panel-models-widgets-FileDownload,
-.action-row .bk-panel-models-widgets-Button {
-    flex: 0 0 auto;
-}
-.site-footer {
-    margin-top: 8px;
-    padding: 12px 14px;
-    border-top: 1px solid var(--aurora-navy-soft);
-    background: var(--aurora-card);
-}
-.site-footer__title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--aurora-navy);
-    margin-bottom: 8px;
-}
-.site-footer__links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-}
-.site-footer__link {
-    min-width: 240px;
-    flex: 1 1 280px;
-}
-.site-footer__link a {
-    color: var(--aurora-sky);
-    font-size: 13px;
-    font-weight: 600;
-    text-decoration: none;
-}
-.site-footer__link a:hover {
-    text-decoration: underline;
-}
-.site-footer__desc {
-    margin-top: 4px;
-    font-size: 12px;
-    color: #5b6673;
-    line-height: 1.4;
-}
-.site-env-banner {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 14px;
-    border: 1px solid #36b9b270;
-    border-radius: 8px;
-    background: var(--aurora-wash);
-    color: var(--aurora-navy);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.35;
-}
-.site-env-banner__meta {
-    color: var(--aurora-sky);
-    font-size: 12px;
-    font-weight: 500;
-}
-.ops-shell {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-}
-.ops-headline {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
-    flex-wrap: wrap;
-}
-.ops-headline__main {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-.ops-headline__text,
-.ops-footnote {
-    font-size: 12px;
-    color: #5b6673;
-    line-height: 1.45;
-}
-.ops-section {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-.ops-section-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #243b53;
-}
-.ops-section-title--headline {
-    font-size: 16px;
-}
-.ops-grid {
-    display: grid;
-    gap: 12px;
-}
-.ops-grid--summary {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-.ops-grid--root-cause,
-.ops-grid--trends {
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-}
-.ops-grid--storage {
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-}
-.ops-card {
-    border: 1px solid #d8dee4;
-    border-radius: 8px;
-    background: #ffffff;
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.ops-card__head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.ops-card__value {
-    font-size: 14px;
-    font-weight: 600;
-    color: #1f2933;
-}
-.ops-card__meta {
-    font-size: 11px;
-    color: #6b7280;
-    line-height: 1.4;
-}
-.ops-card--trend {
-    min-height: 132px;
-}
-.ops-sparkline {
-    width: 100%;
-    height: 34px;
-    display: block;
-}
-.ops-sparkline--empty {
-    display: flex;
-    align-items: center;
-    color: #718195;
-    font-size: 11px;
-    border: 1px dashed #d8dee4;
-    border-radius: 6px;
-    padding-left: 8px;
-}
-.ops-light {
-    display: inline-block;
-    width: 11px;
-    height: 11px;
-    border-radius: 999px;
-    border: 1px solid transparent;
-    flex: 0 0 auto;
-}
-.ops-light--green {
-    background: #2a9d8f;
-    border-color: #2a9d8f;
-}
-.ops-light--amber {
-    background: #e9c46a;
-    border-color: #e9c46a;
-}
-.ops-light--red {
-    background: #e76f51;
-    border-color: #e76f51;
-}
-.ops-light--gray {
-    background: #cbd5e1;
-    border-color: #cbd5e1;
-}
-.ops-light-text {
-    font-size: 12px;
-    color: #243b53;
-}
-.ops-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14px;
-    align-items: center;
-}
-.ops-table-wrap {
-    overflow-x: auto;
-    border: 1px solid #d8dee4;
-    border-radius: 8px;
-    background: #ffffff;
-}
-.ops-table {
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 760px;
-}
-.ops-table th,
-.ops-table td {
-    border-bottom: 1px solid #e6ebf1;
-    padding: 10px 12px;
-    vertical-align: top;
-    text-align: left;
-}
-.ops-table thead th {
-    background: #f8fafb;
-    color: #3b4a5a;
-    font-size: 12px;
-    font-weight: 600;
-}
-.ops-table__rowlabel {
-    font-size: 12px;
-    font-weight: 600;
-    color: #243b53;
-    white-space: nowrap;
-}
-.ops-table__state {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-}
-.ops-table__detail {
-    margin-top: 4px;
-    font-size: 11px;
-    color: #6b7280;
-}
-.ops-callout {
-    border-radius: 8px;
-    padding: 10px 12px;
-    background: #fff8ef;
-    border: 1px solid #f1d4b5;
-    color: #7c4a12;
-}
-.ops-callout--red {
-    background: #fff5f4;
-    border-color: #f3c1bb;
-    color: #8a2f24;
-}
-.ops-callout ul {
-    margin: 0;
-    padding-left: 18px;
-}
-.uas-shell {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.uas-toolbar .bk-card-body {
-    padding: 10px 12px;
-}
-.uas-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    gap: 10px;
-    margin-bottom: 10px;
-}
-.uas-card {
-    border: 1px solid #d8dee4;
-    border-radius: 8px;
-    background: #ffffff;
-    padding: 10px 12px;
-}
-.uas-card--ok {
-    border-color: #b7e4dc;
-    background: #f1fbf8;
-}
-.uas-card--warn {
-    border-color: #f1d4b5;
-    background: #fff8ef;
-}
-.uas-card__label {
-    font-size: 11px;
-    color: #5f6c7b;
-    line-height: 1.25;
-}
-.uas-card__value {
-    margin-top: 5px;
-    font-size: 20px;
-    font-weight: 650;
-    color: #22313f;
-}
-.uas-section-title {
-    font-size: 13px;
-    font-weight: 650;
-    color: #22313f;
-    margin: 0 0 8px;
-}
-.uas-table-wrap {
-    border: 1px solid #d8dee4;
-    border-radius: 8px;
-    background: #ffffff;
-    overflow-x: auto;
-}
-.uas-table {
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 760px;
-}
-.uas-table th,
-.uas-table td {
-    border-bottom: 1px solid #e6ebf1;
-    padding: 8px 10px;
-    text-align: left;
-    vertical-align: top;
-    font-size: 12px;
-}
-.uas-table thead th {
-    background: #f8fafb;
-    color: #3b4a5a;
-    font-weight: 650;
-}
-.uas-table td:last-child {
-    color: #5f6c7b;
-    overflow-wrap: anywhere;
-}
-.auroracam-browser {
-    gap: 12px;
-}
-.auroracam-toolbar .bk-card-body {
-    padding: 10px 12px;
-}
-.auroracam-section {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-.auroracam-section__head {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: baseline;
-    flex-wrap: wrap;
-}
-.auroracam-section__title {
-    font-size: 15px;
-    font-weight: 650;
-    color: #22313f;
-}
-.auroracam-section__meta {
-    font-size: 12px;
-    font-weight: 650;
-    color: #0b7285;
-}
-.auroracam-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 12px;
-}
-.auroracam-card {
-    border: 1px solid #d8e1e8;
-    border-radius: 8px;
-    background: #ffffff;
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-}
-.auroracam-card--button {
-    width: 100%;
-    appearance: none;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-.auroracam-card--button:hover {
-    border-color: #0b7285;
-    box-shadow: 0 0 0 1px rgba(11, 114, 133, 0.18);
-}
-.auroracam-card--button:focus-visible {
-    outline: 2px solid #0b7285;
-    outline-offset: 2px;
-}
-.auroracam-card--selected {
-    border-color: #0b7285;
-    box-shadow: 0 0 0 2px rgba(11, 114, 133, 0.22);
-}
-.auroracam-card__hidden {
-    display: none !important;
-}
-.auroracam-card__head {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    align-items: baseline;
-}
-.auroracam-card__title {
-    font-size: 13px;
-    font-weight: 650;
-    color: #22313f;
-}
-.auroracam-card__ip,
-.auroracam-card__meta,
-.auroracam-card__file {
-    font-size: 11px;
-    color: #5f6c7b;
-    line-height: 1.35;
-    overflow-wrap: anywhere;
-}
-.auroracam-card__img,
-.auroracam-card__placeholder {
-    width: 100%;
-    aspect-ratio: 4 / 3;
-    border-radius: 6px;
-    background: #edf2f7;
-}
-.auroracam-card__img {
-    display: block;
-    object-fit: cover;
-}
-.auroracam-card__placeholder,
-.auroracam-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #647283;
-    font-size: 12px;
-    border: 1px dashed #c5d0da;
-}
-.auroracam-empty {
-    min-height: 180px;
-    border-radius: 8px;
-    background: #fbfcfd;
-}
-.auroracam-hour-strip {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    border: 1px solid #d8e1e8;
-    border-radius: 8px;
-    padding: 10px 12px;
-    background: #fbfcfd;
-}
-.auroracam-hour-strip__header {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 8px 14px;
-    align-items: baseline;
-}
-.auroracam-hour-strip__title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #22313f;
-}
-.auroracam-hour-strip__hint,
-.auroracam-hour-strip__hour {
-    font-size: 11px;
-    color: #5f6c7b;
-}
-.auroracam-hour-strip__scroller {
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(74px, 74px);
-    gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 2px;
-}
-.auroracam-hour-strip__tile {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    align-items: center;
-    padding: 4px;
-    border: 1px solid #d8e1e8;
-    border-radius: 7px;
-    background: #ffffff;
-    min-height: 78px;
-}
-.auroracam-hour-strip__tile--empty {
-    background: #f6f8fb;
-    border-style: dashed;
-}
-.auroracam-hour-strip__thumb,
-.auroracam-hour-strip__placeholder {
-    width: 100%;
-    height: 54px;
-    border-radius: 5px;
-    background: #edf2f7;
-}
-.auroracam-hour-strip__thumb {
-    display: block;
-    object-fit: cover;
-}
-.auroracam-hour-strip__placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #7b8794;
-    font-size: 11px;
-}
-.auroracam-viewer {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-}
-.auroracam-viewer__meta {
-    text-align: center;
-}
-.auroracam-viewer__title {
-    font-size: 16px;
-    font-weight: 650;
-    color: #22313f;
-}
-.auroracam-viewer__subtitle {
-    margin-top: 4px;
-    font-size: 12px;
-    color: #5f6c7b;
-    overflow-wrap: anywhere;
-}
-.auroracam-viewer__frame {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #edf2f7;
-    border-radius: 8px;
-    overflow: hidden;
-    padding: 10px;
-    border: 1px solid #d8e1e8;
-}
-.auroracam-viewer__img {
-    display: block;
-    width: auto;
-    height: auto;
-    max-width: 100%;
-    max-height: min(72vh, 980px);
-    object-fit: contain;
-}
-.auroracam-viewer__placeholder {
-    min-height: 220px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px dashed #c5d0da;
-    border-radius: 8px;
-    color: #647283;
-    background: #fbfcfd;
-}
-.wxcam-player {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-}
-.wxcam-player__meta {
-    display: flex;
-    justify-content: center;
-    text-align: center;
-}
-.wxcam-player__meta-text {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    max-width: 820px;
-}
-.wxcam-player__title {
-    font-size: 16px;
-    font-weight: 600;
-    color: #22313f;
-    text-align: center;
-    word-break: break-word;
-}
-.wxcam-player__subtitle {
-    font-size: 12px;
-    color: #5f6c7b;
-    line-height: 1.4;
-}
-.wxcam-player__controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    justify-content: center;
-}
-.wxcam-player__controls button,
-.wxcam-player__controls select {
-    border: 1px solid #c5d0da;
-    background: #ffffff;
-    color: #22313f;
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 13px;
-}
-.wxcam-player__controls button {
-    cursor: pointer;
-}
-.wxcam-player__inline-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 14px;
-    color: #475569;
-}
-.wxcam-player__checkbox input {
-    margin: 0;
-}
-.wxcam-player__seek {
-    display: grid;
-    grid-template-columns: 60px minmax(0, 1fr) 60px;
-    gap: 10px;
-    align-items: center;
-    width: 100%;
-}
-.wxcam-player__seek input[type="range"] {
-    width: 100%;
-}
-.wxcam-player__time {
-    font-size: 13px;
-    color: #5f6c7b;
-    text-align: center;
-}
-.wxcam-player__frame {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #edf2f7;
-    border-radius: 8px;
-    overflow: hidden;
-    padding: 10px;
-    border: 1px solid #d8e1e8;
-}
-.wxcam-player__frame video {
-    display: block;
-    width: 100%;
-    height: auto;
-    max-height: 68vh;
-}
-.wxcam-still {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-}
-.wxcam-still__frame {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #edf2f7;
-    border-radius: 8px;
-    overflow: hidden;
-    padding: 10px;
-    border: 1px solid #d8e1e8;
-}
-.wxcam-still__frame img {
-    display: block;
-    width: auto;
-    height: auto;
-    max-width: 100%;
-    max-height: min(68vh, 900px);
-    object-fit: contain;
-}
-.wxcam-still--vertical .wxcam-still__frame img {
-    max-height: min(56vh, 680px);
-}
-.wxcam-quicklook-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 4px 14px;
-    align-items: baseline;
-    padding: 8px 0 4px;
-    border-bottom: 1px solid #d8e1e8;
-}
-.wxcam-quicklook-header__title {
-    font-size: 15px;
-    font-weight: 650;
-    color: #22313f;
-}
-.wxcam-quicklook-header__date {
-    font-size: 12px;
-    font-weight: 650;
-    color: #0b7285;
-}
-.wxcam-quicklook-header__note {
-    grid-column: 1 / -1;
-    font-size: 12px;
-    color: #5f6c7b;
-}
-.wxcam-browser {
-    gap: 10px;
-}
-.wxcam-browser__toolbar .bk-card-body {
-    padding: 10px 12px;
-}
-.wxcam-hour-strip {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    border: 1px solid #d8e1e8;
-    border-radius: 8px;
-    padding: 10px 12px;
-    background: #fbfcfd;
-}
-.wxcam-hour-strip__header {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 8px 14px;
-    align-items: baseline;
-}
-.wxcam-hour-strip__title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #22313f;
-}
-.wxcam-hour-strip__hint {
-    font-size: 11px;
-    color: #5f6c7b;
-}
-.wxcam-hour-strip__scroller {
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(62px, 62px);
-    gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 2px;
-}
-.wxcam-hour-strip__tile {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    align-items: center;
-    justify-content: flex-start;
-    padding: 4px;
-    border: 1px solid #d8e1e8;
-    border-radius: 7px;
-    background: #ffffff;
-    min-height: 76px;
-}
-.wxcam-hour-strip__tile--day {
-    min-height: 96px;
-}
-.wxcam-hour-strip__tile--recent {
-    justify-content: center;
-    min-height: 56px;
-}
-.wxcam-hour-strip__tile--active {
-    border-color: #0b7285;
-    box-shadow: inset 0 0 0 1px #0b7285;
-}
-.wxcam-hour-strip__tile--empty {
-    background: #f6f8fb;
-    border-style: dashed;
-}
-.wxcam-hour-strip__thumb {
-    display: block;
-    width: 100%;
-    height: 54px;
-    object-fit: cover;
-    border-radius: 5px;
-    background: #edf2f7;
-}
-.wxcam-hour-strip__placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 54px;
-    border-radius: 5px;
-    background: #edf2f7;
-    color: #7b8794;
-    font-size: 11px;
-}
-.wxcam-hour-strip__chip,
-.wxcam-hour-strip__hour {
-    font-size: 11px;
-    color: #4c5c6b;
-    line-height: 1.2;
-}
-.wxcam-hour-strip__chip {
-    padding: 2px 6px;
-    border-radius: 999px;
-    background: #eff6f8;
-    color: #0b7285;
-}
-.wxcam-hour-strip__empty {
-    font-size: 12px;
-    color: #647283;
-}
-.wxcam-hour-tile {
-    gap: 1px;
-    padding: 1px;
-    border: 1px solid #d8e1e8;
-    border-radius: 2px;
-    background: #ffffff;
-}
-.wxcam-hour-tile > .bk {
-    margin: 0 !important;
-}
-.wxcam-hour-tile__img {
-    display: block;
-    width: auto;
-    max-width: 100%;
-    max-height: 88px;
-    margin: 0 auto;
-    border-radius: 2px;
-    background: #edf2f7;
-}
-.wxcam-hour-tile button {
-    padding: 1px 4px !important;
-    min-height: 18px;
-    font-size: 10px !important;
-    line-height: 1.1 !important;
-}
-.wxcam-hour-tile__placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 56px;
-    border-radius: 2px;
-    background: #edf2f7;
-    color: #647283;
-    font-size: 10px;
-}
-.wxcam-hour-tile--fish .wxcam-hour-tile__img {
-    max-height: 198px;
-}
-.wxcam-hour-tile--fish .wxcam-hour-tile__placeholder {
-    min-height: 126px;
-}
-.wxcam-player--wide .wxcam-player__frame video {
-    max-width: min(100%, 1400px);
-    object-fit: contain;
-}
-.wxcam-player--vertical .wxcam-player__frame {
-    min-height: min(60vh, 720px);
-}
-.wxcam-player--vertical .wxcam-player__frame video {
-    width: auto;
-    max-width: 100%;
-    max-height: calc(100vh - 320px);
-    object-fit: contain;
-}
-.desktop-tabs {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow: hidden;
-}
-:host(.desktop-tabs) .bk-header {
-    display: flex;
-    flex-wrap: nowrap;
-    max-width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
-    -webkit-overflow-scrolling: touch;
-}
-:host(.desktop-tabs) .bk-tab {
-    flex: 0 0 auto;
-    white-space: nowrap;
-}
-.mobile-app {
-    width: 100%;
-    max-width: 100vw;
-    min-width: 0;
-    padding: 0 8px calc(92px + env(safe-area-inset-bottom));
-    box-sizing: border-box;
-    overflow-x: hidden;
-}
-.mobile-shell {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow-x: hidden;
-}
-.mobile-shell--power {
-    gap: 6px;
-}
-.mobile-shell--power .mobile-section-title {
-    font-size: 16px;
-    margin: 0;
-}
-.mobile-shell--power .mobile-section-note {
-    display: none;
-}
-.mobile-section-title {
-    font-size: 18px;
-    font-weight: 700;
-    color: #22313f;
-    margin: 2px 0 0;
-}
-.mobile-section-note {
-    font-size: 12px;
-    color: #5f6c7b;
-    line-height: 1.35;
-}
-.mobile-card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-    gap: 10px;
-}
-.mobile-status-card,
-.mobile-plot-card {
-    border: 1px solid #d8e1e8;
-    border-radius: 8px;
-    background: #ffffff;
-    padding: 10px;
-    box-sizing: border-box;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow: hidden;
-}
-.mobile-status-card {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-.mobile-status-card--green {
-    border-color: #b7e4dc;
-    background: #f1fbf8;
-}
-.mobile-status-card--amber {
-    border-color: #f1d4b5;
-    background: #fff8ef;
-}
-.mobile-status-card--red {
-    border-color: #f3c1bb;
-    background: #fff5f4;
-}
-.mobile-status-card__label {
-    font-size: 11px;
-    font-weight: 650;
-    color: #5f6c7b;
-    line-height: 1.2;
-}
-.mobile-status-card__value {
-    font-size: 18px;
-    font-weight: 750;
-    color: #22313f;
-    line-height: 1.12;
-    overflow-wrap: anywhere;
-}
-.mobile-status-card__meta {
-    font-size: 11px;
-    color: #647283;
-    line-height: 1.35;
-}
-.desktop-overview-heading {
-    font-size: 18px;
-    font-weight: 700;
-    color: #22313f;
-    padding: 4px 0;
-}
-.overview-instrument-status {
-    border: 1px solid #d8e1e8;
-    border-radius: 8px;
-    background: #ffffff;
-    overflow: hidden;
-}
-.overview-instrument-status__title {
-    padding: 10px 12px 4px;
-    font-size: 13px;
-    font-weight: 700;
-    color: #22313f;
-}
-.overview-instrument-status__note {
-    padding: 0 12px 8px;
-    font-size: 11px;
-    color: #647283;
-}
-.overview-instrument-row {
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 12px;
-    border-top: 1px solid #edf1f4;
-}
-.overview-instrument-row__icon {
-    display: grid;
-    width: 30px;
-    height: 30px;
-    place-items: center;
-    border-radius: 6px;
-    color: #64748b;
-    background: rgba(100, 116, 139, 0.1);
-}
-.overview-instrument-row__icon-symbol {
-    width: 24px;
-    height: 24px;
-    display: block;
-    background: currentColor;
-    -webkit-mask: var(--instrument-symbol) center / contain no-repeat;
-    mask: var(--instrument-symbol) center / contain no-repeat;
-}
-.overview-instrument-row__icon-fallback { font-weight: 700; line-height: 19px; }
-.overview-instrument-row--green .overview-instrument-row__icon { color: #1c9b6c; background: rgba(28, 155, 108, 0.1); }
-.overview-instrument-row--amber .overview-instrument-row__icon { color: #c97a17; background: rgba(201, 122, 23, 0.1); }
-.overview-instrument-row--red .overview-instrument-row__icon { color: #c84b42; background: rgba(200, 75, 66, 0.1); }
-.overview-instrument-row__title {
-    font-size: 13px;
-    font-weight: 650;
-    color: #22313f;
-}
-.overview-instrument-row__detail {
-    margin-top: 2px;
-    font-size: 11px;
-    color: #647283;
-}
-.overview-instrument-row__state {
-    font-size: 12px;
-    font-weight: 650;
-    color: #344154;
-    text-align: right;
-}
-.mobile-plot-card {
-    padding: 6px;
-}
-.mobile-plot-card__title {
-    font-size: 11px;
-    font-weight: 700;
-    color: #22313f;
-    margin: 0 0 2px;
-    line-height: 1.15;
-}
-.mobile-plot-card__legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px 6px;
-    align-items: center;
-    margin: 0;
-    max-width: 100%;
-    font-size: 8.5px;
-    line-height: 1.15;
-    color: #344154;
-    overflow: hidden;
-}
-.mobile-plot-card__note {
-    margin: 0 0 4px;
-    font-size: 8.5px;
-    line-height: 1.25;
-    color: #536273;
-}
-.verification-guidance {
-    margin: 4px 0 5px;
-    padding: 6px;
-    border-left: 3px solid #0b7285;
-    background: #f4f8fa;
-    color: #344154;
-}
-.verification-guidance__title { font-size: 9px; font-weight: 700; color: #22313f; }
-.verification-guidance__summary { margin-top: 2px; font-size: 8px; line-height: 1.25; color: #536273; }
-.verification-guidance__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 5px; }
-.verification-guidance__metric { min-width: 0; padding: 4px; border: 1px solid #d9e4e8; background: #fff; }
-.verification-guidance__label { font-size: 8px; font-weight: 700; color: #344154; }
-.verification-guidance__value { margin-top: 1px; font-size: 9px; font-weight: 700; color: #22313f; }
-.verification-guidance__detail { margin-top: 1px; font-size: 7.5px; line-height: 1.2; color: #647283; }
-.verification-guidance__status--good { color: #23623a; }
-.verification-guidance__status--caution { color: #8a5720; }
-.verification-guidance__status--learning { color: #5f6c7b; }
-@media (max-width: 420px) { .verification-guidance__metrics { grid-template-columns: 1fr; } }
-.power-browser-guidance { margin: 8px 0; }
-.power-view-select { max-width: 620px; margin: 8px auto 4px; }
-.power-view-select .bk-btn { min-height: 38px; font-weight: 650; }
-.power-section-intro { margin: 2px 0 8px; padding: 8px 12px; border-bottom: 1px solid #d9e4e8; }
-.power-section-intro__title { color: #22313f; font-size: 17px; font-weight: 700; }
-.power-section-intro__detail { margin-top: 2px; color: #5f6c7b; font-size: 12px; line-height: 1.35; }
-.power-browser-briefing { margin: 0 0 8px; padding: 10px 12px; border: 1px solid #d9e4e8; border-left: 4px solid #0b7285; background: #f8fbfc; color: #344154; }
-.power-browser-briefing__title { color: #22313f; font-size: 14px; font-weight: 700; }
-.power-browser-briefing__copy { margin-top: 4px; font-size: 12px; line-height: 1.35; }
-.power-browser-briefing__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 6px; font-size: 12px; line-height: 1.35; }
-@media (max-width: 760px) {
-    .power-view-select { max-width: none; margin: 4px 0; }
-    .power-view-select .bk-btn { min-height: 34px; padding: 4px 6px; font-size: 12px; }
-    .power-section-intro { padding: 7px 4px; }
-    .power-section-intro__title { font-size: 15px; }
-    .power-browser-briefing__grid { grid-template-columns: 1fr; gap: 6px; }
-}
-.mobile-plot-card__legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    flex: 0 1 calc(50% - 4px);
-    min-width: 0;
-    max-width: 100%;
-}
-.mobile-plot-card__legend-line {
-    display: inline-block;
-    width: 13px;
-    height: 0;
-    border-top: 2px solid currentColor;
-    flex: 0 0 auto;
-}
-.mobile-plot-card__legend-line--dash {
-    border-top-style: dashed;
-}
-.mobile-plot-card__legend-line--dot {
-    border-top-style: dotted;
-}
-.mobile-plot-card__legend-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.mobile-plot-card__empty {
-    min-height: 110px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px dashed #c5d0da;
-    border-radius: 8px;
-    color: #647283;
-    font-size: 12px;
-    text-align: center;
-    padding: 12px;
-}
-.mobile-figure {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    height: 118px !important;
-    max-height: 118px !important;
-    overflow: hidden;
-    box-sizing: border-box;
-}
-.mobile-figure > div,
-.mobile-figure .bk,
-.mobile-figure .js-plotly-plot,
-.mobile-figure .plotly,
-.mobile-figure .plot-container,
-.mobile-figure .svg-container,
-.mobile-figure .main-svg {
-    width: 100% !important;
-    max-width: 100% !important;
-    height: 118px !important;
-    max-height: 118px !important;
-    min-height: 0 !important;
-}
-.mobile-power-title {
-    font-size: 15px;
-    margin: 0;
-}
-.mobile-power-note {
-    display: none;
-}
-@media (max-width: 700px) {
-    .mdc-top-app-bar,
-    .mdc-top-app-bar__row,
-    .pn-template-header,
-    .app-header,
-    header {
-        min-height: 54px !important;
-        height: 54px !important;
-    }
-    .mdc-top-app-bar__row,
-    .mdc-top-app-bar__section,
-    .pn-template-header,
-    .pn-template-header .bk {
-        align-items: center !important;
-    }
-    .mdc-top-app-bar__section {
-        display: flex !important;
-    }
-    .mdc-top-app-bar__title,
-    .pn-template-title {
-        display: flex !important;
-        align-items: center !important;
-        flex: 1 1 auto !important;
-        min-width: 0 !important;
-        max-width: calc(100vw - 104px) !important;
-        font-size: 16px !important;
-        line-height: 1 !important;
-    }
-    .pn-template-logo,
-    .pn-template-logo img,
-    .app-logo,
-    .app-logo img {
-        flex: 0 0 34px !important;
-        width: 34px !important;
-        height: 34px !important;
-        object-fit: contain !important;
-    }
-}
-.mobile-bottom-nav {
-    position: sticky;
-    top: 0;
-    z-index: 1000;
-    margin: 0 -8px 8px;
-    padding: 0 8px;
-    box-sizing: border-box;
-    overflow: hidden;
-    background: var(--aurora-card);
-    border-bottom: 1px solid var(--aurora-navy-soft);
-    box-shadow: none;
-}
-.mobile-app-tabs {
-    display: grid !important;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 0;
-    width: 100%;
-    min-width: 0;
-}
-.mobile-app-tabs__link {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 0;
-    min-height: 30px;
-    padding: 4px 1px 3px;
-    box-sizing: border-box;
-    color: var(--aurora-navy);
-    font-size: 10.5px;
-    font-weight: 600;
-    line-height: 1.05;
-    text-decoration: none;
-    border-bottom: 2px solid transparent;
-}
-.mobile-app-tabs__link:hover,
-.mobile-app-tabs__link:focus {
-    color: var(--aurora-sky);
-    text-decoration: none;
-}
-.mobile-app-tabs__link--active {
-    color: var(--aurora-sky);
-    border-bottom-color: var(--aurora-teal);
-}
-.mobile-app-tabs__label {
-    display: block;
-    max-width: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-@media (max-width: 768px) {
-    html,
-    body {
-        overflow-x: hidden;
-        width: 100%;
-        max-width: 100vw;
-    }
-    .mobile-app { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
-    body, .bk { font-size: 14px; }
-    .pn-template,
-    .pn-template .pn-main,
-    .pn-template .pn-wrapper,
-    .interactive-content,
-    .interactive-plot-body,
-    .interactive-plot-pane {
-        width: 100% !important;
-        max-width: 100vw !important;
-        min-width: 0 !important;
-        overflow-x: hidden !important;
-    }
-    .mobile-app,
-    .mobile-app .bk,
-    .mobile-shell,
-    .mobile-shell .bk,
-    .mobile-plot-card,
-    .mobile-plot-card .bk,
-    .mobile-status-card {
-        max-width: 100% !important;
-        min-width: 0 !important;
-        box-sizing: border-box;
-    }
-    .mdc-top-app-bar {
-        height: 54px !important;
-        min-height: 54px !important;
-    }
-    .mdc-top-app-bar__row {
-        height: 54px !important;
-        align-items: center !important;
-    }
-    .mdc-top-app-bar__section {
-        display: flex !important;
-        align-items: center !important;
-        padding: 0 8px !important;
-    }
-    .mdc-top-app-bar__title {
-        display: flex !important;
-        align-items: center !important;
-        flex: 1 1 auto !important;
-        min-width: 0 !important;
-        max-width: calc(100vw - 104px) !important;
-        font-size: 16px !important;
-        line-height: 1 !important;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .mdc-top-app-bar img {
-        flex: 0 0 34px !important;
-        width: 34px !important;
-        height: 34px !important;
-        object-fit: contain !important;
-    }
-    .bk.card { padding: 8px; }
-    .bk-panel-card { padding: 8px; }
-    .bk.pn-row { gap: 8px; }
-    .mobile-bottom-nav { padding: 0 8px; }
-    .mobile-app-tabs__link { font-size: 10.5px; }
-    .interactive-plot-pane .js-plotly-plot,
-    .interactive-plot-pane .plot-container,
-    .interactive-plot-pane .svg-container,
-    .interactive-plot-pane .main-svg {
-        max-width: 100% !important;
-    }
-    .mobile-stack > .bk {
-        flex: 1 1 100%;
-        min-width: 0;
-    }
-    .controls-card .bk-card-body {
-        max-height: 34vh;
-        overflow-y: auto;
-    }
-    .action-row .bk-input-group {
-        min-width: 0;
-        width: 100%;
-    }
-    .ops-table {
-        min-width: 680px;
-    }
-    .ops-card {
-        min-height: unset;
-    }
-    .wxcam-player__seek {
-        grid-template-columns: 52px minmax(0, 1fr) 52px;
-        gap: 8px;
-    }
-    .wxcam-player--vertical .wxcam-player__frame {
-        min-height: 50vh;
-    }
-    .wxcam-player--vertical .wxcam-player__frame video {
-        max-height: calc(100vh - 260px);
-    }
-    .wxcam-still__frame {
-        padding: 6px;
-    }
-    .wxcam-still__frame img,
-    .wxcam-still--vertical .wxcam-still__frame img {
-        max-height: 52vh;
-    }
-    .mobile-app .site-footer {
-        display: none;
-    }
-    .mobile-app .auroracam-grid {
-        display: grid !important;
-        grid-template-columns: minmax(0, 1fr) !important;
-        gap: 8px;
-    }
-    .mobile-app .auroracam-grid > .bk {
-        min-width: 0 !important;
-        width: auto !important;
-    }
-    .mobile-app .auroracam-card {
-        padding: 6px;
-    }
-    .mobile-app .auroracam-card__title {
-        font-size: 11px;
-    }
-    .mobile-app .auroracam-card__ip,
-    .mobile-app .auroracam-card__file {
-        display: none;
-    }
-    .mobile-app .auroracam-card__meta {
-        font-size: 10px;
-    }
-    .mobile-app .auroracam-viewer__frame {
-        padding: 6px;
-    }
-    .mobile-app .quicklook-image__img {
-        border: 1px solid #d8e1e8;
-        border-radius: 8px;
-    }
-}
-"""
 
 _custom_cl61_start_default = (
     pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).floor("h") + pd.Timedelta(hours=6)
@@ -9157,17 +8210,28 @@ def _custom_cl61_plan_view(start_value, duration_value, kit_value, _live_refresh
     return _build_custom_cl61_plan_view(start_value, duration_value, kit_value)
 
 
-power_plan_editor = pn.Card(
-    _operating_decision_audit_view_reactive,
-    pn.Row(custom_plan_instrument, custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-    _custom_cl61_plan_view,
-    title="Custom Instrument Operating Plan",
-    collapsible=True,
-    collapsed=False,
-    sizing_mode="stretch_width",
-    visible=CURRENT_INSTRUMENT == "power",
-    css_classes=["small-card", "operating-plan-card"],
-)
+# Constructing this card evaluates the learned operating-plan product. It is a
+# Forecast-only tool, so defer the work until the Forecast pane is requested.
+power_plan_editor: pn.Card | None = None
+
+
+def _get_power_plan_editor() -> pn.Card:
+    global power_plan_editor
+    if power_plan_editor is None:
+        power_plan_editor = pn.Card(
+            _operating_decision_audit_view_reactive,
+            pn.Row(custom_plan_instrument, custom_cl61_start, custom_cl61_duration, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+            _custom_cl61_plan_view,
+            title="Custom Instrument Operating Plan",
+            collapsible=True,
+            collapsed=False,
+            sizing_mode="stretch_width",
+            css_classes=["small-card", "operating-plan-card"],
+        )
+    return power_plan_editor
+
+
+power_plan_editor_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
 
 mobile_custom_cl61_start = pn.widgets.DatetimePicker(
     name="Instrument start (UTC)",
@@ -9200,29 +8264,25 @@ def _mobile_custom_cl61_plan_view(start_value, duration_value, kit_value, _live_
     return _build_custom_cl61_plan_view(start_value, duration_value, kit_value)
 
 
-mobile_power_plan_editor = pn.Card(
-    _operating_decision_audit_view_reactive,
-    pn.Column(mobile_custom_plan_instrument, mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
-    _mobile_custom_cl61_plan_view,
-    title="Custom Instrument Operating Plan",
-    collapsible=True,
-    collapsed=True,
-    sizing_mode="stretch_width",
-    css_classes=["operating-plan-card"],
-)
+mobile_power_plan_editor: pn.Card | None = None
 
-POWER_PLAN_CSS = """
-.operating-plan-status { display:inline-flex; align-items:center; min-height:30px; padding:4px 10px; border:1px solid #d8e1e8; border-radius:6px; font-weight:700; margin-bottom:8px; }
-.operating-plan-status--green { color:#23623a; background:#edf7f0; border-color:#a9ceb4; }
-.operating-plan-status--amber { color:#765c11; background:#fff8df; border-color:#dcc77a; }
-.operating-plan-status--red { color:#8a2d24; background:#fff0ee; border-color:#dfafa9; }
-.operating-plan-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-bottom:8px; }
-.operating-plan-metric { min-width:0; padding:8px 10px; border-left:3px solid #0b7285; background:#f7f9fb; }
-.operating-plan-metric__label { color:#5f6c7b; font-size:12px; }
-.operating-plan-metric__value { color:#22313f; font-size:16px; font-weight:700; overflow-wrap:anywhere; }
-.operating-plan-audit-note { color:#5f6c7b; font-size:12px; margin:0 0 10px; }
-@media (max-width: 760px) { .operating-plan-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-"""
+
+def _get_mobile_power_plan_editor() -> pn.Card:
+    global mobile_power_plan_editor
+    if mobile_power_plan_editor is None:
+        mobile_power_plan_editor = pn.Card(
+            _operating_decision_audit_view_reactive,
+            pn.Column(mobile_custom_plan_instrument, mobile_custom_cl61_start, mobile_custom_cl61_duration, sizing_mode="stretch_width"),
+            _mobile_custom_cl61_plan_view,
+            title="Custom Instrument Operating Plan",
+            collapsible=True,
+            collapsed=True,
+            sizing_mode="stretch_width",
+            css_classes=["operating-plan-card"],
+        )
+    return mobile_power_plan_editor
+
+
 
 # The desktop browser keeps the compact row layout used by the stable site.
 # Rows still wrap under the responsive CSS when a desktop link is forced on a
@@ -9266,7 +8326,7 @@ controls = pn.Card(
     css_classes=["small-card", "controls-card"],
 )
 
-pn.extension(raw_css=[css, POWER_PLAN_CSS])
+# Styles are loaded once from /dashboard-assets/dashboard.css via pn.extension above.
 
 # Template layout: header + tabs
 template = pn.template.MaterialTemplate(
@@ -9463,14 +8523,43 @@ def _sync_power_section_visibility() -> None:
     power_view_select_container.visible = is_power
     power_section_intro_container.visible = is_power
     power_browser_guidance_container.visible = is_forecast
-    power_plan_editor.visible = is_forecast
+    interactive_content.visible = not is_forecast
+    power_plan_editor_container.visible = is_forecast
+    if is_forecast:
+        guidance = globals().get("_browser_power_briefing")
+        if not power_browser_guidance_container.objects and callable(guidance):
+            power_browser_guidance_container[:] = [guidance]
+        if not power_plan_editor_container.objects:
+            power_plan_editor_container[:] = [_get_power_plan_editor()]
+    else:
+        power_browser_guidance_container.clear()
+        power_plan_editor_container.clear()
 
 
 def _on_power_view_change(_event) -> None:
     _sync_power_section_visibility()
-    if instrument_select.value == "power":
-        _show_interactive_placeholder("power", "Preparing the selected Power section.")
-        _schedule_current_interactive_render()
+    if instrument_select.value == "power" and power_view_select.value != "forecast":
+        # A section-specific prewarm is normally available. Start directly so
+        # the tab can replace the visible figure without a placeholder flash.
+        _start_interactive_render(
+            range_start.value,
+            range_end.value,
+            bottom_range_m.value,
+            top_range_m.value,
+            var1_select.value,
+            var2_select.value,
+            beta_vmin.value,
+            beta_vmax.value,
+            ldr_vmin.value,
+            ldr_vmax.value,
+            lwp_ymin.value,
+            lwp_ymax.value,
+            iwv_ymin.value,
+            iwv_ymax.value,
+            irr_ymin.value,
+            irr_ymax.value,
+            "power",
+        )
     _refresh_share_and_download_state()
 
 
@@ -9483,7 +8572,7 @@ interactive_tab = pn.Column(
     power_section_intro_container,
     power_browser_guidance_container,
     interactive_content,
-    power_plan_editor,
+    power_plan_editor_container,
     interactive_footer,
     sizing_mode="stretch_width",
 )
@@ -9523,6 +8612,7 @@ auroracam_tab = pn.Column(
         css_classes=["small-card", "auroracam-toolbar"],
     ),
     _auroracam_browser,
+    auroracam_detail,
     auroracam_footer,
     sizing_mode="stretch_width",
 )
@@ -9695,7 +8785,24 @@ def _mobile_overview_markup() -> str:
     battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
     depletion_value, depletion_meta = _ops_battery_depletion_text(snapshot)
     camera_value, camera_meta, camera_level = _mobile_auroracam_freshness()
-    power_latest = _mobile_power_latest_measured_time()
+    # The operations snapshot already records the latest measured power
+    # timestamp. Opening the 271-variable display Zarr here made every
+    # Overview session wait several seconds before its first paint.
+    power_latest = next(
+        (
+            moment
+            for key in (
+                "power_latest_time_utc",
+                "aps_battery_power_time_utc",
+                "aps_battery_soc_time_utc",
+                "aps_battery_voltage_time_utc",
+            )
+            if (moment := _ops_timestamp(snapshot.get(key))) is not None
+        ),
+        None,
+    )
+    if power_latest is None:
+        power_latest = _mobile_power_latest_measured_time()
     power_latest_utc = power_latest.replace(tzinfo=timezone.utc) if power_latest and power_latest.tzinfo is None else power_latest
     power_meta = _humanize_age(power_latest_utc)
     power_level = _ops_level_from_age_minutes(max((datetime.now(timezone.utc) - power_latest_utc).total_seconds() / 60.0, 0.0) if power_latest_utc else None)
@@ -9707,6 +8814,18 @@ def _mobile_overview_markup() -> str:
         _mobile_status_card_markup("Power Data", power_latest.strftime("%H:%M UTC") if power_latest else "No data", power_meta, power_level),
         _mobile_status_card_markup("AURORACam", camera_value, camera_meta, camera_level),
     ]
+    try:
+        cards.extend(
+            _mobile_status_card_markup(
+                str(card["title"]),
+                str(card["value"]),
+                str(card.get("detail") or "Latest station measurement"),
+                _mobile_level(card.get("level")),
+            )
+            for card in mobile_catalog.environmental_signal_cards()
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not load overview environmental signals: %s", exc)
     return (
         "<div class='mobile-shell'>"
         "<div><div class='mobile-section-title'>AURORA Overview</div>"
@@ -9732,8 +8851,13 @@ browser_overview_container = pn.Column(
 browser_overview_refresh = pn.widgets.Button(name="Refresh station snapshot", button_type="primary", icon="refresh")
 
 
-def _refresh_browser_overview(_event=None) -> None:
+def _refresh_browser_overview(_event=None, *, force: bool = False) -> None:
     global _BROWSER_OVERVIEW_LOADED
+    # The initial tab selection happens before the document is attached and an
+    # onload hook runs once the websocket opens. Replacing the same models in
+    # both phases causes Bokeh to drop patches and can leave Overview blank.
+    if _BROWSER_OVERVIEW_LOADED and _event is None and not force:
+        return
     browser_overview_container[:] = [
         _mobile_overview(),
         pn.pane.HTML(_browser_overview_instrument_markup(), sizing_mode="stretch_width", margin=(8, 0, 0, 0)),
@@ -9759,7 +8883,8 @@ def _mobile_power_window() -> xr.Dataset | None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     start = now - DEFAULT_WINDOW
     end = now + timedelta(hours=float(os.environ.get("AURORA_POWER_SOC_FORECAST_HOURS", "48")))
-    ds = _open_power_display_summary_window(start, end)
+    section = power_view_select.value
+    ds = _open_power_display_summary_window(start, end, section=section)
     if ds is None:
         ds = open_window(start, end, instrument="power", render_quality="coarse")
     if ds is not None and "time" in ds:
@@ -9922,7 +9047,7 @@ def _forecast_plot_info_control(panel, ds: xr.Dataset, *, mobile: bool = False):
     )
 
 
-def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
+def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None:
     forecast_panel_keys = {
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
@@ -10006,39 +9131,59 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
             )
     if not fig.data:
         return None
-    plot_height = int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "110"))
+    plot_height = (
+        int(os.environ.get("AURORA_MOBILE_POWER_PLOT_HEIGHT", "110"))
+        if mobile
+        else int(os.environ.get("AURORA_DESKTOP_POWER_PLOT_HEIGHT", "300"))
+    )
     layout = dict(
         height=plot_height,
         autosize=True,
-        margin=dict(l=27, r=27 if has_right_axis else 6, t=3, b=22),
+        margin=(
+            dict(l=27, r=27 if has_right_axis else 6, t=3, b=22)
+            if mobile
+            else dict(l=62, r=62 if has_right_axis else 24, t=12, b=54)
+        ),
         showlegend=False,
         paper_bgcolor="white",
         plot_bgcolor="white",
-        font=dict(size=8, color=THEME_TEXT),
+        font=dict(size=8 if mobile else 12, color=THEME_TEXT),
         xaxis=dict(
             showgrid=True,
             gridcolor=THEME_GRID,
-            tickfont=dict(size=7),
+            tickfont=dict(size=7 if mobile else 11),
             tickformat="%d %b<br>%H:%M UTC",
-            title=None,
-            nticks=4,
+            title=None if mobile else "Forecast Time (UTC)",
+            nticks=4 if mobile else 8,
         ),
-        yaxis=dict(title=None, tickfont=dict(size=7), showgrid=True, gridcolor=THEME_GRID, nticks=4),
+        yaxis=dict(
+            title=None if mobile else panel.left_axis_label,
+            tickfont=dict(size=7 if mobile else 11),
+            showgrid=True,
+            gridcolor=THEME_GRID,
+            nticks=4 if mobile else 6,
+        ),
     )
     if has_right_axis:
         layout["yaxis2"] = dict(
-            title=None,
-            tickfont=dict(size=7),
+            title=None if mobile else panel.right_axis_label,
+            tickfont=dict(size=7 if mobile else 11),
             overlaying="y",
             side="right",
             showgrid=False,
-            nticks=4,
+            nticks=4 if mobile else 6,
         )
     fig.update_layout(**layout)
     guidance = _verification_guidance_markup(build_power_verification_guidance(panel.key, ds))
-    info_control = _forecast_plot_info_control(panel, ds, mobile=True)
+    info_control = _forecast_plot_info_control(panel, ds, mobile=mobile)
+    card_class = "mobile-plot-card" if mobile else "desktop-power-plot-card"
+    figure_class = "mobile-figure" if mobile else "desktop-power-figure"
     return pn.Column(
-        *([info_control] if info_control is not None else [pn.pane.HTML(f"<div class='mobile-plot-card__title'>{escape(panel.label)}</div>", margin=0)]),
+        *(
+            [info_control]
+            if info_control is not None
+            else [pn.pane.HTML(f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(panel.label)}</div>", margin=0)]
+        ),
         *(
             [pn.pane.HTML(f"<div class='mobile-plot-card__note'>{escape(panel.description)}</div>", margin=0)]
             if panel.description
@@ -10046,10 +9191,34 @@ def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
         ),
         *([pn.pane.HTML(guidance, margin=0)] if guidance else []),
         pn.pane.HTML(f"<div class='mobile-plot-card__legend'>{''.join(legend_items)}</div>", margin=0),
-        pn.pane.Plotly(fig, config={"displayModeBar": False, "responsive": True}, sizing_mode="stretch_width", height=plot_height + 8, css_classes=["mobile-figure"]),
+        pn.pane.Plotly(
+            fig,
+            config={"displayModeBar": not mobile, "displaylogo": False, "responsive": True},
+            sizing_mode="stretch_width",
+            height=plot_height + 8,
+            css_classes=[figure_class],
+        ),
         sizing_mode="stretch_width",
-        css_classes=["mobile-plot-card"],
+        css_classes=[card_class],
     )
+
+
+def _mobile_power_card(ds: xr.Dataset, panel) -> pn.Column | None:
+    return _power_plot_card(ds, panel, mobile=True)
+
+
+def _desktop_power_forecast_cards(ds: xr.Dataset) -> list[pn.Column]:
+    forecast_groups = {"forecast_24h", "forecast_96h", "verification"}
+    panels = [
+        panel
+        for panel in SUMMARY_LAYOUTS["power"]
+        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in forecast_groups
+    ]
+    return [
+        card
+        for card in (_power_plot_card(ds, panel, mobile=False) for panel in panels)
+        if card is not None
+    ]
 
 
 def _power_forecast_status_markup(ds: xr.Dataset) -> str:
@@ -10096,42 +9265,35 @@ def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
         "<div class='power-browser-briefing'>"
         "<div class='power-browser-briefing__title'>Forecast scenarios</div>"
         "<div class='power-browser-briefing__grid'>"
-        "<div><strong>System as-is</strong><br>ECMWF ensemble forecast using the current station load and instrument state. P10/P90 show the uncertainty range.</div>"
-        f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and uses the same ECMWF solar forecast.</div>"
+        "<div><strong>System as-is</strong><br>ECMWF ensemble forecast anchored to the recent measured whole-station load. P10/P90 include weather, load-residual, and bounded battery-parameter uncertainty.</div>"
+        f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and shares the same calibrated solar and battery model. UAS tier 3 remains provisional until repeated operating evidence is available.</div>"
         "<div><strong>Safety rule</strong><br>The recommended schedule is advisory only and aims to keep P10 SOC at or above the 40% operational minimum.</div>"
         "</div></div>"
     )
 
 
-@pn.depends(instrument_select.param.value, range_end.param.value)
-def _browser_power_briefing(instrument, _live_refresh_anchor):
+@pn.depends(instrument_select.param.value, range_start.param.value, range_end.param.value)
+def _browser_power_briefing(instrument, start, end):
     if str(instrument) != "power":
         return pn.Spacer(height=0)
-    ds = _get_power_display_summary_dataset()
+    ds = _open_power_display_summary_window(start, end, section="forecast")
     if ds is None or "time" not in ds:
         return pn.pane.Alert("Power forecast data is not available.", alert_type="warning")
-    forecast_groups = {"forecast_24h", "forecast_96h", "verification"}
-    info_controls = [
-        _forecast_plot_info_control(panel, ds)
-        for panel in SUMMARY_LAYOUTS["power"]
-        if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in forecast_groups
-    ]
-    info_controls = [control for control in info_controls if control is not None]
-    info_card = pn.Card(
-        *info_controls,
-        title="Forecast plot information",
-        sizing_mode="stretch_width",
-        css_classes=["small-card", "forecast-guidance-card"],
-    )
+    ds.attrs[SUMMARY_DISPLAY_START_ATTR] = _as_naive_utc_datetime(start).isoformat()
+    ds.attrs[SUMMARY_DISPLAY_END_ATTR] = _as_naive_utc_datetime(end).isoformat()
+    ds = prepare_summary_dataset(ds, "power")
+    cards = _desktop_power_forecast_cards(ds)
+    if not cards:
+        return pn.pane.Alert("No plottable Power forecast panels are available.", alert_type="warning")
     return pn.Column(
         pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
-        info_card,
+        *cards,
         sizing_mode="stretch_width",
         css_classes=["power-browser-guidance"],
     )
 
 
-power_browser_guidance_container[:] = [_browser_power_briefing]
+_sync_power_section_visibility()
 
 
 @pn.depends(power_view_select.param.value, range_end.param.value)
@@ -10162,7 +9324,7 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
         forecast_content = [
             pn.pane.HTML(_power_forecast_status_markup(ds), sizing_mode="stretch_width", margin=0),
             pn.pane.HTML(_browser_power_briefing_markup(ds), sizing_mode="stretch_width", margin=0),
-            mobile_power_plan_editor,
+            _get_mobile_power_plan_editor(),
         ]
     return pn.Column(
         *forecast_content,
@@ -10236,7 +9398,6 @@ def _mobile_auroracam_browser(selected_day, selected_time, camera_id):
         )
     return pn.Column(
         _mobile_auroracam_grid(selected_day, selected_time, camera_id),
-        pn.pane.HTML(_auroracam_viewer_markup(camera_id, selected_day, selected_time), sizing_mode="stretch_width", margin=0),
         sizing_mode="stretch_width",
         css_classes=["auroracam-browser"],
     )
@@ -10260,6 +9421,7 @@ def _mobile_camera_tab() -> pn.Column:
             css_classes=["small-card", "auroracam-toolbar"],
         ),
         _mobile_auroracam_browser,
+        mobile_auroracam_detail,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell"],
     )
@@ -10430,10 +9592,40 @@ def _sync_browser_tab_instrument(active: str) -> None:
 
 def _ensure_active_tab_loaded(slug: str | None = None) -> None:
     active = _normalize_tab_slug(slug or ACTIVE_TAB_SLUG)
+    timer_groups = {
+        "interactive": (_base_dataset_timer, _live_cb),
+        "power": (_base_dataset_timer, _live_cb),
+        "science": (_ql_timer, _wxcam_ql_timer),
+        "housekeeping": (_hk_timer,),
+        "auroracam": (_auroracam_timer,),
+        "uas": (_uas_timer,),
+        "operations": (_operations_timer,),
+    }
+    active_timers = set(timer_groups.get(active, ()))
+    for timers in timer_groups.values():
+        for timer in timers:
+            try:
+                if timer in active_timers:
+                    if not getattr(timer, "running", False):
+                        if _APP_BOOTSTRAPPING:
+                            continue
+                        try:
+                            asyncio.get_running_loop()
+                        except RuntimeError:
+                            continue
+                        timer.start()
+                elif getattr(timer, "running", False):
+                    timer.stop()
+            except RuntimeError:
+                # Plain imports and sessions shutting down do not have a live
+                # event loop. The session-destroyed hook still stops all timers.
+                pass
     if active == "overview":
         _refresh_browser_overview()
     elif active in {"interactive", "power"}:
         _sync_browser_tab_instrument(active)
+        if not _APP_BOOTSTRAPPING and not _INTERACTIVE_RENDER_ENABLED:
+            _enable_browser_interactive_render()
     elif active == "science" and "science" not in _LOADED_TABS:
         science_quicklook_container[:] = [_science_quicklook_image]
         science_status_container[:] = [science_status]
@@ -10446,26 +9638,14 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         _LOADED_TABS.add("housekeeping")
     elif active == "auroracam":
         _refresh_auroracam_latest_if_needed()
-        try:
-            _auroracam_timer.start()
-        except RuntimeError:
-            pass
     elif active == "uas" and "uas" not in _LOADED_TABS:
         uas_container[:] = [pn.Column(uas_status_pane, uas_plot_pane, uas_table_pane, sizing_mode="stretch_width", css_classes=["uas-shell"])]
         _refresh_uas_dashboard()
         _LOADED_TABS.add("uas")
-        try:
-            _uas_timer.start()
-        except RuntimeError:
-            pass
     elif active == "operations" and "operations" not in _LOADED_TABS:
         operations_container[:] = [operations_dashboard]
         _refresh_operations_dashboard()
         _LOADED_TABS.add("operations")
-        try:
-            _operations_timer.start()
-        except RuntimeError:
-            pass
 
 
 def _set_active_tab(slug: str | None) -> None:
@@ -10542,11 +9722,15 @@ else:
     _set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
     _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
-if not _MOBILE_LAYOUT_ACTIVE:
-    pn.state.onload(_enable_browser_interactive_render)
+pn.state.onload(lambda: _ensure_active_tab_loaded(ACTIVE_TAB_SLUG))
 
 site_env_banner = _site_env_banner_pane()
-template.main[:] = ([site_env_banner] if site_env_banner is not None else []) + [main_layout]
+browser_performance_probe = _browser_performance_probe()
+template.main[:] = (
+    ([site_env_banner] if site_env_banner is not None else [])
+    + ([browser_performance_probe] if browser_performance_probe is not None else [])
+    + [main_layout]
+)
 
 # Serve the app. `location=True` installs Panel's Location model so the app can
 # keep the browser URL aligned with the selected view.

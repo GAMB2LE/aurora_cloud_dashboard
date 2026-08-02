@@ -47,6 +47,12 @@ Do not advertise old model directories during dashboard cleanup. Treat them as
 archived evidence and classify them through `archive_manifest.json`. Active
 review should use only campaign-root products and daily AURORA-LASSO bundles.
 
+This is a dashboard visibility and scientific-provenance classification, not a
+storage-backup or deletion policy. The independent GWS and object-store copies,
+their verification, and any storage retention decision are owned by
+`aurora-cloud-infra`; changing `archive_manifest.json` does not move, back up,
+or delete a file.
+
 Recommended archive classes:
 
 - `active_campaign`: current daily AURORA-LASSO products and scorecards

@@ -57,9 +57,9 @@ def _ops_housekeeping_dataset(ds: xr.Dataset) -> xr.Dataset:
         hk["streams_product_gate_block_count"] = (
             hk["source_sync_enabled_count"].fillna(0.0) - hk["streams_product_gate_ok_count"].fillna(0.0)
         ).clip(min=0.0)
-    if "source_sync_enabled_count" in hk and "streams_prune_ready_count" in hk:
+    if "streams_target_count" in hk and "streams_prune_ready_count" in hk:
         hk["streams_prune_block_count"] = (
-            hk["source_sync_enabled_count"].fillna(0.0) - hk["streams_prune_ready_count"].fillna(0.0)
+            hk["streams_target_count"].fillna(0.0) - hk["streams_prune_ready_count"].fillna(0.0)
         ).clip(min=0.0)
 
     for healthy_name, problem_name in (

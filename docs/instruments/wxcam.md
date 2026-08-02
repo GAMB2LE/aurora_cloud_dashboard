@@ -52,11 +52,16 @@ grid.
 - hourly thumbnails:
   `/data/aurora/products/wxcam/hourly_thumbnails`
 - image Zarr:
-  `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr`
+  `/data/aurora/products/wxcam/wxcam.zarr`
 
 The deployed mirror retains HDR JPG and MP4 files for both `FISH` and `PANO`.
 AUTO/LONG/SHORT files remain on the camera host and are not cataloged,
 Zarr-appended, or archived from this VM.
+
+The immutable HDR JPG/MP4 raw mirror is copied to both GWS and object storage.
+The catalog, daily videos, and hourly thumbnails are also archived as
+products after settling. The local pixel Zarr is mutable, reproducible, and
+excluded from both archives; it is never raw-retention evidence.
 
 Detailed product documentation:
 

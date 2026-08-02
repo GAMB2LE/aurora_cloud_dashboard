@@ -4,19 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import xarray as xr
+import zarr
 
 from grouped_timeseries import (
     POWER_DISPLAY_ENERGY_ATTR,
     POWER_DISPLAY_ENERGY_MAP,
     POWER_DISPLAY_SUMMARY_ATTR,
     POWER_DISPLAY_SUMMARY_FREQ,
+    POWER_PANEL_TIME_GROUP_BY_KEY,
+    SUMMARY_LAYOUTS,
     build_power_display_summary_dataset,
 )
 
@@ -50,6 +55,15 @@ POWER_DISPLAY_SUMMARY_ZARR_PATH = Path(
 POWER_DISPLAY_ENERGY_ZARR_PATH = Path(
     os.environ.get("POWER_DISPLAY_ENERGY_ZARR_PATH", "/data/aurora/products/power/power_display_energy.zarr")
 )
+POWER_CURRENT_DISPLAY_ZARR_PATH = Path(
+    os.environ.get("POWER_CURRENT_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_current_display.zarr")
+)
+POWER_FORECAST_DISPLAY_ZARR_PATH = Path(
+    os.environ.get("POWER_FORECAST_DISPLAY_ZARR_PATH", "/data/aurora/products/power/power_forecast_display.zarr")
+)
+POWER_DISPLAY_MANIFEST_PATH = Path(
+    os.environ.get("POWER_DISPLAY_MANIFEST_PATH", "/data/aurora/products/power/power_display_manifest.json")
+)
 
 
 def _metadata_path(output_zarr: Path) -> Path:
@@ -76,23 +90,46 @@ def _write_metadata(output_zarr: Path, display: xr.Dataset) -> Path:
 
 def _write_zarr_atomic(ds: xr.Dataset, output_zarr: Path, chunk_time: int = 1440) -> None:
     output_zarr.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output_zarr.with_name(f"{output_zarr.name}.tmp")
+    # The generator lock serialises complete builds; this unique path also
+    # keeps an interrupted build from being mistaken for the next build.
+    tmp = output_zarr.with_name(f"{output_zarr.name}.tmp.{os.getpid()}")
     if tmp.exists():
         shutil.rmtree(tmp)
     ds.chunk({"time": chunk_time}).to_zarr(tmp, mode="w", consolidated=True)
     if output_zarr.exists():
         shutil.rmtree(output_zarr)
     tmp.rename(output_zarr)
+    zarr.consolidate_metadata(output_zarr)
 
 
-def _open_optional_zarr(path: Path, label: str) -> xr.Dataset | None:
+def _open_optional_zarr(
+    path: Path,
+    label: str,
+    *,
+    eager: bool = False,
+    attempts: int = 3,
+) -> xr.Dataset | None:
+    """Open an optional store, eagerly snapshotting small replace-in-place products."""
     if not path.exists():
         return None
-    try:
-        return xr.open_zarr(path, chunks={})
-    except Exception as exc:
-        print(f"Could not open {label} Zarr for Power display summary: {exc}")
-        return None
+    last_error: Exception | None = None
+    for attempt in range(max(int(attempts), 1)):
+        opened: xr.Dataset | None = None
+        try:
+            opened = xr.open_zarr(path, chunks={})
+            if not eager:
+                return opened
+            loaded = opened.load()
+            opened.close()
+            return loaded
+        except Exception as exc:
+            last_error = exc
+            if opened is not None:
+                opened.close()
+            if attempt + 1 < attempts:
+                time.sleep(0.2)
+    print(f"Could not open {label} Zarr for Power display summary: {last_error}")
+    return None
 
 
 def _energy_subset(summary: xr.Dataset, freq: str) -> xr.Dataset:
@@ -111,7 +148,79 @@ def _energy_subset(summary: xr.Dataset, freq: str) -> xr.Dataset:
     return out
 
 
-def generate(
+def _section_subset(summary: xr.Dataset, section: str) -> xr.Dataset:
+    """Return only the variables plotted by one Power browser section."""
+    groups = {"observed"} if section == "current" else {"forecast_24h", "forecast_96h", "verification"}
+    names = tuple(
+        dict.fromkeys(
+            trace.var
+            for panel in SUMMARY_LAYOUTS["power"]
+            if POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key, "observed") in groups
+            for trace in panel.traces
+            if trace.var in summary
+        )
+    )
+    if not names:
+        return xr.Dataset(coords={"time": summary["time"]})
+    out = summary[list(names)].copy(deep=False)
+    out.attrs = dict(summary.attrs)
+    out.attrs.update(
+        {
+            POWER_DISPLAY_SUMMARY_ATTR: "true",
+            "display_section": section,
+            "description": f"Display-only Power {section} variables for the dashboard.",
+        }
+    )
+    # Remove the empty timeline introduced when observed and forecast sources
+    # are aligned. This keeps the forecast product compact and avoids full-array
+    # validity scans in the browser request path.
+    return out.dropna(dim="time", how="all")
+
+
+def _display_descriptor(path: Path, display: xr.Dataset) -> dict[str, object]:
+    times = display["time"].values if "time" in display.coords else []
+    return {
+        "path": str(path),
+        "time_count": int(display.sizes.get("time", 0)),
+        "variable_count": len(display.data_vars),
+        "time_start_utc": str(times[0]) if len(times) else "",
+        "time_end_utc": str(times[-1]) if len(times) else "",
+    }
+
+
+def _write_manifest(path: Path, current: xr.Dataset, forecast: xr.Dataset, current_path: Path, forecast_path: Path) -> None:
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "products": {
+            "current": _display_descriptor(current_path, current),
+            "forecast": _display_descriptor(forecast_path, forecast),
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _try_generation_lock(output_zarr: Path):
+    """Return a non-blocking lock handle, or ``None`` when a build is active."""
+    lock_path = output_zarr.with_name(f".{output_zarr.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def _release_generation_lock(handle) -> None:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
+def _generate_unlocked(
     power_zarr: Path = POWER_ZARR_PATH,
     output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH,
     ass_logger_zarr: Path = ASFS_LOGGER_ZARR_PATH,
@@ -123,18 +232,33 @@ def generate(
     ensemble_skill_zarr: Path = POWER_SOC_ENSEMBLE_SKILL_ZARR_PATH,
     operating_scenarios_zarr: Path = POWER_OPERATING_SCENARIOS_ZARR_PATH,
     energy_output_zarr: Path | None = POWER_DISPLAY_ENERGY_ZARR_PATH,
+    current_output_zarr: Path | None = POWER_CURRENT_DISPLAY_ZARR_PATH,
+    forecast_output_zarr: Path | None = POWER_FORECAST_DISPLAY_ZARR_PATH,
+    manifest_path: Path | None = POWER_DISPLAY_MANIFEST_PATH,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
 ) -> Path:
     """Build the derived one-minute display-summary store from Power inputs."""
     power = xr.open_zarr(power_zarr, chunks={})
     ass_logger = _open_optional_zarr(ass_logger_zarr, "ASFS logger")
     pdu = _open_optional_zarr(pdu_zarr, "ASS PDU")
-    forecast = _open_optional_zarr(forecast_zarr, "Power SOC forecast")
-    forecast_skill = _open_optional_zarr(forecast_skill_zarr, "Power SOC forecast skill")
-    hindcast = _open_optional_zarr(hindcast_zarr, "Power SOC hindcast")
-    ensemble_forecast = _open_optional_zarr(ensemble_forecast_zarr, "Power SOC ensemble forecast")
-    ensemble_skill = _open_optional_zarr(ensemble_skill_zarr, "Power SOC ensemble skill")
-    operating_scenarios = _open_optional_zarr(operating_scenarios_zarr, "Power operating scenarios")
+    forecast = _open_optional_zarr(forecast_zarr, "Power SOC forecast", eager=True)
+    forecast_skill = _open_optional_zarr(forecast_skill_zarr, "Power SOC forecast skill", eager=True)
+    hindcast = _open_optional_zarr(hindcast_zarr, "Power SOC hindcast", eager=True)
+    ensemble_forecast = _open_optional_zarr(
+        ensemble_forecast_zarr,
+        "Power SOC ensemble forecast",
+        eager=True,
+    )
+    ensemble_skill = _open_optional_zarr(
+        ensemble_skill_zarr,
+        "Power SOC ensemble skill",
+        eager=True,
+    )
+    operating_scenarios = _open_optional_zarr(
+        operating_scenarios_zarr,
+        "Power operating scenarios",
+        eager=True,
+    )
     display = build_power_display_summary_dataset(
         power,
         ass_logger,
@@ -161,7 +285,33 @@ def generate(
         if energy.sizes.get("time", 0) and len(energy.data_vars):
             _write_zarr_atomic(energy, energy_output_zarr)
             print(f"Wrote {energy_output_zarr} with {energy.sizes.get('time', 0)} samples")
+    if current_output_zarr is not None and forecast_output_zarr is not None:
+        current = _section_subset(display, "current")
+        forecast_display = _section_subset(display, "forecast")
+        _write_zarr_atomic(current, current_output_zarr)
+        _write_zarr_atomic(forecast_display, forecast_output_zarr)
+        print(f"Wrote {current_output_zarr} with {current.sizes.get('time', 0)} samples")
+        print(f"Wrote {forecast_output_zarr} with {forecast_display.sizes.get('time', 0)} samples")
+        if manifest_path is not None:
+            _write_manifest(manifest_path, current, forecast_display, current_output_zarr, forecast_output_zarr)
+            print(f"Wrote {manifest_path}")
     return output_zarr
+
+
+def generate(*args, **kwargs) -> Path:
+    """Build one Power display generation at a time for all output products."""
+    output_zarr = kwargs.get("output_zarr")
+    if output_zarr is None:
+        output_zarr = args[1] if len(args) > 1 else POWER_DISPLAY_SUMMARY_ZARR_PATH
+    output_zarr = Path(output_zarr)
+    lock = _try_generation_lock(output_zarr)
+    if lock is None:
+        print(f"Power display-summary build already running for {output_zarr}; skipping duplicate request")
+        return output_zarr
+    try:
+        return _generate_unlocked(*args, **kwargs)
+    finally:
+        _release_generation_lock(lock)
 
 
 def write_metadata_only(output_zarr: Path = POWER_DISPLAY_SUMMARY_ZARR_PATH) -> Path:
@@ -186,6 +336,9 @@ def main() -> None:
     parser.add_argument("--operating-scenarios-zarr", type=Path, default=POWER_OPERATING_SCENARIOS_ZARR_PATH)
     parser.add_argument("--output-zarr", type=Path, default=POWER_DISPLAY_SUMMARY_ZARR_PATH)
     parser.add_argument("--energy-output-zarr", type=Path, default=POWER_DISPLAY_ENERGY_ZARR_PATH)
+    parser.add_argument("--current-output-zarr", type=Path, default=POWER_CURRENT_DISPLAY_ZARR_PATH)
+    parser.add_argument("--forecast-output-zarr", type=Path, default=POWER_FORECAST_DISPLAY_ZARR_PATH)
+    parser.add_argument("--manifest-path", type=Path, default=POWER_DISPLAY_MANIFEST_PATH)
     parser.add_argument("--no-energy-output", action="store_true", help="Do not refresh the legacy cumulative-energy display Zarr")
     parser.add_argument("--freq", default=POWER_DISPLAY_SUMMARY_FREQ)
     parser.add_argument("--write-metadata-only", action="store_true")
@@ -205,6 +358,9 @@ def main() -> None:
         ensemble_skill_zarr=args.ensemble_skill_zarr,
         operating_scenarios_zarr=args.operating_scenarios_zarr,
         energy_output_zarr=None if args.no_energy_output else args.energy_output_zarr,
+        current_output_zarr=args.current_output_zarr,
+        forecast_output_zarr=args.forecast_output_zarr,
+        manifest_path=args.manifest_path,
         freq=args.freq,
     )
 

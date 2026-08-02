@@ -29,7 +29,7 @@ nav:
   - Home: index.md
   - Start here: getting-started.md
   - Architecture: architecture.md
-  - Refactor baseline: reports/development-refactor-baseline-20260719.md
+  - Historical refactor baseline: reports/development-refactor-baseline-20260719.md
   - Overview:
       - Dashboard at a glance: overview/index.md
       - Tabs and views: overview/tabs-and-views.md
@@ -48,11 +48,14 @@ nav:
   - Runtime and storage:
       - Deployed paths: runtime/deployed-paths.md
       - Storage layout: runtime/storage-layout.md
+      - Archive health: runtime/archive-health.md
       - Services and timers: runtime/services-and-timers.md
       - Mobile API: runtime/mobile-api.md
       - Performance logging: runtime/performance-logging.md
+      - Display artifact manifest: runtime/display-artifacts.md
       - Running locally: runtime/running-locally.md
-      - Model evaluation cleanup: runtime/model-evaluation-cleanup.md
+      - Containerisation plan: runtime/containerisation-plan.md
+      - Model evaluation policy: runtime/model-evaluation-cleanup.md
       - Documentation publishing: runtime/documentation-publishing.md
       - Notes: runtime/notes.md
   - Data products:
@@ -66,6 +69,7 @@ nav:
       - ASFS Fast Gas Zarr: data-products/asfs-fast-gas-zarr.md
       - Power Zarr: data-products/power-zarr.md
       - Power forecast model: analysis/power-load-forecast-model.md
+      - Power forecast v7 audit: analysis/power-forecast-v7-audit.md
       - WXcam products: data-products/wxcam-products.md
       - WXcam Zarr: data-products/wxcam-zarr.md
       - AURORACam Zarr: data-products/auroracam-zarr.md

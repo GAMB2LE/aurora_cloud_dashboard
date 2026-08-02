@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import secrets
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -18,6 +20,35 @@ app = FastAPI(
     version="0.3.0",
     root_path=os.environ.get("AURORA_MOBILE_API_ROOT_PATH", ""),
 )
+
+_PUBLIC_READ_ONLY_MODE = "public_read_only"
+
+
+def _auth_mode() -> str:
+    """Return the configured access mode, failing closed on unknown values."""
+    value = os.environ.get("AURORA_MOBILE_API_AUTH_MODE", "required").strip().lower()
+    return _PUBLIC_READ_ONLY_MODE if value == _PUBLIC_READ_ONLY_MODE else "required"
+
+
+def _is_public_read(request: Request) -> bool:
+    return _auth_mode() == _PUBLIC_READ_ONLY_MODE and request.method in {"GET", "HEAD"}
+
+
+@app.middleware("http")
+async def cache_read_only_payloads(request: Request, call_next):
+    """Permit short client caching for small authenticated JSON payloads.
+
+    Media responses set their own cache policy and raw/Zarr paths are never
+    exposed by this API.  A private response avoids sharing authenticated
+    payloads in intermediary caches.
+    """
+    started = perf_counter()
+    response = await call_next(request)
+    response.headers.setdefault("Server-Timing", f"app;dur={(perf_counter() - started) * 1000:.1f}")
+    if request.method == "GET" and not request.url.path.startswith("/media/"):
+        visibility = "public" if _is_public_read(request) else "private"
+        response.headers.setdefault("Cache-Control", f"{visibility}, max-age=30, stale-while-revalidate=60")
+    return response
 
 
 def _token() -> str | None:
@@ -35,19 +66,23 @@ def _token() -> str | None:
     return None
 
 
-def _allow_public() -> bool:
-    return os.environ.get("AURORA_MOBILE_API_ALLOW_PUBLIC", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def require_auth(authorization: Annotated[str | None, Header()] = None) -> None:
-    if _allow_public():
-        return
     expected = _token()
     if not expected:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Mobile API token is not configured")
     scheme, _, value = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or value != expected:
+    if scheme.lower() != "bearer" or not secrets.compare_digest(value, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid mobile API token")
+
+
+def require_read_access(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Allow bounded read-only app data on explicitly public dashboard hosts."""
+    if _is_public_read(request):
+        return
+    require_auth(authorization)
 
 
 def _not_found(message: str = "Resource not found") -> HTTPException:
@@ -74,27 +109,33 @@ def health() -> dict:
     return {
         "status": "ok",
         "serverTime": catalog.utc_now_iso(),
-        "authRequired": not _allow_public(),
-        "tokenConfigured": bool(_token()),
+        "authRequired": _auth_mode() != _PUBLIC_READ_ONLY_MODE,
+        "accessMode": _auth_mode(),
     }
 
 
-@app.get("/manifest", dependencies=[Depends(require_auth)])
+@app.get("/manifest", dependencies=[Depends(require_read_access)])
 def manifest() -> dict:
     return catalog.manifest()
 
 
-@app.get("/operations", dependencies=[Depends(require_auth)])
+@app.get("/artifacts/manifest", dependencies=[Depends(require_auth)])
+def display_artifacts() -> dict:
+    """Expose derived browser artifacts without exposing raw or Zarr products."""
+    return catalog.display_artifacts()
+
+
+@app.get("/operations", dependencies=[Depends(require_read_access)])
 def operations() -> dict:
     return catalog.operations()
 
 
-@app.get("/overview", dependencies=[Depends(require_auth)])
+@app.get("/overview", dependencies=[Depends(require_read_access)])
 def overview() -> dict:
     return catalog.overview()
 
 
-@app.get("/power", dependencies=[Depends(require_auth)])
+@app.get("/power", dependencies=[Depends(require_read_access)])
 def power(
     window: str = Query("24h", pattern="^(24h|96h)$"),
     group: str = Query(
@@ -108,7 +149,18 @@ def power(
         raise _not_found(str(exc)) from exc
 
 
-@app.get("/auroracam", dependencies=[Depends(require_auth)])
+@app.get("/media/power/figure/{section}", dependencies=[Depends(require_read_access)])
+def power_figure(request: Request, section: str) -> Response:
+    """Serve a cacheable prewarmed Plotly figure without exposing a Zarr store."""
+    path = catalog.power_prewarm_path(section)
+    if path is None:
+        raise _not_found("Unsupported Power figure section")
+    if not path.exists():
+        raise _not_found("Power figure is not available yet")
+    return _file_response(path, request)
+
+
+@app.get("/auroracam", dependencies=[Depends(require_read_access)])
 def auroracam(day: str = Query("latest"), time_utc: str | None = Query(None)) -> dict:
     try:
         return catalog.auroracam(day=day, time_utc=time_utc)
@@ -116,7 +168,7 @@ def auroracam(day: str = Query("latest"), time_utc: str | None = Query(None)) ->
         raise _not_found(str(exc)) from exc
 
 
-@app.get("/uas", dependencies=[Depends(require_auth)])
+@app.get("/uas", dependencies=[Depends(require_read_access)])
 def uas(window: str = Query("24h", pattern="^(24h|7d|all)$")) -> dict:
     try:
         return catalog.uas(window=window)
@@ -124,7 +176,7 @@ def uas(window: str = Query("24h", pattern="^(24h|7d|all)$")) -> dict:
         raise _not_found(str(exc)) from exc
 
 
-@app.get("/instruments/{instrument_id}/summary", dependencies=[Depends(require_auth)])
+@app.get("/instruments/{instrument_id}/summary", dependencies=[Depends(require_read_access)])
 def instrument_summary(instrument_id: str, window: str = Query("24h", pattern="^(24h|7d)$")) -> dict:
     try:
         return catalog.instrument_summary(instrument_id, window)
@@ -132,7 +184,7 @@ def instrument_summary(instrument_id: str, window: str = Query("24h", pattern="^
         raise _not_found(str(exc)) from exc
 
 
-@app.get("/quicklooks", dependencies=[Depends(require_auth)])
+@app.get("/quicklooks", dependencies=[Depends(require_read_access)])
 def quicklooks(kind: str = Query("science", pattern="^(science|housekeeping)$"), instrument: str = "power") -> dict:
     try:
         return catalog.quicklooks(kind, instrument)
@@ -140,7 +192,7 @@ def quicklooks(kind: str = Query("science", pattern="^(science|housekeeping)$"),
         raise _not_found(str(exc)) from exc
 
 
-@app.get("/wxcam", dependencies=[Depends(require_auth)])
+@app.get("/wxcam", dependencies=[Depends(require_read_access)])
 def wxcam(stream: str = Query("fish_hdr"), day: str = Query("latest")) -> dict:
     try:
         return catalog.wxcam(stream, day)
@@ -148,7 +200,7 @@ def wxcam(stream: str = Query("fish_hdr"), day: str = Query("latest")) -> dict:
         raise _not_found(str(exc)) from exc
 
 
-@app.get("/media/quicklook/{kind}/{instrument_id}/{token}", dependencies=[Depends(require_auth)])
+@app.get("/media/quicklook/{kind}/{instrument_id}/{token}", dependencies=[Depends(require_read_access)])
 def quicklook_media(request: Request, kind: str, instrument_id: str, token: str) -> Response:
     try:
         path = catalog.resolve_quicklook_path(kind, instrument_id, token)
@@ -159,7 +211,7 @@ def quicklook_media(request: Request, kind: str, instrument_id: str, token: str)
     return _file_response(path, request)
 
 
-@app.get("/media/wxcam/video/{stream}/{day}", dependencies=[Depends(require_auth)])
+@app.get("/media/wxcam/video/{stream}/{day}", dependencies=[Depends(require_read_access)])
 def wxcam_video(request: Request, stream: str, day: str) -> Response:
     try:
         resolved = catalog.wxcam(stream, day)["selectedDay"]
@@ -171,7 +223,7 @@ def wxcam_video(request: Request, stream: str, day: str) -> Response:
     return _file_response(path, request)
 
 
-@app.get("/media/wxcam/thumb/{stream}/{day_token}/{filename}", dependencies=[Depends(require_auth)])
+@app.get("/media/wxcam/thumb/{stream}/{day_token}/{filename}", dependencies=[Depends(require_read_access)])
 def wxcam_thumbnail(request: Request, stream: str, day_token: str, filename: str) -> Response:
     path = catalog.resolve_wxcam_thumbnail_path(stream, day_token, filename)
     if not path:
@@ -179,7 +231,7 @@ def wxcam_thumbnail(request: Request, stream: str, day_token: str, filename: str
     return _file_response(path, request)
 
 
-@app.get("/media/auroracam/original/{camera_id}/{day}/{filename}", dependencies=[Depends(require_auth)])
+@app.get("/media/auroracam/original/{camera_id}/{day}/{filename}", dependencies=[Depends(require_read_access)])
 def auroracam_original(request: Request, camera_id: str, day: str, filename: str) -> Response:
     path = catalog.resolve_auroracam_image_path(camera_id, day, filename)
     if not path:
@@ -187,7 +239,7 @@ def auroracam_original(request: Request, camera_id: str, day: str, filename: str
     return _file_response(path, request)
 
 
-@app.get("/media/auroracam/preview/{camera_id}/{day}/{filename}", dependencies=[Depends(require_auth)])
+@app.get("/media/auroracam/preview/{camera_id}/{day}/{filename}", dependencies=[Depends(require_read_access)])
 def auroracam_preview(request: Request, camera_id: str, day: str, filename: str) -> Response:
     source = catalog.resolve_auroracam_image_path(camera_id, day, filename)
     if not source:

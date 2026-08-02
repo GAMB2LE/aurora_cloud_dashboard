@@ -71,9 +71,18 @@ This tab reads the latest operations snapshot directly rather than waiting for
 an archived quicklook to exist. That means a fresh deployment can show the live
 Operations tab before the archived operations PNGs have accumulated enough
 samples to plot. Archive traffic lights are based on settled mirror health, so
-a stream stays green when the verified GWS archive has no missing or mismatched
-files even if the newest just-arrived source file has not yet landed in the
-next transfer batch.
+a stream stays green when the settled GWS and object-store evidence has no
+missing or mismatched files even if the newest just-arrived source file has not
+yet landed in the next transfer batch. A fresh derived file that is not yet in
+object storage stays in a separate pending-upload state for 30 hours; pending
+is not a red archive failure. A settled missing or mismatched file is red and
+remains so until exact repair and a new complete inventory succeed.
+
+The inventory progress heartbeat lets the dashboard distinguish a slow
+shard-by-shard scan from a stall. A running inventory is healthy while that
+heartbeat is no more than five minutes old. Stable object parity requires two
+distinct complete clean reports; `prune_ready` for one stream is only one input
+to the independently enforced retention gate.
 
 The **Public endpoints** section is snapshot-backed. It probes:
 

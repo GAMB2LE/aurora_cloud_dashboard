@@ -25,6 +25,12 @@ jobs:
         run: python -m pip install -r requirements-runtime.txt
       - name: Check patch formatting
         run: git log --check --oneline -n 20
+      - name: Check tracked files for accidental credentials
+        run: python check_secrets.py
+      - name: Audit pinned dependencies for published vulnerabilities
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit -r requirements-runtime.txt --progress-spinner off
       - name: Compile Python modules
         run: python -m compileall -q -x '/(venv|\.venv[^/]*)/' .
       - name: Run unit tests

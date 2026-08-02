@@ -37,6 +37,7 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_DASHBOARD_PERF_LOG_BACKUP_COUNT`
 - `AURORA_DASHBOARD_PERF_ENABLED`
 - `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS`
+- `AURORA_DASHBOARD_ASSET_PREFIX`
 - `AURORA_RENDER_DEBOUNCE_MS`
 - `AURORA_INTERACTIVE_RENDER_CACHE_SIZE`
 - `AURORA_INTERACTIVE_MAX_TIME_SAMPLES`
@@ -48,6 +49,9 @@ Operations Dashboard **Overall** action state or the health report's
 - `AURORA_POWER_LATEST_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_LATEST_CACHE_TOLERANCE_MINUTES`
 - `AURORA_PREWARM_LATEST_CACHE_TOLERANCE_MINUTES`
+- `AURORA_DASHBOARD_PREP_WORKERS`
+- `AURORA_POWER_PREWARM_WORKERS`
+- `AURORA_POWER_PREWARM_MAX_TIME_SAMPLES`
 - `AURORA_POWER_GENERAL_CACHE_ROUND_MINUTES`
 - `AURORA_POWER_DISPLAY_SUMMARY_FREQ`
 - `AURORA_POWER_DISPLAY_ENERGY_FREQ`
@@ -62,6 +66,30 @@ Operations Dashboard **Overall** action state or the health report's
 `AURORA_DASHBOARD_SESSION_HEARTBEAT_MS` defaults to `0`, which disables
 per-session heartbeat logging. That avoids keeping mobile browser sessions
 alive on the server after the phone has backgrounded or killed the tab.
+
+The dashboard logo and shared stylesheet are served as normal static assets
+under `AURORA_DASHBOARD_ASSET_PREFIX`, rather than being embedded in every HTML
+document. This lets browsers cache them independently of the live dashboard
+document and prevents the same CSS from being repeated in Panel models.
+
+The native Power API bounds each trace to `AURORA_MOBILE_POWER_MAX_POINTS`
+(default `160`) using per-bucket extrema, preserving visible peaks and dips
+without asking Swift Charts to draw thousands of points. The offline Power
+prewarm writer uses up to `AURORA_POWER_PREWARM_WORKERS` processes (default
+`2`) only for JSON serialization; it does not share or mutate live Zarr or
+Panel state.
+
+Browser Power prewarms use `AURORA_POWER_PREWARM_MAX_TIME_SAMPLES` (default
+`120`, capped at `700`) per trace. Sampling retains the local minimum and
+maximum of each time bucket, so short load and voltage events remain visible
+while the first browser payload stays compact.
+
+`AURORA_DASHBOARD_PREP_WORKERS` defaults to `2` and is capped at `4`. It is
+used only for custom browser Power windows that cannot use prewarmed JSON.
+The executor prepares Zarr/NumPy/Plotly data away from the Panel event loop;
+the finished figure is committed through a document callback. A new control
+change cancels the awaiting stale request, so only the newest completed result
+can update the browser.
 
 ## Useful commands
 
@@ -84,12 +112,17 @@ journalctl -u aurora-dashboard-perf-summary.service --since '1 hour ago' --no-pa
 - `interactive_render_cache_hit`
 - `interactive_render_debounced`
 - `interactive_prewarm_load`
+- `interactive_prewarm_load_async`
+- `power_background_prepare_scheduled`
+- `power_background_prepare`
 - `window_open`
 - `power_display_summary_open`
 - `power_display_summary_window`
+- `power_display_section_open`
 - `power_display_energy_open`
 - `power_display_energy_window`
 - `interactive_view_update`
+- `interactive_render_budget_exceeded`
 - `hatpro_render`
 - `stacked_timeseries_render`
 - `science_quicklook_render`
@@ -120,6 +153,8 @@ events should be interpreted:
   data-refresh interval
 - stale-render protection drops older queued renders before they can repaint the
   page
+- custom Power preparations run in the bounded background executor; cancelling
+  a superseded request never mutates the active Bokeh document
 - the matching cached Science Quicklook is shown first when available,
   otherwise a loading skeleton is shown for uncached views
 - the initial interactive render is deferred until the browser session is
@@ -129,10 +164,12 @@ events should be interpreted:
 - Power interactive plots use the same display-time preparation and per-trace
   time downsampling approach as the quicklooks, with display-only sanity limits
   for impossible APS values
-- Power summary traces are read from a compact one-minute display-summary Zarr
-  when available. The older display-energy Zarr remains as a cumulative-panel
-  fallback. Latest Power, Meteorology, and Radiation interactive figures can be
-  loaded from prewarmed Plotly JSON created by their quicklook generators
+- Power summary traces are read from section-specific one-minute display Zarrs
+  when available: Current Conditions opens only observed variables and
+  Forecast & Planning opens only forecast variables. The legacy combined
+  display-summary and display-energy Zarrs remain compatibility fallbacks.
+  Latest Power, Meteorology, and Radiation interactive figures can be loaded
+  from prewarmed Plotly JSON created by their quicklook generators
 - the live Power 24 h window is rounded into 5-minute cache buckets, so a small
   latest-timestamp change does not force an immediate full rebuild
 - fixed-summary instruments use instrument-specific display-time sample caps;

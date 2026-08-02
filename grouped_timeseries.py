@@ -178,6 +178,9 @@ POWER_SOC_FORECAST_SKILL_FIELDS = (
     "ForecastSOCMAE_24_48h_Verified",
     "ForecastSOCMAE_48_96h_Verified",
     "ForecastSOCBias_0_6h_Verified",
+    "ForecastSOCBias_6_24h_Verified",
+    "ForecastSOCBias_24_48h_Verified",
+    "ForecastSOCBias_48_96h_Verified",
     "ForecastSOCSkill_0_6h",
     "ForecastLoadMAE24h",
     "ForecastLoadBias24h",
@@ -197,6 +200,10 @@ POWER_SOC_FORECAST_SKILL_FIELDS = (
     "ForecastSOCSkill_6_24h",
     "ForecastSOCSkill_24_48h",
     "ForecastSOCSkill_48_96h",
+    "ForecastSOCReadiness_0_6h",
+    "ForecastSOCReadiness_6_24h",
+    "ForecastSOCReadiness_24_48h",
+    "ForecastSOCReadiness_48_96h",
     "ForecastLoadVerificationSamples",
     "ForecastLoadIndependentCycles",
     "ForecastSolarVerificationSamples",
@@ -362,7 +369,7 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
         if mode:
             maturity = str(ds.attrs.get("operating_current_mode_maturity", "")).strip()
             suffix = f" ({maturity})" if maturity else ""
-            return f"Current Mode: {mode}{suffix}"
+            return f"Current load / system as-is: {mode}{suffix}"
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -372,7 +379,7 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
 
 
 VERIFICATION_MIN_SAMPLES = 20
-VERIFICATION_MIN_CYCLES = 10
+VERIFICATION_MIN_CYCLES = 30
 
 
 def _latest_finite_value(ds: xr.Dataset, name: str) -> float:
@@ -418,17 +425,24 @@ def build_power_verification_guidance(panel_key: str, ds: xr.Dataset) -> dict[st
         metrics = []
         for bucket, label in (("0_6h", "0-6 h"), ("6_24h", "6-24 h"), ("24_48h", "24-48 h"), ("48_96h", "48-96 h")):
             value = _latest_finite_value(ds, f"ForecastSOCMAE_{bucket}_Verified")
+            bias = _latest_finite_value(ds, f"ForecastSOCBias_{bucket}_Verified")
             samples = _latest_finite_value(ds, f"ForecastSOCMAESamples_{bucket}")
             cycles = _latest_finite_value(ds, f"ForecastSOCMAECycles_{bucket}")
             evidence, evidence_level = _verification_evidence(samples, cycles)
             status, level = _skill_status(_latest_finite_value(ds, f"ForecastSOCSkill_{bucket}"), evidence_level)
+            ready = _latest_finite_value(ds, f"ForecastSOCReadiness_{bucket}")
+            if evidence_level != "learning" and np.isfinite(ready):
+                status, level = ("Meets 10-point target", "good") if ready >= 0.5 else ("Outside 10-point target", "caution")
             metrics.append(
                 {
                     "id": f"soc-mae-{bucket}",
                     "label": f"SOC MAE {label}",
                     "valueText": "Not yet verified" if not np.isfinite(value) else f"{value:.2f} percentage points",
                     "direction": "Lower is better",
-                    "reference": "Compared with persistence from issue-time SOC",
+                    "reference": (
+                        f"Bias {'not yet verified' if not np.isfinite(bias) else f'{bias:+.2f} points'}; "
+                        "target: MAE and absolute bias below 10 points"
+                    ),
                     "status": status,
                     "evidence": evidence,
                     "level": level,
@@ -436,7 +450,7 @@ def build_power_verification_guidance(panel_key: str, ds: xr.Dataset) -> dict[st
             )
         return {
             "title": "How to read SOC verification",
-            "summary": "Average absolute miss of archived SOC forecasts against later APS measurements. Scores use the previous 24 hours.",
+            "summary": "Average absolute miss and signed error of immutable issue-time SOC forecasts against later APS measurements. Certification requires 30 independent ECMWF cycles.",
             "metrics": metrics,
         }
 
@@ -577,7 +591,7 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         "soc_ecmwf_forecast": {
             "title": "SOC 96 h forecast",
             "summary": "The system-as-is ECMWF ensemble outlook for battery SOC and the risk of crossing the operational minimum.",
-            "implementation": "Every ECMWF member starts from the latest valid APS SOC with the detected current system mode and load held fixed. P10, central, and P90 therefore represent solar-weather uncertainty only, not alternative instrument schedules.",
+            "implementation": "Every member starts from the latest valid APS SOC and recent measured whole-station load. The ensemble combines ECMWF solar weather, recent load residuals, and bounded battery-capacity and efficiency uncertainty. These are system-as-is outcomes, not alternative instrument schedules.",
             "metrics": [
                 {"label": "P10", "detail": "Lower-end SOC outcome across ECMWF solar members; use it for conservative planning."},
                 {"label": "Central / P90", "detail": "Central estimate and upper-end solar outcome for the same system-as-is load."},
@@ -595,12 +609,14 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         },
         "operating_plan_scenarios": {
             "title": "Suggested instrument-mode SOC forecasts",
-            "summary": "Seven explicit combinations of CL61, Cloud Radar, and HATPRO using one common solar and battery forecast.",
-            "implementation": "Each line includes the station DC baseline plus the named instruments. Instrument loads come from the learned component model; all scenarios use the same forecast issue time, initial SOC, solar ensemble, battery capacity, and efficiency assumptions. They are advisory comparisons and do not operate PDU outlets.",
+            "summary": "The current-load system-as-is forecast is the reference, followed by eight explicit instrument combinations, including all instruments with UAS at tier 3.",
+            "implementation": "The system-as-is line uses the latest measured whole-station load. Each comparison line includes the unadjusted learned DC baseline plus the named instrument loads. The UAS tier-3 load is learned separately and remains provisional until at least three independent episodes and six observed hours are available. All lines share the forecast issue, initial SOC, solar ensemble, and calibrated battery assumptions. They are advisory and never operate PDU outlets.",
             "metrics": [
                 {"label": "P50", "detail": "The median SOC path for each named instrument combination."},
+                {"label": "Current load", "detail": "Reference SOC path if the latest detected system load and instrument state continue."},
                 {"label": "Common basis", "detail": "Every line starts from the same measured SOC and uses the same weather forecast."},
                 {"label": "Loads", "detail": "DC baseline plus the learned load of each instrument named in the scenario."},
+                {"label": "UAS tier 3", "detail": "Tier-specific load estimate; provisional until the minimum independent evidence gate is met."},
             ],
         },
         "operating_plan_schedule": {
@@ -870,6 +886,13 @@ HUMAN_LABELS = {
     "ForecastSOCMAE_24_48h_Verified": "SOC MAE 24-48 h",
     "ForecastSOCMAE_48_96h_Verified": "SOC MAE 48-96 h",
     "ForecastSOCBias_0_6h_Verified": "SOC Bias 0-6 h",
+    "ForecastSOCBias_6_24h_Verified": "SOC Bias 6-24 h",
+    "ForecastSOCBias_24_48h_Verified": "SOC Bias 24-48 h",
+    "ForecastSOCBias_48_96h_Verified": "SOC Bias 48-96 h",
+    "ForecastSOCReadiness_0_6h": "SOC Target Ready 0-6 h",
+    "ForecastSOCReadiness_6_24h": "SOC Target Ready 6-24 h",
+    "ForecastSOCReadiness_24_48h": "SOC Target Ready 24-48 h",
+    "ForecastSOCReadiness_48_96h": "SOC Target Ready 48-96 h",
     "ForecastSOCSkill_0_6h": "SOC Skill 0-6 h",
     "ForecastSolarMAE24h": "Solar MAE 24 h",
     "ForecastSolarBias24h": "Solar Bias 24 h",
@@ -1047,6 +1070,13 @@ HUMAN_UNITS = {
     "ForecastSOCMAE_24_48h_Verified": "percentage points",
     "ForecastSOCMAE_48_96h_Verified": "percentage points",
     "ForecastSOCBias_0_6h_Verified": "percentage points",
+    "ForecastSOCBias_6_24h_Verified": "percentage points",
+    "ForecastSOCBias_24_48h_Verified": "percentage points",
+    "ForecastSOCBias_48_96h_Verified": "percentage points",
+    "ForecastSOCReadiness_0_6h": "1",
+    "ForecastSOCReadiness_6_24h": "1",
+    "ForecastSOCReadiness_24_48h": "1",
+    "ForecastSOCReadiness_48_96h": "1",
     "ForecastSOCSkill_0_6h": "1",
     "ForecastSolarMAE24h": "W",
     "ForecastSolarBias24h": "W",
@@ -1469,6 +1499,14 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "SOC [%]",
             None,
             (
+                TraceSpec(
+                    "OperatingCurrentSOCP50",
+                    "Current load / system as-is",
+                    COLOR["black"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=3.2,
+                ),
                 TraceSpec("OperatingSuggested1SOCP50", "CL61", COLOR["red"], valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested2SOCP50", "CL61 + Radar", COLOR["blue"], valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested3SOCP50", "CL61 + HATPRO", COLOR["purple"], valid_min=0.0, valid_max=100.0, line_width=2.1),
@@ -1476,6 +1514,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("OperatingSuggested5SOCP50", "HATPRO + Radar", COLOR["green"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested6SOCP50", "Radar", COLOR["slate"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested7SOCP50", "HATPRO", COLOR["brown"], dash="dash", valid_min=0.0, valid_max=100.0, line_width=2.1),
+                TraceSpec(
+                    "OperatingSuggested8SOCP50",
+                    "All instruments + UAS tier 3",
+                    COLOR["teal"],
+                    dash="dashdot",
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.6,
+                ),
             ),
         ),
         PanelSpec(
@@ -3141,7 +3188,29 @@ def _downsample_trace(
     if count <= max_time_samples:
         return times, values
     keep_count = max(2, int(max_time_samples))
-    keep = np.unique(np.linspace(0, count - 1, keep_count, dtype=int))
+    # A uniform stride can hide short APS load spikes and voltage dips. Keep the
+    # local extrema from each time bucket instead, while retaining chronological
+    # order and a strict trace-point budget for browser payloads.
+    bucket_count = max(1, (keep_count - 2) // 2)
+    edges = np.linspace(0, count, bucket_count + 1, dtype=int)
+    selected = [0, count - 1]
+    for left, right in zip(edges[:-1], edges[1:]):
+        if right <= left:
+            continue
+        bucket = values[left:right]
+        finite = np.flatnonzero(np.isfinite(bucket))
+        if len(finite) == 0:
+            continue
+        finite_values = bucket[finite]
+        selected.extend(
+            (
+                left + int(finite[np.argmin(finite_values)]),
+                left + int(finite[np.argmax(finite_values)]),
+            )
+        )
+    keep = np.unique(np.asarray(selected, dtype=int))
+    if len(keep) > keep_count:
+        keep = keep[np.linspace(0, len(keep) - 1, keep_count, dtype=int)]
     return times[keep], values[keep]
 
 
@@ -3187,6 +3256,36 @@ def _insert_line_gap_breaks(times: pd.DatetimeIndex, values: np.ndarray) -> tupl
         return times, values
     expanded_times, expanded_values = insert_time_gap_breaks(times, np.asarray(values, dtype=np.float64)[None, :], time_axis=1)
     return pd.DatetimeIndex(expanded_times), expanded_values[0]
+
+
+def _downsample_trace_with_gap_breaks(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    max_time_samples: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray]:
+    """Retain real source gaps without treating downsampling gaps as outages."""
+    expanded_times, expanded_values = _insert_line_gap_breaks(times, values)
+    gap_mask = ~np.isfinite(expanded_values)
+    gap_times = expanded_times[gap_mask]
+    finite_times = expanded_times[~gap_mask]
+    finite_values = expanded_values[~gap_mask]
+    if len(gap_times) == 0:
+        return _downsample_trace(finite_times, finite_values, max_time_samples)
+
+    # Each real outage has one or two NaN markers. Keep those markers, but do
+    # not let an unusually fragmented source make a browser trace unbounded.
+    keep_count = max(2, int(max_time_samples))
+    gap_budget = max(0, keep_count - 2)
+    if len(gap_times) > gap_budget:
+        gap_times = gap_times[np.linspace(0, len(gap_times) - 1, gap_budget, dtype=int)]
+    finite_budget = max(2, keep_count - len(gap_times))
+    sampled_times, sampled_values = _downsample_trace(finite_times, finite_values, finite_budget)
+    combined_times = sampled_times.append(gap_times).sort_values()
+    combined_values = np.empty(len(combined_times), dtype=np.float64)
+    sampled_lookup = {timestamp: value for timestamp, value in zip(sampled_times, sampled_values, strict=False)}
+    for index, timestamp in enumerate(combined_times):
+        combined_values[index] = sampled_lookup.get(timestamp, np.nan)
+    return combined_times, combined_values
 
 
 def _projection_trace_values(
@@ -3247,8 +3346,7 @@ def _trace_plot_values(
         trace_times = trace_times[display_mask]
         trace_values = trace_values[display_mask]
     trace_values = _smooth_trace_values(trace_times, trace_values, trace)
-    trace_times, trace_values = _downsample_trace(trace_times, trace_values, max_time_samples)
-    trace_times, trace_values = _insert_line_gap_breaks(trace_times, trace_values)
+    trace_times, trace_values = _downsample_trace_with_gap_breaks(trace_times, trace_values, max_time_samples)
     return _insert_day_breaks(trace_times, trace_values, trace)
 
 
@@ -3771,8 +3869,13 @@ def build_summary_plotly(
                 left_axis_values.append(trace_values)
                 left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             trace_label = _trace_display_label(ds, trace)
+            # Power's standard current view contains many independent line
+            # traces. WebGL avoids creating thousands of SVG nodes on phones
+            # and browsers, while stepped state schedules stay SVG so their
+            # horizontal/vertical transitions remain exact.
+            trace_type = go.Scattergl if instrument == "power" and not trace.step else go.Scatter
             fig.add_trace(
-                go.Scatter(
+                trace_type(
                     x=trace_times,
                     y=trace_values,
                     mode="lines",

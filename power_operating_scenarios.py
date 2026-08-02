@@ -19,11 +19,12 @@ from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
 )
+from power_battery_model import BatteryModel
 
-MODEL_NAME = "hybrid_state_space_v6"
-MODEL_VERSION = 6
-STATE_SCHEMA_VERSION = 2
-SCENARIO_SCHEMA_VERSION = 3
+MODEL_NAME = "hybrid_state_space_v7"
+MODEL_VERSION = 7
+STATE_SCHEMA_VERSION = 3
+SCENARIO_SCHEMA_VERSION = 4
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -42,6 +43,11 @@ MIN_RELIABLE_SAMPLES = 12
 MIN_REGIME_SAMPLES = 4
 MIN_RUN_HOURS = 12
 MAX_STARTS_PER_UTC_DAY = 1
+UAS_TIER_RELIABLE_EPISODES = 3
+UAS_TIER_RELIABLE_HOURS = 6.0
+UAS_TIER3_FALLBACK_P10_W = 55.0
+UAS_TIER3_FALLBACK_P50_W = 108.0
+UAS_TIER3_FALLBACK_P90_W = 302.0
 
 SCENARIO_CURRENT = "current_mode"
 SCENARIO_DC_ONLY = "dc_only"
@@ -210,6 +216,7 @@ def build_observation_frame(
     lookback_days: float = 7.0,
     frequency: str = OBSERVATION_FREQUENCY,
     events: Sequence[OperatingEvent] = (),
+    uas_tier: pd.Series | None = None,
 ) -> pd.DataFrame:
     if "time" not in power or power.sizes.get("time", 0) == 0:
         return pd.DataFrame()
@@ -231,6 +238,19 @@ def build_observation_frame(
         pdu_samples = pdu_frame.resample(frequency).median()
         for name in pdu_samples:
             observed[name] = pdu_samples[name].reindex(observed.index, method="nearest", tolerance=pd.Timedelta(frequency))
+    if uas_tier is not None and not uas_tier.empty:
+        tier = pd.Series(
+            pd.to_numeric(uas_tier, errors="coerce").to_numpy(dtype=np.float64),
+            index=pd.DatetimeIndex(uas_tier.index),
+        ).sort_index()
+        if tier.index.tz is not None:
+            tier.index = tier.index.tz_convert("UTC").tz_localize(None)
+        tier = tier.loc[~tier.index.duplicated(keep="last")]
+        observed["uas_effective_tier"] = tier.reindex(
+            observed.index,
+            method="ffill",
+            tolerance=pd.Timedelta(minutes=30),
+        )
 
     mode_values: list[str] = []
     evidence_values: list[str] = []
@@ -457,6 +477,55 @@ def _regime_component_moments(regimes: Mapping[str, Sequence[Mapping[str, float]
     return mean, float(weights @ (variances + (means - mean) ** 2))
 
 
+def _uas_tier_profiles(observations: pd.DataFrame) -> dict[str, dict[str, float | str]]:
+    if "uas_effective_tier" not in observations or "UAS_watts" not in observations:
+        return {}
+    profiles: dict[str, dict[str, float | str]] = {}
+    tiers = observations["uas_effective_tier"]
+    watts = observations["UAS_watts"]
+    for tier_value in sorted(set(int(value) for value in tiers.dropna().to_numpy(dtype=np.float64))):
+        active = (tiers == tier_value) & np.isfinite(watts) & (watts >= PDU_ACTIVE_W)
+        selected = observations.loc[active, ["uas_effective_tier", "UAS_watts"]]
+        if selected.empty:
+            continue
+        continuous = observations.index.to_series().diff().le(pd.Timedelta(minutes=30)).fillna(False)
+        episode_starts = active & ~(active.shift(fill_value=False) & continuous)
+        episodes = int(episode_starts.sum())
+        hours = float(len(selected) * pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1))
+        values = selected["UAS_watts"].to_numpy(dtype=np.float64)
+        p10, p50, p90 = np.nanquantile(values, (0.10, 0.50, 0.90))
+        reliable = episodes >= UAS_TIER_RELIABLE_EPISODES and hours >= UAS_TIER_RELIABLE_HOURS
+        profiles[str(tier_value)] = {
+            "p10_w": float(max(p10, 0.0)),
+            "p50_w": float(max(p50, 0.0)),
+            "p90_w": float(max(p90, 0.0)),
+            "sample_count": float(len(values)),
+            "episode_count": float(episodes),
+            "observed_hours": hours,
+            "maturity": "reliable" if reliable else "provisional",
+        }
+    return profiles
+
+
+def _tier_profile_members(
+    profile: Mapping[str, float | str] | None,
+    count: int,
+    *,
+    seed: int,
+) -> np.ndarray:
+    if profile is None or str(profile.get("maturity", "provisional")) != "reliable":
+        p10, p50, p90 = UAS_TIER3_FALLBACK_P10_W, UAS_TIER3_FALLBACK_P50_W, UAS_TIER3_FALLBACK_P90_W
+    else:
+        p10 = float(profile.get("p10_w", UAS_TIER3_FALLBACK_P10_W))
+        p50 = float(profile.get("p50_w", UAS_TIER3_FALLBACK_P50_W))
+        p90 = float(profile.get("p90_w", UAS_TIER3_FALLBACK_P90_W))
+    ordered = np.maximum.accumulate(np.asarray([max(p10, 0.0), max(p50, 0.0), max(p90, 0.0)]))
+    rng = np.random.default_rng(seed)
+    quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
+    rng.shuffle(quantiles)
+    return np.interp(quantiles, (0.0, 0.10, 0.50, 0.90, 1.0), (ordered[0], ordered[0], ordered[1], ordered[2], ordered[2]))
+
+
 @dataclass
 class OperatingModelResult:
     state_dataset: xr.Dataset
@@ -467,6 +536,7 @@ class OperatingModelResult:
     observed_modes: tuple[str, ...]
     mode_maturity: dict[str, str]
     component_regimes: dict[str, list[dict[str, float]]]
+    uas_tier_profiles: dict[str, dict[str, float | str]]
     current_mode: str
     current_confidence: float
 
@@ -479,8 +549,16 @@ def fit_operating_model(
     end: pd.Timestamp | None = None,
     lookback_days: float = 7.0,
     events: Sequence[OperatingEvent] = (),
+    uas_tier: pd.Series | None = None,
 ) -> OperatingModelResult:
-    observations = build_observation_frame(power, pdu, end=end, lookback_days=lookback_days, events=events)
+    observations = build_observation_frame(
+        power,
+        pdu,
+        end=end,
+        lookback_days=lookback_days,
+        events=events,
+        uas_tier=uas_tier,
+    )
     if observations.empty:
         raise ValueError("No APS/PDU observations are available for operating-state learning")
     mean, covariance, counts = _bootstrap_components(raw_state, observations)
@@ -593,6 +671,12 @@ def fit_operating_model(
         if new_observation_count == 0 and isinstance(saved_regimes, Mapping)
         else _component_regimes(observations)
     )
+    saved_tier_profiles = raw_state.get("uas_tier_profiles") if isinstance(raw_state, Mapping) else None
+    uas_tier_profiles = (
+        {str(name): dict(values) for name, values in saved_tier_profiles.items()}
+        if new_observation_count == 0 and isinstance(saved_tier_profiles, Mapping)
+        else _uas_tier_profiles(observations)
+    )
     if new_observation_count > 0 or not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
         for name, index in COMPONENT_INDEX.items():
             moment = _regime_component_moments(component_regimes, name)
@@ -633,6 +717,13 @@ def fit_operating_model(
                 [component_regimes.get(component, [{}] * 2)[index].get("sample_count", np.nan) if index < len(component_regimes.get(component, ())) else np.nan for index in range(2)]
                 for component in COMPONENTS
             ], dtype=np.float32)),
+            "UASEffectiveTier": (
+                ("time",),
+                observations.get(
+                    "uas_effective_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
         },
         coords={
             "time": observations.index.to_numpy(dtype="datetime64[ns]"),
@@ -659,6 +750,7 @@ def fit_operating_model(
             "component_std_w": json.dumps(
                 {name: float(np.sqrt(max(covariance[index, index], 0.0))) for index, name in enumerate(COMPONENTS)}
             ),
+            "uas_tier_profiles": json.dumps(uas_tier_profiles, sort_keys=True),
             "observation_frequency": OBSERVATION_FREQUENCY,
             "last_observation_time_utc": latest_observation_time.isoformat(),
             "new_observation_count": str(new_observation_count),
@@ -684,6 +776,7 @@ def fit_operating_model(
         "observed_modes": list(observed_modes),
         "mode_maturity": mode_maturity,
         "component_regimes": component_regimes,
+        "uas_tier_profiles": uas_tier_profiles,
         "components": {
             name: {
                 "mean_w": float(mean[index]),
@@ -704,6 +797,7 @@ def fit_operating_model(
         observed_modes=observed_modes,
         mode_maturity=mode_maturity,
         component_regimes=component_regimes,
+        uas_tier_profiles=uas_tier_profiles,
         current_mode=current_mode,
         current_confidence=current_confidence,
     )
@@ -722,6 +816,69 @@ def _latest_soc(power: xr.Dataset) -> tuple[pd.Timestamp, float]:
             index = int(finite_indices[-1])
             return pd.Timestamp(view["time"].values[index]), float(values[index])
     raise ValueError("Power data do not contain a finite BatterySOC sample")
+
+
+def _align_ensemble_solar_contract(
+    deterministic: xr.Dataset,
+    ensemble: xr.Dataset | None,
+) -> tuple[xr.Dataset | None, dict[str, str]]:
+    """Reapply the planning forecast's solar calibration to raw ensemble irradiance."""
+    target_contract = str(deterministic.attrs.get("solar_calibration_contract_id", ""))
+    source_contract = str(ensemble.attrs.get("solar_calibration_contract_id", "")) if ensemble is not None else ""
+    metadata = {
+        "solar_ensemble_source_calibration_contract_id": source_contract,
+        "solar_ensemble_recalibrated": "false",
+    }
+    if ensemble is None or not target_contract or source_contract == target_contract:
+        return ensemble, metadata
+    required_deterministic = {"ForecastSolarWatts", "ECMWFSolarIrradiance"}
+    if not required_deterministic.issubset(deterministic.data_vars) or "time" not in deterministic:
+        raise ValueError(
+            "Cannot align ensemble solar calibration: planning forecast lacks raw irradiance"
+        )
+    if "ECMWFSolarIrradianceEnsemble" not in ensemble or "time" not in ensemble:
+        raise ValueError(
+            "Cannot align ensemble solar calibration: ensemble lacks raw irradiance members"
+        )
+
+    deterministic_times = pd.DatetimeIndex(deterministic["time"].values)
+    deterministic_solar = pd.Series(
+        np.asarray(deterministic["ForecastSolarWatts"].values, dtype=np.float64),
+        index=deterministic_times,
+    )
+    deterministic_irradiance = pd.Series(
+        np.asarray(deterministic["ECMWFSolarIrradiance"].values, dtype=np.float64),
+        index=deterministic_times,
+    )
+    inferred_factor = (
+        deterministic_solar
+        / deterministic_irradiance.where(deterministic_irradiance > 1.0)
+    ).replace([np.inf, -np.inf], np.nan)
+    source_times = pd.DatetimeIndex(ensemble["time"].values)
+    fallback_factor = float(
+        deterministic.attrs.get("solar_calibration_factor_w_per_wm2", 1.0)
+    )
+    factor_profile = (
+        inferred_factor.reindex(source_times, method="nearest", tolerance=pd.Timedelta(hours=2))
+        .ffill()
+        .bfill()
+        .fillna(fallback_factor)
+        .clip(lower=0.0)
+    )
+    raw = ensemble["ECMWFSolarIrradianceEnsemble"]
+    if "member" not in raw.dims or "time" not in raw.dims:
+        raise ValueError("Ensemble raw irradiance must use member and time dimensions")
+    aligned = ensemble.copy()
+    factors = xr.DataArray(
+        factor_profile.to_numpy(dtype=np.float64),
+        dims=("time",),
+        coords={"time": ensemble["time"]},
+    )
+    aligned["ForecastSolarWattsEnsemble"] = (raw * factors).clip(min=0.0)
+    aligned.attrs = dict(ensemble.attrs)
+    aligned.attrs["solar_calibration_contract_id"] = target_contract
+    metadata["solar_ensemble_recalibrated"] = "true"
+    return aligned, metadata
 
 
 def _hourly_solar_members(
@@ -845,6 +1002,27 @@ def _current_system_load_members(
     raise ValueError("System forecast does not contain ForecastLoadWatts")
 
 
+def _battery_member_parameters(
+    ensemble: xr.Dataset | None,
+    model: BatteryModel,
+    member_count: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    fields = (
+        ("BatteryUsableCapacityKWhEnsemble", model.usable_capacity_kwh),
+        ("BatteryChargeEfficiencyEnsemble", model.charge_efficiency),
+        ("BatteryDischargeEfficiencyEnsemble", model.discharge_efficiency),
+    )
+    values: list[np.ndarray] = []
+    for name, fallback in fields:
+        if ensemble is not None and name in ensemble and ensemble[name].dims == ("member",):
+            candidate = np.asarray(ensemble[name].values, dtype=np.float64)
+            if candidate.shape == (member_count,) and np.isfinite(candidate).all():
+                values.append(candidate)
+                continue
+        values.append(np.full(member_count, float(fallback), dtype=np.float64))
+    return values[0], values[1], values[2]
+
+
 def _component_members(
     mean: np.ndarray,
     covariance: np.ndarray,
@@ -889,6 +1067,21 @@ def _load_members_for_modes(component_members: np.ndarray, modes: Sequence[str])
     return np.clip(loads, 0.0, None)
 
 
+def _member_soc_delta_percent(
+    net_power_w: np.ndarray,
+    hours: float,
+    model: BatteryModel,
+    capacities_kwh: np.ndarray,
+    charge_efficiencies: np.ndarray,
+    discharge_efficiencies: np.ndarray,
+) -> np.ndarray:
+    net_w = np.asarray(net_power_w, dtype=np.float64) - model.parasitic_load_w
+    charging_w = np.minimum(np.clip(net_w, 0.0, None), model.max_charge_w)
+    discharging_w = np.minimum(np.clip(-net_w, 0.0, None), model.max_discharge_w)
+    stored_w = charging_w * charge_efficiencies - discharging_w / discharge_efficiencies
+    return 100.0 * stored_w * max(float(hours), 0.0) / (1000.0 * capacities_kwh)
+
+
 def integrate_soc_members(
     *,
     initial_soc: float,
@@ -896,17 +1089,44 @@ def integrate_soc_members(
     solar_members_w: np.ndarray,
     load_members_w: np.ndarray,
     capacity_kwh: float,
+    battery_model: BatteryModel | None = None,
+    member_capacity_kwh: np.ndarray | None = None,
+    member_charge_efficiency: np.ndarray | None = None,
+    member_discharge_efficiency: np.ndarray | None = None,
 ) -> np.ndarray:
     solar = np.asarray(solar_members_w, dtype=np.float64)
     load = np.asarray(load_members_w, dtype=np.float64)
     if solar.ndim != 2 or load.ndim != 2 or solar.shape != load.shape:
         raise ValueError("Solar and load members must be matching member x time arrays")
+    model = battery_model or BatteryModel(
+        usable_capacity_kwh=capacity_kwh,
+        charge_efficiency=1.0,
+        discharge_efficiency=1.0,
+        max_charge_w=20_000.0,
+        max_discharge_w=20_000.0,
+    )
+    member_count = solar.shape[0]
+    capacities = np.asarray(member_capacity_kwh, dtype=np.float64) if member_capacity_kwh is not None else np.full(member_count, model.usable_capacity_kwh)
+    charge_efficiencies = np.asarray(member_charge_efficiency, dtype=np.float64) if member_charge_efficiency is not None else np.full(member_count, model.charge_efficiency)
+    discharge_efficiencies = np.asarray(member_discharge_efficiency, dtype=np.float64) if member_discharge_efficiency is not None else np.full(member_count, model.discharge_efficiency)
+    if capacities.shape != (member_count,) or charge_efficiencies.shape != (member_count,) or discharge_efficiencies.shape != (member_count,):
+        raise ValueError("Battery member parameters must match the forecast member dimension")
+    capacities = np.clip(capacities, 10.0, 40.0)
+    charge_efficiencies = np.clip(charge_efficiencies, 0.65, 1.0)
+    discharge_efficiencies = np.clip(discharge_efficiencies, 0.65, 1.0)
     soc = np.full(solar.shape, np.nan, dtype=np.float64)
     soc[:, 0] = float(np.clip(initial_soc, 0.0, 100.0))
     for index in range(1, len(times)):
         hours = max(float((times[index] - times[index - 1]) / pd.Timedelta(hours=1)), 0.0)
-        net_kwh = (solar[:, index] - load[:, index]) * hours / 1000.0
-        soc[:, index] = np.clip(soc[:, index - 1] + 100.0 * net_kwh / float(capacity_kwh), 0.0, 100.0)
+        delta_soc = _member_soc_delta_percent(
+            solar[:, index] - load[:, index],
+            hours,
+            model,
+            capacities,
+            charge_efficiencies,
+            discharge_efficiencies,
+        )
+        soc[:, index] = np.clip(soc[:, index - 1] + delta_soc, 0.0, 100.0)
     return soc
 
 
@@ -947,6 +1167,10 @@ def optimize_cl61_schedule(
     component_members: np.ndarray,
     initial_soc: float,
     capacity_kwh: float,
+    battery_model: BatteryModel | None = None,
+    member_capacity_kwh: np.ndarray | None = None,
+    member_charge_efficiency: np.ndarray | None = None,
+    member_discharge_efficiency: np.ndarray | None = None,
     base_mode: str,
     horizon_hours: int = 96,
     minimum_soc: float = MINIMUM_OPERATIONAL_SOC_PCT,
@@ -961,6 +1185,34 @@ def optimize_cl61_schedule(
     if full_solar.ndim != 2 or full_solar.shape[1] < len(full_times):
         raise ValueError("Solar members must be a member x time array covering the forecast")
     full_solar = full_solar[:, : len(full_times)]
+    energy_model = battery_model or BatteryModel(
+        usable_capacity_kwh=capacity_kwh,
+        charge_efficiency=1.0,
+        discharge_efficiency=1.0,
+        max_charge_w=20_000.0,
+        max_discharge_w=20_000.0,
+    )
+    member_count = full_solar.shape[0]
+    capacities = (
+        np.asarray(member_capacity_kwh, dtype=np.float64)
+        if member_capacity_kwh is not None
+        else np.full(member_count, energy_model.usable_capacity_kwh)
+    )
+    charge_efficiencies = (
+        np.asarray(member_charge_efficiency, dtype=np.float64)
+        if member_charge_efficiency is not None
+        else np.full(member_count, energy_model.charge_efficiency)
+    )
+    discharge_efficiencies = (
+        np.asarray(member_discharge_efficiency, dtype=np.float64)
+        if member_discharge_efficiency is not None
+        else np.full(member_count, energy_model.discharge_efficiency)
+    )
+    if any(values.shape != (member_count,) for values in (capacities, charge_efficiencies, discharge_efficiencies)):
+        raise ValueError("Battery member parameters must match the solar member dimension")
+    capacities = np.clip(capacities, 10.0, 40.0)
+    charge_efficiencies = np.clip(charge_efficiencies, 0.65, 1.0)
+    discharge_efficiencies = np.clip(discharge_efficiencies, 0.65, 1.0)
     decision_count = min(len(full_times), int(horizon_hours) + 1)
     decision_times = full_times[:decision_count]
     base_kits = set(mode_kits(base_mode))
@@ -1002,7 +1254,14 @@ def optimize_cl61_schedule(
                 )
                 soc = np.clip(
                     candidate.soc
-                    + 100.0 * (full_solar[:, index] - load) * hours / (1000.0 * capacity_kwh),
+                    + _member_soc_delta_percent(
+                        full_solar[:, index] - load,
+                        hours,
+                        energy_model,
+                        capacities,
+                        charge_efficiencies,
+                        discharge_efficiencies,
+                    ),
                     0.0,
                     100.0,
                 )
@@ -1057,7 +1316,15 @@ def optimize_cl61_schedule(
         for index in range(decision_count, len(full_times)):
             hours = max(float((full_times[index] - full_times[index - 1]) / pd.Timedelta(hours=1)), 0.0)
             soc = np.clip(
-                soc + 100.0 * (full_solar[:, index] - off_load) * hours / (1000.0 * capacity_kwh),
+                soc
+                + _member_soc_delta_percent(
+                    full_solar[:, index] - off_load,
+                    hours,
+                    energy_model,
+                    capacities,
+                    charge_efficiencies,
+                    discharge_efficiencies,
+                ),
                 0.0,
                 100.0,
             )
@@ -1086,6 +1353,10 @@ def optimize_cl61_schedule(
             solar_members_w=full_solar,
             load_members_w=off_loads,
             capacity_kwh=capacity_kwh,
+            battery_model=battery_model,
+            member_capacity_kwh=capacities,
+            member_charge_efficiency=charge_efficiencies,
+            member_discharge_efficiency=discharge_efficiencies,
         )
         off_p10 = np.nanquantile(off_soc, 0.10, axis=0)
         minimum_p10 = float(np.nanmin(off_p10))
@@ -1144,6 +1415,10 @@ def _scenario_members(
     component_members: np.ndarray,
     initial_soc: float,
     capacity_kwh: float,
+    battery_model: BatteryModel | None = None,
+    member_capacity_kwh: np.ndarray | None = None,
+    member_charge_efficiency: np.ndarray | None = None,
+    member_discharge_efficiency: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     loads = _load_members_for_modes(component_members, modes)
     soc = integrate_soc_members(
@@ -1152,8 +1427,31 @@ def _scenario_members(
         solar_members_w=solar_members,
         load_members_w=loads,
         capacity_kwh=capacity_kwh,
+        battery_model=battery_model,
+        member_capacity_kwh=member_capacity_kwh,
+        member_charge_efficiency=member_charge_efficiency,
+        member_discharge_efficiency=member_discharge_efficiency,
     )
     return loads, soc
+
+
+def _validate_scenario_invariants(output: xr.Dataset) -> None:
+    for prefix in ("ScenarioLoad", "ScenarioSOC"):
+        p10 = np.asarray(output[f"{prefix}P10{'Watts' if prefix == 'ScenarioLoad' else ''}"].values)
+        p50 = np.asarray(output[f"{prefix}P50{'Watts' if prefix == 'ScenarioLoad' else ''}"].values)
+        p90 = np.asarray(output[f"{prefix}P90{'Watts' if prefix == 'ScenarioLoad' else ''}"].values)
+        if np.any(p10 > p50 + 1e-5) or np.any(p50 > p90 + 1e-5):
+            raise ValueError(f"{prefix} quantiles are not ordered")
+    dc = np.asarray(output.sel(scenario=SCENARIO_DC_ONLY)["ScenarioLoadP50Watts"].values, dtype=np.float64)
+    if not np.isfinite(dc).all() or np.nanmedian(dc) <= 0.0:
+        raise ValueError("DC-only scenario must retain a positive learned station baseline")
+    if "suggested_all_uas_tier3" in set(str(value) for value in output["scenario"].values):
+        all_on = np.asarray(
+            output.sel(scenario="suggested_all_uas_tier3")["ScenarioLoadP50Watts"].values,
+            dtype=np.float64,
+        )
+        if np.any(all_on + 1e-5 < dc):
+            raise ValueError("All-instruments UAS tier 3 load cannot be below DC-only load")
 
 
 def build_operating_scenarios(
@@ -1166,18 +1464,52 @@ def build_operating_scenarios(
     optimization_hours: int = 96,
     capacity_kwh: float | None = None,
 ) -> xr.Dataset:
+    deterministic_solar_contract = str(deterministic.attrs.get("solar_calibration_contract_id", ""))
+    ensemble, solar_alignment_metadata = _align_ensemble_solar_contract(
+        deterministic,
+        ensemble,
+    )
     issue_time, initial_soc = _latest_soc(power)
     available_end = pd.Timestamp(deterministic["time"].values[-1]) if "time" in deterministic else issue_time
     available_hours = max(int((available_end - issue_time) / pd.Timedelta(hours=1)), 1)
     actual_horizon = min(int(horizon_hours), available_hours)
     capacity = float(capacity_kwh or deterministic.attrs.get("battery_capacity_kwh", 26.0))
+    battery_model = (
+        BatteryModel.from_attrs(deterministic.attrs, default_capacity_kwh=capacity)
+        if "battery_energy_model" in deterministic.attrs
+        else BatteryModel(
+            usable_capacity_kwh=capacity,
+            charge_efficiency=1.0,
+            discharge_efficiency=1.0,
+            max_charge_w=20_000.0,
+            max_discharge_w=20_000.0,
+        )
+    )
+    capacity = battery_model.usable_capacity_kwh
     times, solar_members, solar_metadata = _hourly_solar_members(
         deterministic,
         ensemble,
         issue_time=issue_time,
         horizon_hours=actual_horizon,
     )
+    solar_metadata.update(
+        {
+            "solar_calibration_contract_id": deterministic_solar_contract,
+            "solar_calibration_factor_w_per_wm2": str(
+                deterministic.attrs.get("solar_calibration_factor_w_per_wm2", "")
+            ),
+            "solar_mos_factor_by_lead_bucket": str(
+                deterministic.attrs.get("solar_mos_factor_by_lead_bucket", "{}")
+            ),
+            **solar_alignment_metadata,
+        }
+    )
     member_count = solar_members.shape[0]
+    member_capacity, member_charge_efficiency, member_discharge_efficiency = _battery_member_parameters(
+        ensemble,
+        battery_model,
+        member_count,
+    )
     seed = int(issue_time.value % (2**32 - 1))
     component_members = _component_members(
         model.component_mean,
@@ -1187,10 +1519,6 @@ def build_operating_scenarios(
         regimes=model.component_regimes,
     )
     base_mode = model.current_mode if model.current_mode != MODE_UNKNOWN_AC else MODE_DC_ONLY
-    # The component model learns differences between instrument modes.  Its DC
-    # intercept can miss shared station loads that are present in the main SOC
-    # forecast.  Calibrate that intercept member-by-member so all alternatives
-    # retain the system-as-is baseline and differ only by their named kit.
     modeled_current_load = _load_members_for_modes(
         component_members,
         tuple(base_mode for _ in times),
@@ -1202,18 +1530,16 @@ def build_operating_scenarios(
         member_count,
         fallback=modeled_current_load,
     )
-    baseline_adjustment = np.nanmedian(current_system_load - modeled_current_load, axis=1)
-    component_members[:, COMPONENT_INDEX["DC"]] = np.clip(
-        component_members[:, COMPONENT_INDEX["DC"]] + baseline_adjustment,
-        0.0,
-        None,
-    )
     optimized = optimize_cl61_schedule(
         times=times,
         solar_members_w=solar_members,
         component_members=component_members,
         initial_soc=initial_soc,
         capacity_kwh=capacity,
+        battery_model=battery_model,
+        member_capacity_kwh=member_capacity,
+        member_charge_efficiency=member_charge_efficiency,
+        member_discharge_efficiency=member_discharge_efficiency,
         base_mode=base_mode,
         horizon_hours=min(optimization_hours, actual_horizon),
     )
@@ -1229,10 +1555,13 @@ def build_operating_scenarios(
         SCENARIO_DC_ONLY: tuple(MODE_DC_ONLY for _ in times),
         SCENARIO_OPTIMIZED: tuple(optimized_modes),
     }
+    scenario_uas_tiers: dict[str, int] = {}
     for definition in SUGGESTED_OPERATING_SCENARIOS:
         scenario_modes[definition.scenario_id] = tuple(
             mode_id(definition.instruments) for _ in times
         )
+        if definition.uas_effective_tier is not None:
+            scenario_uas_tiers[definition.scenario_id] = int(definition.uas_effective_tier)
     for observed_mode in model.observed_modes:
         if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
@@ -1263,14 +1592,28 @@ def build_operating_scenarios(
     start_times: list[np.datetime64] = []
     stop_times: list[np.datetime64] = []
     safe_values: list[float] = []
+    uas_tier_values: list[np.ndarray] = []
     for scenario_id, modes in scenario_modes.items():
+        scenario_components = component_members
+        tier = scenario_uas_tiers.get(scenario_id)
+        if tier is not None:
+            scenario_components = component_members.copy()
+            scenario_components[:, COMPONENT_INDEX["UAS"]] = _tier_profile_members(
+                model.uas_tier_profiles.get(str(tier)),
+                member_count,
+                seed=seed + tier * 1009,
+            )
         loads, soc = _scenario_members(
             modes,
             times=times,
             solar_members=solar_members,
-            component_members=component_members,
+            component_members=scenario_components,
             initial_soc=initial_soc,
             capacity_kwh=capacity,
+            battery_model=battery_model,
+            member_capacity_kwh=member_capacity,
+            member_charge_efficiency=member_charge_efficiency,
+            member_discharge_efficiency=member_discharge_efficiency,
         )
         if scenario_id == SCENARIO_CURRENT:
             # This is the same system-as-is forecast shown in the 96-hour
@@ -1282,6 +1625,10 @@ def build_operating_scenarios(
                 solar_members_w=solar_members,
                 load_members_w=loads,
                 capacity_kwh=capacity,
+                battery_model=battery_model,
+                member_capacity_kwh=member_capacity,
+                member_charge_efficiency=member_charge_efficiency,
+                member_discharge_efficiency=member_discharge_efficiency,
             )
         load_p10.append(np.nanquantile(loads, 0.10, axis=0))
         load_p50.append(np.nanquantile(loads, 0.50, axis=0))
@@ -1297,6 +1644,7 @@ def build_operating_scenarios(
         minimum_p10.append(float(np.nanmin(p10)))
         final_p10.append(float(p10[-1]))
         safe_values.append(float(np.nanmin(p10) >= MINIMUM_OPERATIONAL_SOC_PCT))
+        uas_tier_values.append(np.full(len(times), tier if tier is not None else -1, dtype=np.int16))
         transitions = np.flatnonzero(on & ~np.r_[False, on[:-1]])
         stops_found = np.flatnonzero(~on & np.r_[False, on[:-1]])
         starts.append(int(len(transitions)))
@@ -1321,18 +1669,26 @@ def build_operating_scenarios(
             "ScenarioStarts": (("scenario",), np.asarray(starts, dtype=np.int16)),
             "ScenarioStartTime": (("scenario",), np.asarray(start_times, dtype="datetime64[ns]")),
             "ScenarioStopTime": (("scenario",), np.asarray(stop_times, dtype="datetime64[ns]")),
+            "ScenarioUASEffectiveTier": (("scenario", "time"), np.asarray(uas_tier_values, dtype=np.int16)),
             "SolarEnsembleWatts": (("member", "time"), solar_members.astype(np.float32)),
             "SolarP10Watts": (("time",), np.nanquantile(solar_members, 0.10, axis=0).astype(np.float32)),
             "SolarP50Watts": (("time",), np.nanquantile(solar_members, 0.50, axis=0).astype(np.float32)),
             "SolarP90Watts": (("time",), np.nanquantile(solar_members, 0.90, axis=0).astype(np.float32)),
             "ComponentLoadWatts": (("member", "component"), component_members.astype(np.float32)),
+            "BatteryUsableCapacityKWhEnsemble": (("member",), member_capacity.astype(np.float32)),
+            "BatteryChargeEfficiencyEnsemble": (("member",), member_charge_efficiency.astype(np.float32)),
+            "BatteryDischargeEfficiencyEnsemble": (("member",), member_discharge_efficiency.astype(np.float32)),
         },
         coords={
             "scenario": np.asarray(scenario_ids, dtype=str),
             "scenario_label": (("scenario",), np.asarray([labels[value] for value in scenario_ids], dtype=str)),
             "scenario_mode_maturity": (("scenario",), np.asarray([
                 "core" if value in CORE_SCENARIOS else
-                "suggested" if value in SUGGESTED_OPERATING_SCENARIO_IDS else
+                (
+                    str(model.uas_tier_profiles.get(str(scenario_uas_tiers[value]), {}).get("maturity", "provisional"))
+                    if value in scenario_uas_tiers
+                    else "suggested"
+                ) if value in SUGGESTED_OPERATING_SCENARIO_IDS else
                 model.mode_maturity.get(value.removeprefix("learned_"), "observed")
                 for value in scenario_ids
             ], dtype=str)),
@@ -1356,7 +1712,11 @@ def build_operating_scenarios(
             "observed_modes": json.dumps(list(model.observed_modes)),
             "mode_maturity": json.dumps(model.mode_maturity, sort_keys=True),
             "scenario_base_mode": base_mode,
-            "load_baseline_source": "system_as_is_forecast_plus_learned_instrument_deltas",
+            "load_baseline_source": "measured_system_anchor_for_current_plus_unadjusted_learned_components",
+            "current_system_load_p50_w": f"{float(np.nanmedian(current_system_load)):.6g}",
+            "modeled_current_load_p50_w": f"{float(np.nanmedian(modeled_current_load)):.6g}",
+            "current_load_model_disagreement_w": f"{float(np.nanmedian(current_system_load - modeled_current_load)):.6g}",
+            "uas_tier_profiles": json.dumps(model.uas_tier_profiles, sort_keys=True),
             "forecast_horizon_hours": str(actual_horizon),
             "optimization_horizon_hours": str(min(optimization_hours, actual_horizon)),
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
@@ -1370,6 +1730,7 @@ def build_operating_scenarios(
             "optimized_collection_hours": f"{optimized.collection_hours:.6g}",
             "optimized_minimum_p10_soc": f"{optimized.minimum_p10_soc:.6g}",
             **solar_metadata,
+            **battery_model.attrs(),
         },
     )
     for name in ("ScenarioSOCP10", "ScenarioSOCP50", "ScenarioSOCP90", "ScenarioMinimumP10SOC", "ScenarioFinalP10SOC"):
@@ -1386,10 +1747,15 @@ def build_operating_scenarios(
     ):
         output[name].attrs["units"] = "W"
     output["ScenarioBelow40Probability"].attrs["units"] = "1"
+    output["ScenarioUASEffectiveTier"].attrs["units"] = "tier"
+    output["BatteryUsableCapacityKWhEnsemble"].attrs["units"] = "kWh"
+    output["BatteryChargeEfficiencyEnsemble"].attrs["units"] = "1"
+    output["BatteryDischargeEfficiencyEnsemble"].attrs["units"] = "1"
     output["ScenarioModeCode"].attrs["mode_mapping"] = json.dumps(
         {str(mode_code(value)): mode_label(value) for value in {mode for modes in scenario_modes.values() for mode in modes}},
         sort_keys=True,
     )
+    _validate_scenario_invariants(output)
     return output
 
 
@@ -1415,6 +1781,11 @@ def evaluate_custom_schedule(
         solar_members_w=solar,
         load_members_w=loads,
         capacity_kwh=float(scenarios.attrs["battery_capacity_kwh"]),
+        battery_model=(
+            BatteryModel.from_attrs(scenarios.attrs)
+            if "battery_energy_model" in scenarios.attrs
+            else None
+        ),
     )
     p10 = np.nanquantile(soc, 0.10, axis=0)
     return {

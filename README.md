@@ -11,6 +11,7 @@ instrument data without changing raw mirrored inputs.
 - Dashboard views and instruments: [dashboard overview](docs/overview/index.md)
 - Local development: [running locally](docs/runtime/running-locally.md)
 - Product schemas and storage: [data products](docs/data-products/index.md)
+- Backup status shown by the app: [archive health](docs/runtime/archive-health.md)
 
 The published documentation is built from `docs/` with MkDocs.
 
@@ -26,6 +27,11 @@ This repository owns:
 It does not own server configuration, timer ownership, deployment policy, or
 the native iOS application. Those live in `aurora-cloud-infra` and
 `aurora-dashboard-ios` respectively.
+
+It also does not own backup writers, GWS/object-store verification, repair, or
+retention. The app consumes the versioned archive-health result read-only; the
+infrastructure repositories remain authoritative for archive and deletion
+policy.
 
 ## First local run
 

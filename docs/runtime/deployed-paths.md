@@ -1,6 +1,8 @@
 # Deployed Paths
 
-Primary runtime paths come from `/etc/aurora-dashboard.env`.
+Primary runtime paths come from `/etc/aurora-dashboard.env`. Production and
+development share the same read-only mirror layout, but only production owns
+the normal raw and product writers.
 
 ## Main application paths
 
@@ -9,6 +11,14 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - product root: `/data/aurora/products`
 - quicklook root: `/data/aurora/products/quicklooks`
 - interactive prewarm root: `/data/aurora/products/dashboard/prewarm`
+
+Development-only experiments must use:
+
+- raw/test inputs: `/project/aurora/dev-raw`
+- derived products: `/data/aurora/dev-products`
+
+The development dashboard may read mirrored products from
+`/data/aurora/products`; it must not write experimental output there.
 
 ## Important deployed products
 
@@ -27,7 +37,7 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - ASS PDU raw mirror: `/project/aurora/raw/pdu`
 - ASS PDU Zarr: `/data/aurora/products/power/pdu.zarr`
 - WXcam Zarr:
-  `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr`
+  `/data/aurora/products/wxcam/wxcam.zarr` (mutable and excluded from archives)
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - AURORACam raw mirror: `/project/aurora/raw/auroracam`
 - AURORACam Zarr: `/data/aurora/products/auroracam/auroracam.zarr`
@@ -35,6 +45,8 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - Operations health outputs:
   `/data/aurora/products/ops_monitor/health/latest_health.json` and
   `/data/aurora/products/ops_monitor/health/latest_report.md`
+- Infrastructure archive-health contract:
+  `/data/aurora/internal/archive_status/health-v1.json`
 
 ## Related docs
 

@@ -58,6 +58,23 @@ def test_stale_manifest_replaces_false_stream_staleness():
     assert "stream:cl61:source_stale" not in ids
 
 
+def test_red_archive_contract_generates_one_authoritative_alert():
+    alerts = evaluate_alerts(
+        {
+            "archive_health_level": "red",
+            "archive_health_failures": [
+                "object_store_raw_missing=3",
+                "object_store_stable_parity=false",
+            ],
+            "mirror_summary_recent_state": 1,
+        }
+    )
+
+    archive = [alert for alert in alerts if alert.id == "archive:health_red"]
+    assert len(archive) == 1
+    assert "object_store_raw_missing=3" in archive[0].message
+
+
 def test_recent_manifest_preserves_real_stream_staleness():
     ids = _ids(
         {

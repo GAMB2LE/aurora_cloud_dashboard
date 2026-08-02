@@ -47,6 +47,12 @@ JPEG browser plus a small metadata Zarr. Operations Dashboard adds raw JSONL
 snapshots, a monitoring Zarr, archived PNG quicklooks, live trend cards, and
 observe-only health reports.
 
+This storage split is not itself the backup policy. Production infrastructure
+copies raw data and selected products additively to both GWS and object storage.
+Derived products never substitute for exact raw-retention evidence, and some
+mutable/rebuildable products such as `wxcam.zarr` are deliberately excluded.
+See [Archive health](../runtime/archive-health.md).
+
 Numeric appenders use a common safe-append policy: incoming files are sorted,
 deduplicated, filtered to genuinely new timestamps, and materialized before the
 Zarr append. That keeps the deployed stores monotonic and avoids partial chunk

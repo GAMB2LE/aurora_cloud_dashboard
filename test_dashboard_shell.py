@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -12,6 +14,161 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_auroracam_detail_panes_refresh_without_rebuilding_thumbnail_grid(self) -> None:
+        with patch.object(app, "_auroracam_viewer_markup", return_value="<div>selected camera</div>") as render:
+            app._refresh_auroracam_detail()
+
+        render.assert_called_once_with(
+            app.auroracam_camera.value,
+            app.auroracam_date.value,
+            app.auroracam_time.value,
+        )
+        self.assertEqual(app.auroracam_detail.object, "<div>selected camera</div>")
+        self.assertEqual(app.mobile_auroracam_detail.object, "<div>selected camera</div>")
+
+    def test_browser_performance_probe_is_development_only(self) -> None:
+        with (
+            patch.object(app, "SITE_ENV", "development"),
+            patch.dict("os.environ", {"AURORA_BROWSER_RUM_ENABLED": "1"}, clear=False),
+        ):
+            probe = app._browser_performance_probe()
+
+        self.assertIsInstance(probe, app.BrowserPerformanceProbe)
+        self.assertIn("browser_first_power_plot", probe._esm)
+        self.assertIn("browser_power_section_switch", probe._esm)
+
+        with (
+            patch.object(app, "SITE_ENV", "production"),
+            patch.dict("os.environ", {"AURORA_BROWSER_RUM_ENABLED": "1"}, clear=False),
+        ):
+            self.assertIsNone(app._browser_performance_probe())
+
+    def test_browser_performance_probe_rejects_unknown_events(self) -> None:
+        probe = app.BrowserPerformanceProbe()
+        events = []
+        with patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))):
+            probe._handle_msg({"event": "untrusted", "duration_ms": 1})
+            probe._handle_msg({"event": "browser_document_ready", "duration_ms": 12.5, "path": "/app"})
+
+        self.assertEqual(events, [("browser_document_ready", {"duration_ms": 12.5, "instrument": "power", "path": "/app"})])
+
+    def test_power_section_prewarm_paths_are_distinct(self) -> None:
+        original = app.power_view_select.value
+        try:
+            app.power_view_select.value = "current"
+            current = app._prewarmed_interactive_path("power")
+            app.power_view_select.value = "forecast"
+            forecast = app._prewarmed_interactive_path("power")
+        finally:
+            app.power_view_select.value = original
+
+        self.assertEqual(current.name, "power_current_latest_interactive.json")
+        self.assertEqual(forecast.name, "power_forecast_latest_interactive.json")
+
+    def test_power_live_window_uses_a_fresh_section_prewarm(self) -> None:
+        end = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        start = end - app.DEFAULT_WINDOW
+        cache_key = (
+            "power", "current", app._interactive_final_quality("power"), "power_latest_5min", "power_latest_5min",
+            start.isoformat(), end.isoformat(), 0, 1, "", "", 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+        )
+        with TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ", {"AURORA_INTERACTIVE_PREWARM_DIR": tmpdir}, clear=False
+        ):
+            path = Path(tmpdir) / "power_current_latest_interactive.json"
+            path.write_text('{"data":[],"layout":{}}', encoding="utf-8")
+            self.assertTrue(app._cache_key_targets_latest_prewarm(cache_key, "power"))
+
+    def test_power_live_window_does_not_open_raw_data_when_prewarmed(self) -> None:
+        end = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        start = end - app.DEFAULT_WINDOW
+        with TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ", {"AURORA_INTERACTIVE_PREWARM_DIR": tmpdir}, clear=False
+        ), patch.object(app, "_dataset_time_bounds", side_effect=AssertionError("raw data should not be read")):
+            (Path(tmpdir) / "power_current_latest_interactive.json").write_text("{}", encoding="utf-8")
+            self.assertTrue(app._is_power_latest_window(start, end, "power"))
+
+    def test_power_section_window_reads_only_the_selected_compact_store(self) -> None:
+        times = pd.date_range("2026-07-20T00:00:00", periods=5, freq="1h")
+        dataset = xr.Dataset(
+            {"BatterySOC": (("time",), np.arange(len(times), dtype=float))},
+            coords={"time": times},
+        )
+        with TemporaryDirectory() as tmpdir:
+            current_path = Path(tmpdir) / "power_current_display.zarr"
+            dataset.to_zarr(current_path, mode="w", consolidated=True)
+            previous = dict(app._POWER_DISPLAY_SECTION_DS)
+            previous_times = dict(app._POWER_DISPLAY_SECTION_REFRESHED_AT)
+            app._POWER_DISPLAY_SECTION_DS.clear()
+            app._POWER_DISPLAY_SECTION_REFRESHED_AT.clear()
+            try:
+                with patch.dict("os.environ", {"POWER_CURRENT_DISPLAY_ZARR_PATH": str(current_path)}, clear=False):
+                    result = app._open_power_display_summary_window(times[1], times[3], section="current")
+            finally:
+                app._refresh_power_display_energy_dataset()
+                app._POWER_DISPLAY_SECTION_DS.update(previous)
+                app._POWER_DISPLAY_SECTION_REFRESHED_AT.update(previous_times)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(list(pd.DatetimeIndex(result["time"].values)), list(times[1:4]))
+
+    def test_power_background_prepare_uses_selected_section_without_panel_mutation(self) -> None:
+        times = pd.date_range("2026-07-20T00:00:00", periods=3, freq="1h")
+        dataset = xr.Dataset(
+            {"BatterySOC": (("time",), np.array([70.0, 71.0, 72.0]))},
+            coords={"time": times},
+        )
+        figure = app.go.Figure()
+        with (
+            patch.object(app, "_power_display_summary_path", return_value=Path("/tmp")),
+            patch.object(app, "_open_power_display_summary_window", return_value=dataset) as open_display,
+            patch.object(app, "build_summary_plotly", return_value=figure) as build_plot,
+        ):
+            prepared, metrics = app._prepare_stacked_timeseries_figure(
+                "power",
+                times[0],
+                times[-1],
+                "downsampled",
+                power_section="forecast",
+            )
+
+        self.assertIs(prepared, figure)
+        self.assertEqual(metrics["status"], "ok")
+        self.assertEqual(open_display.call_args.kwargs["section"], "forecast")
+        self.assertEqual(
+            build_plot.call_args.kwargs["panel_groups"],
+            {"forecast_24h", "forecast_96h", "verification"},
+        )
+
+    def test_background_preparation_executor_stays_bounded(self) -> None:
+        self.assertGreaterEqual(app._BACKGROUND_PREPARATION_EXECUTOR._max_workers, 1)
+        self.assertLessEqual(app._BACKGROUND_PREPARATION_EXECUTOR._max_workers, 4)
+
+    def test_power_query_selects_power_before_interactive_callbacks(self) -> None:
+        original_instrument = app.instrument_select.value
+        original_view = app.power_view_select.value
+        try:
+            with patch.object(app, "_request_query_args", return_value={"tab": "power", "power_view": "forecast"}):
+                app._apply_query_state()
+            self.assertEqual(app.instrument_select.value, "power")
+            self.assertEqual(app.power_view_select.value, "forecast")
+        finally:
+            app.instrument_select.value = original_instrument
+            app.power_view_select.value = original_view
+
+    def test_slow_interactive_render_emits_a_budget_event(self) -> None:
+        events = []
+        with (
+            patch.object(app, "INTERACTIVE_RENDER_BUDGET_MS", 0),
+            patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))),
+        ):
+            with app._timed_perf("interactive_view_update", instrument="power") as details:
+                details["status"] = "ok"
+
+        self.assertEqual(events[0][0], "interactive_view_update")
+        self.assertEqual(events[1][0], "interactive_render_budget_exceeded")
+        self.assertEqual(events[1][1]["source_event"], "interactive_view_update")
+
     def test_forecast_info_control_uses_deployed_panel_widget_api(self) -> None:
         panel = next(
             panel
@@ -23,6 +180,29 @@ class DashboardShellTests(TestCase):
 
         self.assertIsNotNone(control)
         self.assertEqual(control.objects[0].objects[-1].name, "Info")
+
+    def test_desktop_forecast_plot_card_keeps_info_with_its_plot(self) -> None:
+        panel = next(
+            panel
+            for panel in app.SUMMARY_LAYOUTS["power"]
+            if panel.key == "soc_ecmwf_forecast"
+        )
+        times = pd.date_range("2026-07-20T00:00:00", periods=4, freq="1h")
+        dataset = xr.Dataset(
+            {
+                trace.var: (("time",), np.linspace(90.0, 80.0, len(times)))
+                for trace in panel.traces
+            },
+            coords={"time": times},
+        )
+
+        card = app._power_plot_card(dataset, panel, mobile=False)
+
+        self.assertIsNotNone(card)
+        self.assertIn("desktop-power-plot-card", card.css_classes)
+        self.assertIn("forecast-plot-info-control", card.objects[0].css_classes)
+        self.assertIsInstance(card.objects[-1], app.pn.pane.Plotly)
+        self.assertIn("desktop-power-figure", card.objects[-1].css_classes)
 
     def test_desktop_shell_has_full_named_tabs(self) -> None:
         labels = [label for label, _slug, _panel in app.DESKTOP_TAB_SPECS]
@@ -56,10 +236,21 @@ class DashboardShellTests(TestCase):
         self.assertEqual(app.power_tab_host.objects, [])
 
     def test_desktop_tab_labels_scroll_without_abbreviating(self) -> None:
-        self.assertIn(":host(.desktop-tabs) .bk-header", app.css)
-        self.assertIn("overflow-x: auto", app.css)
-        self.assertIn(":host(.desktop-tabs) .bk-tab", app.css)
-        self.assertIn("white-space: nowrap", app.css)
+        stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
+        css = stylesheet.read_text(encoding="utf-8")
+        self.assertIn(":host(.desktop-tabs) .bk-header", css)
+        self.assertIn("overflow-x: auto", css)
+        self.assertIn(":host(.desktop-tabs) .bk-tab", css)
+        self.assertIn("white-space: nowrap", css)
+
+    def test_dashboard_stylesheet_is_a_single_cacheable_static_asset(self) -> None:
+        stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
+
+        self.assertTrue(stylesheet.is_file())
+        self.assertRegex(
+            app.DASHBOARD_STYLESHEET,
+            r"^/dashboard-assets/dashboard\.css\?v=[0-9a-f]{12}$",
+        )
 
     def test_desktop_controls_keep_compact_navigation_rows(self) -> None:
         controls_body = app.controls.objects[0]
@@ -106,6 +297,61 @@ class DashboardShellTests(TestCase):
             app._ensure_active_tab_loaded("overview")
 
         refresh.assert_called_once_with()
+
+    def test_overview_refresh_is_idempotent_after_initial_render(self) -> None:
+        original_loaded = app._BROWSER_OVERVIEW_LOADED
+        try:
+            app._BROWSER_OVERVIEW_LOADED = True
+            with patch.object(app, "_mobile_overview", side_effect=AssertionError("overview rebuilt")):
+                app._refresh_browser_overview()
+        finally:
+            app._BROWSER_OVERVIEW_LOADED = original_loaded
+
+    def test_overview_uses_cached_power_timestamp_without_opening_display_zarr(self) -> None:
+        snapshot = {
+            "time_utc": "2026-07-29T12:00:00Z",
+            "aps_battery_power_time_utc": "2026-07-29T11:58:00Z",
+        }
+        with (
+            patch.object(app, "_ops_read_snapshot", return_value=snapshot),
+            patch.object(app, "_mobile_power_latest_measured_time", side_effect=AssertionError("display Zarr opened")),
+            patch.object(app, "_mobile_auroracam_freshness", return_value=("Radar", "2m ago", "green")),
+            patch.object(app.mobile_catalog, "environmental_signal_cards", return_value=[]),
+        ):
+            markup = app._mobile_overview_markup()
+
+        self.assertIn("11:58 UTC", markup)
+
+    def test_overview_selection_does_not_enable_interactive_rendering(self) -> None:
+        original_bootstrapping = app._APP_BOOTSTRAPPING
+        try:
+            app._APP_BOOTSTRAPPING = False
+            with (
+                patch.object(app, "_refresh_browser_overview"),
+                patch.object(app, "_enable_browser_interactive_render") as enable,
+            ):
+                app._ensure_active_tab_loaded("overview")
+        finally:
+            app._APP_BOOTSTRAPPING = original_bootstrapping
+
+        enable.assert_not_called()
+
+    def test_interactive_selection_enables_renderer_on_demand(self) -> None:
+        original_bootstrapping = app._APP_BOOTSTRAPPING
+        original_enabled = app._INTERACTIVE_RENDER_ENABLED
+        try:
+            app._APP_BOOTSTRAPPING = False
+            app._INTERACTIVE_RENDER_ENABLED = False
+            with (
+                patch.object(app, "_sync_browser_tab_instrument"),
+                patch.object(app, "_enable_browser_interactive_render") as enable,
+            ):
+                app._ensure_active_tab_loaded("interactive")
+        finally:
+            app._APP_BOOTSTRAPPING = original_bootstrapping
+            app._INTERACTIVE_RENDER_ENABLED = original_enabled
+
+        enable.assert_called_once_with()
 
     def test_empty_pdu_instrument_view_explains_intentional_power_off(self) -> None:
         with patch.object(

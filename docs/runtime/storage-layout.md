@@ -1,7 +1,8 @@
 # Storage Layout
 
-The deployed host deliberately keeps raw mirrored inputs and derived products in
-separate trees.
+The deployed system deliberately keeps raw mirrored inputs and derived products
+in separate trees. The paths are stable across sites; the underlying storage
+device is host-specific and should be checked live in the Operations Dashboard.
 
 ## `/project/aurora`
 
@@ -17,10 +18,8 @@ separate trees.
   - `/project/aurora/raw/pdu`
   - `/project/aurora/raw/wxcam`
   - `/project/aurora/raw/auroracam`
-- **Storage type:** shared Ceph network filesystem
-- **Current filesystem size on `2026-05-21`:** `4.0T`
-- **Current used on `2026-05-21`:** `57G`
-- **Current available on `2026-05-21`:** `3.9T`
+- **Production storage:** shared Ceph network filesystem
+- **Development storage:** replicated live data on the development host
 
 So `/project/aurora` is the raw landing and mirror area.
 
@@ -41,12 +40,18 @@ So `/project/aurora` is the raw landing and mirror area.
   - `/data/aurora/products/quicklooks/...`
   - `/data/aurora/products/wxcam/...`
   - `/data/aurora/products/auroracam/auroracam.zarr`
-- **Storage type:** local disk on `/dev/vdb`
-- **Current filesystem size on `2026-05-21`:** `983G`
-- **Current used on `2026-05-21`:** `262G`
-- **Current available on `2026-05-21`:** `672G`
+- **Storage:** local product disk on each host
 
 So `/data/aurora` is the product, work, and output area.
+
+Development experiments use `/project/aurora/dev-raw` and
+`/data/aurora/dev-products`. They must not overwrite the mirrored production
+trees above.
+
+Long-term backups are not defined by either local filesystem alone. Production
+infrastructure copies verified raw and selected product paths additively to the
+JASMIN GWS and object storage. The dashboard only consumes their health
+contract; see [Archive health](archive-health.md).
 
 ## Why the split matters
 

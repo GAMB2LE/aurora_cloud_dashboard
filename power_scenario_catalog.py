@@ -11,6 +11,7 @@ class OperatingScenarioDefinition:
     scenario_id: str
     instruments: tuple[str, ...]
     label: str
+    uas_effective_tier: int | None = None
 
 
 SUGGESTED_OPERATING_SCENARIOS = (
@@ -25,6 +26,12 @@ SUGGESTED_OPERATING_SCENARIOS = (
     OperatingScenarioDefinition("suggested_hatpro_radar", ("HATPRO", "Radar"), "HATPRO + Radar"),
     OperatingScenarioDefinition("suggested_radar", ("Radar",), "Radar"),
     OperatingScenarioDefinition("suggested_hatpro", ("HATPRO",), "HATPRO"),
+    OperatingScenarioDefinition(
+        "suggested_all_uas_tier3",
+        ("CL61", "Radar", "HATPRO", "UAS"),
+        "All instruments + UAS tier 3",
+        uas_effective_tier=3,
+    ),
 )
 
 SUGGESTED_OPERATING_SCENARIO_IDS = tuple(

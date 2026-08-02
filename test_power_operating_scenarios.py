@@ -16,14 +16,17 @@ from power_operating_scenarios import (
     SCENARIO_CURRENT,
     SCENARIO_DC_ONLY,
     SCENARIO_OPTIMIZED,
+    _align_ensemble_solar_contract,
     build_operating_scenarios,
     evaluate_custom_schedule,
     fit_operating_model,
+    integrate_soc_members,
     mode_from_code,
     mode_id,
     mode_kits,
     load_operating_events,
     optimize_cl61_schedule,
+    _tier_profile_members,
 )
 from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
 from generate_power_operating_scenarios import (
@@ -31,6 +34,7 @@ from generate_power_operating_scenarios import (
     _planning_forecast_provenance,
     _validate_operating_inputs,
     generate as generate_operating_products,
+    scenario_publication_signature,
 )
 
 
@@ -280,6 +284,61 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
         self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
 
+    def test_ensemble_is_recalibrated_to_the_planning_solar_contract(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        deterministic["ECMWFSolarIrradiance"] = deterministic["ForecastSolarWatts"] / 2.0
+        ensemble["ECMWFSolarIrradianceEnsemble"] = ensemble["ForecastSolarWattsEnsemble"] / 4.0
+        deterministic.attrs["solar_calibration_factor_w_per_wm2"] = "2"
+        deterministic.attrs["solar_calibration_contract_id"] = "solar-a"
+        ensemble.attrs["solar_calibration_contract_id"] = "solar-b"
+
+        aligned, metadata = _align_ensemble_solar_contract(deterministic, ensemble)
+        scenarios = build_operating_scenarios(power, deterministic, model, ensemble=ensemble)
+
+        self.assertIsNotNone(aligned)
+        np.testing.assert_allclose(
+            aligned["ForecastSolarWattsEnsemble"].values,
+            ensemble["ECMWFSolarIrradianceEnsemble"].values * 2.0,
+        )
+        self.assertEqual(metadata["solar_ensemble_recalibrated"], "true")
+        self.assertEqual(scenarios.attrs["solar_calibration_contract_id"], "solar-a")
+        self.assertEqual(scenarios.attrs["solar_ensemble_source_calibration_contract_id"], "solar-b")
+        self.assertEqual(scenarios.attrs["solar_ensemble_recalibrated"], "true")
+
+    def test_mismatched_solar_contract_without_raw_members_is_rejected(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        deterministic["ECMWFSolarIrradiance"] = deterministic["ForecastSolarWatts"] / 2.0
+        deterministic.attrs["solar_calibration_contract_id"] = "solar-a"
+        ensemble.attrs["solar_calibration_contract_id"] = "solar-b"
+
+        with self.assertRaisesRegex(ValueError, "ensemble lacks raw irradiance members"):
+            build_operating_scenarios(power, deterministic, model, ensemble=ensemble)
+
+    def test_scenario_publication_signature_ignores_generation_time(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+        first = scenario_publication_signature(scenarios)
+        scenarios.attrs["generated_at_utc"] = "2099-01-01T00:00:00+00:00"
+
+        self.assertEqual(scenario_publication_signature(scenarios), first)
+        scenarios["ScenarioLoadP50Watts"].values[0, 0] += 50.0
+        self.assertNotEqual(scenario_publication_signature(scenarios), first)
+
     def test_current_scenario_matches_system_ensemble_load_and_soc_anchor(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
@@ -301,8 +360,95 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(float(current["ScenarioLoadP50Watts"].isel(time=0)), expected_load, places=5)
         self.assertEqual(
             scenarios.attrs["load_baseline_source"],
-            "system_as_is_forecast_plus_learned_instrument_deltas",
+            "measured_system_anchor_for_current_plus_unadjusted_learned_components",
         )
+
+    def test_all_instruments_uas_tier3_uses_tier_profile_and_stays_above_dc(self) -> None:
+        power, pdu = _training_data()
+        pdu["PDUOutlet4Watts"] = (("time",), np.full(power.sizes["time"], 108.0))
+        pdu["PDUOutlet4State"] = (("time",), np.ones(power.sizes["time"]))
+        pdu["PDUOutlet6Watts"] = (("time",), np.full(power.sizes["time"], 285.0))
+        pdu["PDUOutlet6State"] = (("time",), np.ones(power.sizes["time"]))
+        pdu["PDUOutlet8Watts"] = (("time",), np.full(power.sizes["time"], 230.0))
+        pdu["PDUOutlet8State"] = (("time",), np.ones(power.sizes["time"]))
+        tier = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
+        model = fit_operating_model(power, pdu, uas_tier=tier, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+
+        tier3 = scenarios.sel(scenario="suggested_all_uas_tier3")
+        dc_only = scenarios.sel(scenario=SCENARIO_DC_ONLY)
+        np.testing.assert_array_equal(tier3["ScenarioUASEffectiveTier"].values, 3)
+        self.assertTrue(
+            np.all(
+                tier3["ScenarioLoadP50Watts"].values
+                >= dc_only["ScenarioLoadP50Watts"].values
+            )
+        )
+        self.assertEqual(
+            str(tier3["scenario_mode_maturity"].item()),
+            "provisional",
+        )
+
+    def test_provisional_uas_tier_profile_uses_conservative_fallback(self) -> None:
+        members = _tier_profile_members(
+            {
+                "p10_w": 170.0,
+                "p50_w": 175.0,
+                "p90_w": 180.0,
+                "maturity": "provisional",
+            },
+            1_000,
+            seed=4,
+        )
+
+        self.assertAlmostEqual(float(np.median(members)), 108.0, delta=1.0)
+        self.assertLess(float(np.quantile(members, 0.10)), 60.0)
+        self.assertGreater(float(np.quantile(members, 0.90)), 295.0)
+
+    def test_uas_tier_requires_three_separate_episodes_for_reliability(self) -> None:
+        power, pdu = _training_data()
+        sample_count = power.sizes["time"]
+        pdu["PDUOutlet4Watts"] = (("time",), np.full(sample_count, 175.0))
+        pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
+        tier_values = np.full(sample_count, 3.0)
+        tier_values[8:10] = 2.0
+        tier_values[18:20] = 2.0
+        tiers = pd.Series(tier_values, index=pd.DatetimeIndex(power["time"].values))
+
+        result = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        tier3 = result.uas_tier_profiles["3"]
+
+        self.assertEqual(tier3["episode_count"], 3.0)
+        self.assertGreaterEqual(tier3["observed_hours"], 6.0)
+        self.assertEqual(tier3["maturity"], "reliable")
+
+    def test_soc_integration_honours_member_specific_capacity(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=3, freq="1h")
+        solar = np.zeros((2, len(times)))
+        load = np.full((2, len(times)), 1_000.0)
+
+        soc = integrate_soc_members(
+            initial_soc=80.0,
+            times=times,
+            solar_members_w=solar,
+            load_members_w=load,
+            capacity_kwh=26.0,
+            member_capacity_kwh=np.array([10.0, 20.0]),
+            member_charge_efficiency=np.ones(2),
+            member_discharge_efficiency=np.ones(2),
+        )
+
+        self.assertAlmostEqual(float(soc[0, -1]), 60.0)
+        self.assertAlmostEqual(float(soc[1, -1]), 70.0)
 
     def test_optimizer_enforces_minimum_run_and_daily_start_limit(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=97, freq="1h")
@@ -455,7 +601,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "6")
+                self.assertEqual(state.attrs["model_version"], "7")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
                 scenario_ids = [str(value) for value in scenarios["scenario"].values]

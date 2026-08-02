@@ -3,6 +3,8 @@
 !README.md
 !LICENSE
 !.gitignore
+!assets/
+!assets/dashboard.css
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml

@@ -2,11 +2,12 @@
 
 Path:
 
-- `/mnt/gws/gamb2le/data/output/aurora-cloud/products/wxcam/wxcam.zarr`
+- `/data/aurora/products/wxcam/wxcam.zarr`
 
-The canonical WXcam pixel Zarr is GWS-only. The active processing host writes
-it through the GWS SSHFS mount and does not retain a local copy under
-`/data/aurora/products/wxcam`.
+The active WXcam pixel Zarr is a local mutable working product. It is excluded
+from both GWS and object-store product writers because it can be rebuilt from
+the archived HDR JPG imagery. It is not a canonical backup and is never
+accepted as raw-retention evidence.
 
 ## Store purpose
 
@@ -49,20 +50,9 @@ Each group stores one xarray dataset with:
 
 ## Group geometry
 
-When checked on `2026-05-21`:
-
-- `fish_hdr`
-  - shape: `time=16068`, `y=3040`, `x=3120`, `channel=3`
-  - image geometry: `3120 x 3040`
-  - time coverage: `2026-05-02 00:00:00` to `2026-05-21 20:10:39`
-  - sorted unique `time` coordinate
-  - chunks: `(1, 1024, 1024, 3)`
-- `pano_hdr`
-  - shape: `time=4710`, `y=750`, `x=2880`, `channel=3`
-  - image geometry: `2880 x 750`
-  - time coverage: `2026-01-12 02:25:00` to `2026-05-21 20:10:39`
-  - sorted unique `time` coordinate
-  - chunks: `(1, 750, 1024, 3)`
+Expected geometry is `3120 x 3040` for `fish_hdr` and `2880 x 750` for
+`pano_hdr`. The time count and coverage advance as the local appender runs and
+must be inspected live rather than copied from an old GWS snapshot.
 
 ## Important note
 
@@ -71,4 +61,6 @@ The dashboard does not render WXcam directly from this Zarr:
 - interactive WXcam uses stitched MP4 products
 - science WXcam uses the SQLite catalog plus hourly thumbnail products
 
-The Zarr is the retained HDR image archive for analysis and reproducible storage.
+The retained source archive is the immutable FISH/PANO HDR JPG and MP4 tree in
+the cloud raw mirror, GWS, and object storage. The SQLite catalog, daily
+videos, and hourly thumbnails are separately archived products.
