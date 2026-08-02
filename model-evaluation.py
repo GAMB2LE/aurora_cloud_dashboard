@@ -859,6 +859,16 @@ DEFAULT_RUN_IDS = (
 
 DIRECT_MODEL_CANDIDATES = (("IFS", "ifs"), ("GFS", "gfs"), ("ICON", "icon"))
 CM1_FULL_DAY_MODEL_ID = "cm1_gfs_full_day_v1"
+DIRECT_PROCESS_ROLES = tuple(
+    f"direct_{model_id}" for _model_label, model_id in DIRECT_MODEL_CANDIDATES
+)
+ACTIVE_PROCESS_ROLES = (*DIRECT_PROCESS_ROLES, "les_cm1_gfs")
+PROCESS_ROLE_LABELS = {
+    "direct_ifs": "IFS direct",
+    "direct_gfs": "GFS direct",
+    "direct_icon": "ICON direct",
+    "les_cm1_gfs": "GFS-forced CM1 full LES",
+}
 
 
 def _direct_comparison_specs(
@@ -1896,7 +1906,11 @@ def _cloudnet_status_summary(cloudnet: object) -> str:
     if not isinstance(products, dict):
         return "missing"
     categorize = _dict_status(products.get("categorize"))
-    l3_cf = _dict_status(products.get("l3_cf_era5"))
+    l3_cf = _dict_status(
+        products.get("l3_cf")
+        or products.get("l3_cf_observed")
+        or products.get("l3_cf_era5")
+    )
     lwc = _dict_status(products.get("lwc_source"))
     iwc = _dict_status(products.get("iwc_source"))
     return f"cat:{categorize}; cf:{l3_cf}; lwc:{lwc}; iwc:{iwc}"
@@ -4224,6 +4238,25 @@ def _badge(value: object) -> str:
     return f"<span class='status-badge {css}'>{escape(text)}</span>"
 
 
+def _active_process_pair(
+    pairs: dict[str, object],
+    preferred: dict[str, object] | None = None,
+) -> dict[str, object]:
+    if isinstance(preferred, dict):
+        preferred_role = preferred.get("model_role") or preferred.get("role")
+        if preferred_role in ACTIVE_PROCESS_ROLES:
+            return preferred
+    for require_ready in (True, False):
+        for role in ACTIVE_PROCESS_ROLES:
+            candidate = pairs.get(role)
+            if not isinstance(candidate, dict):
+                continue
+            if require_ready and not candidate.get("comparison_ready", False):
+                continue
+            return candidate
+    return {}
+
+
 def _cloud_seb_process_instrument_row(
     day: str,
     spec: dict[str, object],
@@ -4232,18 +4265,13 @@ def _cloud_seb_process_instrument_row(
     review = _cloud_seb_model_observation_review(process)
     interpretation = review.get("interpretation") if isinstance(review, dict) else {}
     interpretation = interpretation if isinstance(interpretation, dict) else {}
-    pair = interpretation.get("process_window_highlight_pair")
-    pair = pair if isinstance(pair, dict) else {}
-    if not pair:
-        process_window = process.get("process_window")
-        process_window = process_window if isinstance(process_window, dict) else {}
-        pairs = process_window.get("pairs")
-        pairs = pairs if isinstance(pairs, dict) else {}
-        candidate = pairs.get("direct_era5") or next(
-            (value for value in pairs.values() if isinstance(value, dict)),
-            {},
-        )
-        pair = candidate if isinstance(candidate, dict) else {}
+    preferred_pair = interpretation.get("process_window_highlight_pair")
+    preferred_pair = preferred_pair if isinstance(preferred_pair, dict) else {}
+    process_window = process.get("process_window")
+    process_window = process_window if isinstance(process_window, dict) else {}
+    pairs = process_window.get("pairs")
+    pairs = pairs if isinstance(pairs, dict) else {}
+    pair = _active_process_pair(pairs, preferred_pair)
     contingency = pair.get("regime_contingency")
     contingency = contingency if isinstance(contingency, dict) else {}
     metrics = contingency.get("metrics")
@@ -4266,6 +4294,9 @@ def _cloud_seb_process_instrument_row(
         "cloud_seb_model_observation_review.json",
     )
     note = interpretation.get("statement") or interpretation.get("interpretation_class") or ""
+    pair_role = pair.get("model_role") or pair.get("role")
+    if pair_role in PROCESS_ROLE_LABELS:
+        note = _join_notes(str(note), f"Displayed role: {PROCESS_ROLE_LABELS[pair_role]}.")
     if table:
         note = _join_notes(
             str(note),
@@ -4879,9 +4910,6 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
         wband = _summary_scorecard(summary, "wband_radar")
         wband_contingency = wband.get("contingency") if isinstance(wband, dict) else {}
         wband_contingency = wband_contingency if isinstance(wband_contingency, dict) else {}
-        era5_iwc = _generic_contingency(_direct_scorecard(day, "era5_iwc"), "iwc", "ice_occurrence")
-        era5_lwc_scorecard = _direct_scorecard(day, "era5_lwc")
-        era5_lwc = _generic_contingency(era5_lwc_scorecard, "lwc", "liquid_occurrence")
         process_labels = summary.get("process_labels") if isinstance(summary, dict) else []
         if not isinstance(process_labels, list):
             process_labels = []
@@ -4906,13 +4934,11 @@ def _operational_rows(paths: list[Path]) -> list[dict[str, object]]:
                 "operational_qa_missing": _list_summary(
                     operational_qa.get("missing_required_scorecards")
                 ),
-                "era5_cf_csi": _cf_csi(summary, "era5_cloud_fraction"),
+                "ifs_cf_hss": _direct_cloud_fraction_hss(day, "ifs"),
+                "gfs_cf_hss": _direct_cloud_fraction_hss(day, "gfs"),
+                "icon_cf_hss": _direct_cloud_fraction_hss(day, "icon"),
                 "cm1_cf_csi": _cm1_cf_csi(day, summary),
                 "wband_csi": _compact_float(wband_contingency.get("critical_success_index")),
-                "iwc_points": era5_iwc.get("valid_points", "n/a"),
-                "iwc_csi": _compact_float(era5_iwc.get("critical_success_index")),
-                "lwc_points": era5_lwc.get("valid_points", "n/a"),
-                "lwp_policy": _lwp_policy_summary(era5_lwc_scorecard),
                 "labels": ", ".join(str(item) for item in process_labels[:4]),
             }
         )
@@ -4934,13 +4960,11 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
             f"<td>{escape(str(row['scheduler_priority']))}</td>"
             f"<td>{escape(str(row['operational_qa']))}</td>"
             f"<td>{escape(str(row['operational_qa_missing']))}</td>"
-            f"<td>{escape(str(row['era5_cf_csi']))}</td>"
+            f"<td>{escape(str(row['ifs_cf_hss']))}</td>"
+            f"<td>{escape(str(row['gfs_cf_hss']))}</td>"
+            f"<td>{escape(str(row['icon_cf_hss']))}</td>"
             f"<td>{escape(str(row['cm1_cf_csi']))}</td>"
             f"<td>{escape(str(row['wband_csi']))}</td>"
-            f"<td>{escape(str(row['iwc_points']))}</td>"
-            f"<td>{escape(str(row['iwc_csi']))}</td>"
-            f"<td>{escape(str(row['lwc_points']))}</td>"
-            f"<td>{escape(str(row['lwp_policy']))}</td>"
             f"<td>{escape(str(row['scheduler_actions']))}</td>"
             f"<td>{escape(str(row['labels']))}</td>"
             "</tr>"
@@ -4951,8 +4975,8 @@ def _operational_table(rows: list[dict[str, object]]) -> str:
         "<thead><tr>"
         "<th>day</th><th>run</th><th>summary</th><th>gate</th>"
         "<th>scheduler</th><th>priority</th><th>QA</th><th>missing QA</th>"
-        "<th>ERA5 CF CSI</th><th>CM1 LES CF CSI</th><th>W-band CSI</th>"
-        "<th>IWC gates</th><th>IWC CSI</th><th>LWC gates</th><th>LWP policy</th>"
+        "<th>IFS CF HSS</th><th>GFS CF HSS</th><th>ICON CF HSS</th>"
+        "<th>CM1 LES CF CSI</th><th>W-band CSI</th>"
         "<th>actions</th><th>labels</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -5306,7 +5330,9 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
             continue
         scorecards = item.get("scorecards")
         scorecards = scorecards if isinstance(scorecards, dict) else {}
-        era5 = _metric_block(scorecards, "era5_cloud_fraction", "cf_V")
+        ifs = _metric_block(scorecards, "ifs_cloud_fraction", "cf_V")
+        gfs = _metric_block(scorecards, "gfs_cloud_fraction", "cf_V")
+        icon = _metric_block(scorecards, "icon_cloud_fraction", "cf_V")
         cm1 = _metric_block(scorecards, "cloud_fraction", "cf_V")
         cloudnet = _metric_block(scorecards, "cloudnet_cloud_fraction", "cf_V")
         rows.append(
@@ -5314,9 +5340,9 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
             f"<td>{escape(str(label))}</td>"
             f"<td>{escape(str(item.get('day_count', 0)))}</td>"
             f"<td>{escape(str(item.get('full_virtual_observatory_ready_day_count', 0)))}</td>"
-            f"<td>{escape(str(era5.get('csi', 'n/a')))}</td>"
-            f"<td>{escape(str(era5.get('pod', 'n/a')))}</td>"
-            f"<td>{escape(str(era5.get('far', 'n/a')))}</td>"
+            f"<td>{escape(str(ifs.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(gfs.get('csi', 'n/a')))}</td>"
+            f"<td>{escape(str(icon.get('csi', 'n/a')))}</td>"
             f"<td>{escape(str(cm1.get('csi', 'n/a')))}</td>"
             f"<td>{escape(str(cloudnet.get('csi', 'n/a')))}</td>"
             "</tr>"
@@ -5328,7 +5354,7 @@ def _process_skill_rollup_table(index: dict[str, object] | None, limit: int = 16
         "<table class='model-table operational-table process-skill-table'>"
         "<thead><tr>"
         "<th>process label</th><th>days</th><th>full VO days</th>"
-        "<th>ERA5 CSI</th><th>ERA5 POD</th><th>ERA5 FAR</th>"
+        "<th>IFS CSI</th><th>GFS CSI</th><th>ICON CSI</th>"
         "<th>CM1 LES CSI</th><th>Cloudnet CSI</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
@@ -5367,7 +5393,9 @@ def _process_evidence_table(
                 f"<td>{escape(str(label))}</td>"
                 f"<td>{escape(day_text)}</td>"
                 f"<td>{escape(str(row.get('release_gate_status', 'n/a')))}</td>"
-                f"<td>{escape(str(_cf_csi(summary, 'era5_cloud_fraction')))}</td>"
+                f"<td>{escape(str(_direct_cloud_fraction_hss(day_text, 'ifs')))}</td>"
+                f"<td>{escape(str(_direct_cloud_fraction_hss(day_text, 'gfs')))}</td>"
+                f"<td>{escape(str(_direct_cloud_fraction_hss(day_text, 'icon')))}</td>"
                 f"<td>{escape(str(_cm1_cf_csi(day_text, summary)))}</td>"
                 f"<td><code>{escape(_evidence_bundle_path(row, day_text))}</code></td>"
                 f"<td><code>{escape(_evidence_summary_path(row, day_text))}</code></td>"
@@ -5381,7 +5409,8 @@ def _process_evidence_table(
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table process-evidence-table'>"
         "<thead><tr>"
-        "<th>process label</th><th>day</th><th>gate</th><th>ERA5 CSI</th><th>CM1 LES CSI</th>"
+        "<th>process label</th><th>day</th><th>gate</th><th>IFS CF HSS</th>"
+        "<th>GFS CF HSS</th><th>ICON CF HSS</th><th>CM1 LES CSI</th>"
         "<th>bundle</th><th>summary</th><th>scorecards</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -5405,21 +5434,35 @@ def _process_diagnosis_table(diagnosis: dict[str, object] | None, limit: int = 1
             continue
         scorecards = process.get("scorecards")
         scorecards = scorecards if isinstance(scorecards, dict) else {}
-        era5 = _diagnosis_comparison(scorecards, "era5_cloud_fraction", "cf_V")
-        labels = era5.get("diagnosis_labels", [])
-        label_text = ", ".join(str(item) for item in labels) if isinstance(labels, list) else "-"
-        body.append(
-            "<tr>"
-            f"<td>{escape(str(label))}</td>"
-            f"<td>{escape(str(process.get('day_count', 0)))}</td>"
-            f"<td>{escape(str(_compact_float(era5.get('critical_success_index_mean'))))}</td>"
-            f"<td>{escape(str(_compact_float(era5.get('false_alarm_ratio_mean'))))}</td>"
-            f"<td>{escape(str(_compact_float(era5.get('cloud_base_bias_mean_m'))))}</td>"
-            f"<td>{escape(str(_compact_float(era5.get('cloud_top_bias_mean_m'))))}</td>"
-            f"<td>{escape(label_text)}</td>"
-            f"<td>{escape(str(era5.get('interpretation', 'n/a')))}</td>"
-            "</tr>"
+        role_specs = (
+            ("IFS direct", "ifs_cloud_fraction"),
+            ("GFS direct", "gfs_cloud_fraction"),
+            ("ICON direct", "icon_cloud_fraction"),
+            ("GFS-forced CM1", "cloud_fraction"),
         )
+        for role_label, scorecard_name in role_specs:
+            comparison = _diagnosis_comparison(scorecards, scorecard_name, "cf_V")
+            if not comparison:
+                continue
+            labels = comparison.get("diagnosis_labels", [])
+            label_text = (
+                ", ".join(str(item) for item in labels)
+                if isinstance(labels, list)
+                else "-"
+            )
+            body.append(
+                "<tr>"
+                f"<td>{escape(str(label))}</td>"
+                f"<td>{escape(role_label)}</td>"
+                f"<td>{escape(str(process.get('day_count', 0)))}</td>"
+                f"<td>{escape(str(_compact_float(comparison.get('critical_success_index_mean'))))}</td>"
+                f"<td>{escape(str(_compact_float(comparison.get('false_alarm_ratio_mean'))))}</td>"
+                f"<td>{escape(str(_compact_float(comparison.get('cloud_base_bias_mean_m'))))}</td>"
+                f"<td>{escape(str(_compact_float(comparison.get('cloud_top_bias_mean_m'))))}</td>"
+                f"<td>{escape(label_text)}</td>"
+                f"<td>{escape(str(comparison.get('interpretation', 'n/a')))}</td>"
+                "</tr>"
+            )
     if not body:
         return ""
     return (
@@ -5427,7 +5470,7 @@ def _process_diagnosis_table(diagnosis: dict[str, object] | None, limit: int = 1
         "<div class='model-table-wrap'>"
         "<table class='model-table operational-table process-diagnosis-table'>"
         "<thead><tr>"
-        "<th>process label</th><th>days</th><th>ERA5 CSI</th><th>ERA5 FAR</th>"
+        "<th>process label</th><th>model</th><th>days</th><th>CSI</th><th>FAR</th>"
         "<th>base bias m</th><th>top bias m</th><th>dominant labels</th><th>interpretation</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -5789,6 +5832,139 @@ def _day_review_index(day: str) -> dict[str, object] | None:
     return _read_json(_day_file(day, "dashboard", "day_review_index.json"))
 
 
+def _process_scorecard_review(
+    scorecard: dict[str, object],
+    *,
+    role: str,
+) -> dict[str, object]:
+    figure = scorecard.get("figure_evidence_summary")
+    figure = figure if isinstance(figure, dict) else {}
+    summary = scorecard.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    support_window = scorecard.get("support_window")
+    support_window = support_window if isinstance(support_window, dict) else {}
+    clear_count = int(scorecard.get("clear_count", 0) or 0)
+    cloudy_count = int(scorecard.get("cloudy_count", 0) or 0)
+    support_status = (
+        scorecard.get("support_status")
+        or figure.get("support_status")
+        or summary.get("support_status")
+        or support_window.get("support_status")
+    )
+    if not support_status:
+        if clear_count and cloudy_count:
+            support_status = "clear_and_cloudy_sampled"
+        elif clear_count:
+            support_status = "only_clear_sampled"
+        elif cloudy_count:
+            support_status = "only_cloudy_sampled"
+        else:
+            support_status = "not_scored"
+    production_ready = bool(
+        figure.get("production_ready", support_status == "clear_and_cloudy_sampled")
+    )
+    output_plot = scorecard.get("output_plot")
+    plot = {"path": output_plot} if isinstance(output_plot, str) else {}
+    return {
+        "role": role,
+        "model_id": scorecard.get("model_id"),
+        "path": scorecard.get("output_json") or "",
+        "plot": plot,
+        "scorecard_status": scorecard.get("status", "unknown"),
+        "status": scorecard.get("status", "unknown"),
+        "production_status": (
+            "production_ready" if production_ready else "diagnostic_only"
+        ),
+        "sample_count": scorecard.get("sample_count", 0),
+        "clear_count": clear_count,
+        "cloudy_count": cloudy_count,
+        "support_status": support_status,
+        "support_window": support_window,
+        "next_action": (
+            scorecard.get("next_action")
+            or figure.get("next_action")
+            or summary.get("next_action")
+            or "Review this role with its recorded support and readiness state."
+        ),
+    }
+
+
+def _active_process_scorecard(day: str, role: str) -> dict[str, object] | None:
+    if role.startswith("direct_"):
+        name = f"{role}_cloud_seb_process"
+        return load_scorecard(day, name)
+    for name in ("cloud_seb_process_cm1_gfs", f"cloud_seb_process_{CM1_FULL_DAY_MODEL_ID}"):
+        scorecard = load_scorecard(day, name)
+        if isinstance(scorecard, dict):
+            return scorecard
+    return None
+
+
+def _merge_current_cloud_seb_scorecards(
+    day: str,
+    process: dict[str, object],
+) -> None:
+    observation = load_scorecard(day, "cloud_seb_process")
+    if isinstance(observation, dict):
+        process["observation_process_review"] = _process_scorecard_review(
+            observation,
+            role="observations",
+        )
+        output_plot = observation.get("output_plot")
+        if isinstance(output_plot, str):
+            process["plot"] = {"path": output_plot}
+
+    existing_reviews = process.get("model_process_review")
+    reviews = dict(existing_reviews) if isinstance(existing_reviews, dict) else {}
+    for role in ACTIVE_PROCESS_ROLES:
+        scorecard = _active_process_scorecard(day, role)
+        if not isinstance(scorecard, dict):
+            continue
+        current = reviews.get(role)
+        record = dict(current) if isinstance(current, dict) else {}
+        record.update(_process_scorecard_review(scorecard, role=role))
+        reviews[role] = record
+    process["model_process_review"] = reviews
+
+    process_window = load_scorecard(day, "cloud_seb_process_window")
+    if isinstance(process_window, dict):
+        diagnostic = process_window.get("diagnostic")
+        process["process_window"] = (
+            diagnostic if isinstance(diagnostic, dict) else process_window
+        )
+    comparison = load_scorecard(day, "cloud_seb_process_comparison")
+    if isinstance(comparison, dict):
+        inner = comparison.get("comparison")
+        process["comparison"] = inner if isinstance(inner, dict) else comparison
+        process["comparison_status"] = comparison.get("status", "unknown")
+
+    readiness = _read_json(
+        _day_file(day, "provenance", "cloud_seb_process_readiness.json")
+    )
+    if isinstance(readiness, dict):
+        process["production_readiness"] = readiness
+        process["production_readiness_status"] = readiness.get("status", "unknown")
+        process["production_blocked_gate_count"] = readiness.get(
+            "blocked_gate_count", 0
+        )
+        process["production_blocking_gate_ids"] = readiness.get(
+            "blocking_gate_ids", []
+        )
+        process["production_top_next_action"] = readiness.get("top_next_action")
+        process["production_role_groups"] = readiness.get("role_groups", {})
+
+    production_ready_roles = [
+        role
+        for role in ACTIVE_PROCESS_ROLES
+        if isinstance(reviews.get(role), dict)
+        and reviews[role].get("production_status") == "production_ready"
+    ]
+    process["production_direct_model_roles_ready"] = [
+        role for role in production_ready_roles if role in DIRECT_PROCESS_ROLES
+    ]
+    process["production_les_ready"] = "les_cm1_gfs" in production_ready_roles
+
+
 def _cloud_seb_process_summary(day: str) -> dict[str, object]:
     merged: dict[str, object] = {}
     bundle = load_day_bundle(day)
@@ -5811,26 +5987,12 @@ def _cloud_seb_process_summary(day: str) -> dict[str, object]:
             status_process = status.get("cloud_seb_process")
         if isinstance(status_process, dict):
             merged.update(status_process)
-    if merged:
-        _merge_cloud_seb_process_report(day, merged)
-        _merge_cloud_seb_model_observation_review(day, merged)
-        return merged
-    if isinstance(process, dict):
-        production = process.get("production_readiness")
-        if isinstance(production, dict):
-            return {
-                "production_readiness_status": production.get("status", "unknown"),
-                "production_blocked_gate_count": production.get("blocked_gate_count", 0),
-                "production_blocking_gate_ids": production.get("blocking_gate_ids", []),
-                "production_top_next_action": production.get("top_next_action"),
-                "production_role_groups": production.get("role_groups", {}),
-                "production_era5_process_ready": production.get("era5_process_ready", False),
-                "production_les_ready": production.get("les_ready", False),
-                "comparison_status": process.get("comparison", {}).get("status")
-                if isinstance(process.get("comparison"), dict)
-                else "unknown",
-            }
-    return {}
+    _merge_current_cloud_seb_scorecards(day, merged)
+    if not merged:
+        return {}
+    _merge_cloud_seb_process_report(day, merged)
+    _merge_cloud_seb_model_observation_review(day, merged)
+    return merged
 
 
 def _merge_cloud_seb_process_report(day: str, process: dict[str, object]) -> None:
@@ -5933,6 +6095,13 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
     ready_roles = role_groups.get("ready_roles")
     blocked_roles = role_groups.get("blocked_roles")
     missing_roles = role_groups.get("missing_roles")
+    ready_roles = ready_roles if isinstance(ready_roles, list) else []
+    blocked_roles = blocked_roles if isinstance(blocked_roles, list) else []
+    missing_roles = missing_roles if isinstance(missing_roles, list) else []
+    direct_ready_roles = process.get("production_direct_model_roles_ready")
+    direct_ready_roles = (
+        direct_ready_roles if isinstance(direct_ready_roles, list) else []
+    )
     gate_statuses = process.get("production_gate_statuses")
     gate_statuses = gate_statuses if isinstance(gate_statuses, dict) else {}
     blocking_gate_ids = process.get("production_blocking_gate_ids")
@@ -5981,7 +6150,7 @@ def _cloud_seb_process_gate_panel(day: str) -> str:
             "regime conclusion",
             process.get("model_observation_review_interpretation_class", "missing"),
         ),
-        _card("ERA5 process", process.get("production_era5_process_ready", False)),
+        _card("direct process ready", _list_summary(direct_ready_roles, limit=3)),
         _card("CM1 LES process", process.get("production_les_ready", False)),
         _card("ready roles", _list_summary(ready_roles, limit=3)),
         _card("blocked roles", _list_summary(blocked_roles, limit=3)),
@@ -6115,7 +6284,7 @@ def _cloud_seb_process_plot_gallery(process: dict[str, object]) -> str:
         _process_plot_card(
             "Observed Cloudnet-regime cloud/SEB",
             process.get("plot"),
-            "Official Cloudnet-regime reference; currently samples only cloudy periods.",
+            "Official Cloudnet-regime observation reference.",
         ),
         _process_plot_card(
             "Diagnostic HATPRO-LWP process split",
@@ -6125,13 +6294,16 @@ def _cloud_seb_process_plot_gallery(process: dict[str, object]) -> str:
     ]
     model_reviews = process.get("model_process_review")
     if isinstance(model_reviews, dict):
-        era5 = model_reviews.get("direct_era5")
-        if isinstance(era5, dict):
+        for role in ACTIVE_PROCESS_ROLES:
+            review = model_reviews.get(role)
+            if not isinstance(review, dict):
+                continue
+            support = str(review.get("support_status") or "unknown")
             cards.append(
                 _process_plot_card(
-                    "ERA5 direct matched cloud/SEB",
-                    era5.get("plot"),
-                    "Direct model-variable path; not comparable yet because only clear samples are present.",
+                    f"{PROCESS_ROLE_LABELS[role]} cloud/SEB",
+                    review.get("plot"),
+                    f"Recorded support: {support}.",
                 )
             )
     cards = [card for card in cards if card]
@@ -6188,7 +6360,7 @@ def _cloud_seb_role_rows(process: dict[str, object]) -> list[dict[str, object]]:
         )
     model_reviews = process.get("model_process_review")
     if isinstance(model_reviews, dict):
-        for role in ("direct_era5", "direct_carra2", "les_cm1_carra2"):
+        for role in ACTIVE_PROCESS_ROLES:
             review = model_reviews.get(role)
             if not isinstance(review, dict):
                 continue
@@ -6247,7 +6419,8 @@ def _cloud_seb_process_window_contingency(process: dict[str, object]) -> str:
         return "<div class='model-note'>No process-window model pairs are available.</div>"
     rows = []
     headline = ""
-    for role, raw_pair in sorted(pairs.items()):
+    for role in ACTIVE_PROCESS_ROLES:
+        raw_pair = pairs.get(role)
         if not isinstance(raw_pair, dict):
             continue
         contingency = raw_pair.get("regime_contingency")
@@ -6259,7 +6432,7 @@ def _cloud_seb_process_window_contingency(process: dict[str, object]) -> str:
         metrics = metrics if isinstance(metrics, dict) else {}
         role_text = str(role)
         dominant = contingency.get("dominant_pair")
-        if role_text == "direct_era5" and dominant:
+        if not headline and dominant:
             headline = _cloud_seb_regime_contingency_headline(
                 role=role_text,
                 contingency=contingency,
@@ -6361,134 +6534,98 @@ def _direct_science_summary(day: str) -> dict[str, object]:
     return direct if isinstance(direct, dict) else {}
 
 
-def _direct_era5_process_verdict(day: str) -> dict[str, object]:
-    summary = _direct_science_summary(day)
-    readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
-    process = (
-        readiness.get("cloud_seb_process_review")
-        if isinstance(readiness.get("cloud_seb_process_review"), dict)
-        else {}
-    )
-    highlight = (
-        process.get("process_window_highlight_pair")
-        if isinstance(process.get("process_window_highlight_pair"), dict)
-        else {}
-    )
-    if not highlight:
-        for raw in summary.get("key_conclusions", []):
-            if not isinstance(raw, dict):
-                continue
-            if raw.get("topic") == "cloud_seb_process_window" and raw.get("role") == "direct_era5":
-                highlight = raw
-                break
-    if not highlight:
+def _direct_process_verdict(day: str) -> dict[str, object]:
+    scorecard = load_scorecard(day, "direct_process_verdict")
+    if not isinstance(scorecard, dict):
         return {
             "exists": False,
-            "status": process.get("process_window_status")
-            or process.get("status")
-            or "not_available",
-            "statement": process.get("process_window_statement")
-            or "Direct ERA5 process-window verdict is not available yet.",
+            "status": "not_available",
+            "statement": "Direct IFS/GFS/ICON process verdicts are not available yet.",
         }
-    table = highlight.get("table") if isinstance(highlight.get("table"), dict) else {}
-    hits = _metric_or_table_value(highlight, table, "hits", "observed_cloudy_model_cloudy")
-    misses = _metric_or_table_value(
-        highlight,
-        table,
-        "misses",
-        "observed_cloudy_model_clear",
-    )
-    false_alarms = _metric_or_table_value(
-        highlight,
-        table,
-        "false_alarms",
-        "observed_clear_model_cloudy",
-    )
-    correct_negatives = _metric_or_table_value(
-        highlight,
-        table,
-        "correct_negatives",
-        "observed_clear_model_clear",
-    )
+    verdicts = scorecard.get("verdicts")
+    verdicts = [
+        verdict
+        for verdict in verdicts
+        if isinstance(verdict, dict) and verdict.get("role") in DIRECT_PROCESS_ROLES
+    ] if isinstance(verdicts, list) else []
+    primary = scorecard.get("primary_verdict")
+    primary = primary if isinstance(primary, dict) else {}
+    if primary.get("role") not in DIRECT_PROCESS_ROLES:
+        primary = verdicts[0] if verdicts else {}
     return {
-        "exists": True,
-        "status": highlight.get("status")
-        or process.get("process_window_status")
-        or process.get("status")
-        or "unknown",
-        "interpretation_class": process.get("process_window_interpretation_class")
-        or highlight.get("interpretation_class")
-        or "unknown",
-        "statement": process.get("process_window_statement")
-        or highlight.get("statement")
-        or "Direct ERA5 process-window verdict is available.",
-        "role": highlight.get("role") or "direct_era5",
-        "paired_sample_count": highlight.get("paired_sample_count"),
-        "hits": hits,
-        "misses": misses,
-        "false_alarms": false_alarms,
-        "correct_negatives": correct_negatives,
-        "probability_of_detection": highlight.get("probability_of_detection"),
-        "false_alarm_ratio": highlight.get("false_alarm_ratio"),
-        "critical_success_index": highlight.get("critical_success_index"),
-        "dominant_pair": highlight.get("dominant_pair") or "unknown",
-        "production_use": highlight.get("production_use") or "diagnostic_only",
+        **scorecard,
+        "exists": bool(verdicts or primary),
+        "verdicts": verdicts,
+        "primary_verdict": primary,
     }
 
 
-def _metric_or_table_value(
-    metrics: dict[str, object],
-    table: dict[str, object],
-    metric_key: str,
-    table_key: str,
-) -> object:
-    value = metrics.get(metric_key)
-    return table.get(table_key, value)
-
-
-def _direct_era5_process_verdict_panel(day: str) -> str:
-    verdict = _direct_era5_process_verdict(day)
+def _direct_process_verdict_panel(day: str) -> str:
+    verdict = _direct_process_verdict(day)
     if not verdict.get("exists"):
         return (
             "<div class='direct-verdict model-note'>"
-            f"{escape(str(verdict.get('statement', 'Direct ERA5 verdict is not available.')))}"
+            f"{escape(str(verdict.get('statement')))}"
             "</div>"
         )
+    primary = verdict.get("primary_verdict")
+    primary = primary if isinstance(primary, dict) else {}
+    primary_metrics = primary.get("metrics")
+    primary_metrics = primary_metrics if isinstance(primary_metrics, dict) else {}
+    primary_role = str(primary.get("role") or verdict.get("primary_role") or "unknown")
     cards = [
-        _card("ERA5 process verdict", verdict.get("interpretation_class", "unknown")),
-        _card("paired samples", verdict.get("paired_sample_count", "n/a")),
-        _card("hits", verdict.get("hits", "n/a")),
-        _card("misses", verdict.get("misses", "n/a")),
-        _card("false alarms", verdict.get("false_alarms", "n/a")),
-        _card("POD", _compact_float(verdict.get("probability_of_detection"))),
-        _card("FAR", _compact_float(verdict.get("false_alarm_ratio"))),
-        _card("CSI", _compact_float(verdict.get("critical_success_index"))),
+        _card("verdict status", verdict.get("status", "unknown")),
+        _card("primary role", PROCESS_ROLE_LABELS.get(primary_role, primary_role)),
+        _card("ready roles", _list_summary(verdict.get("ready_direct_roles"), limit=3)),
+        _card(
+            "diagnostic roles",
+            _list_summary(verdict.get("diagnostic_direct_roles"), limit=3),
+        ),
+        _card("primary paired", primary.get("paired_sample_count", "n/a")),
+        _card("primary CSI", _compact_float(primary_metrics.get("critical_success_index"))),
     ]
-    body = (
-        "<tr>"
-        "<th>observed cloudy</th>"
-        f"<td>{escape(str(verdict.get('hits', 0)))}</td>"
-        f"<td>{escape(str(verdict.get('misses', 0)))}</td>"
-        "</tr>"
-        "<tr>"
-        "<th>observed clear</th>"
-        f"<td>{escape(str(verdict.get('false_alarms', 0)))}</td>"
-        f"<td>{escape(str(verdict.get('correct_negatives', 0)))}</td>"
-        "</tr>"
+    rows = []
+    for item in verdict.get("verdicts", []):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "unknown")
+        metrics = item.get("metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        rows.append(
+            "<tr>"
+            f"<td>{escape(PROCESS_ROLE_LABELS.get(role, role))}</td>"
+            f"<td>{_badge(item.get('status'))}</td>"
+            f"<td>{escape(str(item.get('paired_sample_count', 0)))}</td>"
+            f"<td>{escape(str(metrics.get('hits', 0)))}</td>"
+            f"<td>{escape(str(metrics.get('misses', 0)))}</td>"
+            f"<td>{escape(str(metrics.get('false_alarms', 0)))}</td>"
+            f"<td>{escape(str(_compact_float(metrics.get('probability_of_detection'))))}</td>"
+            f"<td>{escape(str(_compact_float(metrics.get('false_alarm_ratio'))))}</td>"
+            f"<td>{escape(str(_compact_float(metrics.get('critical_success_index'))))}</td>"
+            f"<td>{escape(str(item.get('production_use', 'diagnostic_only')))}</td>"
+            "</tr>"
+        )
+    table = ""
+    if rows:
+        table = (
+            "<div class='model-table-wrap'>"
+            "<table class='model-table operational-table direct-verdict-table'>"
+            "<thead><tr><th>model</th><th>state</th><th>paired</th><th>hits</th>"
+            "<th>misses</th><th>false alarms</th><th>POD</th><th>FAR</th>"
+            "<th>CSI</th><th>use</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table></div>"
+        )
+    plot = _process_plot_card(
+        "Direct IFS/GFS/ICON process verdict",
+        {"path": verdict.get("output_svg")},
+        "Cloud-occurrence agreement in each model's valid process window.",
     )
     return (
         "<div class='direct-verdict'>"
-        "<div class='model-subsection-title'>Direct ERA5 Cloud/SEB Process Verdict</div>"
-        "<div class='model-note'>"
-        f"{escape(str(verdict.get('statement', 'No verdict statement is available.')))} "
-        f"Production use: {escape(str(verdict.get('production_use', 'diagnostic_only')))}."
-        "</div>"
+        "<div class='model-subsection-title'>Direct IFS / GFS / ICON Cloud/SEB Verdicts</div>"
+        f"<div class='model-note'>{escape(str(verdict.get('statement') or primary.get('statement') or 'No verdict statement is available.'))}</div>"
         f"<div class='model-grid direct-verdict-grid'>{''.join(cards)}</div>"
-        "<div class='model-table-wrap direct-verdict-table-wrap'>"
-        "<table class='model-table direct-verdict-table'>"
-        "<thead><tr><th></th><th>model cloudy</th><th>model clear</th></tr></thead>"
-        f"<tbody>{body}</tbody>"
-        "</table></div>"
+        f"{plot}{table}"
         "</div>"
     )
 
@@ -6606,7 +6743,8 @@ def _direct_model_evidence_panel(day: str) -> str:
         return ""
     summary = _direct_science_summary(day)
     report = _direct_review_report(day)
-    if not summary and not report:
+    verdict = _direct_process_verdict(day)
+    if not summary and not report and not verdict.get("exists"):
         return ""
     release = report.get("release_state") if isinstance(report.get("release_state"), dict) else {}
     readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
@@ -6622,10 +6760,17 @@ def _direct_model_evidence_panel(day: str) -> str:
                 0,
             )
             transform_count_label = "nearest-support vars"
-    usable_models = release.get("usable_models") or readiness.get("usable_models")
+    usable_models = (
+        release.get("usable_models")
+        or readiness.get("usable_models")
+        or verdict.get("ready_direct_roles")
+    )
     missing_models = release.get("missing_models") or readiness.get("missing_models")
     cards = [
-        _card("direct status", summary.get("status", report.get("status", "unknown"))),
+        _card(
+            "direct status",
+            summary.get("status", report.get("status", verdict.get("status", "unknown"))),
+        ),
         _card("review ready", release.get("science_review_ready", "unknown")),
         _card("usable models", _list_summary(usable_models, limit=3)),
         _card("missing models", _list_summary(missing_models, limit=3)),
@@ -6634,7 +6779,11 @@ def _direct_model_evidence_panel(day: str) -> str:
         _card(transform_count_label, time_window_count),
         _card("full-day ready", release.get("full_day_release_ready", False)),
     ]
-    headline = summary.get("headline") or "Direct matched-product evidence is partial."
+    headline = (
+        summary.get("headline")
+        or verdict.get("statement")
+        or "Direct matched-product evidence is partial."
+    )
     caveats = []
     for source in (report.get("caveats"), summary.get("caveats")):
         if isinstance(source, list):
@@ -6646,7 +6795,7 @@ def _direct_model_evidence_panel(day: str) -> str:
         "<div class='model-section-title'>Direct Model-Evaluation Evidence</div>"
         f"<div class='model-note'>{escape(str(headline))}</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
-        f"{_direct_era5_process_verdict_panel(day)}"
+        f"{_direct_process_verdict_panel(day)}"
         f"{plot_card}"
         f"{_direct_model_table(day)}"
         f"{_direct_highlight_table(day)}"
@@ -6702,6 +6851,7 @@ def _overview_panel(_clicks: int = 0) -> pn.Column:
         f"{_iceland_readiness_panel()}"
         f"{_review_tracks_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
+        f"{_direct_model_evidence_panel(latest_day)}"
         f"{_cloudnet_backbone_review_panel(index, latest_day)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
         f"{_daily_review_queue_table(index)}"

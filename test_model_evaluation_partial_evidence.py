@@ -561,3 +561,144 @@ def test_cloudnet_backbone_panel_selects_requested_day(tmp_path) -> None:
     assert "2026-08-01T00:00:01Z to 2026-08-01T23:56:10Z" in html
     assert "2026-08-01T00:59:58Z to 2026-08-01T23:56:10Z" in html
     assert "2026-07-06" not in html
+
+
+def test_direct_process_verdict_uses_active_iceland_models(tmp_path) -> None:
+    module = _load_model_evaluation_module()
+    day = "2026-08-01"
+    scorecards = tmp_path / "2026" / "08" / "01" / "scorecards"
+    scorecards.mkdir(parents=True)
+    verdicts = []
+    for model_id, hits, misses in (("ifs", 30, 10), ("gfs", 0, 40), ("icon", 25, 15)):
+        verdicts.append(
+            {
+                "role": f"direct_{model_id}",
+                "model_id": model_id,
+                "status": "window_ready" if model_id == "ifs" else "diagnostic_ready",
+                "paired_sample_count": 40,
+                "production_use": (
+                    "process_ranking_ready" if model_id == "ifs" else "diagnostic_only"
+                ),
+                "metrics": {
+                    "hits": hits,
+                    "misses": misses,
+                    "false_alarms": 0,
+                    "probability_of_detection": hits / 40,
+                    "false_alarm_ratio": 0.0,
+                    "critical_success_index": hits / 40,
+                },
+            }
+        )
+    (scorecards / "direct_process_verdict.json").write_text(
+        json.dumps(
+            {
+                "status": "ready_direct_process_verdict",
+                "scorecard": {
+                    "status": "ready_direct_process_verdict",
+                    "statement": "Active direct-model process verdicts are ready.",
+                    "ready_direct_roles": ["direct_ifs"],
+                    "diagnostic_direct_roles": ["direct_gfs", "direct_icon"],
+                    "primary_verdict": verdicts[0],
+                    "verdicts": verdicts,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+    verdict = module._direct_process_verdict(day)
+    html = module._direct_process_verdict_panel(day)
+    evidence = module._direct_model_evidence_panel(day)
+
+    assert verdict["exists"] is True
+    assert [item["role"] for item in verdict["verdicts"]] == [
+        "direct_ifs",
+        "direct_gfs",
+        "direct_icon",
+    ]
+    assert "IFS direct" in html
+    assert "GFS direct" in html
+    assert "ICON direct" in html
+    assert "ERA5" not in html
+    assert "CARRA2" not in html
+    assert "Direct Model-Evaluation Evidence" in evidence
+
+
+def test_cloud_seb_panels_only_enumerate_active_process_roles(tmp_path) -> None:
+    module = _load_model_evaluation_module()
+    day = "2026-08-01"
+    scorecards = tmp_path / "2026" / "08" / "01" / "scorecards"
+    scorecards.mkdir(parents=True)
+
+    def write_process_scorecard(name: str, model_id: str, clear: int, cloudy: int) -> None:
+        (scorecards / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "status": "scored",
+                    "scorecard": {
+                        "status": "scored",
+                        "model_id": model_id,
+                        "sample_count": clear + cloudy,
+                        "clear_count": clear,
+                        "cloudy_count": cloudy,
+                        "output_json": str(scorecards / f"{name}.json"),
+                        "figure_evidence_summary": {
+                            "production_ready": bool(clear and cloudy),
+                            "support_status": (
+                                "clear_and_cloudy_sampled"
+                                if clear and cloudy
+                                else "only_clear_sampled"
+                            ),
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_process_scorecard("direct_ifs_cloud_seb_process", "ifs", 2, 2)
+    write_process_scorecard("direct_gfs_cloud_seb_process", "gfs", 4, 0)
+    write_process_scorecard("direct_icon_cloud_seb_process", "icon", 1, 1)
+    write_process_scorecard("cloud_seb_process_cm1_gfs", "cm1_gfs", 2, 2)
+    (scorecards / "cloud_seb_process_window.json").write_text(
+        json.dumps(
+            {
+                "status": "process_window_ready",
+                "diagnostic": {
+                    "pairs": {
+                        "direct_ifs": {
+                            "comparison_ready": True,
+                            "regime_contingency": {
+                                "status": "diagnostic_ready",
+                                "paired_sample_count": 4,
+                                "dominant_pair": "observed_cloudy_model_cloudy",
+                                "metrics": {"hits": 2, "misses": 0, "false_alarms": 0},
+                                "table": {
+                                    "observed_cloudy_model_cloudy": 2,
+                                    "observed_cloudy_model_clear": 0,
+                                    "observed_clear_model_cloudy": 0,
+                                    "observed_clear_model_clear": 2,
+                                },
+                            },
+                        },
+                        "direct_era5": {
+                            "comparison_ready": True,
+                            "regime_contingency": {"status": "legacy"},
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+    process = module._cloud_seb_process_summary(day)
+    roles = [row["role"] for row in module._cloud_seb_role_rows(process)]
+    contingency = module._cloud_seb_process_window_contingency(process)
+
+    assert roles == ["direct_ifs", "direct_gfs", "direct_icon", "les_cm1_gfs"]
+    assert "direct_ifs" in contingency
+    assert "direct_era5" not in contingency
+    assert "CARRA2" not in contingency
