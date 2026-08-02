@@ -17,18 +17,22 @@ import xarray as xr
 
 from generate_power_soc_forecast import (
     DEFAULT_BATTERY_CAPACITY_KWH,
-    DEFAULT_AC_MODE_THRESHOLD_W,
     DEFAULT_HORIZON_HOURS,
     DEFAULT_LATITUDE,
     DEFAULT_LONGITUDE,
     DEFAULT_OPEN_DATA_SOURCE,
     _bounded_load_profile,
-    _observed_load_w,
     _power_frame,
     build_historical_load_forecast,
     integrate_soc_forecast,
     latest_finite,
     solar_irradiance_from_ssrd,
+)
+from power_load_contract import (
+    CONTROLLED_LOAD_CONTRACT,
+    STATE_HOLD_POLICY,
+    ControlledLoadEstimate,
+    controlled_load_member_levels,
 )
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -76,12 +80,18 @@ ENSEMBLE_INPUT_ATTRS = (
     "battery_energy_model",
     "load_bias_correction_w",
     "forecast_load_w",
+    "forecast_load_p10_w",
+    "forecast_load_p50_w",
+    "forecast_load_p90_w",
     "load_model",
     "load_model_version",
     "load_mode",
     "load_mode_source",
     "load_mode_active_kits",
     "load_mode_signature",
+    "load_state_contract",
+    "load_state_hold_policy",
+    "load_state_uncertainty_source",
 )
 NUMERIC_ENSEMBLE_INPUT_ATTRS = {
     "initial_soc_pct",
@@ -95,6 +105,9 @@ NUMERIC_ENSEMBLE_INPUT_ATTRS = {
     "battery_max_discharge_w",
     "load_bias_correction_w",
     "forecast_load_w",
+    "forecast_load_p10_w",
+    "forecast_load_p50_w",
+    "forecast_load_p90_w",
 }
 
 
@@ -243,25 +256,32 @@ def _member_dimension(ds: xr.Dataset) -> str:
     raise ValueError("ECMWF ensemble ssrd has no member dimension")
 
 
-def _load_residual_offsets(frame: pd.DataFrame, *, end: pd.Timestamp, members: int) -> np.ndarray:
-    observed = _observed_load_w(frame)
-    observed = observed[(observed.index >= end - pd.Timedelta(days=7)) & (observed.index <= end)]
-    sampled = observed.resample("15min").median().dropna()
-    if sampled.empty:
-        return np.zeros(members, dtype=np.float64)
-    if "ACOutputWatts" in frame:
-        ac = frame.loc[(frame.index >= observed.index.min()) & (frame.index <= end), "ACOutputWatts"]
-        ac = ac.resample("15min").median()
-        ac = ac.reindex(sampled.index, method="nearest", tolerance=pd.Timedelta(minutes=10))
-        recent_ac = ac[ac.index >= end - pd.Timedelta(minutes=30)].dropna()
-        current_active = bool(not recent_ac.empty and float(recent_ac.median()) > DEFAULT_AC_MODE_THRESHOLD_W)
-        sampled = sampled[(ac.fillna(0.0) > DEFAULT_AC_MODE_THRESHOLD_W) == current_active]
-    expected = float(sampled.median())
-    residuals = (sampled - expected).replace([np.inf, -np.inf], np.nan).dropna().clip(-500.0, 500.0)
-    if len(residuals) < 10:
-        return np.zeros(members, dtype=np.float64)
-    quantiles = (np.arange(members, dtype=np.float64) + 0.5) / members
-    return np.quantile(residuals.to_numpy(dtype=np.float64), quantiles)
+def _deterministic_controlled_load(
+    deterministic: xr.Dataset,
+    fallback_w: float,
+) -> ControlledLoadEstimate:
+    """Read the finite-state load distribution published by the central run."""
+
+    def value(name: str, fallback: float) -> float:
+        try:
+            candidate = float(deterministic.attrs.get(name, fallback))
+        except (TypeError, ValueError):
+            return float(fallback)
+        return candidate if np.isfinite(candidate) else float(fallback)
+
+    try:
+        sample_count = int(float(deterministic.attrs.get("load_mode_learning_observations", 0) or 0))
+    except (TypeError, ValueError):
+        sample_count = 0
+
+    p50 = value("forecast_load_p50_w", fallback_w)
+    return ControlledLoadEstimate(
+        p10_w=value("forecast_load_p10_w", p50),
+        p50_w=p50,
+        p90_w=value("forecast_load_p90_w", p50),
+        source=str(deterministic.attrs.get("load_anchor_method", "legacy_central_load")),
+        sample_count=sample_count,
+    ).validated()
 
 
 def apply_operational_soc_threshold(ds: xr.Dataset) -> xr.Dataset:
@@ -325,19 +345,22 @@ def build_ensemble_dataset(
         raise ValueError("No ECMWF ensemble members overlap the requested SOC horizon")
     common_times = member_irradiance[0].index
     common_times = common_times[(common_times >= latest_time) & (common_times <= latest_time + pd.Timedelta(hours=horizon_hours))]
+    fallback_level = np.nan
     if "ForecastLoadWatts" in deterministic and "time" in deterministic:
-        central_load = pd.Series(
-            np.asarray(deterministic["ForecastLoadWatts"].values, dtype=np.float64),
-            index=pd.DatetimeIndex(deterministic["time"].values),
-        ).reindex(common_times, method="nearest", tolerance=pd.Timedelta(hours=2))
-        central_load = central_load.ffill().bfill().clip(lower=0.0)
-    else:
+        source_load = np.asarray(deterministic["ForecastLoadWatts"].values, dtype=np.float64)
+        finite_load = source_load[np.isfinite(source_load)]
+        fallback_level = float(np.nanmedian(finite_load)) if finite_load.size else np.nan
+    if not np.isfinite(fallback_level):
         raw_load = build_historical_load_forecast(frame, common_times, end=latest_time, calibration_days=7)
-        central_load, _ = _bounded_load_profile(raw_load, correction_w)
+        bounded_load, _ = _bounded_load_profile(raw_load, correction_w)
+        fallback_level = float(bounded_load.median())
     # This operational ensemble represents the detected system as it is now.
     # Planned instrument schedules are evaluated by the separate operating-plan
     # product; only the ECMWF solar members may vary here.
-    current_system_load = central_load.reindex(common_times).ffill().bfill().clip(lower=0.0)
+    controlled_load = _deterministic_controlled_load(
+        deterministic,
+        fallback_level,
+    )
     # Keep the deterministic lead-dependent solar calibration when propagating
     # ECMWF members. The remaining member spread then combines meteorological
     # forcing with observed, mode-conditioned station-load variability.
@@ -350,9 +373,9 @@ def build_ensemble_dataset(
         solar_factor_profile = solar_factor_profile.ffill().bfill().fillna(solar_factor).clip(lower=0.0)
     else:
         solar_factor_profile = pd.Series(float(solar_factor), index=common_times)
-    load_offsets = _load_residual_offsets(frame, end=latest_time, members=len(member_irradiance))
     rng = np.random.default_rng(int(latest_time.value % (2**32 - 1)))
-    rng.shuffle(load_offsets)
+    load_levels = controlled_load_member_levels(controlled_load, len(member_irradiance))
+    rng.shuffle(load_levels)
     parameter_spread = 0.06 if battery_model.calibration_confidence == "calibrated" else 0.10
     capacity_rank = np.linspace(-1.0, 1.0, len(member_irradiance), dtype=np.float64)
     charge_rank = capacity_rank.copy()
@@ -371,7 +394,11 @@ def build_ensemble_dataset(
     output_times: pd.DatetimeIndex | None = None
     for member_index, irradiance in enumerate(member_irradiance):
         irradiance = irradiance.reindex(common_times).interpolate().ffill().bfill()
-        member_load = (current_system_load + float(load_offsets[member_index])).clip(lower=0.0)
+        member_load = pd.Series(
+            float(load_levels[member_index]),
+            index=common_times,
+            dtype=np.float64,
+        )
         member_model = replace(
             battery_model,
             usable_capacity_kwh=battery_model.usable_capacity_kwh
@@ -444,13 +471,22 @@ def build_ensemble_dataset(
             **battery_model.attrs(),
             "load_bias_correction_w": f"{correction_w:.6g}",
             "forecast_load_w": str(deterministic.attrs.get("forecast_load_w", "")),
+            "forecast_load_p10_w": f"{controlled_load.p10_w:.6g}",
+            "forecast_load_p50_w": f"{controlled_load.p50_w:.6g}",
+            "forecast_load_p90_w": f"{controlled_load.p90_w:.6g}",
             "load_model": str(deterministic.attrs.get("load_model", "kit_mode_persistence_v4")),
             "load_model_version": str(deterministic.attrs.get("load_model_version", "4")),
             "load_mode": str(deterministic.attrs.get("load_mode", "unknown")),
             "load_mode_source": str(deterministic.attrs.get("load_mode_source", "unknown")),
             "load_mode_active_kits": str(deterministic.attrs.get("load_mode_active_kits", "")),
             "load_mode_signature": str(deterministic.attrs.get("load_mode_signature", "")),
-            "load_uncertainty": "independently paired mode-conditioned load residuals plus ECMWF solar ensemble",
+            "load_state_contract": str(
+                deterministic.attrs.get("load_state_contract", CONTROLLED_LOAD_CONTRACT)
+            ),
+            "load_state_hold_policy": str(
+                deterministic.attrs.get("load_state_hold_policy", STATE_HOLD_POLICY)
+            ),
+            "load_uncertainty": "stationary exact-state load distribution independently paired with ECMWF solar members",
             "battery_parameter_uncertainty": f"member-wise usable-capacity spread plus or minus {100.0 * parameter_spread:.0f}% and efficiency spread plus or minus 3%",
             "scenario_scope": "current_system_only",
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",

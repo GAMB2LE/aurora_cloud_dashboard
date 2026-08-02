@@ -2,6 +2,10 @@
 
 Audit date: 2026-08-01.
 
+This is a historical audit of version 7. The operational successor is
+`finite_controlled_state_v8`, which holds load to a confirmed finite operating
+state and uses explicit scenario transitions for future state changes.
+
 ## Why the model changed
 
 Recent operating periods included different combinations of CL61, Radar,

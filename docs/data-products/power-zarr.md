@@ -165,10 +165,11 @@ described below. It always includes seven stable comparisons: CL61, CL61 +
 Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, and HATPRO.
 
 The **SOC 96 h Forecast** P10/P90 traces describe the current system as-is,
-not different future instrument schedules. Version 7 varies ECMWF weather,
-recent whole-station load residuals, and calibrated battery parameters while
-holding the current operating plan fixed. Planned instrument combinations are
-shown separately in the operating-scenario product.
+not different future instrument schedules. Version 8 varies ECMWF weather,
+calibrated battery parameters, and the learned P10-P90 load distribution for
+the one detected operating state. Every member holds its assigned state load
+constant through the horizon. Planned instrument combinations are shown
+separately in the operating-scenario product.
 
 When `/data/aurora/products/power/power_soc_forecast_skill.zarr` is available,
 the display summary also includes past-facing forecast verification traces:
@@ -231,13 +232,14 @@ is `SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`, where
 positive battery power is charging and negative power is discharge. This
 captures the 48 V DC load that is absent from inverter idle power.
 
-The operational deterministic product uses
-`mode_conditioned_energy_balance_v7`. The system-as-is load is the median of
-the latest three finite 15-minute whole-station balance samples, normally about
-the last 30 minutes. It remains the forecast anchor for the full horizon. PDU
-signatures and learned component levels identify and explain the active mode,
-but do not replace the measured anchor. This prevents a component-model error
-from making the operational forecast contradict current station consumption.
+The operational deterministic product uses `finite_controlled_state_v8` under
+the `finite_operating_state_v1` contract. It identifies the latest confirmed
+PDU/APS operating state and holds that state's load constant through the
+forecast horizon. Load comes from fresh PDU components plus the clean DC-only
+baseline where possible, otherwise from a mature distribution learned for that
+exact state. The latest whole-station balance is used only to bootstrap a state
+that does not yet have component or exact-state evidence. A load change without
+an explicit state transition is rejected during scenario validation.
 
 SOC is integrated with a fitted battery model containing usable capacity,
 charge/discharge efficiencies, and observed power limits. The fit excludes
@@ -268,6 +270,9 @@ Variables:
 - `ECMWFSolarIrradiance` in `W m-2`
 - `ForecastSolarWatts` in `W`
 - `ForecastLoadWatts` in `W`
+- `ForecastLoadP10Watts` in `W`
+- `ForecastLoadP50Watts` in `W`
+- `ForecastLoadP90Watts` in `W`
 
 Root attributes include ECMWF input file, generation time, initial SOC time and
 value, horizon, calibration window, solar calibration factor, forecast load,
@@ -277,13 +282,15 @@ parameters. Load diagnostics include `load_model`, `load_model_version`,
 `load_balance_measurement`, `load_mode_registry`, `load_mode_signature`,
 `load_mode_learning_ready`, `load_mode_learning_reason`,
 `load_mode_pdu_active_watts`, `load_regime_level_w`, and
-`load_regime_run_hours`. Version 7 also records `load_anchor_method`, the
-measured and learned-reference loads, their disagreement, calibrated battery
-capacity/efficiencies/limits, `solar_calibration_contract_id`, and a semantic
+`load_regime_run_hours`. Version 8 also records `load_anchor_method`,
+`load_state_contract`, `load_state_hold_policy`, the state P10/P50/P90 load,
+the measured and learned-reference loads, their disagreement, calibrated
+battery capacity/efficiencies/limits, `solar_calibration_contract_id`, and a semantic
 `publication_signature`. `minimum_operational_soc_pct = "40"` identifies the
 reference used by SOC risk plots and ensemble threshold verification. Scenario attributes include
 `scenario_loads_w = "100,200,300,400,500,600"`
-and `scenario_solar_mode = "ecmwf"`. The product is separate from
+and `scenario_solar_mode = "ecmwf"`; these fixed loads are compatibility-only
+sensitivity fields, not operating states. The product is separate from
 model-evaluation ECMWF products.
 
 The forecast-run archive is stored at:
@@ -337,8 +344,9 @@ solar factor, learned load level, model version, or named operating mode has
 changed. These same-cycle updates use the site cache rather than downloading
 ECMWF again. Dashboard variables include SOC P10, P50, P90, minimum, maximum,
 and probability below the 40% minimum operational SOC threshold. Ensemble
-members vary ECMWF weather, recent load residuals, and calibrated battery
-capacity and efficiencies. The deterministic, ensemble, and scenario products
+members vary ECMWF weather, calibrated battery capacity and efficiencies, and
+the exact-state P10-P90 load distribution. A member's load remains stationary
+until a modeled schedule changes the operating-state code. The deterministic, ensemble, and scenario products
 must share the same `solar_calibration_contract_id`.
 Verification includes CRPS by lead bucket, P10-P90 coverage, threshold Brier
 score, and verified ensemble-cycle count.
@@ -360,7 +368,10 @@ holding the final irradiance value constant.
 all scenarios to the latest finite `BatterySOC`, derives observed total load as
 summed APS solar power minus signed `BatteryWatts`, and classifies the current
 kit configuration from fresh PDU outlet evidence. Stale PDU evidence is treated
-as unknown rather than carried into a new mode. The state product contains:
+as unknown rather than carried into a new mode. When the deterministic product
+publishes the finite-state contract, the current-mode scenario reuses its exact
+system-as-is distribution; alternative modes use the scenario component model.
+The state product contains:
 
 - `OperatingModeCode` and `OperatingModeProbability`
 - `OperatingModeConfidence`
