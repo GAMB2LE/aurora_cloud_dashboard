@@ -119,7 +119,7 @@ def test_every_power_forecast_panel_has_shared_implementation_info() -> None:
         assert info["metrics"]
 
 
-def test_operating_scenarios_start_with_current_load_reference() -> None:
+def test_operating_scenarios_start_with_current_state_reference() -> None:
     panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "operating_plan_scenarios")
 
     assert panel.traces[0].var == "OperatingCurrentSOCP50"
@@ -127,7 +127,8 @@ def test_operating_scenarios_start_with_current_load_reference() -> None:
     assert panel.traces[0].line_width > max(trace.line_width for trace in panel.traces[1:])
     info = build_power_forecast_info(panel.key)
     assert info is not None
-    assert "current-load system-as-is forecast is the reference" in info["summary"]
+    assert "current exact instrument state is the reference" in info["summary"]
+    assert "states are never blended" in info["implementation"]
 
 
 def _power_layout_panels() -> tuple[PanelSpec, ...]:
