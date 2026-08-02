@@ -1052,7 +1052,7 @@ class PowerSocForecastTests(unittest.TestCase):
             coords={"number": [1, 2, 3, 4, 5], "time": forecast_times},
         )
         dynamics = {
-            "schema_version": 1,
+            "schema_version": 2,
             "state": "dc_cl61",
             "current_phase": "startup",
             "state_started_at": power_times[-1].isoformat(),

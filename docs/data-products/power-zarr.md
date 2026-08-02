@@ -395,15 +395,21 @@ The state product contains:
 
 - `OperatingModeCode` and `OperatingModeProbability`
 - `OperatingModeConfidence`
+- `DirectStateConfirmed`, which is `1` only when all four assigned PDU outlets
+  have direct state or watt evidence for that observation
 - `ObservedLoadWatts` and `EstimatedModeLoadWatts`
 - `LoadInnovationWatts` and `LoadObservationOutlier`
 
-The persisted `hybrid_state_space_phases_v8` learner combines a finite set of
+The persisted `hybrid_state_space_phases_v9` learner combines a finite set of
 named operating modes with robust component and exact-state phase learning. Its
 components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
 increment. Existing observations are reclassified on each run, but component
 parameters are updated only from timestamps newer than the saved training
-cursor. Re-running unchanged data therefore does not double count evidence.
+cursor. A total station load can train an exact mode or phase only when the
+UAS, CL61, Radar, and HATPRO observations form a complete PDU state vector.
+Incomplete PDU rows remain available for state recognition and diagnostics but
+cannot contaminate a named state's load distribution. Re-running unchanged data
+therefore does not double count evidence.
 The UAS MQTT effective tier is aligned with these 15-minute observations and
 the state stores tier-specific load quantiles, sample count, independent
 episode count, and observed duration. A tier is mature only after three

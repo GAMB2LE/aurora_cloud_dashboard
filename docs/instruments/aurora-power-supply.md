@@ -254,8 +254,11 @@ observations with forecasts issued 6, 24, 48, and 72 hours earlier. A separate
 50-member ECMWF IFS ensemble supplies P10-P90 SOC uncertainty and the forecast
 probability of crossing below the 40% minimum operational threshold. Every
 member represents the detected current PDU/APS system mode, while uncertainty
-also samples that exact state's learned load distribution and calibrated
-battery parameters. Each member keeps its load fixed through the horizon.
+also samples that exact state's learned startup duration, steady/fan phase
+occupancy and dwell time, load distribution, and calibrated battery parameters.
+These load changes remain inside the confirmed instrument state; they do not
+represent uncommanded instrument switching. Exact-state phase learning requires
+direct evidence for all four assigned PDU outlets at the observation time.
 Deliberate
 instrument-on schedules are evaluated solely in the separate operating-mode
 plans. Ensemble CRPS,
