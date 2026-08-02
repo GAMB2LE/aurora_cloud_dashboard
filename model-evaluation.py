@@ -44,15 +44,13 @@ SHOW_OPERATIONAL_DETAILS = (
 )
 LEEDS_REPLAY_DAYS = tuple(f"2026-05-{day:02d}" for day in range(21, 28))
 NEXT_DATA_REQUIRED_INPUTS = (
-    "ERA5 pressure levels",
-    "ERA5 single levels",
-    "Cloudnet categorize",
-    "radar at reference point",
-    "surface met",
-    "ASFS radiation",
-    "ASFS sonic/turbulence",
-    "ASFS gas",
-    "HATPRO/LWP audit or override",
+    "IFS pressure and surface fields",
+    "GFS pressure and surface fields",
+    "ICON pressure and surface fields",
+    "official Cloudnet products",
+    "collocated RPG-FMCW94 and CL61",
+    "collocated HATPRO and surface met",
+    "collocated ASFS radiation, sonic and gas",
 )
 CASE_READINESS_POLICY_GATE_STEM = "case_readiness_policy_gate_20260622"
 SCORECARD_CF_V0_STEM = "scorecard_cf_model_cf_vs_cloudnet_cf_v_cf_a_20260621"
@@ -100,7 +98,7 @@ ARTIFACT_TITLES = {
     "observation_audit": "Observation audit",
     "iwc_scorecard": "IWC scorecard",
     "lwp_scorecard": "HATPRO LWP diagnostic",
-    "cl61_scorecard": "CL61 diagnostic",
+    "cl61_scorecard": "CL61 comparison",
     "wband_radar_scorecard": "W-band radar scorecard",
     "pamtra_wband_radar_scorecard": "PAMTRA W-band sensitivity scorecard",
     "pamtra_wband_radar_sensitivity_sweep": "PAMTRA W-band sensitivity-margin sweep",
@@ -859,139 +857,126 @@ DEFAULT_RUN_IDS = (
     "era5_reference",
 )
 
+DIRECT_MODEL_CANDIDATES = (("IFS", "ifs"), ("GFS", "gfs"), ("ICON", "icon"))
+CM1_FULL_DAY_MODEL_ID = "cm1_gfs_full_day_v1"
+
+
+def _direct_comparison_specs(
+    instrument: str,
+    alias_suffix: str,
+    *,
+    comparison: str,
+    basis: str,
+    metric_family: str,
+    occurrence: str | None = None,
+    metrics: str | None = None,
+) -> tuple[dict[str, object], ...]:
+    specs = []
+    for model_label, model_id in DIRECT_MODEL_CANDIDATES:
+        spec: dict[str, object] = {
+            "instrument": instrument,
+            "model": f"{model_label} direct",
+            "model_group": model_id,
+            "scorecard": f"{model_id}_{alias_suffix}",
+            "comparison": comparison,
+            "basis": f"{model_label} {basis}",
+            "metric_family": metric_family,
+            "caveat": "ready",
+        }
+        if occurrence is not None:
+            spec["occurrence"] = occurrence
+        if metrics is not None:
+            spec["metrics"] = metrics
+        specs.append(spec)
+    return tuple(specs)
+
+
 INSTRUMENT_COMPARISON_SPECS = (
+    *_direct_comparison_specs(
+        "Cloudnet CF",
+        "cloud_fraction",
+        comparison="cf_V",
+        basis="cloud fraction mapped to official Cloudnet model support",
+        occurrence="contingency",
+        metrics="point_metrics",
+        metric_family="occurrence",
+    ),
     {
         "instrument": "Cloudnet CF",
-        "model": "ERA5 / CloudnetPy L3",
-        "model_group": "era5",
-        "scorecard": "cloud_fraction_hogan",
-        "basis": "official CloudnetPy L3-CF: model_cf_cirrus vs cf_V_adv",
-        "metric_family": "occurrence",
-        "caveat": "ready",
-    },
-    {
-        "instrument": "Cloudnet CF",
-        "model": "CM1 full LES",
+        "model": "GFS-forced CM1 full LES",
         "model_group": "cm1",
-        "scorecard": "cloud_fraction",
+        "scorecard": f"cloud_fraction_{CM1_FULL_DAY_MODEL_ID}",
         "comparison": "cf_V",
-        "basis": "CM1 Cloudnet L3 CF cf_V",
+        "basis": "CM1 cloud fraction mapped through the Cloudnet model-evaluation path",
         "occurrence": "contingency",
         "metric_family": "occurrence",
         "caveat": "ready",
     },
-    {
-        "instrument": "Cloudnet CF",
-        "model": "GFS direct",
-        "model_group": "gfs",
-        "scorecard": "gfs_cloud_fraction",
-        "comparison": "cf_V",
-        "basis": "GFS native-column cloud fraction vs Cloudnet L3-CF",
-        "occurrence": "contingency",
-        "metrics": "point_metrics",
-        "metric_family": "occurrence",
-        "caveat": "diagnostic_only",
-    },
+    *_direct_comparison_specs(
+        "Cloudnet LWC",
+        "lwc",
+        comparison="lwc",
+        basis="liquid-water content mapped to official Cloudnet support",
+        occurrence="liquid_occurrence",
+        metrics="point_metrics",
+        metric_family="continuous",
+    ),
     {
         "instrument": "Cloudnet LWC",
-        "model": "ERA5",
-        "model_group": "era5",
-        "scorecard": "era5_lwc",
-        "comparison": "lwc",
-        "basis": "Cloudnet L3 LWC",
-        "occurrence": "liquid_occurrence",
-        "metrics": "point_metrics",
-        "metric_family": "continuous",
-        "caveat": "ready",
-    },
-    {
-        "instrument": "Cloudnet LWC",
-        "model": "CM1 full LES",
+        "model": "GFS-forced CM1 full LES",
         "model_group": "cm1",
-        "scorecard": "cm1_lwc",
+        "scorecard": f"lwc_{CM1_FULL_DAY_MODEL_ID}",
         "comparison": "lwc",
-        "basis": "CM1 Cloudnet L3 LWC",
+        "basis": "CM1 liquid-water content through Cloudnet L3-LWC evaluation",
         "occurrence": "liquid_occurrence",
         "metrics": "point_metrics",
         "metric_family": "continuous",
         "caveat": "ready",
     },
-    {
-        "instrument": "Cloudnet LWC",
-        "model": "GFS direct",
-        "model_group": "gfs",
-        "scorecard": "gfs_lwc",
-        "comparison": "lwc",
-        "basis": "GFS liquid-water content from mixing ratio and dry-air density",
-        "occurrence": "liquid_occurrence",
-        "metrics": "point_metrics",
-        "metric_family": "continuous",
-        "caveat": "diagnostic_only",
-    },
+    *_direct_comparison_specs(
+        "HATPRO/LWP",
+        "lwc",
+        comparison="lwc",
+        basis="column liquid-water path versus collocated HATPRO LWP",
+        metrics="lwp_metrics",
+        metric_family="column",
+    ),
     {
         "instrument": "HATPRO/LWP",
-        "model": "ERA5",
-        "model_group": "era5",
-        "scorecard": "era5_lwc",
-        "comparison": "lwc",
-        "basis": "model LWP vs audit-gated HATPRO LWP",
-        "metrics": "lwp_metrics",
-        "metric_family": "column",
+        "model": "CM1 + PAMTRA microwave",
+        "model_group": "synthetic",
+        "scorecard": f"hatpro_tb_{CM1_FULL_DAY_MODEL_ID}",
+        "basis": "PAMTRA brightness temperatures versus all collocated HATPRO channels",
+        "metric_family": "continuous",
         "caveat": "ready",
     },
+    *_direct_comparison_specs(
+        "Cloudnet IWC",
+        "iwc",
+        comparison="iwc",
+        basis="ice-water content mapped to official Cloudnet support",
+        occurrence="ice_occurrence",
+        metrics="point_metrics",
+        metric_family="continuous",
+    ),
     {
-        "instrument": "HATPRO/LWP",
-        "model": "CM1 full LES",
+        "instrument": "Cloudnet IWC",
+        "model": "GFS-forced CM1 full LES",
         "model_group": "cm1",
-        "scorecard": "cm1_lwc",
-        "comparison": "lwc",
-        "basis": "CM1 LWP vs audit-gated HATPRO LWP",
-        "metrics": "lwp_metrics",
-        "metric_family": "column",
-        "caveat": "ready",
-    },
-    {
-        "instrument": "Cloudnet IWC",
-        "model": "ERA5",
-        "model_group": "era5",
-        "scorecard": "era5_iwc",
+        "scorecard": f"iwc_{CM1_FULL_DAY_MODEL_ID}",
         "comparison": "iwc",
-        "basis": "Cloudnet L3 IWC",
+        "basis": "CM1 ice-water content through Cloudnet L3-IWC evaluation",
         "occurrence": "ice_occurrence",
         "metrics": "point_metrics",
         "metric_family": "continuous",
         "caveat": "ready",
-    },
-    {
-        "instrument": "Cloudnet IWC",
-        "model": "CM1 full LES",
-        "model_group": "cm1",
-        "scorecard": "cm1_iwc",
-        "comparison": "iwc",
-        "basis": "CM1 Cloudnet L3 IWC",
-        "occurrence": "ice_occurrence",
-        "metrics": "point_metrics",
-        "metric_family": "continuous",
-        "caveat": "ready",
-    },
-    {
-        "instrument": "Cloudnet IWC",
-        "model": "GFS direct",
-        "model_group": "gfs",
-        "scorecard": "gfs_iwc",
-        "comparison": "iwc",
-        "basis": "GFS ice-water content from mixing ratio and dry-air density",
-        "occurrence": "ice_occurrence",
-        "metrics": "point_metrics",
-        "metric_family": "continuous",
-        "caveat": "diagnostic_only",
     },
     {
         "instrument": "W-band radar",
-        "model": "CM1 virtual observatory",
+        "model": "CM1 + PAMTRA W-band",
         "model_group": "synthetic",
-        "scorecard": "wband_radar",
-        "basis": "CM1 synthetic radar vs Cloudnet Z",
+        "scorecard": f"wband_radar_{CM1_FULL_DAY_MODEL_ID}",
+        "basis": "PAMTRA synthetic moments versus collocated RPG-FMCW94 reflectivity",
         "occurrence": "contingency",
         "metrics": "reflectivity_metrics",
         "metric_family": "occurrence",
@@ -999,84 +984,74 @@ INSTRUMENT_COMPARISON_SPECS = (
     },
     {
         "instrument": "CL61 lidar",
-        "model": "CM1 virtual observatory",
+        "model": "CM1 + ALCF CL61",
         "model_group": "synthetic",
-        "scorecard": "cl61_diagnostic",
-        "basis": "CM1 synthetic lidar vs CL61 beta_att; production only when coincident",
+        "scorecard": f"cl61_{CM1_FULL_DAY_MODEL_ID}",
+        "basis": (
+            "ALCF synthetic backscatter, cloud occurrence and cloud base versus "
+            "collocated CL61; depolarisation remains observation-only"
+        ),
         "occurrence": "contingency",
         "metric_family": "occurrence",
         "caveat": "ready",
     },
+    *_direct_comparison_specs(
+        "Surface met",
+        "surface_met",
+        comparison="air_temperature",
+        basis="near-surface temperature versus collocated Vaisala support-window means",
+        metrics="metrics",
+        metric_family="continuous",
+    ),
     {
         "instrument": "Surface met",
-        "model": "CM1 full LES virtual instrument",
+        "model": "GFS-forced CM1 virtual instrument",
         "model_group": "surface",
-        "scorecard": "surface_met_cm1_era5_full_day",
+        "scorecard": f"surface_met_{CM1_FULL_DAY_MODEL_ID}",
         "comparison": "temperature",
-        "basis": "CM1 50 m sample vs Vaisala 5-minute support-window means",
+        "basis": "CM1 lowest-level sample versus collocated Vaisala observations",
         "metrics": "score",
         "metric_family": "continuous",
         "caveat": "diagnostic_only",
     },
-    {
-        "instrument": "Surface met",
-        "model": "GFS direct",
-        "model_group": "gfs",
-        "scorecard": "gfs_surface_met",
-        "comparison": "air_temperature",
-        "basis": "GFS nearest-column 2 m temperature vs Vaisala support-window means",
-        "metrics": "metrics",
-        "metric_family": "continuous",
-        "caveat": "diagnostic_only",
-    },
+    *_direct_comparison_specs(
+        "ASFS radiation",
+        "surface_radiation",
+        comparison="longwave_downwelling",
+        basis="surface downwelling longwave radiation versus collocated ASFS",
+        metrics="metrics",
+        metric_family="continuous",
+    ),
     {
         "instrument": "ASFS radiation",
-        "model": "CM1 + RRTMGP/SEB",
+        "model": "CM1 + RRTMGP",
         "model_group": "surface",
-        "scorecard": "asfs_logger_radiation_surface",
-        "comparison": "longwave_downwelling",
-        "basis": "ASFS logger longwave down",
-        "metrics": "metrics",
+        "scorecard": f"cloud_seb_process_{CM1_FULL_DAY_MODEL_ID}",
+        "basis": "RRTMGP all-sky and clear-sky fluxes versus collocated ASFS radiation",
         "metric_family": "continuous",
         "caveat": "ready",
-    },
-    {
-        "instrument": "ASFS radiation",
-        "model": "GFS direct",
-        "model_group": "gfs",
-        "scorecard": "gfs_asfs_logger_radiation_surface",
-        "comparison": "longwave_downwelling",
-        "basis": "GFS downwelling longwave radiation vs ASFS logger",
-        "metrics": "metrics",
-        "metric_family": "continuous",
-        "caveat": "diagnostic_only",
     },
     {
         "instrument": "ASFS sonic",
-        "model": "CM1 surface diagnostics",
+        "model": "CM1 turbulence context",
         "model_group": "surface",
-        "scorecard": "asfs_sonic_turbulence",
-        "comparison": "mean_x_wind",
-        "basis": "sonic mean wind and turbulence",
-        "metrics_group": "mean_comparisons",
-        "metrics": "metrics",
+        "scorecard": f"asfs_sonic_{CM1_FULL_DAY_MODEL_ID}",
+        "basis": "LES wind and turbulence context versus collocated ASFS sonic",
         "metric_family": "continuous",
-        "caveat": "ready",
+        "caveat": "diagnostic_only",
     },
     {
         "instrument": "ASFS gas",
-        "model": "CM1 diagnostic background",
+        "model": "CM1 moisture and gas context",
         "model_group": "surface",
-        "scorecard": "asfs_gas",
-        "comparison": "co2_molar_density",
-        "basis": "LI-COR CO2 diagnostic",
-        "metrics": "metrics",
+        "scorecard": f"asfs_gas_{CM1_FULL_DAY_MODEL_ID}",
+        "basis": "LES moisture context versus collocated ASFS gas measurements",
         "metric_family": "continuous",
         "caveat": "diagnostic_only",
     },
     {
         "instrument": "Cloud/SEB process",
-        "model": "ERA5 direct + CM1 full LES",
+        "model": "IFS / GFS / ICON direct + GFS-forced CM1",
         "model_group": "surface",
         "scorecard": "cloud_seb_model_observation_review",
         "basis": "Cloudnet-regime surface-energy process review",
@@ -1087,40 +1062,48 @@ INSTRUMENT_COMPARISON_SPECS = (
 
 INSTRUMENT_GALLERY_SCORECARDS = {
     "Cloudnet CF": (
-        ("Hogan CF verification: ERA5", "cloud_fraction_hogan"),
-        ("Cloudnet CF: CM1 full LES", "cloud_fraction"),
+        ("IFS / GFS / ICON direct cloud evaluation", "direct_scorecard"),
+        ("GFS-forced CM1 Cloudnet CF", f"cloud_fraction_{CM1_FULL_DAY_MODEL_ID}"),
     ),
-    "Cloudnet LWC": (("Cloudnet LWC: ERA5", "era5_lwc"), ("Cloudnet LWC: CM1 full LES", "cm1_lwc")),
-    "HATPRO/LWP": (("LWP context: ERA5", "era5_lwc"), ("LWP context: CM1 full LES", "cm1_lwc")),
-    "Cloudnet IWC": (("Cloudnet IWC: ERA5", "era5_iwc"), ("Cloudnet IWC: CM1 full LES", "cm1_iwc")),
-    "W-band radar": (("W-band radar", "wband_radar"),),
-    "CL61 lidar": (("CL61 lidar diagnostic", "cl61_diagnostic"),),
+    "Cloudnet LWC": (
+        ("IFS / GFS / ICON direct cloud-water evaluation", "direct_scorecard"),
+        ("GFS-forced CM1 Cloudnet LWC", f"lwc_{CM1_FULL_DAY_MODEL_ID}"),
+    ),
+    "HATPRO/LWP": (
+        ("IFS / GFS / ICON direct LWP evaluation", "direct_scorecard"),
+        ("CM1 + PAMTRA HATPRO channels", f"hatpro_tb_{CM1_FULL_DAY_MODEL_ID}"),
+    ),
+    "Cloudnet IWC": (
+        ("IFS / GFS / ICON direct ice-water evaluation", "direct_scorecard"),
+        ("GFS-forced CM1 Cloudnet IWC", f"iwc_{CM1_FULL_DAY_MODEL_ID}"),
+    ),
+    "W-band radar": (
+        ("CM1 + PAMTRA W-band comparison", f"wband_radar_{CM1_FULL_DAY_MODEL_ID}"),
+    ),
+    "CL61 lidar": (
+        ("CM1 + ALCF CL61 comparison", f"cl61_{CM1_FULL_DAY_MODEL_ID}"),
+    ),
     "Surface met": (
-        ("CM1 full LES surface meteorology", "surface_met_cm1_era5_full_day"),
+        ("GFS-forced CM1 surface meteorology", f"surface_met_{CM1_FULL_DAY_MODEL_ID}"),
+        ("IFS / GFS / ICON direct surface evaluation", "direct_scorecard"),
     ),
-    "ASFS radiation": (("ASFS radiation", "asfs_logger_radiation_surface"),),
-    "ASFS sonic": (("ASFS sonic/turbulence", "asfs_sonic_turbulence"),),
-    "ASFS gas": (("ASFS gas", "asfs_gas"),),
+    "ASFS radiation": (
+        ("GFS-forced CM1 + RRTMGP cloud/SEB", f"cloud_seb_process_{CM1_FULL_DAY_MODEL_ID}"),
+        ("GFS direct cloud/SEB", "direct_gfs_cloud_seb_process"),
+    ),
+    "ASFS sonic": (),
+    "ASFS gas": (),
     "Cloud/SEB process": (),
 }
 
-DIRECT_SCORECARD_ALIASES = {
-    "era5_cloud_fraction": {
-        "source": "direct_era5",
+_DIRECT_ALIAS_VARIABLES = {
+    "cloud_fraction": {
         "variable": "cloud_fraction",
         "comparison": "cf_V",
         "occurrence": "contingency",
         "metrics": "point_metrics",
     },
-    "gfs_cloud_fraction": {
-        "source": "direct_gfs",
-        "variable": "cloud_fraction",
-        "comparison": "cf_V",
-        "occurrence": "contingency",
-        "metrics": "point_metrics",
-    },
-    "era5_lwc": {
-        "source": "direct_era5",
+    "lwc": {
         "variable": "liquid_water_content",
         "column_variable": "liquid_water_path",
         "comparison": "lwc",
@@ -1128,60 +1111,39 @@ DIRECT_SCORECARD_ALIASES = {
         "metrics": "point_metrics",
         "column_metrics": "lwp_metrics",
     },
-    "gfs_lwc": {
-        "source": "direct_gfs",
-        "variable": "liquid_water_content",
-        "column_variable": "liquid_water_path",
-        "comparison": "lwc",
-        "occurrence": "liquid_occurrence",
-        "metrics": "point_metrics",
-        "column_metrics": "lwp_metrics",
-    },
-    "era5_iwc": {
-        "source": "direct_era5",
-        "variable": "ice_water_content",
-        "comparison": "iwc",
-        "occurrence": "ice_occurrence",
-        "metrics": "point_metrics",
-    },
-    "gfs_iwc": {
-        "source": "direct_gfs",
+    "iwc": {
         "variable": "ice_water_content",
         "comparison": "iwc",
         "occurrence": "ice_occurrence",
         "metrics": "point_metrics",
     },
     "surface_met": {
-        "source": "direct_era5",
         "variable": "air_temperature",
         "comparison": "air_temperature",
         "metrics": "metrics",
     },
-    "gfs_surface_met": {
-        "source": "direct_gfs",
-        "variable": "air_temperature",
-        "comparison": "air_temperature",
-        "metrics": "metrics",
-    },
-    "asfs_logger_radiation_surface": {
-        "source": "direct_era5",
-        "variable": "surface_downwelling_longwave_radiation",
-        "comparison": "longwave_downwelling",
-        "metrics": "metrics",
-    },
-    "gfs_asfs_logger_radiation_surface": {
-        "source": "direct_gfs",
+    "surface_radiation": {
         "variable": "surface_downwelling_longwave_radiation",
         "comparison": "longwave_downwelling",
         "metrics": "metrics",
     },
 }
 
+DIRECT_SCORECARD_ALIASES = {
+    f"{model_id}_{alias_suffix}": {
+        "source": f"direct_{model_id}",
+        **alias,
+    }
+    for _model_label, model_id in DIRECT_MODEL_CANDIDATES
+    for alias_suffix, alias in _DIRECT_ALIAS_VARIABLES.items()
+}
+
 MODEL_FILTERS = OrderedDict(
     [
         ("All model outputs", "all"),
-        ("ERA5", "era5"),
+        ("IFS", "ifs"),
         ("GFS", "gfs"),
+        ("ICON", "icon"),
         ("CM1 full LES", "cm1"),
         ("Synthetic / forward operator", "synthetic"),
         ("Surface / SEB diagnostics", "surface"),
@@ -1211,7 +1173,7 @@ DATASETS = OrderedDict(
         ("IWC scorecard", "iwc_scorecard"),
         ("HATPRO LWP diagnostic", "lwp_scorecard"),
         ("Observation audit", "observation_audit"),
-        ("CL61 diagnostic", "cl61_scorecard"),
+        ("CL61 comparison", "cl61_scorecard"),
         ("W-band radar scorecard", "wband_radar_scorecard"),
         ("PAMTRA W-band scorecard", "pamtra_wband_radar_scorecard"),
         ("PAMTRA W-band sensitivity sweep", "pamtra_wband_radar_sensitivity_sweep"),
@@ -1465,9 +1427,11 @@ def _direct_alias_scorecard(
         base_top["cloud_top_bias_mean_m"] = top_metrics.get("bias_mean", "n/a")
     notes = variable_score.get("notes")
     note_text = "; ".join(str(note) for note in notes) if isinstance(notes, list) else ""
+    variable_status = variable_score.get("status", scorecard.get("status", "unknown"))
+    hogan = variable_score.get("hogan_2009_cloud_fraction")
     return {
-        "status": scorecard.get("metric_status", scorecard.get("status", "unknown")),
-        "scoring_status": scorecard.get("metric_status", scorecard.get("status", "unknown")),
+        "status": variable_status,
+        "scoring_status": variable_status,
         "metric_status": scorecard.get("metric_status", "unknown"),
         "model_id": scorecard.get("model_id", "unknown"),
         "source_scorecard": alias.get("source", "direct"),
@@ -1477,6 +1441,7 @@ def _direct_alias_scorecard(
         "comparisons": {comparison_name: comparison},
         "contingency": occurrence,
         "cloud_base_top": base_top,
+        "hogan_2009_cloud_fraction": hogan if isinstance(hogan, dict) else {},
         "readiness_note": note_text,
     }
 
@@ -1685,66 +1650,93 @@ def _iceland_audit_summary(preflight: dict[str, object]) -> str:
 
 
 def _iceland_readiness_panel() -> str:
-    queue = _iceland_readiness_queue()
-    preflight = _iceland_preflight()
-    if isinstance(queue, dict):
-        cards = _iceland_queue_cards(queue)
-        notes = queue.get("notes", [])
-        note_html = "".join(
-            f"<li>{escape(str(note))}</li>" for note in notes if str(note).strip()
-        )
-        preflight_context = ""
-        if isinstance(preflight, dict):
-            preflight_context = (
-                f"{_iceland_audit_summary(preflight)}"
-                f"{_group_status_summary(preflight.get('groups', {}))}"
-            )
+    days = _campaign_days(limit=1)
+    day = days[0] if days else ""
+    bundle = load_day_bundle(day) if day else None
+    if not isinstance(bundle, dict):
         return (
-            "<div class='model-section-title'>Iceland Readiness</div>"
-            f"<div class='model-grid'>{''.join(cards)}</div>"
-            "<div class='model-note'>"
-            "Queue is read-only: it stages the next safe actions for Iceland and does not launch "
-            "CM1 or forward operators."
-            "</div>"
-            f"{_iceland_queue_table(queue)}"
-            f"{preflight_context}"
-            + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
+            "<div class='model-section-title'>Iceland Case Status</div>"
+            "<div class='model-note'>No current Iceland daily bundle is available.</div>"
         )
-    if not isinstance(preflight, dict):
-        cards = [
-            _card("Iceland status", "not staged"),
-            _card("planned start", "2026-07-06"),
-            _card("next action", "run readiness queue"),
-        ]
-        return (
-            "<div class='model-section-title'>Iceland Readiness</div>"
-            f"<div class='model-grid'>{''.join(cards)}</div>"
-            "<div class='model-note'>"
-            "No Iceland readiness queue has been written yet. The Leeds replay remains the "
-            "regression baseline until new colocated campaign data arrive."
-            "</div>"
-        )
-    groups = preflight.get("groups", {})
-    cards = [
-        _card("Iceland day", preflight.get("day", "missing")),
-        _card("preflight", preflight.get("status", "missing")),
-        _card("daily readiness", preflight.get("readiness_status", "missing")),
-        _card("blockers", len(preflight.get("blockers", []) or [])),
-    ]
-    notes = preflight.get("notes", [])
-    note_html = "".join(
-        f"<li>{escape(str(note))}</li>" for note in notes if str(note).strip()
+
+    readiness = bundle.get("readiness")
+    readiness = readiness if isinstance(readiness, dict) else {}
+    availability = readiness.get("model_input_availability")
+    availability = availability if isinstance(availability, dict) else {}
+    models = availability.get("models")
+    models = models if isinstance(models, dict) else {}
+    coverage = load_scorecard(day, "cloudnet_instrument_coverage") or {}
+    common_overlap = (
+        coverage.get("production_common_overlap")
+        or coverage.get("all_role_common_overlap")
+        or coverage.get("common_overlap")
     )
+    common_overlap = common_overlap if isinstance(common_overlap, dict) else {}
+    full_les = readiness.get("v1_path_summary")
+    full_les = full_les if isinstance(full_les, dict) else {}
+    paths = full_les.get("paths")
+    paths = paths if isinstance(paths, dict) else {}
+    les_path = paths.get("full_les_virtual_observatory_path")
+    les_path = les_path if isinstance(les_path, dict) else {}
+    diagnostic = les_path.get("diagnostic_review")
+    diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+    artifact_statuses = diagnostic.get("artifact_statuses")
+    artifact_statuses = artifact_statuses if isinstance(artifact_statuses, dict) else {}
+    cm1_status = artifact_statuses.get(
+        "cm1_gfs_full_day_virtual_observatory_result",
+        artifact_statuses.get("cm1_gfs_full_day_launch", les_path.get("status", "missing")),
+    )
+
+    site = coverage.get("site") or bundle.get("site")
+    site = site if isinstance(site, dict) else {}
+    deployments = site.get("deployments")
+    deployments = deployments if isinstance(deployments, list) else []
+    deployment = deployments[-1] if deployments and isinstance(deployments[-1], dict) else {}
+    colocated = deployment.get("colocated_instruments")
+    colocated = colocated if isinstance(colocated, list) else []
+    cards = [
+        _card("example day", day),
+        _card("site", site.get("name", bundle.get("site_name", "Iceland"))),
+        _card("collocated instruments", len(colocated)),
+        _card("Cloudnet overlap h", common_overlap.get("hours", "n/a")),
+        _card("Cloudnet window", common_overlap.get("status", coverage.get("status", "unknown"))),
+        _card("IFS", _model_status(models, "ifs")),
+        _card("GFS", _model_status(models, "gfs")),
+        _card("ICON", _model_status(models, "icon")),
+        _card("GFS-forced CM1", cm1_status),
+    ]
+    rows = []
+    for model_label, model_id in DIRECT_MODEL_CANDIDATES:
+        model = models.get(model_id)
+        model = model if isinstance(model, dict) else {}
+        rows.append(
+            "<tr>"
+            f"<td>{escape(model_label)}</td>"
+            f"<td>{_badge(model.get('status', 'missing'))}</td>"
+            f"<td>{escape(str(model.get('target_available_hours', 'n/a')))}</td>"
+            f"<td>{escape(str(model.get('valid_time_start', 'n/a')))}</td>"
+            f"<td>{escape(str(model.get('valid_time_end', 'n/a')))}</td>"
+            "</tr>"
+        )
     return (
-        "<div class='model-section-title'>Iceland Readiness</div>"
+        "<div class='model-section-title'>August 1 Iceland Case</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
         "<div class='model-note'>"
-        f"{escape(str(preflight.get('resume_condition', 'Run preflight before execution.')))}"
+        "All seven observation streams are physically collocated. CL61 backscatter, "
+        "cloud occurrence and cloud base are production-eligible; linear "
+        "depolarisation remains observation-only because ALCF does not simulate it."
         "</div>"
-        f"{_iceland_audit_summary(preflight)}"
-        f"{_group_status_summary(groups)}"
-        + (f"<ul class='model-compact-list'>{note_html}</ul>" if note_html else "")
+        "<div class='model-table-wrap'>"
+        "<table class='model-table operational-table'>"
+        "<thead><tr><th>model</th><th>input state</th><th>available h</th>"
+        "<th>valid start</th><th>valid end</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
     )
+
+
+def _model_status(models: dict[str, object], model_id: str) -> object:
+    model = models.get(model_id)
+    return model.get("status", "missing") if isinstance(model, dict) else "missing"
 
 
 def _bundle_recipe(day: str) -> dict[str, object]:
@@ -3156,7 +3148,7 @@ def _direct_model_variable_readiness_panel(day: str) -> str:
         "<div class='model-section-title'>Direct Model Path Readiness</div>"
         "<div class='model-note'>"
         "Direct model-variable products can be reviewed independently from the "
-        "CM1/CARRA2 virtual observatory. Available-model products are usable for "
+        "GFS-forced CM1 virtual observatory. Available-model products are usable for "
         "science review; missing parent models remain excluded from ranking."
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
@@ -3655,7 +3647,7 @@ def _model_input_review_statement(
     return (
         f"Ready parent models: {_list_summary(ready_models, limit=4)}. "
         f"Waiting parent models: {_list_summary(waiting_models, limit=4)}. "
-        f"Direct path: {direct_state}; CM1/CARRA2 virtual observatory: {virtual_state}."
+        f"Direct path: {direct_state}; GFS-forced CM1 virtual observatory: {virtual_state}."
     )
 
 
@@ -3970,14 +3962,35 @@ def _metric_from(metric_block: object, names: tuple[str, ...]) -> object:
     return "n/a"
 
 
+def _hogan_headline_eligibility(scorecard: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(scorecard, dict):
+        return {}
+    hogan = scorecard.get("hogan_2009_cloud_fraction")
+    hogan = hogan if isinstance(hogan, dict) else {}
+    support = hogan.get("support_compliance")
+    support = support if isinstance(support, dict) else {}
+    eligibility = support.get("headline_eligibility")
+    return eligibility if isinstance(eligibility, dict) else {}
+
+
 def _scorecard_caveat(scorecard: dict[str, object] | None, spec: dict[str, object]) -> str:
     if not isinstance(scorecard, dict):
+        return "blocked_missing_input"
+    scorecard_status = str(
+        scorecard.get("scoring_status") or scorecard.get("status") or ""
+    ).lower()
+    if scorecard_status.startswith(("missing", "failed", "blocked")):
         return "blocked_missing_input"
     if scorecard.get("excluded_from_scoring"):
         status = str(scorecard.get("scoring_status", "")).lower()
         if "non_colocated" in status or "not colocated" in status:
             return "not_colocated"
         return "diagnostic_only"
+    hogan_eligibility = _hogan_headline_eligibility(scorecard)
+    hogan_status = str(hogan_eligibility.get("status", "")).lower()
+    hogan_ranking = str(hogan_eligibility.get("ranking_policy", "")).lower()
+    if hogan_status.startswith("diagnostic") or hogan_ranking.startswith("excluded"):
+        return "diagnostic_only_hogan_support"
     payload_caveat = str(spec.get("caveat", "ready"))
     if payload_caveat != "ready":
         return payload_caveat
@@ -4000,9 +4013,7 @@ def _instrument_path_overlay(
 
     model_group = str(spec.get("model_group", ""))
     model_label = str(spec.get("model", ""))
-    if model_group == "era5" or (
-        "ERA5" in model_label and "CM1" not in model_label
-    ):
+    if model_group in {model_id for _label, model_id in DIRECT_MODEL_CANDIDATES}:
         readiness = _direct_model_variable_readiness(day)
         current = readiness.get("current_work")
         current = current if isinstance(current, dict) else {}
@@ -4012,8 +4023,13 @@ def _instrument_path_overlay(
         usable_models = usable_models if isinstance(usable_models, list) else []
         missing_models = readiness.get("missing_models")
         missing_models = missing_models if isinstance(missing_models, list) else []
-        can_review = bool(current.get("can_review_now", readiness.get("review_ready", False)))
+        scorecard_reviewable = not caveat.startswith("blocked")
+        can_review = bool(
+            current.get("can_review_now", readiness.get("review_ready", False))
+        ) or scorecard_reviewable
         can_rank = bool(current.get("can_rank_all_models_now", False))
+        if scorecard_reviewable and model_group not in usable_models:
+            usable_models = [*usable_models, model_group]
         path_caveat = caveat
         if caveat == "ready" and can_review and not can_rank:
             path_caveat = "partial_review_ready"
@@ -4030,7 +4046,11 @@ def _instrument_path_overlay(
         )
         return {
             "evaluation_path": "direct model variables",
-            "path_readiness": readiness.get("status", gate.get("status", "unknown")),
+            "path_readiness": (
+                "partial_scorecard_review_ready"
+                if scorecard_reviewable and not can_rank
+                else readiness.get("status", gate.get("status", "unknown"))
+            ),
             "path_review_ready": can_review,
             "path_production_ready": bool(readiness.get("production_ready", False)),
             "path_model_ranking_ready": can_rank,
@@ -4051,7 +4071,8 @@ def _instrument_path_overlay(
             diagnostic_track.get("diagnostic_ready")
             or diagnostic_track.get("can_review_now")
         )
-        review_ready = production_ready or diagnostic_ready
+        scorecard_reviewable = not caveat.startswith("blocked")
+        review_ready = production_ready or diagnostic_ready or scorecard_reviewable
         status = str(
             diagnostic_track.get("status")
             if diagnostic_ready and not production_ready
@@ -4068,13 +4089,13 @@ def _instrument_path_overlay(
         path_note = _join_notes(
             note,
             (
-                "Full LES virtual observatory: blocked until CM1/CARRA2 forcing, "
-                "run and operator products are ready."
+                "Full LES virtual observatory: waiting for the GFS-forced CM1 run "
+                "and instrument forward-operator products."
             )
             if path_caveat.startswith("blocked")
             else (
-                "ERA5-forced full-day LES evidence is reviewable as diagnostic; "
-                "production CM1/CARRA2 remains blocked."
+                "GFS-forced full-day CM1 evidence is reviewable but production "
+                "operator completion remains pending."
             )
             if diagnostic_ready and not production_ready
             else "Full LES virtual-observatory evidence is reviewable.",
@@ -4108,7 +4129,7 @@ def _wband_descriptor_note(
     scorecard_name: str,
     scorecard: dict[str, object] | None,
 ) -> str:
-    if scorecard_name != "wband_radar":
+    if not scorecard_name.startswith("wband_radar"):
         return ""
     metadata = {}
     if isinstance(scorecard, dict) and isinstance(
@@ -4117,11 +4138,12 @@ def _wband_descriptor_note(
         metadata = scorecard["simulated_operator_metadata"]
     if not metadata:
         metadata = _netcdf_attrs(
-            OPERATIONAL_CAMPAIGN_ROOT
-            / "days"
-            / day
-            / "virtual_observatory"
-            / "pamtra_wband_radar.nc"
+            _day_file(
+                day,
+                "virtual",
+                CM1_FULL_DAY_MODEL_ID,
+                "pamtra_wband_radar.nc",
+            )
         )
     family = str(metadata.get("pamtra_descriptor_family", "") or "")
     if not family:
@@ -4468,6 +4490,23 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
     if not isinstance(base_top, dict) and isinstance(scorecard, dict):
         base_top = scorecard.get("cloud_base_top")
     base_top = base_top if isinstance(base_top, dict) else {}
+    hogan = scorecard.get("hogan_2009_cloud_fraction") if isinstance(scorecard, dict) else {}
+    hogan = hogan if isinstance(hogan, dict) else {}
+    hogan_threshold = hogan.get("primary_threshold_score")
+    hogan_threshold = hogan_threshold if isinstance(hogan_threshold, dict) else {}
+    hogan_continuous = hogan.get("continuous_skill")
+    hogan_continuous = hogan_continuous if isinstance(hogan_continuous, dict) else {}
+    hogan_hss = hogan_threshold.get("heidke_skill_score_height_aware")
+    hogan_log_odds = hogan_threshold.get("log_odds_ratio_climatology_corrected")
+    hogan_seds = hogan_threshold.get("symmetric_extreme_dependency_score")
+    hogan_maess = hogan_continuous.get("mean_absolute_error_skill_score")
+    hogan_eligibility = _hogan_headline_eligibility(scorecard)
+    support_blockers = hogan_eligibility.get("support_blockers")
+    if isinstance(support_blockers, list) and support_blockers:
+        note = _join_notes(
+            note,
+            "Hogan headline ranking excluded: " + ", ".join(str(item) for item in support_blockers),
+        )
     runtime = _bundle_runtime_summary(day)
     caveat = _scorecard_caveat(scorecard, spec)
     overlay = _instrument_path_overlay(
@@ -4499,10 +4538,10 @@ def _instrument_comparison_row(day: str, spec: dict[str, object]) -> dict[str, o
         "pod": _metric_from(occurrence, ("probability_of_detection",)),
         "far": _metric_from(occurrence, ("false_alarm_ratio",)),
         "csi": _metric_from(occurrence, ("critical_success_index",)),
-        "hss": "n/a",
-        "log_odds": "n/a",
-        "seds": "n/a",
-        "maess": "n/a",
+        "hss": _metric_from(hogan_hss, ("value",)),
+        "log_odds": _metric_with_standard_error(hogan_log_odds),
+        "seds": _metric_with_standard_error(hogan_seds),
+        "maess": _metric_from(hogan_maess, ("value",)),
         "bias": _metric_from(
             metrics,
             (
@@ -4613,7 +4652,12 @@ def _instrument_metric_cards(rows: list[dict[str, object]]) -> str:
         return f"<div class='model-grid'>{''.join(cards)}</div>"
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
     partial = sum(1 for row in rows if "partial" in str(row.get("caveat", "")))
-    diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
+    diagnostic = sum(
+        1
+        for row in rows
+        if str(row.get("caveat", "")).startswith("diagnostic")
+        or row.get("caveat") == "not_colocated"
+    )
     blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
     hss_values = [
         float(row["hss"])
@@ -5671,35 +5715,37 @@ def _evaluation_schematic() -> str:
     return """
     <div class="schematic">
       <div class="schematic-col">
-        <div class="schematic-title">Observations</div>
+        <div class="schematic-title">August 1 Iceland inputs</div>
         <div class="schematic-box">Cloud radar / W-band</div>
-        <div class="schematic-box">CL61 lidar</div>
+        <div class="schematic-box">Collocated CL61 lidar</div>
         <div class="schematic-box">HATPRO LWP</div>
         <div class="schematic-box">ASFS met, radiation, sonic, gas</div>
-        <div class="schematic-box">Cloudnet source products</div>
+        <div class="schematic-box">IFS / GFS / ICON</div>
+      </div>
+      <div class="schematic-arrow">-></div>
+      <div class="schematic-lanes">
+        <div class="schematic-col">
+          <div class="schematic-title">Direct model-variable path</div>
+          <div class="schematic-box">MODF observations at native cadence</div>
+          <div class="schematic-box">IFS / GFS / ICON MMDF</div>
+          <div class="schematic-box">Observations matched to model support</div>
+          <div class="schematic-box">Hogan CF and continuous-variable scores</div>
+        </div>
+        <div class="schematic-col">
+          <div class="schematic-title">Full LES virtual-observatory path</div>
+          <div class="schematic-box">GFS boundary forcing</div>
+          <div class="schematic-box">CM1 nonhydrostatic full LES</div>
+          <div class="schematic-box">PAMTRA W-band and HATPRO</div>
+          <div class="schematic-box">ALCF CL61 and RRTMGP radiation</div>
+        </div>
       </div>
       <div class="schematic-arrow">-></div>
       <div class="schematic-col">
-        <div class="schematic-title">Model Inputs</div>
-        <div class="schematic-box">ERA5</div>
-        <div class="schematic-box">CM1 / full LES daily recipe</div>
-        <div class="schematic-box">CM1 virtual-observatory products</div>
-      </div>
-      <div class="schematic-arrow">-></div>
-      <div class="schematic-col">
-        <div class="schematic-title">Forward Operators</div>
+        <div class="schematic-title">Joint science review</div>
+        <div class="schematic-box">Instrument scorecards</div>
         <div class="schematic-box">Cloudnet CF / LWC / IWC</div>
-        <div class="schematic-box">PAMTRA / W-band radar</div>
-        <div class="schematic-box">CL61 diagnostic lidar</div>
-        <div class="schematic-box">RRTMGP / SEB</div>
-        <div class="schematic-box">ASFS surface diagnostics</div>
-      </div>
-      <div class="schematic-arrow">-></div>
-      <div class="schematic-col">
-        <div class="schematic-title">Review Outputs</div>
-        <div class="schematic-box">Scorecards</div>
-        <div class="schematic-box">AURORA-LASSO bundle</div>
-        <div class="schematic-box">Dashboard</div>
+        <div class="schematic-box">Cloud / surface-energy process analysis</div>
+        <div class="schematic-box">Daily bundle, provenance and history</div>
       </div>
     </div>
     """
@@ -6574,87 +6620,57 @@ def _direct_model_evidence_panel(day: str) -> str:
     )
 
 
+def _direct_cloud_fraction_hss(day: str, model_id: str) -> object:
+    scorecard = load_scorecard(day, f"{model_id}_cloud_fraction")
+    hogan = scorecard.get("hogan_2009_cloud_fraction") if isinstance(scorecard, dict) else {}
+    hogan = hogan if isinstance(hogan, dict) else {}
+    threshold = hogan.get("primary_threshold_score")
+    threshold = threshold if isinstance(threshold, dict) else {}
+    hss = threshold.get("heidke_skill_score_height_aware")
+    return _metric_from(hss, ("value",))
+
+
 def _overview_panel(_clicks: int = 0) -> pn.Column:
     index = load_campaign_index()
-    operator_physics = _campaign_operator_physics_diagnosis()
     days = _campaign_days()
     latest_day = days[0] if days else ""
-    latest_runtime = _bundle_runtime_summary(latest_day) if latest_day else {}
-    operational_qa = _operational_qa_rollup(index)
-    archive_manifest = _campaign_archive_manifest()
-    operator_rows = _operator_physics_campaign_days(operator_physics)
-    operator_latest_day = _operator_physics_latest_day(operator_physics, operator_rows)
-    operator_latest = _operator_physics_day(operator_latest_day) if operator_latest_day else None
-    operator_hypotheses = (
-        operator_latest.get("hypotheses") if isinstance(operator_latest, dict) else []
-    )
-    operator_top = (
-        operator_hypotheses[0]
-        if isinstance(operator_hypotheses, list) and operator_hypotheses
-        else {}
-    )
     rows = build_instrument_catalog([latest_day]) if latest_day else []
     ready = sum(1 for row in rows if row.get("caveat") == "ready")
     partial = sum(1 for row in rows if "partial" in str(row.get("caveat", "")))
-    diagnostic = sum(1 for row in rows if row.get("caveat") in {"diagnostic_only", "not_colocated"})
+    diagnostic = sum(
+        1
+        for row in rows
+        if str(row.get("caveat", "")).startswith("diagnostic")
+        or row.get("caveat") == "not_colocated"
+    )
     blocked = sum(1 for row in rows if str(row.get("caveat", "")).startswith("blocked"))
     cards = [
         _card("latest day", latest_day or "missing"),
         _card("campaign", index.get("status", "missing") if isinstance(index, dict) else "missing"),
-        _card(
-            "MDF source reviews",
-            index.get("mdf_source_metadata_review_required_count", "n/a")
-            if isinstance(index, dict)
-            else "n/a",
-        ),
-        _card(
-            "MDF review status",
-            _count_dict_text(index.get("mdf_source_metadata_review_status_counts"))
-            if isinstance(index, dict)
-            else "missing",
-        ),
-        _card("QA ready days", operational_qa.get("ready_day_count", "n/a")),
-        _card("QA incomplete", operational_qa.get("qa_incomplete_day_count", "n/a")),
-        _card("CM1 run h", latest_runtime.get("run_hours", "n/a")),
-        _card("CM1 eval h", latest_runtime.get("evaluation_hours", "n/a")),
         _card("ready products", ready),
         _card("partial products", partial),
         _card("diagnostic products", diagnostic),
         _card("blocked products", blocked),
-        _card("ERA5 CF CSI", _index_cf_metric(index, "era5_cloud_fraction", "cf_V")),
-        _card("CM1 LES CF CSI", _index_cf_metric(index, "cloud_fraction", "cf_V")),
-        _card("operator physics", operator_physics.get("status", "missing") if isinstance(operator_physics, dict) else "missing"),
-        _card("top operator hypothesis", operator_top.get("id", "missing") if isinstance(operator_top, dict) else "missing"),
-        *_archive_manifest_cards(archive_manifest),
+        _card("IFS CF HSS (diagnostic)", _direct_cloud_fraction_hss(latest_day, "ifs")),
+        _card("GFS CF HSS (diagnostic)", _direct_cloud_fraction_hss(latest_day, "gfs")),
+        _card("ICON CF HSS (diagnostic)", _direct_cloud_fraction_hss(latest_day, "icon")),
     ]
     html = (
         "<div class='model-shell operational-shell'>"
         "<div class='model-headline'>"
         "<div>"
         "<div class='model-title'>AURORA-LASSO Evaluation Overview</div>"
-        "<div class='model-subtitle'>External science-review view of active campaign products</div>"
+        "<div class='model-subtitle'>August 1 Iceland science review: direct models and full LES virtual observatory</div>"
         "</div>"
         "<div class='model-pill'>active campaign only</div>"
         "</div>"
         f"<div class='model-grid'>{''.join(cards)}</div>"
-        f"{_goal_progress_panel(latest_day)}"
+        f"{_iceland_readiness_panel()}"
         f"{_review_tracks_panel(latest_day)}"
-        f"{_partial_evidence_brief_panel(latest_day)}"
-        f"{_parent_model_inputs_panel(latest_day)}"
-        f"{_comparison_readiness_panel(latest_day)}"
-        f"{_cloud_seb_process_gate_panel(latest_day)}"
         f"{_direct_model_variable_readiness_panel(latest_day)}"
-        f"{_side_loaded_input_handoff_panel(latest_day)}"
         f"{_cloudnet_backbone_review_panel(index)}"
         f"{_cloud_seb_process_evidence_panel(latest_day)}"
-        f"{_direct_model_evidence_panel(latest_day)}"
-        f"{_operator_review_batch_panel(latest_day, limit=6)}"
-        f"{_cm1_forcing_handoff_panel(index)}"
-        f"{_operational_wait_state(index)}"
-        f"{_iceland_readiness_panel()}"
         f"{_daily_review_queue_table(index)}"
-        f"{_seven_day_replay_summary(index)}"
-        f"{_operator_physics_rollup_text(operator_physics)}"
         f"{_evaluation_schematic()}"
         "</div>"
     )
@@ -7835,7 +7851,6 @@ instrument_comparison_panel = pn.bind(
     metric_family_select.param.value,
     refresh_button.param.clicks,
 )
-operator_physics_panel = pn.bind(_operator_physics_panel, refresh_button.param.clicks)
 details_provenance_panel = pn.bind(_details_provenance_panel, refresh_button.param.clicks)
 
 CSS = """
@@ -8087,10 +8102,15 @@ body, .bk {
 }
 .schematic {
     display: grid;
-    grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) auto minmax(180px, 1fr) auto minmax(180px, 1fr);
+    grid-template-columns: minmax(210px, 0.8fr) auto minmax(440px, 1.8fr) auto minmax(230px, 0.9fr);
     gap: 10px;
     align-items: stretch;
     margin-top: 12px;
+}
+.schematic-lanes {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(200px, 1fr));
+    gap: 10px;
 }
 .schematic-col {
     border: 1px solid #d8e1e8;
@@ -8154,6 +8174,9 @@ body, .bk {
         transform: rotate(90deg);
         min-height: 20px;
     }
+    .schematic-lanes {
+        grid-template-columns: 1fr;
+    }
 }
 """
 
@@ -8216,13 +8239,6 @@ main_sections = [
         pn.panel(instrument_comparison_panel, sizing_mode="stretch_width"),
         share,
         title="Instrument Comparisons",
-        collapsible=True,
-        collapsed=False,
-        sizing_mode="stretch_width",
-    ),
-    pn.Card(
-        pn.panel(operator_physics_panel, sizing_mode="stretch_width"),
-        title="Operator Physics",
         collapsible=True,
         collapsed=False,
         sizing_mode="stretch_width",

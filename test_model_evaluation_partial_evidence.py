@@ -131,7 +131,7 @@ def test_parent_model_inputs_panel_shows_ready_era5_and_waiting_carra2(
     assert "Ready parent models: era5." in html
     assert "Waiting parent models: carra2." in html
     assert "Direct path: ready" in html
-    assert "CM1/CARRA2 virtual observatory: blocked_missing_input" in html
+    assert "GFS-forced CM1 virtual observatory: blocked_missing_input" in html
     assert "ready_full_target_day" in html
     assert "waiting_upstream_not_available" in html
 
@@ -219,20 +219,20 @@ def test_surface_met_row_uses_full_day_virtual_instrument_scorecard(
     tmp_path,
 ) -> None:
     module = _load_model_evaluation_module()
-    day = "2026-07-06"
-    day_root = tmp_path / "2026" / "07" / "06"
+    day = "2026-08-01"
+    day_root = tmp_path / "2026" / "08" / "01"
     scorecard_root = day_root / "scorecards"
     plot_root = day_root / "plots"
     dashboard_root = day_root / "dashboard"
     scorecard_root.mkdir(parents=True)
     plot_root.mkdir(parents=True)
     dashboard_root.mkdir(parents=True)
-    plot = plot_root / "surface_met_cm1_era5_full_day_20260706.svg"
+    plot = plot_root / "surface_met_cm1_gfs_full_day_v1_20260801.svg"
     plot.write_text(
         "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'></svg>",
         encoding="utf-8",
     )
-    (scorecard_root / "surface_met_cm1_era5_full_day.json").write_text(
+    (scorecard_root / "surface_met_cm1_gfs_full_day_v1.json").write_text(
         json.dumps(
             {
                 "status": "scored_diagnostic_vertical_support_mismatch",
@@ -286,13 +286,13 @@ def test_surface_met_row_uses_full_day_virtual_instrument_scorecard(
     spec = next(
         item
         for item in module.INSTRUMENT_COMPARISON_SPECS
-        if item["instrument"] == "Surface met"
+        if item["instrument"] == "Surface met" and item["model_group"] == "surface"
     )
     row = module._instrument_comparison_row(day, spec)
     gallery = module.render_scorecard_gallery(day, "Surface met")
 
-    assert row["scorecard"] == "surface_met_cm1_era5_full_day"
-    assert row["model"] == "CM1 full LES virtual instrument"
+    assert row["scorecard"] == "surface_met_cm1_gfs_full_day_v1"
+    assert row["model"] == "GFS-forced CM1 virtual instrument"
     assert row["status"] == "scored_diagnostic_vertical_support_mismatch"
     assert row["caveat"] == "diagnostic_only"
     assert row["path_readiness"] == (
@@ -304,46 +304,58 @@ def test_surface_met_row_uses_full_day_virtual_instrument_scorecard(
     assert row["bias"] == "-0.405"
     assert row["rmse"] == "1.35"
     assert row["correlation"] == "-0.708"
-    assert "CM1 full LES surface meteorology" in gallery
+    assert "GFS-forced CM1 surface meteorology" in gallery
     assert "data:image/svg+xml;base64," in gallery
 
 
 def test_hogan_cloud_fraction_row_and_svg_gallery(tmp_path) -> None:
     module = _load_model_evaluation_module()
-    day = "2026-07-06"
-    day_root = tmp_path / "2026" / "07" / "06"
+    day = "2026-08-01"
+    day_root = tmp_path / "2026" / "08" / "01"
     scorecard_root = day_root / "scorecards"
     plot_root = day_root / "plots"
     scorecard_root.mkdir(parents=True)
     plot_root.mkdir(parents=True)
-    plot_path = plot_root / "cloud_fraction_hogan_20260706.svg"
+    plot_path = plot_root / "direct_scorecard_20260801.svg"
     plot_path.write_text(
         "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'></svg>",
         encoding="utf-8",
     )
-    (scorecard_root / "cloud_fraction_hogan.json").write_text(
+    (scorecard_root / "direct_scorecard.json").write_text(
+        json.dumps({"status": "scored", "output_svg": str(plot_path)}),
+        encoding="utf-8",
+    )
+    (scorecard_root / "direct_gfs.json").write_text(
         json.dumps(
             {
-                "status": "scored_with_qc_caveat",
-                "primary_comparison_id": "model_cf_cirrus__vs__cf_V_adv",
-                "plot_file": str(plot_path),
-                "qc_caveats": [
-                    "High-rain exclusion is pending collocated surface rain rate."
-                ],
-                "comparisons": [
-                    {
-                        "comparison_id": "model_cf_cirrus__vs__cf_V_adv",
-                        "score": {
-                            "status": "scored",
-                            "sample_qc": {"valid_pair_count": 88},
-                            "support_compliance": {
-                                "headline_eligibility": {
-                                    "status": (
-                                        "method_support_ready_with_high_rain_qc_caveat"
-                                    ),
-                                    "ranking_policy": "blocked_pending_high_rain_qc",
-                                }
-                            },
+                "scorecard": {
+                    "status": "scored_partial_model_input_coverage",
+                    "model_id": "gfs",
+                    "metrics": {
+                        "variable_scores": [
+                            {
+                                "variable_name": "cloud_fraction",
+                                "status": "scored",
+                                "notes": ["Mapped to model support."],
+                                "binary_occurrence": {
+                                    "sample_count": 88,
+                                    "probability_of_detection": 0.8667,
+                                    "false_alarm_ratio": 0.8194,
+                                    "critical_success_index": 0.1757,
+                                },
+                                "continuous": {"sample_count": 88},
+                                "hogan_2009_cloud_fraction": {
+                                    "status": "scored",
+                                    "support_compliance": {
+                                        "headline_eligibility": {
+                                            "status": "diagnostic_only_incomplete_hogan_support",
+                                            "ranking_policy": "excluded_from_hogan_headline_ranking",
+                                            "support_blockers": [
+                                                "missing_radar_sensitivity_cirrus_filter",
+                                                "high_rain_qc_not_applied_missing_categorize",
+                                            ],
+                                        }
+                                    },
                             "primary_threshold_score": {
                                 "probability_of_detection": 0.8667,
                                 "false_alarm_ratio": 0.8194,
@@ -369,9 +381,11 @@ def test_hogan_cloud_fraction_row_and_svg_gallery(tmp_path) -> None:
                                     "value": -0.00512,
                                 }
                             },
-                        },
-                    }
-                ],
+                                },
+                            }
+                        ]
+                    },
+                }
             }
         ),
         encoding="utf-8",
@@ -385,14 +399,14 @@ def test_hogan_cloud_fraction_row_and_svg_gallery(tmp_path) -> None:
             "can_review_now": True,
             "can_rank_all_models_now": False,
         },
-        "usable_models": ["era5"],
-        "missing_models": ["carra2"],
+        "usable_models": ["gfs"],
+        "missing_models": ["icon"],
     }
     rows = module.build_instrument_catalog([day])
     row = next(
         item
         for item in rows
-        if item["scorecard"] == "cloud_fraction_hogan"
+        if item["scorecard"] == "gfs_cloud_fraction"
     )
 
     assert row["valid"] == 88
@@ -402,9 +416,102 @@ def test_hogan_cloud_fraction_row_and_svg_gallery(tmp_path) -> None:
     assert row["maess"] == "-0.00512"
     assert row["path_review_ready"] is True
     assert row["path_model_ranking_ready"] is False
-    assert row["caveat"] == "diagnostic_only_high_rain_qc"
-    assert "blocked_pending_high_rain_qc" in row["note"]
+    assert row["caveat"] == "diagnostic_only_hogan_support"
+    assert "missing_radar_sensitivity_cirrus_filter" in row["note"]
 
     gallery = module.render_scorecard_gallery(day, "Cloudnet CF")
-    assert "Hogan CF verification: ERA5" in gallery
+    assert "IFS / GFS / ICON direct cloud evaluation" in gallery
     assert "data:image/svg+xml;base64," in gallery
+
+
+def test_evaluation_schematic_shows_current_two_paths() -> None:
+    module = _load_model_evaluation_module()
+
+    html = module._evaluation_schematic()
+
+    assert "IFS / GFS / ICON MMDF" in html
+    assert "MODF observations at native cadence" in html
+    assert "GFS boundary forcing" in html
+    assert "CM1 nonhydrostatic full LES" in html
+    assert "ALCF CL61" in html
+    assert "ERA5" not in html
+    assert "diagnostic lidar" not in html
+
+
+def test_iceland_panel_uses_collocated_deployment_and_production_overlap(tmp_path) -> None:
+    module = _load_model_evaluation_module()
+    day_root = tmp_path / "2026" / "08" / "01"
+    (day_root / "scorecards").mkdir(parents=True)
+    (day_root / "bundle.json").write_text(
+        json.dumps(
+            {
+                "day": "2026-08-01",
+                "site_name": "AURORA Iceland deployment",
+                "readiness": {
+                    "model_input_availability": {
+                        "models": {
+                            "ifs": {"status": "downloaded", "target_available_hours": 24.0},
+                            "gfs": {"status": "downloaded", "target_available_hours": 24.0},
+                            "icon": {"status": "partial_day", "target_available_hours": 12.0},
+                        }
+                    },
+                    "v1_path_summary": {
+                        "paths": {
+                            "full_les_virtual_observatory_path": {
+                                "status": "running",
+                                "diagnostic_review": {
+                                    "artifact_statuses": {
+                                        "cm1_gfs_full_day_launch": "running"
+                                    }
+                                },
+                            }
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (day_root / "status.json").write_text(
+        json.dumps({"day": "2026-08-01", "status": "running"}),
+        encoding="utf-8",
+    )
+    (day_root / "scorecards" / "cloudnet_instrument_coverage.json").write_text(
+        json.dumps(
+            {
+                "status": "partial_day_coverage",
+                "production_common_overlap": {
+                    "hours": 23.900556,
+                    "status": "partial_day",
+                },
+                "site": {
+                    "name": "AURORA Iceland deployment",
+                    "deployments": [
+                        {
+                            "colocated_instruments": [
+                                "rpgfmcw94",
+                                "cl61",
+                                "hatpro",
+                                "vaisalamet",
+                                "asfs_logger",
+                                "asfs_fast_sonic",
+                                "asfs_fast_gas",
+                            ]
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+    html = module._iceland_readiness_panel()
+
+    assert "August 1 Iceland Case" in html
+    assert "collocated instruments" in html
+    assert ">7<" in html
+    assert "23.900556" in html
+    assert "CL61 backscatter" in html
+    assert "production-eligible" in html
+    assert "depolarisation remains observation-only" in html

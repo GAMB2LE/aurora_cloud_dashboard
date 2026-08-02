@@ -1,40 +1,47 @@
 # Model Evaluation Cleanup
 
-The `model-evaluation` page is now operational-first. Its default view should
-show the AURORA-LASSO case library and daily operational campaign status, not
-every historic sensitivity test.
+The `model-evaluation` page is operational-first. Its active example is
+`2026-08-01` UTC at the AURORA Iceland deployment. Historical Leeds cases and
+sensitivity tests are provenance, not the default science-review surface.
 
 ## Default Active Surface
 
-- AURORA-LASSO daily bundles
-- Operational campaign readiness
-- Daily ERA5, CM1 LES, Cloudnet, radar, LWC/IWC, LWP, SEB, ASFS/met summary
-  records through the campaign products
-- CM1 full-LES virtual-observatory products only; bridge-era products are
-  archive/provenance material, not active review products
+- Four top-level sections: Overview, Instrument Comparisons, Case Library, and
+  Details / Provenance
+- Direct model-variable evaluation for IFS, GFS, and ICON through MODF/MMDF
+  support matching
+- A GFS-forced CM1 full-LES virtual observatory; no LES-bridge product is an
+  active comparison
+- Official Cloudnet products plus radar, LWC/IWC, HATPRO/LWP, surface met,
+  radiation/SEB, sonic, and gas records
+- Hogan et al. (2009) cloud-fraction metrics, with headline-ranking exclusions
+  shown whenever required method support is incomplete
 - W-band radar rows should expose the active PAMTRA descriptor family when the
   product metadata are available
 - Surface met should use
-  `scorecards/surface_met_cm1_era5_full_day.json` and its rendered plot for the
-  CM1 virtual-instrument comparison. Keep the 50 m model support and missing
-  Vaisala sensor-height metadata visible as a diagnostic caveat; do not present
-  it as a validated 2 m score.
-- CL61 is diagnostic for the Leeds replay, but can become production-valid for
-  Iceland when the site metadata audit and scorecard both report a coincident
-  comparison policy
+  `scorecards/surface_met_cm1_gfs_full_day_v1.json` and its rendered plot for
+  the CM1 virtual-instrument comparison. Keep model/observation support-height
+  differences visible; do not present a lowest-model-level comparison as a
+  validated 2 m score.
+- All seven instrument streams are physically collocated in Iceland from
+  `2026-08-01`. CL61 backscatter, cloud occurrence, and cloud base are
+  production-eligible. Linear depolarisation is observation-only because ALCF
+  does not simulate it.
+- Cloudnet/process evaluation uses the documented common radar/lidar/MWR
+  overlap. For 1 August this is 00:02:08 to 23:56:10 UTC, or 23.900556 hours.
 - Daily review queue rows with bundle/QA status, missing inputs, diagnostic and
   blocked stream counts, runner status, QA actions, and per-day archive class
   counts
 - Current campaign artifacts under
-  `/data/aurora/les/campaigns/aurora_multistream_pilot_20260520_20260602`
+  `/data/aurora/model-evaluation/campaigns/aurora_iceland_model_evaluation_v1`
 
 ## Removed Legacy Surface
 
 The earlier hard-coded run explorer and candidate leaderboard have been removed
 from the served page. The dashboard is no longer an entry point for old CM1
-smoke tests, moisture-forcing experiments, IFS/HRES attempts, or proxy W-band
-comparisons. Forensic review should use campaign bundle provenance and archived
-files directly, not dashboard modes.
+smoke tests, moisture-forcing experiments, ERA5/CARRA experiments, or proxy
+W-band comparisons. Forensic review should use campaign bundle provenance and
+archived files directly, not dashboard modes.
 
 - `AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS=1`
 
@@ -56,11 +63,10 @@ or delete a file.
 Recommended archive classes:
 
 - `active_campaign`: current daily AURORA-LASSO products and scorecards
-- `reference`: ERA5 reference and current CM1 daily recipe
+- `reference`: fixed recipes, contracts, and community-method references
 - `archived_experiment`: old CM1 sensitivity tests and exploratory PAMTRA sweeps
 - `runtime_proof`: CM1 smoke tests and build/runtime checks
-- `retired_dead_end`: scripted but intentionally inactive paths such as IFS/HRES
-  attempts or bridge-era W-band proxy outputs
+- `retired_dead_end`: intentionally inactive bridge-era or proxy outputs
 
 The machine-readable archive manifest is the cleanup contract. Move or hide old
 products by manifest class rather than by ad hoc path deletion.
