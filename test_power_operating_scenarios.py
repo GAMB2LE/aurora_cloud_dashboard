@@ -166,6 +166,9 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertGreater(result.current_confidence, 0.90)
         self.assertIn(MODE_DC_ONLY, result.learned_modes)
         self.assertIn(mode_id(("CL61",)), result.learned_modes)
+        self.assertIn(MODE_DC_ONLY, result.mode_load_profiles)
+        self.assertIn(mode_id(("CL61",)), result.mode_load_profiles)
+        self.assertIn("mode_load_profiles", result.state_dataset.attrs)
         self.assertAlmostEqual(result.component_mean[COMPONENT_INDEX["DC"]], 200.0, delta=25.0)
         self.assertAlmostEqual(result.component_mean[COMPONENT_INDEX["CL61"]], 220.0, delta=20.0)
         probabilities = result.state_dataset["OperatingModeProbability"].values
@@ -363,7 +366,9 @@ class OperatingScenarioTests(unittest.TestCase):
             scenarios.attrs["load_baseline_source"],
             "finite_state_component_model_for_all_operational_scenarios",
         )
-        self.assertEqual(scenarios.attrs["load_state_contract"], "finite_operating_state_v1")
+        self.assertEqual(scenarios.attrs["load_state_contract"], "finite_operating_state_phases_v2")
+        self.assertIn("ScenarioLoadPhaseCode", scenarios)
+        self.assertIn("ScenarioLoadPhaseEpoch", scenarios)
         np.testing.assert_allclose(np.diff(current["ScenarioLoadP50Watts"].values), 0.0)
 
     def test_current_scenario_reuses_the_shared_system_as_is_state_distribution(self) -> None:
@@ -373,8 +378,8 @@ class OperatingScenarioTests(unittest.TestCase):
         deterministic, ensemble = _forecast_inputs(issue)
         deterministic.attrs.update(
             {
-                "load_state_contract": "finite_operating_state_v1",
-                "load_state_hold_policy": "hold_latest_confirmed_state_until_explicit_schedule_transition",
+                "load_state_contract": "finite_operating_state_phases_v2",
+                "load_state_hold_policy": "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition",
             }
         )
         ensemble["ForecastLoadWattsEnsemble"][:] = 515.0
@@ -404,7 +409,7 @@ class OperatingScenarioTests(unittest.TestCase):
         for name in ("ScenarioLoadP10Watts", "ScenarioLoadP50Watts", "ScenarioLoadP90Watts"):
             scenarios[name].values[current_index, 1] += 25.0
 
-        with self.assertRaisesRegex(ValueError, "without an operating-state transition"):
+        with self.assertRaisesRegex(ValueError, "without an operating-state or phase transition"):
             _validate_scenario_invariants(scenarios)
 
     def test_all_instruments_uas_tier3_uses_tier_profile_and_stays_above_dc(self) -> None:
@@ -645,7 +650,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "7")
+                self.assertEqual(state.attrs["model_version"], "8")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
                 scenario_ids = [str(value) for value in scenarios["scenario"].values]

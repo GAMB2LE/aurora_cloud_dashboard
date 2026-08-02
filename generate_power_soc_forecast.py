@@ -29,6 +29,11 @@ from power_load_contract import (
     STATE_HOLD_POLICY,
     estimate_controlled_load,
 )
+from power_load_dynamics import (
+    PHASE_CODES,
+    build_controlled_load_profile,
+    learn_state_load_dynamics,
+)
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 POWER_SOC_FORECAST_ZARR_PATH = Path(
@@ -76,6 +81,7 @@ DEFAULT_PDU_MODE_FRESHNESS_MINUTES = float(os.environ.get("AURORA_POWER_PDU_MODE
 DEFAULT_PDU_ACTIVE_W_THRESHOLD = float(os.environ.get("AURORA_POWER_PDU_ACTIVE_W_THRESHOLD", "5"))
 DEFAULT_LOAD_MODE_MIN_STABLE_SAMPLES = int(os.environ.get("AURORA_POWER_LOAD_MODE_MIN_STABLE_SAMPLES", "2"))
 DEFAULT_MODE_MIN_OBSERVATIONS = int(os.environ.get("AURORA_POWER_LOAD_MODE_MIN_OBSERVATIONS", "3"))
+DEFAULT_DYNAMICS_MIN_SAMPLES = int(os.environ.get("AURORA_POWER_LOAD_DYNAMICS_MIN_SAMPLES", "8"))
 FORECAST_TARGET_MAE_PCT_POINTS = float(os.environ.get("AURORA_POWER_FORECAST_TARGET_MAE_PCT_POINTS", "10"))
 FORECAST_TARGET_MIN_CYCLES = int(os.environ.get("AURORA_POWER_FORECAST_TARGET_MIN_CYCLES", "30"))
 FORECAST_TARGET_MIN_SAMPLES = int(os.environ.get("AURORA_POWER_FORECAST_TARGET_MIN_SAMPLES", "20"))
@@ -88,8 +94,8 @@ DEFAULT_OPEN_DATA_SOURCE = os.environ.get("AURORA_POWER_ECMWF_OPEN_DATA_SOURCE",
 DEFAULT_SKILL_WINDOW_HOURS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_WINDOW_HOURS", "24"))
 DEFAULT_SKILL_RETENTION_DAYS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_RETENTION_DAYS", "7"))
 ECMWF_PARAM = "ssrd"
-LOAD_MODEL_NAME = "finite_controlled_state_v8"
-LOAD_MODEL_VERSION = 8
+LOAD_MODEL_NAME = "finite_controlled_state_phases_v9"
+LOAD_MODEL_VERSION = 9
 PDU_OUTLET_KIT_NAMES = {
     4: "UAS",
     5: "CL61",
@@ -125,6 +131,10 @@ ARCHIVE_FORECAST_FIELDS = (
     "ECMWFSolarIrradiance",
     "ForecastSolarWatts",
     "ForecastLoadWatts",
+    "ForecastLoadP10Watts",
+    "ForecastLoadP50Watts",
+    "ForecastLoadP90Watts",
+    "ForecastLoadPhaseCode",
 )
 SCENARIO_LOADS_W = (100, 200, 300, 400, 500, 600)
 HINDCAST_LEAD_HOURS = (6, 24, 48, 72)
@@ -164,12 +174,16 @@ def forecast_publication_signature(forecast: xr.Dataset) -> str:
             return None
         return round(value / step) * step
 
+    dynamics = str(attrs.get("load_state_dynamics", ""))
+    dynamics_signature = hashlib.sha256(dynamics.encode("utf-8")).hexdigest()[:16] if dynamics else ""
     payload = {
-        "schema": 1,
+        "schema": 2,
         "anchor_30min": anchor_bucket,
         "soc_pct": stepped("initial_soc_pct", 1.0),
         "load_w": stepped("forecast_load_w", 25.0),
         "load_mode": str(attrs.get("load_mode_signature", attrs.get("load_mode", ""))),
+        "load_phase": str(attrs.get("load_current_phase", "")),
+        "load_dynamics": dynamics_signature,
         "ecmwf_cycle": str(attrs.get("ecmwf_cycle_time", "")),
         "solar_contract": str(attrs.get("solar_calibration_contract_id", "")),
         "battery_capacity_kwh": stepped("battery_usable_capacity_kwh", 0.25),
@@ -1898,6 +1912,22 @@ def integrate_soc_forecast(
     )
 
 
+def _forecast_integration_times(
+    initial_time: pd.Timestamp,
+    forecast_times: pd.DatetimeIndex,
+) -> pd.DatetimeIndex:
+    """Return the exact timeline used by :func:`integrate_soc_forecast`."""
+    times = pd.DatetimeIndex(forecast_times)
+    if not len(times):
+        return times
+    anchor = pd.Timestamp(initial_time)
+    if anchor.tz is not None:
+        anchor = anchor.tz_convert("UTC").tz_localize(None)
+    if anchor < times[0]:
+        return pd.DatetimeIndex([anchor]).append(times)
+    return times
+
+
 def _extend_irradiance_with_diurnal_persistence(
     irradiance: pd.Series,
     horizon_end: pd.Timestamp,
@@ -1986,9 +2016,13 @@ def build_forecast_dataset(
         issue_time=latest_time,
     )
     solar_contract_id = solar_calibration_contract_id(factor, solar_mos_by_bucket)
+    load_forecast_times = _forecast_integration_times(
+        latest_time,
+        pd.DatetimeIndex(irradiance.index),
+    )
     raw_load_profile = build_historical_load_forecast(
         frame,
-        pd.DatetimeIndex(irradiance.index),
+        load_forecast_times,
         end=latest_time,
         calibration_days=calibration_days,
         default_load_w=DEFAULT_LOAD_W,
@@ -2052,7 +2086,39 @@ def build_forecast_dataset(
         dc_only_estimate_w=clean_dc_only_level_w,
         minimum_observations=DEFAULT_MODE_MIN_OBSERVATIONS,
     )
-    load_w = controlled_load.p50_w
+    state_dynamics = None
+    state_dynamics_reason = "no_exact_pdu_state"
+    exact_state_id = ""
+    if load_mode == "DC-Only" or active_kits:
+        try:
+            from power_operating_scenarios import MODE_DC_ONLY, build_observation_frame, mode_id
+
+            exact_state_id = mode_id(active_kits) if active_kits else MODE_DC_ONLY
+            state_observations = build_observation_frame(
+                power,
+                pdu,
+                end=latest_time,
+                lookback_days=max(float(calibration_days), 14.0),
+            )
+            if state_observations.empty or str(state_observations["direct_mode"].iloc[-1]) != exact_state_id:
+                state_dynamics_reason = "latest_observation_state_mismatch"
+            else:
+                candidate = learn_state_load_dynamics(state_observations, exact_state_id)
+                if candidate is None:
+                    state_dynamics_reason = "no_phase_profile"
+                elif candidate.sample_count < DEFAULT_DYNAMICS_MIN_SAMPLES:
+                    state_dynamics_reason = "insufficient_exact_state_phase_samples"
+                else:
+                    state_dynamics = candidate
+                    state_dynamics_reason = "learned_exact_state_phases"
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            state_dynamics_reason = f"phase_learning_unavailable:{type(exc).__name__}"
+    controlled_profile = build_controlled_load_profile(
+        state_dynamics,
+        pd.DatetimeIndex(raw_load_profile.index),
+        controlled_load,
+    )
+    load_w = float(controlled_profile.p50_w[0])
     load_anchor_disagreement_w = float(load_w - raw_load_w)
     load_diagnostics.update(
         {
@@ -2071,14 +2137,17 @@ def build_forecast_dataset(
             "load_component_estimate_w": component_load_w,
             "load_anchor_disagreement_w": load_anchor_disagreement_w,
             "load_learned_reference_w": learned_reference_w,
-            "load_anchor_method": controlled_load.source,
+            "load_anchor_method": controlled_profile.source,
             "load_distribution_sample_count": controlled_load.sample_count,
+            "load_exact_state_id": exact_state_id,
+            "load_current_phase": state_dynamics.current_phase if state_dynamics is not None else "steady",
+            "load_state_dynamics_reason": state_dynamics_reason,
         }
     )
     # Bias learned by retired load models is not transferable across operating
     # modes. Each named mode learns its own robust power-balance level.
     load_bias_correction = 0.0
-    load_profile = pd.Series(np.full(len(raw_load_profile), load_w), index=raw_load_profile.index)
+    load_profile = pd.Series(controlled_profile.p50_w, index=raw_load_profile.index)
     forecast = integrate_soc_forecast(
         initial_soc=latest_soc,
         initial_time=latest_time,
@@ -2088,9 +2157,10 @@ def build_forecast_dataset(
         capacity_kwh=battery_model.usable_capacity_kwh,
         battery_model=battery_model,
     )
-    forecast["ForecastLoadP10Watts"] = controlled_load.p10_w
-    forecast["ForecastLoadP50Watts"] = controlled_load.p50_w
-    forecast["ForecastLoadP90Watts"] = controlled_load.p90_w
+    forecast["ForecastLoadP10Watts"] = controlled_profile.p10_w
+    forecast["ForecastLoadP50Watts"] = controlled_profile.p50_w
+    forecast["ForecastLoadP90Watts"] = controlled_profile.p90_w
+    forecast["ForecastLoadPhaseCode"] = controlled_profile.phase_codes
     for scenario_load_w in SCENARIO_LOADS_W:
         scenario = integrate_soc_forecast(
             initial_soc=latest_soc,
@@ -2125,6 +2195,8 @@ def build_forecast_dataset(
     forecast["ForecastLoadBiasRecent"] = load_bias
     forecast["ForecastEvaluationSamples"] = float(evaluation_samples)
     forecast["ForecastSkillSampleCount"] = float(evaluation_samples)
+    state_dynamics_json = json.dumps(state_dynamics.to_dict(), sort_keys=True) if state_dynamics is not None else "{}"
+    state_dynamics_signature = hashlib.sha256(state_dynamics_json.encode("utf-8")).hexdigest()[:16]
     out = xr.Dataset(
         {name: (("time",), forecast[name].to_numpy(dtype=np.float32)) for name in forecast.columns},
         coords={"time": forecast.index.to_numpy(dtype="datetime64[ns]")},
@@ -2145,9 +2217,9 @@ def build_forecast_dataset(
             "solar_calibration": "physical panel factor plus independent-cycle lead-specific MOS",
             "solar_calibration_contract_id": solar_contract_id,
             "forecast_load_w": f"{load_w:.6g}",
-            "forecast_load_p10_w": f"{controlled_load.p10_w:.6g}",
-            "forecast_load_p50_w": f"{controlled_load.p50_w:.6g}",
-            "forecast_load_p90_w": f"{controlled_load.p90_w:.6g}",
+            "forecast_load_p10_w": f"{float(controlled_profile.p10_w[0]):.6g}",
+            "forecast_load_p50_w": f"{float(controlled_profile.p50_w[0]):.6g}",
+            "forecast_load_p90_w": f"{float(controlled_profile.p90_w[0]):.6g}",
             "raw_forecast_load_w": f"{raw_load_w:.6g}",
             "load_bias_correction_w": f"{load_bias_correction:.6g}",
             "soc_bias_correction_pct_points_by_bucket": json.dumps(soc_bias_corrections, sort_keys=True),
@@ -2156,10 +2228,17 @@ def build_forecast_dataset(
             "load_state_contract": CONTROLLED_LOAD_CONTRACT,
             "load_state_hold_policy": STATE_HOLD_POLICY,
             "load_state_uncertainty_source": (
-                "exact_state_observations"
+                "elapsed_time_exact_state_phase_distribution"
+                if state_dynamics is not None
+                else "exact_state_observations"
                 if controlled_load.sample_count >= DEFAULT_MODE_MIN_OBSERVATIONS
                 else "no_cross_state_spread"
             ),
+            "load_exact_state_id": exact_state_id,
+            "load_current_phase": state_dynamics.current_phase if state_dynamics is not None else "steady",
+            "load_state_dynamics_reason": state_dynamics_reason,
+            "load_state_dynamics": state_dynamics_json,
+            "load_state_dynamics_signature": state_dynamics_signature,
             "load_mode": load_mode,
             "load_mode_source": mode_source,
             "load_mode_active_kits": ",".join(active_kits),
@@ -2199,9 +2278,16 @@ def build_forecast_dataset(
     out["ECMWFSolarIrradiance"].attrs["units"] = "W m-2"
     out["ForecastSolarWatts"].attrs["units"] = "W"
     out["ForecastLoadWatts"].attrs["units"] = "W"
+    out["ForecastLoadPhaseCode"] = (
+        ("time",),
+        np.asarray(controlled_profile.phase_codes, dtype=np.int8),
+    )
     for name in ("ForecastLoadP10Watts", "ForecastLoadP50Watts", "ForecastLoadP90Watts"):
         out[name].attrs["units"] = "W"
         out[name].attrs["load_state_contract"] = CONTROLLED_LOAD_CONTRACT
+    out["ForecastLoadPhaseCode"].attrs["phase_mapping"] = json.dumps(
+        {str(code): name for name, code in PHASE_CODES.items()}, sort_keys=True
+    )
     out["ForecastSOCMAERecent"].attrs["units"] = "percentage points"
     for bucket, _, _ in LEAD_BUCKETS:
         out[f"ForecastSOCMAE_{bucket}"].attrs["units"] = "percentage points"
