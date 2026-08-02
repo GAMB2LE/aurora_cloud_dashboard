@@ -290,8 +290,13 @@ def learn_state_load_dynamics(
         steady_values = [float(value) for value in frame.loc[frame["mode"] == state, "load_w"]]
     steady_profiles, _ = _split_steady_phases(np.asarray(steady_values, dtype=np.float64))
     phase_profiles = dict(steady_profiles)
-    if startup_values:
+    if startup_values and _material_difference(
+        np.asarray(startup_values, dtype=np.float64),
+        np.asarray(steady_values, dtype=np.float64),
+    ):
         phase_profiles[PHASE_STARTUP] = LoadDistribution.from_values(startup_values)
+    else:
+        startup_durations = []
 
     steady_names = [name for name in (PHASE_FAN_LOW, PHASE_FAN_HIGH, PHASE_STEADY) if name in steady_profiles]
     steady_centres = np.asarray([steady_profiles[name].p50_w for name in steady_names], dtype=np.float64)

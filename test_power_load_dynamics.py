@@ -49,6 +49,27 @@ class StateLoadDynamicsTests(unittest.TestCase):
         self.assertGreater(dynamics.phase_profiles[PHASE_FAN_HIGH].p50_w, 400.0)
         self.assertGreater(dynamics.change_count, 0)
 
+    def test_rejects_inconsistent_episode_edges_as_a_startup_phase(self) -> None:
+        times = pd.date_range("2026-07-20", periods=28, freq="15min")
+        observations = pd.DataFrame(
+            {
+                "direct_mode": ["dc_only"] * 12 + ["other"] * 4 + ["dc_only"] * 12,
+                "load_w": [300.0] * 4
+                + [230.0] * 8
+                + [500.0] * 4
+                + [170.0] * 4
+                + [230.0] * 8,
+            },
+            index=times,
+        )
+
+        dynamics = learn_state_load_dynamics(observations, "dc_only")
+
+        self.assertIsNotNone(dynamics)
+        assert dynamics is not None
+        self.assertNotIn(PHASE_STARTUP, dynamics.phase_profiles)
+        self.assertEqual(dynamics.startup_duration_p50_minutes, 0.0)
+
     def test_profile_transitions_from_startup_without_changing_state(self) -> None:
         observations = self._observations().iloc[:58]
         observations.iloc[-2:, observations.columns.get_loc("direct_mode")] = "dc_cl61"
