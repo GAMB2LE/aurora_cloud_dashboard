@@ -28,7 +28,7 @@ move to Earthkit after an equivalent bounded-memory benchmark passes.
 
 ## Decision
 
-The operational load model is `finite_controlled_state_v8`. Its
+The operational load model is `finite_controlled_state_phases_v9`. Its
 observed target is the APS energy balance:
 
 `load = SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`
@@ -40,19 +40,24 @@ in `DC-Only` it reports about `9 W` of inverter idle while the battery balance
 shows about `220-226 W` of real consumption.
 
 The **system-as-is** forecast first identifies the latest confirmed finite
-operating state. Its forecast load is then held constant until an explicit
-schedule changes that state. It never extrapolates an instrument switch from
-the clock or borrows a residual trajectory from another operating state.
+operating state. That state is held until an explicit schedule changes it. The
+load can change only through a detected phase learned inside that exact state:
+startup, steady operation, or a low/high fan regime. It never extrapolates an
+instrument switch from the clock, invents an intermediate configuration, or
+borrows a load trajectory from another operating state.
 
 The load estimate follows a conservative priority order: fresh PDU component
 power plus a clean DC-only baseline, a clean DC-only observation when no kit is
 active, a mature distribution learned for that exact state, then the latest
 whole-station balance only as a bootstrap for a newly seen state. The measured
 whole-station value and its disagreement with the state estimate remain in the
-metadata as diagnostics; they do not silently turn the forecast into an
-uncontrolled historical-load trajectory.
+metadata as diagnostics. Recent material changes are evaluated only after the
+PDU state is fixed. Repeated episodes then supply phase-specific P10, median,
+and P90 load, startup-duration quantiles, fan-phase occupancy, and fan-phase
+dwell time. They do not silently turn the forecast into an uncontrolled
+historical-load trajectory.
 
-The scenario learner is `hybrid_state_space_v7`. Its discrete part is an
+The scenario learner is `hybrid_state_space_phases_v8`. Its discrete part is an
 HMM-like finite-state classifier. Fresh PDU outlet watts provide direct
 evidence for CL61, Radar, HATPRO, UAS, and their combinations; the APS AC
 output and learned total-load level provide secondary evidence. Stale PDU data
@@ -60,13 +65,15 @@ cannot assert that a kit remains on. A transition prior prevents single noisy
 observations from making the classification oscillate, while the posterior
 probability supplies a dashboard confidence value.
 
-The continuous part is a robust Kalman learner over additive components: DC,
-CL61, Radar, HATPRO, UAS, and Unknown AC. Every observation supplies a total
-power-balance equation and fresh PDU outlet watts can additionally constrain an
-individual kit component. Innovation clipping prevents a transition spike or a
-bad sample from moving the learned level arbitrarily. The persisted mean and
-full covariance drive the named operating-scenario loads. The system-as-is
-ensemble uses the P10, median, and P90 distribution for the one detected state.
+The continuous part combines a robust Kalman learner over additive components
+with an exact-state phase learner. The components are DC, CL61, Radar, HATPRO,
+UAS, and Unknown AC. Every observation supplies a total power-balance equation
+and fresh PDU outlet watts can additionally constrain an individual kit
+component. Innovation clipping prevents a transition spike or a bad sample
+from moving the learned level arbitrarily. Within each exact state, robust
+change detection requires at least `20 W`, `8%` of load, and three robust noise
+scales before it accepts a phase boundary. A phase needs at least four samples;
+an exact state needs at least eight samples before its phase profile is used.
 
 Recognition and durable learning remain separate. The latest state can change
 as soon as fresh PDU and APS data identify it, but saved component parameters
@@ -98,9 +105,11 @@ factor profile to the ensemble's raw irradiance members and records both source
 and target contract IDs. It stops rather than combining products when those raw
 members are unavailable. The ensemble varies ECMWF weather, calibrated battery
 parameters, and only the learned uncertainty within the detected operating
-state. Each member's load remains fixed through the horizon. Its P10-P90
-interval is therefore not solar-only, but it cannot imply an unrequested
-instrument-state transition.
+state. If the state has a repeatable startup, members sample its learned
+duration and phase-specific load. If it has low/high fan regimes, members
+switch between only those learned regimes using their observed occupancy and
+dwell time. The P10-P90 interval is therefore not solar-only, but it cannot
+imply an unrequested instrument-state transition or use another state's load.
 
 Future operator choices are represented explicitly instead of guessed. Named
 plans include current mode, DC-Only, DC + CL61 continuously on, an optimized
@@ -109,7 +118,7 @@ model has learned. The fixed comparison set also includes CL61, CL61 + Radar,
 CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, HATPRO, and **all
 instruments + UAS tier 3**. The old `100-600 W` plot is retained only as a
 backwards-compatible data contract and is no longer the operating interface.
-The current-mode scenario reuses the same version-8 system-as-is load
+The current-mode scenario reuses the same version-9 system-as-is load
 distribution, so the two panels cannot disagree about the current state.
 
 ## Evidence
@@ -146,9 +155,16 @@ context. On this limited backtest,
 version 3 reduced RMSE by about 16% relative to
 version 2 and slightly reduced MAE, but its negative bias shows that a single
 `DC-Only` baseline cannot represent unlabelled higher-load operation. These are
-historical results, not a guarantee of future skill. Named PDU kit modes will
-separate those periods as they are observed; there are not yet enough repeated
-kit transitions to estimate operator switching times.
+historical results, not a guarantee of future skill. Named PDU kit modes
+separate those periods as they are observed.
+
+A 14-day phase audit on 2026-08-02 found repeatable load changes inside exact
+states. Three CL61 starts initially used about `459-471 W` before settling near
+`275-278 W`. CL61 + HATPRO started near `667 W` before settling around
+`477-508 W`; CL61 + Radar + HATPRO started near `968 W` before settling around
+`732-787 W`; and all instruments including UAS started near `1070 W` before
+settling around `810-893 W`. These observations justify startup and fan phases,
+but not a free-running time-of-day load forecast.
 
 ## Learning, planning, and verification
 
@@ -169,7 +185,7 @@ marginal, or unsafe from its minimum P10 SOC.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
 skill only use rows from a matching model version, preventing retired model
-errors from contaminating the improvement loop. Version 8 therefore starts a
+errors from contaminating the improvement loop. Version 9 therefore starts a
 fresh verification series. SOC MAE is reported by lead bucket; solar and load
 MAE/bias diagnose the two principal error sources. Skill is measured against
 persistence, and the fixed-lead hindcast shows what the dashboard would have
@@ -177,8 +193,8 @@ forecast 6, 24, 48, and 72 hours before each observation.
 
 The 50-member SOC ensemble also re-anchors when the deterministic forecast's
 SOC anchor, calibrated solar contract, finite-state load distribution, battery
-model, model version, or named mode changes, even when ECMWF is still on the same
-00/12 UTC ensemble cycle. The
+model, model version, named mode, or exact-state phase profile changes, even
+when ECMWF is still on the same 00/12 UTC ensemble cycle. The
 cycle's accumulated SSRD values at the AURORA grid point are cached as a small
 site Zarr, so hourly re-anchoring does not redownload or reparse the global
 GRIB. This keeps the probabilistic forecast aligned with mode transitions such

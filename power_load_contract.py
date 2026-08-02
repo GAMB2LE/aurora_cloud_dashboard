@@ -8,13 +8,13 @@ from typing import Iterable
 import numpy as np
 
 
-CONTROLLED_LOAD_CONTRACT = "finite_operating_state_v1"
-STATE_HOLD_POLICY = "hold_latest_confirmed_state_until_explicit_schedule_transition"
+CONTROLLED_LOAD_CONTRACT = "finite_operating_state_phases_v2"
+STATE_HOLD_POLICY = "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition"
 
 
 @dataclass(frozen=True)
 class ControlledLoadEstimate:
-    """A stationary load distribution for one confirmed operating state."""
+    """A load distribution for one confirmed state or one phase within it."""
 
     p10_w: float
     p50_w: float
@@ -93,7 +93,7 @@ def controlled_load_member_levels(
     estimate: ControlledLoadEstimate,
     member_count: int,
 ) -> np.ndarray:
-    """Return stationary member levels spanning one state's learned uncertainty."""
+    """Return member levels spanning one state or phase distribution."""
 
     checked = estimate.validated()
     count = max(int(member_count), 1)
@@ -111,9 +111,10 @@ def validate_state_held_load(
     mode_codes: np.ndarray,
     load_values: np.ndarray,
     *,
+    phase_codes: np.ndarray | None = None,
     tolerance_w: float = 1e-4,
 ) -> None:
-    """Require load to remain fixed between explicit operating-state changes."""
+    """Reject load changes that have neither a state nor learned phase change."""
 
     modes = np.asarray(mode_codes)
     loads = np.asarray(load_values, dtype=np.float64)
@@ -124,7 +125,17 @@ def validate_state_held_load(
     if not np.isfinite(loads).all():
         raise ValueError("Controlled-state load values must be finite")
     unchanged = modes[1:] == modes[:-1]
-    if unchanged.any():
-        differences = np.abs(np.diff(loads, axis=-1)[..., unchanged])
-        if np.any(differences > float(tolerance_w)):
-            raise ValueError("Forecast load changed without an operating-state transition")
+    differences = np.abs(np.diff(loads, axis=-1))
+    if phase_codes is not None:
+        phases = np.asarray(phase_codes)
+        if phases.shape[-1] != modes.size:
+            raise ValueError("Load phase time dimension must match operating-state codes")
+        phase_unchanged = phases[..., 1:] == phases[..., :-1]
+        if phases.ndim > 1 and phase_unchanged.shape != differences.shape:
+            raise ValueError("Member load phases must match the load array shape")
+        disallowed = phase_unchanged & unchanged
+        violation = np.any((differences > float(tolerance_w)) & disallowed)
+    else:
+        violation = np.any(differences[..., unchanged] > float(tolerance_w)) if unchanged.any() else False
+    if violation:
+        raise ValueError("Forecast load changed without an operating-state or phase transition")

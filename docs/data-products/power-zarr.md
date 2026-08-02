@@ -165,11 +165,11 @@ described below. It always includes seven stable comparisons: CL61, CL61 +
 Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, and HATPRO.
 
 The **SOC 96 h Forecast** P10/P90 traces describe the current system as-is,
-not different future instrument schedules. Version 8 varies ECMWF weather,
-calibrated battery parameters, and the learned P10-P90 load distribution for
-the one detected operating state. Every member holds its assigned state load
-constant through the horizon. Planned instrument combinations are shown
-separately in the operating-scenario product.
+not different future instrument schedules. Version 9 varies ECMWF weather,
+calibrated battery parameters, and the learned P10-P90 startup/fan behavior for
+the one detected operating state. Every member keeps that exact state through
+the horizon. Planned instrument combinations are shown separately in the
+operating-scenario product.
 
 When `/data/aurora/products/power/power_soc_forecast_skill.zarr` is available,
 the display summary also includes past-facing forecast verification traces:
@@ -232,14 +232,32 @@ is `SolarWatts_East + SolarWatts_South + SolarWatts_West - BatteryWatts`, where
 positive battery power is charging and negative power is discharge. This
 captures the 48 V DC load that is absent from inverter idle power.
 
-The operational deterministic product uses `finite_controlled_state_v8` under
-the `finite_operating_state_v1` contract. It identifies the latest confirmed
-PDU/APS operating state and holds that state's load constant through the
-forecast horizon. Load comes from fresh PDU components plus the clean DC-only
-baseline where possible, otherwise from a mature distribution learned for that
-exact state. The latest whole-station balance is used only to bootstrap a state
-that does not yet have component or exact-state evidence. A load change without
-an explicit state transition is rejected during scenario validation.
+The operational deterministic product uses
+`finite_controlled_state_phases_v9` under the
+`finite_operating_state_phases_v2` contract. It identifies the latest confirmed
+PDU/APS operating state and holds that exact state through the forecast horizon.
+Load comes from fresh PDU components plus the clean DC-only baseline where
+possible, otherwise from a mature distribution learned for that exact state.
+Within the state, the model can detect and learn startup, steady, and low/high
+fan phases. It publishes phase-specific load quantiles and learned startup
+duration rather than forcing one wattage across a real transient. The latest
+whole-station balance is used only to bootstrap a state that does not yet have
+component or exact-state evidence. A load change without either an explicit
+state transition or a learned within-state phase transition is rejected during
+validation.
+
+Phase-aware fields include:
+
+- `ForecastLoadP10Watts`, `ForecastLoadP50Watts`, and
+  `ForecastLoadP90Watts`
+- `ForecastLoadPhaseCode`
+- root attributes `load_exact_state_id`, `load_current_phase`,
+  `load_state_dynamics`, and `load_state_dynamics_reason`
+
+The ensemble product adds `ForecastLoadPhaseCodeEnsemble`. The operating
+scenario product adds `ScenarioLoadPhaseCode` and `ScenarioLoadPhaseEpoch`, so
+every accepted load change remains attributable to a controlled state or phase
+boundary.
 
 SOC is integrated with a fitted battery model containing usable capacity,
 charge/discharge efficiencies, and observed power limits. The fit excludes
@@ -282,11 +300,13 @@ parameters. Load diagnostics include `load_model`, `load_model_version`,
 `load_balance_measurement`, `load_mode_registry`, `load_mode_signature`,
 `load_mode_learning_ready`, `load_mode_learning_reason`,
 `load_mode_pdu_active_watts`, `load_regime_level_w`, and
-`load_regime_run_hours`. Version 8 also records `load_anchor_method`,
+`load_regime_run_hours`. Version 9 also records `load_anchor_method`,
 `load_state_contract`, `load_state_hold_policy`, the state P10/P50/P90 load,
 the measured and learned-reference loads, their disagreement, calibrated
 battery capacity/efficiencies/limits, `solar_calibration_contract_id`, and a semantic
-`publication_signature`. `minimum_operational_soc_pct = "40"` identifies the
+`publication_signature`. It also records `load_state_dynamics_signature`, so a
+new startup or fan profile republishes the deterministic and ensemble products
+even when the named operating state is unchanged. `minimum_operational_soc_pct = "40"` identifies the
 reference used by SOC risk plots and ensemble threshold verification. Scenario attributes include
 `scenario_loads_w = "100,200,300,400,500,600"`
 and `scenario_solar_mode = "ecmwf"`; these fixed loads are compatibility-only
@@ -297,9 +317,9 @@ The forecast-run archive is stored at:
 
 - `/data/aurora/products/power/power_soc_forecast_archive.zarr`
 
-It keeps recent forecast issue times, valid times, lead hours, and selected
-forecast variables for skill scoring. The latest forecast product remains the
-dashboard-facing product.
+It keeps recent forecast issue times, valid times, lead hours, load P10/P50/P90,
+phase code, and selected forecast variables for skill scoring. The latest
+forecast product remains the dashboard-facing product.
 
 The forecast-verification product is stored at:
 
@@ -378,8 +398,8 @@ The state product contains:
 - `ObservedLoadWatts` and `EstimatedModeLoadWatts`
 - `LoadInnovationWatts` and `LoadObservationOutlier`
 
-The persisted `hybrid_state_space_v7` learner combines a finite set of named
-operating modes with robust component-regime learning for continuous loads. Its
+The persisted `hybrid_state_space_phases_v8` learner combines a finite set of
+named operating modes with robust component and exact-state phase learning. Its
 components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
 increment. Existing observations are reclassified on each run, but component
 parameters are updated only from timestamps newer than the saved training

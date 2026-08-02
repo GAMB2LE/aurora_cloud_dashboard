@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 from dataclasses import replace
@@ -22,6 +23,7 @@ from generate_power_soc_forecast import (
     DEFAULT_LONGITUDE,
     DEFAULT_OPEN_DATA_SOURCE,
     _bounded_load_profile,
+    _forecast_integration_times,
     _power_frame,
     build_historical_load_forecast,
     integrate_soc_forecast,
@@ -32,7 +34,12 @@ from power_load_contract import (
     CONTROLLED_LOAD_CONTRACT,
     STATE_HOLD_POLICY,
     ControlledLoadEstimate,
-    controlled_load_member_levels,
+    validate_state_held_load,
+)
+from power_load_dynamics import (
+    PHASE_CODES,
+    StateLoadDynamics,
+    controlled_load_member_profiles,
 )
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -92,6 +99,8 @@ ENSEMBLE_INPUT_ATTRS = (
     "load_state_contract",
     "load_state_hold_policy",
     "load_state_uncertainty_source",
+    "load_state_dynamics",
+    "load_state_dynamics_signature",
 )
 NUMERIC_ENSEMBLE_INPUT_ATTRS = {
     "initial_soc_pct",
@@ -374,8 +383,30 @@ def build_ensemble_dataset(
     else:
         solar_factor_profile = pd.Series(float(solar_factor), index=common_times)
     rng = np.random.default_rng(int(latest_time.value % (2**32 - 1)))
-    load_levels = controlled_load_member_levels(controlled_load, len(member_irradiance))
-    rng.shuffle(load_levels)
+    state_dynamics = None
+    if str(deterministic.attrs.get("load_state_contract", "")) == CONTROLLED_LOAD_CONTRACT:
+        try:
+            raw_dynamics = json.loads(str(deterministic.attrs.get("load_state_dynamics", "{}")))
+            if isinstance(raw_dynamics, Mapping) and raw_dynamics:
+                state_dynamics = StateLoadDynamics.from_dict(raw_dynamics)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            state_dynamics = None
+    load_times = _forecast_integration_times(latest_time, common_times)
+    load_member_profiles, load_phase_codes = controlled_load_member_profiles(
+        state_dynamics,
+        load_times,
+        controlled_load,
+        len(member_irradiance),
+        seed=int(latest_time.value % (2**32 - 1)),
+    )
+    permutation = rng.permutation(len(member_irradiance))
+    load_member_profiles = load_member_profiles[permutation]
+    load_phase_codes = load_phase_codes[permutation]
+    validate_state_held_load(
+        np.zeros(len(load_times), dtype=np.int16),
+        load_member_profiles,
+        phase_codes=load_phase_codes,
+    )
     parameter_spread = 0.06 if battery_model.calibration_confidence == "calibrated" else 0.10
     capacity_rank = np.linspace(-1.0, 1.0, len(member_irradiance), dtype=np.float64)
     charge_rank = capacity_rank.copy()
@@ -394,11 +425,7 @@ def build_ensemble_dataset(
     output_times: pd.DatetimeIndex | None = None
     for member_index, irradiance in enumerate(member_irradiance):
         irradiance = irradiance.reindex(common_times).interpolate().ffill().bfill()
-        member_load = pd.Series(
-            float(load_levels[member_index]),
-            index=common_times,
-            dtype=np.float64,
-        )
+        member_load = pd.Series(load_member_profiles[member_index], index=load_times, dtype=np.float64)
         member_model = replace(
             battery_model,
             usable_capacity_kwh=battery_model.usable_capacity_kwh
@@ -444,6 +471,7 @@ def build_ensemble_dataset(
             "ECMWFSolarIrradianceEnsemble": (("member", "time"), np.asarray(irr_rows, dtype=np.float32)),
             "ForecastSolarWattsEnsemble": (("member", "time"), np.asarray(solar_rows, dtype=np.float32)),
             "ForecastLoadWattsEnsemble": (("member", "time"), np.asarray(load_rows, dtype=np.float32)),
+            "ForecastLoadPhaseCodeEnsemble": (("member", "time"), np.asarray(load_phase_codes, dtype=np.int8)),
             "BatteryUsableCapacityKWhEnsemble": (("member",), np.asarray(capacity_rows, dtype=np.float32)),
             "BatteryChargeEfficiencyEnsemble": (("member",), np.asarray(charge_efficiency_rows, dtype=np.float32)),
             "BatteryDischargeEfficiencyEnsemble": (("member",), np.asarray(discharge_efficiency_rows, dtype=np.float32)),
@@ -486,7 +514,18 @@ def build_ensemble_dataset(
             "load_state_hold_policy": str(
                 deterministic.attrs.get("load_state_hold_policy", STATE_HOLD_POLICY)
             ),
-            "load_uncertainty": "stationary exact-state load distribution independently paired with ECMWF solar members",
+            "load_state_uncertainty_source": str(
+                deterministic.attrs.get("load_state_uncertainty_source", "exact_state_observations")
+            ),
+            "load_state_dynamics": str(deterministic.attrs.get("load_state_dynamics", "{}")),
+            "load_state_dynamics_signature": str(
+                deterministic.attrs.get("load_state_dynamics_signature", "")
+            ),
+            "load_uncertainty": (
+                "exact-state startup duration and fan-phase uncertainty independently paired with ECMWF solar members"
+                if state_dynamics is not None
+                else "stationary exact-state load distribution independently paired with ECMWF solar members"
+            ),
             "battery_parameter_uncertainty": f"member-wise usable-capacity spread plus or minus {100.0 * parameter_spread:.0f}% and efficiency spread plus or minus 3%",
             "scenario_scope": "current_system_only",
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
@@ -496,6 +535,12 @@ def build_ensemble_dataset(
     out = apply_operational_soc_threshold(out)
     for name in out.data_vars:
         out[name].attrs["units"] = "1" if name.endswith("Probability") else "%" if "SOC" in name else "W m-2" if "Irradiance" in name else "W"
+    out["ForecastLoadPhaseCodeEnsemble"].attrs.update(
+        {
+            "units": "1",
+            "phase_mapping": json.dumps({str(code): name for name, code in PHASE_CODES.items()}, sort_keys=True),
+        }
+    )
     return out
 
 

@@ -194,11 +194,13 @@ radiation forecast data, converts the accumulated `J m-2` field to interval
 `W m-2`, calibrates expected solar charging from recent APS solar production,
 and derives total station load from solar generation minus signed battery
 power. This includes the 48 V DC system load that is not represented by the
-roughly `9 W` inverter-idle value. Version 8 identifies the latest finite
-operating state and holds that state's load through the horizon. Fresh PDU
-components plus the clean DC-only baseline are preferred; an exact-state
-learned distribution is the next choice. The latest whole-station balance is
-used only to bootstrap a state with insufficient direct or learned evidence.
+roughly `9 W` inverter-idle value. Version 9 identifies the latest finite
+operating state and holds that state through the horizon. Within that exact
+state it can represent learned startup and low/high fan phases, including their
+load and duration uncertainty. Fresh PDU components plus the clean DC-only
+baseline are preferred; an exact-state learned distribution is the next
+choice. The latest whole-station balance is used only to bootstrap a state with
+insufficient direct or learned evidence.
 When AC kit is switched on, fresh non-zero PDU outlet power names the mode from
 that kit. Outlet 5 identifies the Ceilometer as `DC-Only + CL61`; relay state is
 only used when outlet watts are unavailable. Recognition can update the next
@@ -206,7 +208,7 @@ forecast immediately, while durable mode learning waits for 30 minutes of
 stable AC/DC state and at least two aggregated samples. The learner then stores
 independent hourly load observations and persists the recognised mode's robust
 level; it does not infer a daily schedule. The mode name is included in the
-forecast-load legend. This version-8 model refreshes with every 15-minute
+forecast-load legend. This version-9 model refreshes with every 15-minute
 learning run and uses calibrated battery capacity, directional efficiencies,
 and power limits for SOC integration.
 This product is operational guidance only and is stored separately from

@@ -38,8 +38,8 @@ class ControlledLoadContractTests(unittest.TestCase):
             dc_only_estimate_w=220.0,
         )
 
-        self.assertEqual(CONTROLLED_LOAD_CONTRACT, "finite_operating_state_v1")
-        self.assertIn("explicit_schedule_transition", STATE_HOLD_POLICY)
+        self.assertEqual(CONTROLLED_LOAD_CONTRACT, "finite_operating_state_phases_v2")
+        self.assertIn("detected_phase", STATE_HOLD_POLICY)
         self.assertEqual(estimate.source, "fresh_pdu_components_for_current_state")
         self.assertAlmostEqual(estimate.p50_w, 515.0)
         self.assertLessEqual(estimate.p10_w, estimate.p50_w)
@@ -61,11 +61,18 @@ class ControlledLoadContractTests(unittest.TestCase):
         np.testing.assert_allclose(np.diff(loads, axis=1), 0.0)
 
     def test_load_change_without_state_transition_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "without an operating-state transition"):
+        with self.assertRaisesRegex(ValueError, "without an operating-state or phase transition"):
             validate_state_held_load(
                 np.asarray([0, 0, 0], dtype=np.int16),
                 np.asarray([220.0, 220.0, 400.0]),
             )
+
+    def test_load_change_at_detected_phase_transition_is_allowed(self) -> None:
+        validate_state_held_load(
+            np.asarray([1, 1, 1, 1], dtype=np.int16),
+            np.asarray([460.0, 460.0, 275.0, 275.0]),
+            phase_codes=np.asarray([1, 1, 2, 2], dtype=np.int8),
+        )
 
 
 if __name__ == "__main__":
