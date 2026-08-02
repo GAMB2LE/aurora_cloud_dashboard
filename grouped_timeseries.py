@@ -582,19 +582,20 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         "soc_24h_forecast": {
             "title": "SOC next 24 h forecast",
             "summary": "The near-term weather-informed SOC outlook used for immediate station context.",
-            "implementation": "It starts from the latest valid APS SOC and propagates the forecast solar charging and the detected current station load. It is the central forecast only; uncertainty is shown in the 96-hour ensemble panel.",
+            "implementation": "It starts from the latest valid APS SOC and propagates forecast solar charging against the latest confirmed finite instrument state and its currently detected load phase. That state is held fixed unless an explicit operating schedule changes it. This is the central forecast only; uncertainty is shown in the 96-hour ensemble panel.",
             "metrics": [
                 {"label": "Starting point", "detail": "Latest valid APS battery SOC."},
-                {"label": "Load assumption", "detail": "Current detected system configuration, held fixed."},
+                {"label": "Load assumption", "detail": "Latest confirmed instrument state and sustained within-state load phase, held fixed."},
             ],
         },
         "soc_ecmwf_forecast": {
             "title": "SOC 96 h forecast",
             "summary": "The system-as-is ECMWF ensemble outlook for battery SOC and the risk of crossing the operational minimum.",
-            "implementation": "Every member starts from the latest valid APS SOC and recent measured whole-station load. The ensemble combines ECMWF solar weather, recent load residuals, and bounded battery-capacity and efficiency uncertainty. These are system-as-is outcomes, not alternative instrument schedules.",
+            "implementation": "Every member starts from the latest valid APS SOC and the latest confirmed finite instrument state. The controllable state is fixed; the load distribution represents its current sustained phase plus only recurrent startup or fan phases learned within that same state. The ensemble combines that within-state load uncertainty with ECMWF solar weather and bounded battery-capacity and efficiency uncertainty. These are system-as-is outcomes, not alternative instrument schedules.",
             "metrics": [
                 {"label": "P10", "detail": "Lower-end SOC outcome across ECMWF solar members; use it for conservative planning."},
                 {"label": "Central / P90", "detail": "Central estimate and upper-end solar outcome for the same system-as-is load."},
+                {"label": "Load uncertainty", "detail": "Only recurrent startup and fan behaviour within the confirmed instrument state; it never blends different controllable states."},
                 {"label": f"Probability below {minimum}", "detail": f"The fraction of ensemble members below the {minimum} operational reference at each time."},
             ],
         },
@@ -609,13 +610,13 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         },
         "operating_plan_scenarios": {
             "title": "Suggested instrument-mode SOC forecasts",
-            "summary": "The current-load system-as-is forecast is the reference, followed by eight explicit instrument combinations, including all instruments with UAS at tier 3.",
-            "implementation": "The system-as-is line uses the latest measured whole-station load. Each comparison line includes the unadjusted learned DC baseline plus the named instrument loads. The UAS tier-3 load is learned separately and remains provisional until at least three independent episodes and six observed hours are available. All lines share the forecast issue, initial SOC, solar ensemble, and calibrated battery assumptions. They are advisory and never operate PDU outlets.",
+            "summary": "The current exact instrument state is the reference, followed by eight explicit instrument combinations, including all instruments with UAS at tier 3.",
+            "implementation": "The system-as-is line uses the latest confirmed finite instrument state and its currently detected sustained load phase. Each comparison line uses the learned load distribution for exactly the named state; states are never blended. Recurrent startup and fan phases add uncertainty only within their own state. The UAS tier-3 load is learned separately and remains provisional until at least three independent episodes and six observed hours are available. All lines share the forecast issue, initial SOC, solar ensemble, and calibrated battery assumptions. They are advisory and never operate PDU outlets.",
             "metrics": [
                 {"label": "P50", "detail": "The median SOC path for each named instrument combination."},
-                {"label": "Current load", "detail": "Reference SOC path if the latest detected system load and instrument state continue."},
+                {"label": "Current state", "detail": "Reference SOC path if the latest confirmed instrument state and detected load phase continue."},
                 {"label": "Common basis", "detail": "Every line starts from the same measured SOC and uses the same weather forecast."},
-                {"label": "Loads", "detail": "DC baseline plus the learned load of each instrument named in the scenario."},
+                {"label": "State loads", "detail": "The learned distribution for each exact named state, including recurrent startup or fan phases where supported."},
                 {"label": "UAS tier 3", "detail": "Tier-specific load estimate; provisional until the minimum independent evidence gate is met."},
             ],
         },

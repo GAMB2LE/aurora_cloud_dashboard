@@ -46,6 +46,7 @@ from grouped_timeseries import (
     _active_panels,
     _trace_plot_values,
     build_power_display_summary_dataset,
+    build_power_forecast_info,
     build_power_verification_guidance,
     build_summary_plotly,
     merge_operating_scenarios_into_display_summary,
@@ -75,11 +76,30 @@ class PowerSocForecastTests(unittest.TestCase):
         )
 
         self.assertIn("System as-is", markup)
+        self.assertIn("latest confirmed finite instrument state", markup)
+        self.assertIn("states are never blended", markup)
+        self.assertNotIn("recent measured whole-station load", markup)
         self.assertIn("Instrument scenarios", markup)
         self.assertIn("DC-Only", markup)
         self.assertIn("CL61 + HATPRO + Radar", markup)
         self.assertIn("HATPRO + Radar", markup)
         self.assertIn("40% operational minimum", markup)
+
+    def test_forecast_info_documents_finite_state_load_uncertainty(self) -> None:
+        ensemble = build_power_forecast_info("soc_ecmwf_forecast")
+        scenarios = build_power_forecast_info("operating_plan_scenarios")
+
+        self.assertIsNotNone(ensemble)
+        self.assertIsNotNone(scenarios)
+        assert ensemble is not None
+        assert scenarios is not None
+        ensemble_text = str(ensemble["implementation"])
+        scenario_text = str(scenarios["implementation"])
+        self.assertIn("latest confirmed finite instrument state", ensemble_text)
+        self.assertIn("only recurrent startup or fan phases", ensemble_text)
+        self.assertIn("states are never blended", scenario_text)
+        self.assertNotIn("recent measured whole-station load", ensemble_text)
+        self.assertNotIn("load residuals", ensemble_text)
 
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
