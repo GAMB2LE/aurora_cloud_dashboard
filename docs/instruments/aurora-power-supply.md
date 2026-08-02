@@ -28,8 +28,9 @@ implementation used at AURORA, so a plot can be interpreted without leaving
 the dashboard. The key distinctions are:
 
 - **P10, central, and P90 SOC** describe the current system as-is. They vary
-  ECMWF solar weather, recent load residuals, and calibrated battery
-  parameters. They are not different instrument schedules.
+  ECMWF solar weather, calibrated battery parameters, and uncertainty learned
+  within the one detected operating state. They are not different instrument
+  schedules, and their load does not change state during the horizon.
 - **Operating-mode scenarios** are separate advisory simulations. Each includes
   the DC baseline plus the instruments named in its legend. Shaded intervals on
   the solar/load panel identify recommended CL61-on periods and do not indicate
@@ -193,10 +194,17 @@ radiation forecast data, converts the accumulated `J m-2` field to interval
 `W m-2`, calibrates expected solar charging from recent APS solar production,
 and derives total station load from solar generation minus signed battery
 power. This includes the 48 V DC system load that is not represented by the
-roughly `9 W` inverter-idle value. Version 7 anchors the system-as-is forecast
-to the median of the latest three finite 15-minute whole-station balance
-samples. Learned mode/components explain that load and drive scenarios, but do
-not replace it.
+roughly `9 W` inverter-idle value. Version 10 identifies the latest finite
+operating state and holds that state through the horizon. Within that exact
+state it can represent recurrent startup and low/high fan phases, including
+their load and duration uncertainty. Startup needs two state-entry episodes and
+a fan level needs two non-contiguous segments; one-off historical levels are
+not forecast as repeatable behavior. A new sustained latest level still updates
+the current steady forecast immediately.
+Fresh PDU components plus the clean DC-only
+baseline are preferred; an exact-state learned distribution is the next
+choice. The latest whole-station balance is used only to bootstrap a state with
+insufficient direct or learned evidence.
 When AC kit is switched on, fresh non-zero PDU outlet power names the mode from
 that kit. Outlet 5 identifies the Ceilometer as `DC-Only + CL61`; relay state is
 only used when outlet watts are unavailable. Recognition can update the next
@@ -204,7 +212,7 @@ forecast immediately, while durable mode learning waits for 30 minutes of
 stable AC/DC state and at least two aggregated samples. The learner then stores
 independent hourly load observations and persists the recognised mode's robust
 level; it does not infer a daily schedule. The mode name is included in the
-forecast-load legend. This version-7 model refreshes with every 15-minute
+forecast-load legend. This version-10 model refreshes with every 15-minute
 learning run and uses calibrated battery capacity, directional efficiencies,
 and power limits for SOC integration.
 This product is operational guidance only and is stored separately from
@@ -213,7 +221,8 @@ model-evaluation products.
 The **Suggested Instrument-Mode SOC Forecasts** panel uses the same ECMWF solar
 input and latest `BatterySOC` anchor for all eight fixed combinations. Each
 scenario includes the DC baseline and load distributions learned for its named
-instruments. The eighth scenario keeps CL61, Radar, HATPRO, and UAS on with UAS
+instruments. Its current-mode trace reuses the same finite-state system-as-is
+load shown in the 96-hour panel. The eighth scenario keeps CL61, Radar, HATPRO, and UAS on with UAS
 effective tier 3. It remains explicitly provisional until tier 3 has at least
 three independent episodes and six observed hours; its fallback P10/P50/P90
 UAS loads are `55/108/302 W`. The separate optimized CL61 plan maximizes
@@ -249,7 +258,11 @@ observations with forecasts issued 6, 24, 48, and 72 hours earlier. A separate
 50-member ECMWF IFS ensemble supplies P10-P90 SOC uncertainty and the forecast
 probability of crossing below the 40% minimum operational threshold. Every
 member represents the detected current PDU/APS system mode, while uncertainty
-also samples recent load residuals and calibrated battery parameters.
+also samples that exact state's learned startup duration, steady/fan phase
+occupancy and dwell time, load distribution, and calibrated battery parameters.
+These load changes remain inside the confirmed instrument state; they do not
+represent uncommanded instrument switching. Exact-state phase learning requires
+direct evidence for all four assigned PDU outlets at the observation time.
 Deliberate
 instrument-on schedules are evaluated solely in the separate operating-mode
 plans. Ensemble CRPS,

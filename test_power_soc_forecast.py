@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,7 @@ from grouped_timeseries import (
     _active_panels,
     _trace_plot_values,
     build_power_display_summary_dataset,
+    build_power_forecast_info,
     build_power_verification_guidance,
     build_summary_plotly,
     merge_operating_scenarios_into_display_summary,
@@ -56,6 +58,7 @@ from power_soc_thresholds import (
     SOC_BELOW_THRESHOLD_BRIER_FIELD,
     SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,
 )
+from power_load_dynamics import PHASE_CODES, PHASE_STARTUP
 
 
 class PowerSocForecastTests(unittest.TestCase):
@@ -73,11 +76,30 @@ class PowerSocForecastTests(unittest.TestCase):
         )
 
         self.assertIn("System as-is", markup)
+        self.assertIn("latest confirmed finite instrument state", markup)
+        self.assertIn("states are never blended", markup)
+        self.assertNotIn("recent measured whole-station load", markup)
         self.assertIn("Instrument scenarios", markup)
         self.assertIn("DC-Only", markup)
         self.assertIn("CL61 + HATPRO + Radar", markup)
         self.assertIn("HATPRO + Radar", markup)
         self.assertIn("40% operational minimum", markup)
+
+    def test_forecast_info_documents_finite_state_load_uncertainty(self) -> None:
+        ensemble = build_power_forecast_info("soc_ecmwf_forecast")
+        scenarios = build_power_forecast_info("operating_plan_scenarios")
+
+        self.assertIsNotNone(ensemble)
+        self.assertIsNotNone(scenarios)
+        assert ensemble is not None
+        assert scenarios is not None
+        ensemble_text = str(ensemble["implementation"])
+        scenario_text = str(scenarios["implementation"])
+        self.assertIn("latest confirmed finite instrument state", ensemble_text)
+        self.assertIn("only recurrent startup or fan phases", ensemble_text)
+        self.assertIn("states are never blended", scenario_text)
+        self.assertNotIn("recent measured whole-station load", ensemble_text)
+        self.assertNotIn("load residuals", ensemble_text)
 
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
@@ -266,14 +288,23 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertGreaterEqual(float(forecast["BatterySOCForecast"].min()), 0.0)
         self.assertLessEqual(float(forecast["BatterySOCForecast"].max()), 100.0)
         self.assertEqual(forecast.attrs["forecast_horizon_hours"], "12")
-        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v7")
-        self.assertEqual(forecast.attrs["load_model_version"], "7")
+        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v10")
+        self.assertEqual(forecast.attrs["load_model_version"], "10")
         self.assertIn("battery_charge_efficiency", forecast.attrs)
         self.assertIn("battery_discharge_efficiency", forecast.attrs)
         self.assertEqual(
             forecast.attrs["load_anchor_method"],
-            "median_latest_30_minutes_whole_station_balance",
+            "learned_exact_state_phase:steady",
         )
+        self.assertEqual(forecast.attrs["load_state_contract"], "finite_operating_state_phases_v2")
+        self.assertEqual(
+            forecast.attrs["load_state_hold_policy"],
+            "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition",
+        )
+        self.assertIn("ForecastLoadP10Watts", forecast)
+        self.assertIn("ForecastLoadP50Watts", forecast)
+        self.assertIn("ForecastLoadP90Watts", forecast)
+        self.assertIn("ForecastLoadPhaseCode", forecast)
         self.assertTrue(forecast.attrs["solar_calibration_contract_id"].startswith("solar-calibration-v1-"))
         self.assertEqual(float(forecast.attrs["minimum_operational_soc_pct"]), 40.0)
         self.assertEqual(forecast.attrs["scenario_loads_w"], "100,200,300,400,500,600")
@@ -307,6 +338,26 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(forecast_publication_signature(forecast), first)
         forecast.attrs["forecast_load_w"] = "550"
+        self.assertNotEqual(forecast_publication_signature(forecast), first)
+
+    def test_forecast_publication_signature_tracks_load_phase_dynamics(self) -> None:
+        forecast = xr.Dataset(
+            attrs={
+                "initial_soc_time": "2026-07-20T00:00:00",
+                "initial_soc_pct": "80",
+                "forecast_load_w": "275",
+                "load_mode_signature": "dc_cl61",
+                "load_current_phase": "fan_low",
+                "load_state_dynamics": '{"phase_profiles":{"fan_low":{"p50_w":275}}}',
+                "load_model_version": "10",
+            }
+        )
+        first = forecast_publication_signature(forecast)
+
+        forecast.attrs["load_current_phase"] = "fan_high"
+        self.assertNotEqual(forecast_publication_signature(forecast), first)
+        forecast.attrs["load_current_phase"] = "fan_low"
+        forecast.attrs["load_state_dynamics"] = '{"phase_profiles":{"fan_low":{"p50_w":290}}}'
         self.assertNotEqual(forecast_publication_signature(forecast), first)
 
     def test_forecast_publication_signature_tracks_battery_power_limits(self) -> None:
@@ -409,8 +460,8 @@ class PowerSocForecastTests(unittest.TestCase):
         load = build_historical_load_forecast(frame, forecast_times, end=times[-1], calibration_days=10)
 
         np.testing.assert_allclose(load.to_numpy(), 9.0)
-        self.assertEqual(load.attrs["load_model"], "mode_conditioned_energy_balance_v7")
-        self.assertEqual(load.attrs["load_model_version"], 7)
+        self.assertEqual(load.attrs["load_model"], "finite_controlled_state_phases_v10")
+        self.assertEqual(load.attrs["load_model_version"], 10)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
         self.assertEqual(load.attrs["load_regime"], "DC-Only")
         self.assertGreater(float(load.attrs["load_regime_threshold_w"]), 9.0)
@@ -477,6 +528,45 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertAlmostEqual(float(forecast["ForecastLoadWatts"].median()), 500.0)
         registry = forecast.attrs["load_mode_registry"]
         self.assertIn("DC-Only + Radar", registry)
+
+    def test_current_state_uses_dc_baseline_plus_pdu_not_conflicting_aggregate_load(self) -> None:
+        end = pd.Timestamp("2026-07-17T00:00:00")
+        power_times = pd.date_range(end - pd.Timedelta(hours=48), end, freq="15min")
+        battery_watts = np.full(len(power_times), -220.0)
+        battery_watts[-5:] = -900.0
+        power = xr.Dataset(
+            {
+                "BatterySOC": (("time",), np.linspace(82.0, 80.0, len(power_times))),
+                "SolarWatts_East": (("time",), np.zeros(len(power_times))),
+                "SolarWatts_South": (("time",), np.zeros(len(power_times))),
+                "SolarWatts_West": (("time",), np.zeros(len(power_times))),
+                "BatteryWatts": (("time",), battery_watts),
+                "ACOutputWatts": (("time",), np.zeros(len(power_times))),
+                "DCInverterWatts": (("time",), np.full(len(power_times), 9.0)),
+            },
+            coords={"time": power_times},
+        )
+        pdu_times = pd.date_range(end - pd.Timedelta(minutes=30), end, freq="15min")
+        pdu = xr.Dataset(
+            {
+                "PDUOutlet6State": (("time",), np.ones(len(pdu_times))),
+                "PDUOutlet6Watts": (("time",), np.full(len(pdu_times), 300.0)),
+            },
+            coords={"time": pdu_times},
+        )
+        forecast_times = pd.date_range(end, periods=5, freq="3h")
+        solar = xr.Dataset(
+            {"ssrd": (("time",), np.arange(len(forecast_times), dtype=float) * 3 * 3600 * 200.0)},
+            coords={"time": forecast_times},
+        )
+
+        forecast = build_forecast_dataset(power, solar, pdu=pdu, horizon_hours=12, capacity_kwh=26.0)
+
+        self.assertEqual(forecast.attrs["load_mode"], "DC-Only + Radar")
+        self.assertEqual(forecast.attrs["load_anchor_method"], "fresh_pdu_components_for_current_state")
+        self.assertAlmostEqual(float(forecast.attrs["load_component_estimate_w"]), 520.0, places=3)
+        self.assertAlmostEqual(float(forecast.attrs["forecast_load_p50_w"]), 520.0, places=3)
+        np.testing.assert_allclose(forecast["ForecastLoadWatts"].values, 520.0)
 
     def test_powered_cl61_pdu_signature_precedes_smoothed_ac_state(self) -> None:
         end = pd.Timestamp("2026-07-16T12:00:00")
@@ -595,7 +685,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(float(forecast.attrs["load_bias_correction_w"]), 0.0)
         self.assertAlmostEqual(float(forecast["ForecastLoadWatts"].median()), 250.0)
-        self.assertEqual(forecast.attrs["load_model"], "mode_conditioned_energy_balance_v7")
+        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v10")
         self.assertIn("ForecastLoadBiasRecent", forecast)
 
     def test_stale_negative_load_bias_cannot_zero_ac_dc_load_forecast(self) -> None:
@@ -668,6 +758,32 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertIn("soc_mae_24_48h", metrics)
         self.assertIn("soc_mae_48_96h", metrics)
 
+    def test_archive_preserves_load_phase_uncertainty(self) -> None:
+        issue_time = pd.Timestamp("2026-07-10T00:00:00")
+        times = pd.date_range(issue_time, periods=3, freq="3h")
+        forecast = xr.Dataset(
+            {
+                "ForecastLoadWatts": (("time",), [470.0, 275.0, 450.0]),
+                "ForecastLoadP10Watts": (("time",), [450.0, 260.0, 425.0]),
+                "ForecastLoadP50Watts": (("time",), [470.0, 275.0, 450.0]),
+                "ForecastLoadP90Watts": (("time",), [500.0, 290.0, 480.0]),
+                "ForecastLoadPhaseCode": (("time",), [1, 2, 3]),
+            },
+            coords={"time": times},
+            attrs={"initial_soc_time": issue_time.isoformat(), "load_model_version": "10"},
+        )
+
+        archive = append_forecast_archive(forecast, self.tmp_archive_path)
+
+        for name in (
+            "ForecastLoadP10Watts",
+            "ForecastLoadP50Watts",
+            "ForecastLoadP90Watts",
+            "ForecastLoadPhaseCode",
+        ):
+            self.assertIn(name, archive)
+        np.testing.assert_array_equal(archive["ForecastLoadPhaseCode"].values[0], [1.0, 2.0, 3.0])
+
     def test_forecast_skill_dataset_is_past_facing(self) -> None:
         issue_time = pd.Timestamp("2026-07-10T00:00:00")
         forecast_times = pd.date_range(issue_time, periods=5, freq="3h")
@@ -722,7 +838,7 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={
                 "initial_soc_time": new_issue.isoformat(),
                 "ecmwf_cycle_time": new_issue.isoformat(),
-                "load_model_version": "7",
+                "load_model_version": "10",
             },
         )
         archive = append_forecast_archive(new_forecast, self.tmp_archive_path)
@@ -746,7 +862,7 @@ class PowerSocForecastTests(unittest.TestCase):
         finite_mae = skill["ForecastLoadMAE24h"].dropna("time")
         self.assertTrue(len(finite_mae))
         self.assertAlmostEqual(float(finite_mae.values[-1]), 10.0)
-        self.assertEqual(skill.attrs["load_model_version"], "7")
+        self.assertEqual(skill.attrs["load_model_version"], "10")
 
     def test_hindcast_selects_fixed_lead_forecasts(self) -> None:
         issue = pd.Timestamp("2026-07-10T00:00:00")
@@ -890,7 +1006,118 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(ensemble.attrs["scenario_scope"], "current_system_only")
         self.assertEqual(
             ensemble.attrs["load_uncertainty"],
-            "independently paired mode-conditioned load residuals plus ECMWF solar ensemble",
+            "stationary exact-state load distribution independently paired with ECMWF solar members",
+        )
+
+    def test_ensemble_load_members_span_one_stationary_state_distribution(self) -> None:
+        power_times = pd.date_range("2026-07-10T00:00:00", periods=49, freq="1h")
+        power = xr.Dataset(
+            {
+                "BatterySOC": (("time",), np.linspace(70.0, 66.0, len(power_times))),
+                "ACOutputWatts": (("time",), np.full(len(power_times), 100.0)),
+                "DCInverterWatts": (("time",), np.full(len(power_times), 20.0)),
+            },
+            coords={"time": power_times},
+        )
+        forecast_times = pd.date_range(power_times[-1], periods=6, freq="3h")
+        accumulated = np.stack(
+            [np.arange(len(forecast_times), dtype=float) * 3 * 3600 * value for value in (100.0, 200.0, 300.0, 400.0, 500.0)]
+        )
+        solar = xr.Dataset(
+            {"ssrd": (("number", "time"), accumulated)},
+            coords={"number": [1, 2, 3, 4, 5], "time": forecast_times},
+        )
+        deterministic = xr.Dataset(
+            attrs={
+                "solar_calibration_factor_w_per_wm2": "1.0",
+                "battery_capacity_kwh": "26",
+                "load_bias_correction_w": "0",
+                "forecast_load_p10_w": "400",
+                "forecast_load_p50_w": "500",
+                "forecast_load_p90_w": "600",
+                "load_anchor_method": "learned_exact_state_distribution",
+                "load_mode_learning_observations": "12",
+                "load_model": "finite_controlled_state_v8",
+                "load_model_version": "8",
+                "load_mode": "DC-Only + Radar",
+                "load_state_contract": "finite_operating_state_v1",
+            }
+        )
+
+        ensemble = build_ensemble_dataset(power, deterministic, solar, horizon_hours=15)
+
+        loads = ensemble["ForecastLoadWattsEnsemble"].values
+        np.testing.assert_allclose(np.diff(loads, axis=1), 0.0)
+        self.assertGreater(float(np.ptp(loads[:, 0])), 0.0)
+        self.assertGreaterEqual(float(loads[:, 0].min()), 400.0)
+        self.assertLessEqual(float(loads[:, 0].max()), 600.0)
+        self.assertEqual(ensemble.attrs["load_state_contract"], "finite_operating_state_v1")
+
+    def test_ensemble_tracks_startup_and_fan_uncertainty_inside_one_state(self) -> None:
+        power_times = pd.date_range("2026-07-20T00:00:00", periods=49, freq="1h")
+        power = xr.Dataset(
+            {
+                "BatterySOC": (("time",), np.linspace(95.0, 92.0, len(power_times))),
+                "ACOutputWatts": (("time",), np.full(len(power_times), 250.0)),
+                "DCInverterWatts": (("time",), np.full(len(power_times), 25.0)),
+            },
+            coords={"time": power_times},
+        )
+        forecast_times = pd.date_range(power_times[-1], periods=6, freq="3h")
+        accumulated = np.stack(
+            [np.arange(len(forecast_times), dtype=float) * 3 * 3600 * value for value in (100.0, 200.0, 300.0, 400.0, 500.0)]
+        )
+        solar = xr.Dataset(
+            {"ssrd": (("number", "time"), accumulated)},
+            coords={"number": [1, 2, 3, 4, 5], "time": forecast_times},
+        )
+        dynamics = {
+            "schema_version": 3,
+            "state": "dc_cl61",
+            "current_phase": "startup",
+            "state_started_at": power_times[-1].isoformat(),
+            "phase_started_at": power_times[-1].isoformat(),
+            "startup_duration_p10_minutes": 60.0,
+            "startup_duration_p50_minutes": 120.0,
+            "startup_duration_p90_minutes": 180.0,
+            "phase_profiles": {
+                "startup": {"p10_w": 450.0, "p50_w": 470.0, "p90_w": 500.0, "sample_count": 16},
+                "fan_low": {"p10_w": 260.0, "p50_w": 275.0, "p90_w": 290.0, "sample_count": 48},
+                "fan_high": {"p10_w": 425.0, "p50_w": 450.0, "p90_w": 480.0, "sample_count": 24},
+            },
+            "phase_weights": {"fan_low": 0.67, "fan_high": 0.33},
+            "phase_dwell_minutes": {"fan_low": 360.0, "fan_high": 180.0},
+            "sample_count": 88,
+            "episode_count": 3,
+            "change_count": 7,
+        }
+        deterministic = xr.Dataset(
+            attrs={
+                "solar_calibration_factor_w_per_wm2": "1.0",
+                "battery_capacity_kwh": "26",
+                "forecast_load_p10_w": "260",
+                "forecast_load_p50_w": "275",
+                "forecast_load_p90_w": "500",
+                "load_model": "finite_controlled_state_phases_v10",
+                "load_model_version": "10",
+                "load_mode": "DC-Only + CL61",
+                "load_state_contract": "finite_operating_state_phases_v2",
+                "load_state_hold_policy": "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition",
+                "load_state_dynamics": json.dumps(dynamics),
+            }
+        )
+
+        ensemble = build_ensemble_dataset(power, deterministic, solar, horizon_hours=15)
+
+        loads = np.asarray(ensemble["ForecastLoadWattsEnsemble"].values)
+        phases = np.asarray(ensemble["ForecastLoadPhaseCodeEnsemble"].values)
+        self.assertEqual(loads.shape, phases.shape)
+        self.assertTrue(np.all(phases[:, 0] == PHASE_CODES[PHASE_STARTUP]))
+        self.assertGreater(np.count_nonzero(np.diff(phases, axis=1)), 0)
+        self.assertGreater(np.count_nonzero(np.diff(loads, axis=1)), 0)
+        self.assertEqual(
+            ensemble.attrs["load_uncertainty"],
+            "exact-state startup duration and fan-phase uncertainty independently paired with ECMWF solar members",
         )
 
     def test_ensemble_reanchors_when_soc_or_load_mode_changes_within_same_cycle(self) -> None:
@@ -907,10 +1134,20 @@ class PowerSocForecastTests(unittest.TestCase):
             "load_mode_source": "pdu_signature",
             "load_mode_active_kits": "CL61",
             "load_mode_signature": "PDUOutlet5Watts>=5W",
+            "load_state_uncertainty_source": "elapsed_time_exact_state_phase_distribution",
+            "load_state_dynamics": '{"current_phase":"fan_low"}',
+            "load_state_dynamics_signature": "phase-profile-a",
         }
         matching_attrs = dict(deterministic_attrs)
 
         self.assertEqual(_ensemble_refresh_reasons(matching_attrs, deterministic_attrs), [])
+
+        stale_dynamics = dict(matching_attrs)
+        stale_dynamics["load_state_dynamics_signature"] = "phase-profile-b"
+        self.assertEqual(
+            _ensemble_refresh_reasons(stale_dynamics, deterministic_attrs),
+            ["load_state_dynamics_signature"],
+        )
 
         stale_attrs = dict(matching_attrs)
         stale_attrs.update(

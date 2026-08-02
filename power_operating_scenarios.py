@@ -15,16 +15,31 @@ import pandas as pd
 import xarray as xr
 
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+from power_load_contract import (
+    CONTROLLED_LOAD_CONTRACT,
+    STATE_HOLD_POLICY,
+    ControlledLoadEstimate,
+    validate_state_held_load,
+)
+from power_load_dynamics import (
+    LOAD_PHASE_SCHEMA_VERSION,
+    PHASE_CODES,
+    PHASE_STEADY,
+    StateLoadDynamics,
+    controlled_load_member_profiles,
+    force_startup,
+    learn_state_load_dynamics,
+)
 from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
 )
 from power_battery_model import BatteryModel
 
-MODEL_NAME = "hybrid_state_space_v7"
-MODEL_VERSION = 7
-STATE_SCHEMA_VERSION = 3
-SCENARIO_SCHEMA_VERSION = 4
+MODEL_NAME = "hybrid_state_space_phases_v10"
+MODEL_VERSION = 10
+STATE_SCHEMA_VERSION = 6
+SCENARIO_SCHEMA_VERSION = 8
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -255,20 +270,23 @@ def build_observation_frame(
     mode_values: list[str] = []
     evidence_values: list[str] = []
     confidence_values: list[float] = []
+    confirmed_values: list[bool] = []
     for _, row in observed.iterrows():
         active: list[str] = []
-        has_pdu_evidence = False
+        pdu_evidence_count = 0
         for kit in KIT_ORDER:
             watts = row.get(f"{kit}_watts", np.nan)
             state = row.get(f"{kit}_state", np.nan)
             if np.isfinite(watts):
-                has_pdu_evidence = True
+                pdu_evidence_count += 1
                 if float(watts) >= PDU_ACTIVE_W:
                     active.append(kit)
             elif np.isfinite(state):
-                has_pdu_evidence = True
+                pdu_evidence_count += 1
                 if float(state) >= 0.5:
                     active.append(kit)
+        has_pdu_evidence = pdu_evidence_count > 0
+        direct_state_confirmed = pdu_evidence_count == len(KIT_ORDER)
         ac_active = bool(np.isfinite(row.get("ACOutputWatts", np.nan)) and row["ACOutputWatts"] > AC_ACTIVE_W)
         if active:
             selected = mode_id(active)
@@ -289,9 +307,11 @@ def build_observation_frame(
         mode_values.append(selected)
         evidence_values.append(evidence)
         confidence_values.append(confidence)
+        confirmed_values.append(direct_state_confirmed)
     observed["direct_mode"] = mode_values
     observed["mode_evidence"] = evidence_values
     observed["direct_confidence"] = confidence_values
+    observed["direct_state_confirmed"] = confirmed_values
     observed["operator_event"] = ""
     observed["operator_event_agreement"] = np.nan
     tolerance = pd.Timedelta(minutes=5)
@@ -317,7 +337,14 @@ def _default_component_means(observations: pd.DataFrame) -> np.ndarray:
     means = np.array([200.0, 220.0, 300.0, 250.0, 200.0, 250.0], dtype=np.float64)
     if observations.empty:
         return means
-    dc = observations.loc[observations["direct_mode"] == MODE_DC_ONLY, "load_w"].dropna()
+    confirmed = observations.get(
+        "direct_state_confirmed",
+        pd.Series(False, index=observations.index, dtype=bool),
+    ).fillna(False).astype(bool)
+    dc = observations.loc[
+        confirmed & (observations["direct_mode"] == MODE_DC_ONLY),
+        "load_w",
+    ].dropna()
     if not dc.empty:
         means[COMPONENT_INDEX["DC"]] = max(float(dc.median()), 0.0)
     for kit in KIT_ORDER:
@@ -329,11 +356,23 @@ def _default_component_means(observations: pd.DataFrame) -> np.ndarray:
     return means
 
 
+def _state_is_compatible(raw_state: Mapping[str, Any] | None) -> bool:
+    if not isinstance(raw_state, Mapping):
+        return False
+    try:
+        return (
+            int(raw_state.get("model_version", 0) or 0) == MODEL_VERSION
+            and int(raw_state.get("schema_version", 0) or 0) == STATE_SCHEMA_VERSION
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _bootstrap_components(raw_state: Mapping[str, Any] | None, observations: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     means = _default_component_means(observations)
     covariance = np.diag(np.array([60.0, 100.0, 150.0, 120.0, 100.0, 150.0]) ** 2)
     counts = np.zeros(len(COMPONENTS), dtype=np.int64)
-    if not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
+    if not _state_is_compatible(raw_state):
         return means, covariance, counts
     component_state = raw_state.get("components")
     if isinstance(component_state, Mapping):
@@ -431,7 +470,14 @@ def _component_regimes(observations: pd.DataFrame) -> dict[str, list[dict[str, f
     That preserves the CL61 high/low regimes while rejecting the single UAS spike.
     """
     regimes: dict[str, list[dict[str, float]]] = {}
-    dc_values = observations.loc[observations["direct_mode"] == MODE_DC_ONLY, "load_w"].to_numpy(dtype=np.float64)
+    confirmed = observations.get(
+        "direct_state_confirmed",
+        pd.Series(False, index=observations.index, dtype=bool),
+    ).fillna(False).astype(bool)
+    dc_values = observations.loc[
+        confirmed & (observations["direct_mode"] == MODE_DC_ONLY),
+        "load_w",
+    ].to_numpy(dtype=np.float64)
     for component in COMPONENTS:
         if component == "DC":
             values = dc_values
@@ -536,6 +582,7 @@ class OperatingModelResult:
     observed_modes: tuple[str, ...]
     mode_maturity: dict[str, str]
     component_regimes: dict[str, list[dict[str, float]]]
+    mode_load_profiles: dict[str, StateLoadDynamics]
     uas_tier_profiles: dict[str, dict[str, float | str]]
     current_mode: str
     current_confidence: float
@@ -561,10 +608,11 @@ def fit_operating_model(
     )
     if observations.empty:
         raise ValueError("No APS/PDU observations are available for operating-state learning")
+    compatible_state = _state_is_compatible(raw_state)
     mean, covariance, counts = _bootstrap_components(raw_state, observations)
     process_variance = np.array([1.0, 4.0, 6.0, 5.0, 4.0, 8.0], dtype=np.float64)
     last_trained = pd.NaT
-    if isinstance(raw_state, Mapping):
+    if compatible_state:
         candidate = pd.to_datetime(raw_state.get("last_observation_time_utc"), errors="coerce")
         if not pd.isna(candidate):
             last_trained = pd.Timestamp(candidate)
@@ -574,7 +622,7 @@ def fit_operating_model(
 
     mode_names = _mode_catalog()
     posterior = np.full(len(mode_names), 1.0 / len(mode_names), dtype=np.float64)
-    previous_mode = str(raw_state.get("current_mode", MODE_DC_ONLY)) if isinstance(raw_state, Mapping) else MODE_DC_ONLY
+    previous_mode = str(raw_state.get("current_mode", MODE_DC_ONLY)) if compatible_state else MODE_DC_ONLY
     if previous_mode in mode_names:
         posterior[:] = 0.02 / max(len(mode_names) - 1, 1)
         posterior[mode_names.index(previous_mode)] = 0.98
@@ -619,15 +667,16 @@ def fit_operating_model(
         estimated_load = float(design @ mean)
         innovation = np.nan
         clipped = False
-        if finite_load and should_train:
+        if finite_load and should_train and bool(row.get("direct_state_confirmed", False)):
+            training_design = _mode_design(direct_mode)
             mean, covariance, innovation, clipped = _kalman_update(
                 mean,
                 covariance,
-                design,
+                training_design,
                 float(row["load_w"]),
                 75.0**2,
             )
-            counts[np.flatnonzero(design)] += 1
+            counts[np.flatnonzero(training_design)] += 1
         for kit in KIT_ORDER:
             field = f"{kit}_watts"
             if not should_train or field not in row or not np.isfinite(row[field]) or float(row[field]) < PDU_ACTIVE_W:
@@ -665,19 +714,42 @@ def fit_operating_model(
     }
     learned_modes = tuple(value for value in observed_modes if mode_maturity[value] in {"calibrated", "reliable"})
     new_observation_count = int(np.count_nonzero(train_mask))
-    saved_regimes = raw_state.get("component_regimes") if isinstance(raw_state, Mapping) else None
+    saved_regimes = raw_state.get("component_regimes") if compatible_state else None
     component_regimes = (
         {str(name): list(values) for name, values in saved_regimes.items()}
         if new_observation_count == 0 and isinstance(saved_regimes, Mapping)
         else _component_regimes(observations)
     )
-    saved_tier_profiles = raw_state.get("uas_tier_profiles") if isinstance(raw_state, Mapping) else None
+    saved_mode_profiles = raw_state.get("mode_load_profiles") if compatible_state else None
+    mode_load_profiles: dict[str, StateLoadDynamics] = {}
+    if new_observation_count == 0 and isinstance(saved_mode_profiles, Mapping):
+        for name, value in saved_mode_profiles.items():
+            if not isinstance(value, Mapping):
+                continue
+            try:
+                profile = StateLoadDynamics.from_dict(value)
+                if profile.state == str(name):
+                    mode_load_profiles[str(name)] = profile
+            except (KeyError, TypeError, ValueError):
+                continue
+    phase_observations = observations.loc[observations["direct_state_confirmed"].fillna(False).astype(bool)]
+    confirmed_modes = sorted(
+        set(str(value) for value in phase_observations["direct_mode"])
+        - {MODE_UNKNOWN_AC}
+    )
+    for name in confirmed_modes:
+        if new_observation_count == 0 and name in mode_load_profiles:
+            continue
+        profile = learn_state_load_dynamics(phase_observations, name)
+        if profile is not None and profile.sample_count >= 8:
+            mode_load_profiles[name] = profile
+    saved_tier_profiles = raw_state.get("uas_tier_profiles") if compatible_state else None
     uas_tier_profiles = (
         {str(name): dict(values) for name, values in saved_tier_profiles.items()}
         if new_observation_count == 0 and isinstance(saved_tier_profiles, Mapping)
         else _uas_tier_profiles(observations)
     )
-    if new_observation_count > 0 or not isinstance(raw_state, Mapping) or int(raw_state.get("model_version", 0) or 0) != MODEL_VERSION:
+    if new_observation_count > 0 or not compatible_state:
         for name, index in COMPONENT_INDEX.items():
             moment = _regime_component_moments(component_regimes, name)
             if moment is None:
@@ -699,6 +771,10 @@ def fit_operating_model(
             "EstimatedModeLoadWatts": (("time",), np.asarray(estimated_loads, dtype=np.float32)),
             "LoadInnovationWatts": (("time",), np.asarray(innovations, dtype=np.float32)),
             "LoadObservationOutlier": (("time",), np.asarray(outliers, dtype=np.float32)),
+            "DirectStateConfirmed": (
+                ("time",),
+                observations["direct_state_confirmed"].to_numpy(dtype=np.uint8),
+            ),
             "OperatingEventAgreement": (("time",), observations["operator_event_agreement"].to_numpy(dtype=np.float32)),
             "OperatingModeProbability": (("time", "mode"), probabilities.astype(np.float32)),
             "ComponentRegimeMeanWatts": (("component", "regime"), np.asarray([
@@ -736,6 +812,7 @@ def fit_operating_model(
             "schema_version": str(STATE_SCHEMA_VERSION),
             "model": MODEL_NAME,
             "model_version": str(MODEL_VERSION),
+            "load_phase_schema_version": str(LOAD_PHASE_SCHEMA_VERSION),
             "generated_at_utc": _utc_now(),
             "current_mode": current_mode,
             "current_mode_label": mode_label(current_mode),
@@ -746,6 +823,10 @@ def fit_operating_model(
             "operator_event_count": str(len(events)),
             "operator_event_agreements": str(int(np.nansum(observations["operator_event_agreement"].to_numpy(dtype=np.float64)))),
             "component_names": json.dumps(list(COMPONENTS)),
+            "mode_load_profiles": json.dumps(
+                {name: profile.to_dict() for name, profile in mode_load_profiles.items()},
+                sort_keys=True,
+            ),
             "component_mean_w": json.dumps({name: float(mean[index]) for index, name in enumerate(COMPONENTS)}),
             "component_std_w": json.dumps(
                 {name: float(np.sqrt(max(covariance[index, index], 0.0))) for index, name in enumerate(COMPONENTS)}
@@ -754,12 +835,19 @@ def fit_operating_model(
             "observation_frequency": OBSERVATION_FREQUENCY,
             "last_observation_time_utc": latest_observation_time.isoformat(),
             "new_observation_count": str(new_observation_count),
+            "confirmed_state_observation_count": str(int(observations["direct_state_confirmed"].sum())),
         },
     )
     state_ds["OperatingModeCode"].attrs["mode_mapping"] = json.dumps(
         {str(mode_code(value)): mode_label(value) for value in mode_names}, sort_keys=True
     )
     state_ds["OperatingModeConfidence"].attrs["units"] = "1"
+    state_ds["DirectStateConfirmed"].attrs.update(
+        {
+            "long_name": "complete four-outlet PDU state vector available",
+            "flag_values": "0, 1",
+        }
+    )
     for name in ("ObservedLoadWatts", "EstimatedModeLoadWatts", "LoadInnovationWatts"):
         state_ds[name].attrs["units"] = "W"
 
@@ -767,15 +855,20 @@ def fit_operating_model(
         "schema_version": STATE_SCHEMA_VERSION,
         "model": MODEL_NAME,
         "model_version": MODEL_VERSION,
+        "load_phase_schema_version": LOAD_PHASE_SCHEMA_VERSION,
         "updated_at_utc": _utc_now(),
         "current_mode": current_mode,
         "current_mode_confidence": current_confidence,
         "last_observation_time_utc": latest_observation_time.isoformat(),
         "new_observation_count": new_observation_count,
+        "confirmed_state_observation_count": int(observations["direct_state_confirmed"].sum()),
         "learned_modes": list(learned_modes),
         "observed_modes": list(observed_modes),
         "mode_maturity": mode_maturity,
         "component_regimes": component_regimes,
+        "mode_load_profiles": {
+            name: profile.to_dict() for name, profile in mode_load_profiles.items()
+        },
         "uas_tier_profiles": uas_tier_profiles,
         "components": {
             name: {
@@ -797,6 +890,7 @@ def fit_operating_model(
         observed_modes=observed_modes,
         mode_maturity=mode_maturity,
         component_regimes=component_regimes,
+        mode_load_profiles=mode_load_profiles,
         uas_tier_profiles=uas_tier_profiles,
         current_mode=current_mode,
         current_confidence=current_confidence,
@@ -958,8 +1052,8 @@ def _current_system_load_members(
     member_count: int,
     *,
     fallback: np.ndarray | None = None,
-) -> np.ndarray:
-    """Return the system-as-is load used by the SOC ensemble on ``times``."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return system-as-is load and learned phase codes on ``times``."""
     source = ensemble if ensemble is not None and "ForecastLoadWattsEnsemble" in ensemble else None
     if source is not None and "time" in source:
         source_times = pd.DatetimeIndex(source["time"].values)
@@ -981,7 +1075,25 @@ def _current_system_load_members(
         if rows:
             result = np.asarray(rows, dtype=np.float64)
             if result.shape[0] == member_count and np.isfinite(result).all():
-                return np.clip(result, 0.0, None)
+                phases = np.full(result.shape, PHASE_CODES[PHASE_STEADY], dtype=np.int8)
+                if "ForecastLoadPhaseCodeEnsemble" in source:
+                    native_phases = np.asarray(
+                        source["ForecastLoadPhaseCodeEnsemble"].transpose("member", "time").values,
+                        dtype=np.float64,
+                    )
+                    if native_phases.shape[0] == member_count:
+                        aligned_phases = []
+                        for row in native_phases:
+                            aligned = (
+                                pd.Series(row, index=source_times)
+                                .reindex(times.union(source_times))
+                                .ffill()
+                                .bfill()
+                                .reindex(times)
+                            )
+                            aligned_phases.append(aligned.to_numpy(dtype=np.int8))
+                        phases = np.asarray(aligned_phases, dtype=np.int8)
+                return np.clip(result, 0.0, None), phases
 
     if "ForecastLoadWatts" in deterministic and "time" in deterministic:
         source_times = pd.DatetimeIndex(deterministic["time"].values)
@@ -994,11 +1106,27 @@ def _current_system_load_members(
             .bfill()
             .clip(lower=0.0)
         )
-        return np.tile(aligned.to_numpy(dtype=np.float64), (member_count, 1))
+        phases = np.full((member_count, len(times)), PHASE_CODES[PHASE_STEADY], dtype=np.int8)
+        if "ForecastLoadPhaseCode" in deterministic:
+            aligned_phase = (
+                pd.Series(
+                    np.asarray(deterministic["ForecastLoadPhaseCode"].values, dtype=np.float64),
+                    index=source_times,
+                )
+                .reindex(times.union(source_times))
+                .ffill()
+                .bfill()
+                .reindex(times)
+            )
+            phases[:] = aligned_phase.to_numpy(dtype=np.int8)
+        return np.tile(aligned.to_numpy(dtype=np.float64), (member_count, 1)), phases
     if fallback is not None:
         values = np.asarray(fallback, dtype=np.float64)
         if values.shape == (member_count, len(times)) and np.isfinite(values).all():
-            return np.clip(values, 0.0, None)
+            return (
+                np.clip(values, 0.0, None),
+                np.full(values.shape, PHASE_CODES[PHASE_STEADY], dtype=np.int8),
+            )
     raise ValueError("System forecast does not contain ForecastLoadWatts")
 
 
@@ -1419,8 +1547,45 @@ def _scenario_members(
     member_capacity_kwh: np.ndarray | None = None,
     member_charge_efficiency: np.ndarray | None = None,
     member_discharge_efficiency: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+    mode_load_profiles: Mapping[str, StateLoadDynamics] | None = None,
+    current_mode: str | None = None,
+    seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     loads = _load_members_for_modes(component_members, modes)
+    phase_codes = np.full(loads.shape, PHASE_CODES[PHASE_STEADY], dtype=np.int8)
+    profiles = mode_load_profiles or {}
+    start = 0
+    while start < len(modes):
+        stop = start + 1
+        while stop < len(modes) and modes[stop] == modes[start]:
+            stop += 1
+        profile = profiles.get(str(modes[start]))
+        if profile is not None:
+            if start > 0 or str(modes[start]) != str(current_mode):
+                profile = force_startup(profile, times[start])
+            baseline = loads[:, start]
+            fallback = ControlledLoadEstimate(
+                p10_w=float(np.nanquantile(baseline, 0.10)),
+                p50_w=float(np.nanquantile(baseline, 0.50)),
+                p90_w=float(np.nanquantile(baseline, 0.90)),
+                source="finite_state_component_fallback",
+                sample_count=int(len(baseline)),
+            ).validated()
+            profiled, phases = controlled_load_member_profiles(
+                profile,
+                times[start:stop],
+                fallback,
+                loads.shape[0],
+                seed=int(seed + start * 1009 + sum(ord(character) for character in str(modes[start]))),
+            )
+            loads[:, start:stop] = profiled
+            phase_codes[:, start:stop] = phases
+        start = stop
+    validate_state_held_load(
+        np.asarray([mode_code(value) for value in modes], dtype=np.int16),
+        loads,
+        phase_codes=phase_codes,
+    )
     soc = integrate_soc_members(
         initial_soc=initial_soc,
         times=times,
@@ -1432,7 +1597,7 @@ def _scenario_members(
         member_charge_efficiency=member_charge_efficiency,
         member_discharge_efficiency=member_discharge_efficiency,
     )
-    return loads, soc
+    return loads, soc, phase_codes
 
 
 def _validate_scenario_invariants(output: xr.Dataset) -> None:
@@ -1452,6 +1617,26 @@ def _validate_scenario_invariants(output: xr.Dataset) -> None:
         )
         if np.any(all_on + 1e-5 < dc):
             raise ValueError("All-instruments UAS tier 3 load cannot be below DC-only load")
+    for scenario_index in range(int(output.sizes.get("scenario", 0))):
+        mode_codes = np.asarray(
+            output["ScenarioModeCode"].isel(scenario=scenario_index).values,
+            dtype=np.int16,
+        )
+        load_quantiles = np.stack(
+            [
+                np.asarray(output[name].isel(scenario=scenario_index).values, dtype=np.float64)
+                for name in (
+                    "ScenarioLoadP10Watts",
+                    "ScenarioLoadP50Watts",
+                    "ScenarioLoadP90Watts",
+                )
+            ]
+        )
+        phase_epochs = np.asarray(
+            output["ScenarioLoadPhaseEpoch"].isel(scenario=scenario_index).values,
+            dtype=np.int16,
+        )
+        validate_state_held_load(mode_codes, load_quantiles, phase_codes=phase_epochs)
 
 
 def build_operating_scenarios(
@@ -1523,13 +1708,37 @@ def build_operating_scenarios(
         component_members,
         tuple(base_mode for _ in times),
     )
-    current_system_load = _current_system_load_members(
+    upstream_current_load, upstream_current_phases = _current_system_load_members(
         deterministic,
         ensemble,
         times,
         member_count,
         fallback=modeled_current_load,
     )
+    current_system_load = modeled_current_load
+    current_system_phases = np.full(
+        modeled_current_load.shape,
+        PHASE_CODES[PHASE_STEADY],
+        dtype=np.int8,
+    )
+    current_system_load_source = "scenario_component_model"
+    has_shared_contract = (
+        str(deterministic.attrs.get("load_state_contract", "")) == CONTROLLED_LOAD_CONTRACT
+        and str(deterministic.attrs.get("load_state_hold_policy", "")) == STATE_HOLD_POLICY
+    )
+    if has_shared_contract:
+        try:
+            validate_state_held_load(
+                np.full(len(times), mode_code(base_mode), dtype=np.int16),
+                upstream_current_load,
+                phase_codes=upstream_current_phases,
+            )
+        except ValueError:
+            pass
+        else:
+            current_system_load = upstream_current_load
+            current_system_phases = upstream_current_phases
+            current_system_load_source = "shared_system_as_is_finite_state_contract"
     optimized = optimize_cl61_schedule(
         times=times,
         solar_members_w=solar_members,
@@ -1585,6 +1794,8 @@ def build_operating_scenarios(
     soc_p90: list[np.ndarray] = []
     below_probability: list[np.ndarray] = []
     mode_codes: list[np.ndarray] = []
+    load_phase_codes: list[np.ndarray] = []
+    load_phase_epochs: list[np.ndarray] = []
     collection_hours: list[float] = []
     minimum_p10: list[float] = []
     final_p10: list[float] = []
@@ -1603,7 +1814,7 @@ def build_operating_scenarios(
                 member_count,
                 seed=seed + tier * 1009,
             )
-        loads, soc = _scenario_members(
+        loads, soc, member_load_phases = _scenario_members(
             modes,
             times=times,
             solar_members=solar_members,
@@ -1614,11 +1825,13 @@ def build_operating_scenarios(
             member_capacity_kwh=member_capacity,
             member_charge_efficiency=member_charge_efficiency,
             member_discharge_efficiency=member_discharge_efficiency,
+            mode_load_profiles={} if tier is not None else model.mode_load_profiles,
+            current_mode=base_mode,
+            seed=seed,
         )
         if scenario_id == SCENARIO_CURRENT:
-            # This is the same system-as-is forecast shown in the 96-hour
-            # ensemble panel, so use its exact load members as a hard contract.
             loads = current_system_load
+            member_load_phases = current_system_phases
             soc = integrate_soc_members(
                 initial_soc=initial_soc,
                 times=times,
@@ -1638,7 +1851,22 @@ def build_operating_scenarios(
         soc_p50.append(np.nanquantile(soc, 0.50, axis=0))
         soc_p90.append(np.nanquantile(soc, 0.90, axis=0))
         below_probability.append(np.mean(soc < MINIMUM_OPERATIONAL_SOC_PCT, axis=0))
-        mode_codes.append(np.asarray([mode_code(value) for value in modes], dtype=np.int16))
+        scenario_mode_codes = np.asarray([mode_code(value) for value in modes], dtype=np.int16)
+        mode_codes.append(scenario_mode_codes)
+        central_phases = np.asarray(
+            [
+                int(np.bincount(member_load_phases[:, index].astype(np.int64)).argmax())
+                for index in range(member_load_phases.shape[1])
+            ],
+            dtype=np.int8,
+        )
+        phase_changed = np.r_[
+            False,
+            np.any(member_load_phases[:, 1:] != member_load_phases[:, :-1], axis=0)
+            | (scenario_mode_codes[1:] != scenario_mode_codes[:-1]),
+        ]
+        load_phase_codes.append(central_phases)
+        load_phase_epochs.append(np.cumsum(phase_changed).astype(np.int16))
         on = np.asarray(["CL61" in mode_kits(value) for value in modes], dtype=bool)
         collection_hours.append(float(np.count_nonzero(on[1:])))
         minimum_p10.append(float(np.nanmin(p10)))
@@ -1662,6 +1890,8 @@ def build_operating_scenarios(
             "ScenarioSOCP90": (("scenario", "time"), np.asarray(soc_p90, dtype=np.float32)),
             "ScenarioBelow40Probability": (("scenario", "time"), np.asarray(below_probability, dtype=np.float32)),
             "ScenarioModeCode": (("scenario", "time"), np.asarray(mode_codes, dtype=np.int16)),
+            "ScenarioLoadPhaseCode": (("scenario", "time"), np.asarray(load_phase_codes, dtype=np.int8)),
+            "ScenarioLoadPhaseEpoch": (("scenario", "time"), np.asarray(load_phase_epochs, dtype=np.int16)),
             "ScenarioCollectionHours": (("scenario",), np.asarray(collection_hours, dtype=np.float32)),
             "ScenarioMinimumP10SOC": (("scenario",), np.asarray(minimum_p10, dtype=np.float32)),
             "ScenarioFinalP10SOC": (("scenario",), np.asarray(final_p10, dtype=np.float32)),
@@ -1701,6 +1931,7 @@ def build_operating_scenarios(
             "schema_version": str(SCENARIO_SCHEMA_VERSION),
             "model": MODEL_NAME,
             "model_version": str(MODEL_VERSION),
+            "load_phase_schema_version": str(LOAD_PHASE_SCHEMA_VERSION),
             "generated_at_utc": _utc_now(),
             "initial_soc_time": issue_time.isoformat(),
             "initial_soc_pct": f"{initial_soc:.6g}",
@@ -1712,10 +1943,18 @@ def build_operating_scenarios(
             "observed_modes": json.dumps(list(model.observed_modes)),
             "mode_maturity": json.dumps(model.mode_maturity, sort_keys=True),
             "scenario_base_mode": base_mode,
-            "load_baseline_source": "measured_system_anchor_for_current_plus_unadjusted_learned_components",
+            "load_baseline_source": "finite_state_component_model_for_all_operational_scenarios",
+            "load_state_contract": CONTROLLED_LOAD_CONTRACT,
+            "load_state_hold_policy": STATE_HOLD_POLICY,
+            "current_system_load_source": current_system_load_source,
             "current_system_load_p50_w": f"{float(np.nanmedian(current_system_load)):.6g}",
             "modeled_current_load_p50_w": f"{float(np.nanmedian(modeled_current_load)):.6g}",
-            "current_load_model_disagreement_w": f"{float(np.nanmedian(current_system_load - modeled_current_load)):.6g}",
+            "upstream_current_load_p50_w": f"{float(np.nanmedian(upstream_current_load)):.6g}",
+            "current_load_model_disagreement_w": f"{float(np.nanmedian(upstream_current_load - modeled_current_load)):.6g}",
+            "mode_load_profiles": json.dumps(
+                {name: profile.to_dict() for name, profile in model.mode_load_profiles.items()},
+                sort_keys=True,
+            ),
             "uas_tier_profiles": json.dumps(model.uas_tier_profiles, sort_keys=True),
             "forecast_horizon_hours": str(actual_horizon),
             "optimization_horizon_hours": str(min(optimization_hours, actual_horizon)),
@@ -1754,6 +1993,12 @@ def build_operating_scenarios(
     output["ScenarioModeCode"].attrs["mode_mapping"] = json.dumps(
         {str(mode_code(value)): mode_label(value) for value in {mode for modes in scenario_modes.values() for mode in modes}},
         sort_keys=True,
+    )
+    output["ScenarioLoadPhaseCode"].attrs["phase_mapping"] = json.dumps(
+        {str(code): name for name, code in PHASE_CODES.items()}, sort_keys=True
+    )
+    output["ScenarioLoadPhaseEpoch"].attrs["description"] = (
+        "increments whenever the operating state or any learned startup/fan phase changes"
     )
     _validate_scenario_invariants(output)
     return output
