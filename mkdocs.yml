@@ -54,6 +54,7 @@ nav:
       - Performance logging: runtime/performance-logging.md
       - Display artifact manifest: runtime/display-artifacts.md
       - Running locally: runtime/running-locally.md
+      - Containerisation plan: runtime/containerisation-plan.md
       - Model evaluation policy: runtime/model-evaluation-cleanup.md
       - Documentation publishing: runtime/documentation-publishing.md
       - Notes: runtime/notes.md
