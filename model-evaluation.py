@@ -2583,6 +2583,20 @@ def _cloudnet_backbone_review_panel(
     end = latest.get("cloudnet_instrument_source_common_overlap_end", "n/a")
     hours = latest.get("cloudnet_instrument_source_common_overlap_hours", "n/a")
     review = latest.get("cloudnet_instrument_source_review_conclusion")
+    categorize = (
+        _read_json(_day_file(day, "provenance", "cloudnet_categorize_run.json"))
+        if day
+        else None
+    )
+    categorize = categorize if isinstance(categorize, dict) else {}
+    categorize_overlap = categorize.get("common_overlap")
+    categorize_overlap = (
+        categorize_overlap if isinstance(categorize_overlap, dict) else {}
+    )
+    categorize_hours = categorize_overlap.get("hours", "n/a")
+    categorize_start = categorize_overlap.get("start", "n/a")
+    categorize_end = categorize_overlap.get("end", "n/a")
+    categorize_limiting = categorize_overlap.get("limiting_roles")
     products_text = (
         f"{latest.get('cloudnet_observed_product_ready_count', 'n/a')}/"
         f"{latest.get('cloudnet_observed_product_expected_count', 'n/a')} ready; "
@@ -2603,7 +2617,8 @@ def _cloudnet_backbone_review_panel(
             "instrument coverage",
             latest.get("cloudnet_instrument_source_coverage_status", "unknown"),
         ),
-        _card("production overlap", f"{hours} h"),
+        _card("source overlap", f"{hours} h"),
+        _card("official categorize overlap", f"{categorize_hours} h"),
     ]
     rows = [
         (
@@ -2611,12 +2626,20 @@ def _cloudnet_backbone_review_panel(
             _list_summary(missing_types, limit=8),
         ),
         (
-            "production overlap window",
+            "source overlap window",
             f"{start} to {end}",
         ),
         (
-            "limiting instrument roles",
+            "official categorize window",
+            f"{categorize_start} to {categorize_end}",
+        ),
+        (
+            "source limiting roles",
             _list_summary(limiting_roles, limit=6),
+        ),
+        (
+            "categorize limiting roles",
+            _list_summary(categorize_limiting, limit=6),
         ),
         (
             "campaign official-product counts",

@@ -517,8 +517,23 @@ def test_iceland_panel_uses_collocated_deployment_and_production_overlap(tmp_pat
     assert "depolarisation remains observation-only" in html
 
 
-def test_cloudnet_backbone_panel_selects_requested_day() -> None:
+def test_cloudnet_backbone_panel_selects_requested_day(tmp_path) -> None:
     module = _load_model_evaluation_module()
+    provenance = tmp_path / "2026" / "08" / "01" / "provenance"
+    provenance.mkdir(parents=True)
+    (provenance / "cloudnet_categorize_run.json").write_text(
+        json.dumps(
+            {
+                "common_overlap": {
+                    "hours": 22.936667,
+                    "start": "2026-08-01T00:59:58Z",
+                    "end": "2026-08-01T23:56:10Z",
+                    "limiting_roles": ["radar", "lidar"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     index = {
         "days": [
             {
@@ -538,8 +553,11 @@ def test_cloudnet_backbone_panel_selects_requested_day() -> None:
         ]
     }
 
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
     html = module._cloudnet_backbone_review_panel(index, "2026-08-01")
 
     assert "23.900556 h" in html
+    assert "22.936667 h" in html
     assert "2026-08-01T00:00:01Z to 2026-08-01T23:56:10Z" in html
+    assert "2026-08-01T00:59:58Z to 2026-08-01T23:56:10Z" in html
     assert "2026-07-06" not in html
