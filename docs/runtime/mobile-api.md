@@ -3,11 +3,11 @@
 The native iOS app uses a small read-only API instead of scraping the Panel
 dashboard or reading Zarr/SQLite files directly from the phone.
 
-The server-side API remains on the dashboard `main` branch. The native Swift
-client is maintained as a separate iOS artifact/repository so dashboard
-runtime changes and app UI changes can be reviewed independently. Do not
-recreate an iOS feature branch in this repository; release the dashboard and
-native client independently.
+The server-side API is released with the dashboard repository. The native
+Swift client is maintained in the separate `aurora-dashboard-ios` repository,
+so API and app changes can be reviewed and released independently. Keep the
+two releases compatible through the tested `/mobile/v1` contract rather than
+copying native code into this repository.
 
 ## Service
 
@@ -23,11 +23,11 @@ The API is served by `mobile_api.py`:
 uvicorn mobile_api:app --host 127.0.0.1 --port 8010
 ```
 
-For production, the Ansible dashboard release installs the service and proxies
-it under both public dashboard hostnames. The bearer token is generated once in
-the root-owned `/etc/aurora-mobile-api.token` file and referenced through
-`AURORA_MOBILE_API_TOKEN_FILE`; it is not committed to the dashboard or
-infrastructure repositories.
+Ansible installs the service and proxies it under both public dashboard
+hostnames. It also creates a root-owned token file at
+`/etc/aurora-mobile-api.token`, referenced through
+`AURORA_MOBILE_API_TOKEN_FILE`. The token is never committed to the dashboard
+or infrastructure repository.
 
 ```text
 https://data.gamb2le.co.uk/mobile/v1
@@ -35,18 +35,19 @@ https://data.gamb2le.co.uk/mobile/v1
 
 ## Authentication
 
-Authentication is required by default:
+The service fails closed by default and requires:
 
 ```text
 Authorization: Bearer <AURORA_MOBILE_API_TOKEN>
 ```
 
-`GET /health` is intentionally unauthenticated so the iOS app can report whether
-the service is reachable. A public dashboard host may explicitly set
-`AURORA_MOBILE_API_AUTH_MODE=public_read_only`. That mode allows only `GET` and
+`GET /health` is intentionally unauthenticated so the iOS app can report
+whether the service is reachable. Both current public dashboard hosts
+explicitly use `AURORA_MOBILE_API_AUTH_MODE=public_read_only`; normal read-only
+app use therefore does not require a token. That mode allows only `GET` and
 `HEAD` requests to the bounded app payloads and media already displayed on the
-public dashboard. The derived-artifact inventory remains token-protected,
-unknown mode values fail closed, and the legacy
+public dashboard. The administrative derived-artifact inventory remains
+token-protected, unknown mode values fail closed, and the legacy
 `AURORA_MOBILE_API_ALLOW_PUBLIC` variable has no effect.
 
 ## Endpoints
@@ -70,16 +71,17 @@ unknown mode values fail closed, and the legacy
   forecast, planning, and verification variables only. The legacy combined
   display product remains a fallback.
   `group=current` returns observed conditions; `group=forecast` returns the
-  24-hour forecast, 96-hour forecast/planning, and verification panels. The
-  Each forecast panel includes an `info` object with its summary,
+  24-hour forecast, 96-hour forecast/planning, and verification panels. Each
+  forecast panel includes an `info` object with its summary,
   implementation-specific assumptions, and metric definitions for the native
   per-plot Info sheet. Verification panels also retain their live `guidance`
   evidence and score cards. The
   legacy `all`, `observed`, `forecast_24h`, `forecast_96h`, and `verification`
   groups remain supported.
-- `GET /media/power/figure/current|forecast` - an authenticated, ETag-backed
-  prewarmed Plotly JSON figure for a Power section. This never exposes raw or
-  Zarr paths and can be cached by native clients for one minute.
+- `GET /media/power/figure/current|forecast` - an ETag-backed prewarmed Plotly
+  JSON figure for a Power section. Access follows the host authentication mode.
+  The response never exposes raw or Zarr paths and can be cached by native
+  clients for one minute.
 - `GET /auroracam?day=latest|YYYY-MM-DD&time_utc=...` - the latest four
   AURORACam records with separate preview and original URLs. Historical days
   also provide a bounded list of UTC frame times for native selection.
@@ -95,9 +97,10 @@ unknown mode values fail closed, and the legacy
   power-off as an expected collection pause instead of a missing-data fault.
 - `GET /wxcam?stream=fish_hdr|pano_hdr&day=latest|YYYY-MM-DD` - stitched MP4,
   day list, poster, and hourly thumbnails.
-- `GET /media/...` - authenticated image/video file responses with short cache
-  headers and ETag/304 revalidation. AURORACam previews are generated only on
-  demand, are capped at 960 pixels, and use a bounded 50 MB server cache.
+- `GET /media/...` - image/video responses with short cache headers and
+  ETag/304 revalidation. Access follows the host authentication mode.
+  AURORACam previews are generated only on demand, are capped at 960 pixels,
+  and use a bounded 50 MB server cache.
 
 The API reads existing deployed products only. It does not restart services,
 write Zarr stores, mutate the WXcam catalog, or change Panel dashboard behavior.

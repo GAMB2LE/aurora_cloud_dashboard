@@ -29,7 +29,7 @@ nav:
   - Home: index.md
   - Start here: getting-started.md
   - Architecture: architecture.md
-  - Refactor baseline: reports/development-refactor-baseline-20260719.md
+  - Historical refactor baseline: reports/development-refactor-baseline-20260719.md
   - Overview:
       - Dashboard at a glance: overview/index.md
       - Tabs and views: overview/tabs-and-views.md
@@ -54,7 +54,7 @@ nav:
       - Performance logging: runtime/performance-logging.md
       - Display artifact manifest: runtime/display-artifacts.md
       - Running locally: runtime/running-locally.md
-      - Model evaluation cleanup: runtime/model-evaluation-cleanup.md
+      - Model evaluation policy: runtime/model-evaluation-cleanup.md
       - Documentation publishing: runtime/documentation-publishing.md
       - Notes: runtime/notes.md
   - Data products:

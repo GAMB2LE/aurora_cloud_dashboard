@@ -59,7 +59,7 @@ AUTO/LONG/SHORT files remain on the camera host and are not cataloged,
 Zarr-appended, or archived from this VM.
 
 The immutable HDR JPG/MP4 raw mirror is copied to both GWS and object storage.
-The catalogue, daily videos, and hourly thumbnails are also archived as
+The catalog, daily videos, and hourly thumbnails are also archived as
 products after settling. The local pixel Zarr is mutable, reproducible, and
 excluded from both archives; it is never raw-retention evidence.
 

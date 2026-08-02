@@ -62,5 +62,5 @@ The dashboard does not render WXcam directly from this Zarr:
 - science WXcam uses the SQLite catalog plus hourly thumbnail products
 
 The retained source archive is the immutable FISH/PANO HDR JPG and MP4 tree in
-the cloud raw mirror, GWS, and object storage. The SQLite catalogue, daily
+the cloud raw mirror, GWS, and object storage. The SQLite catalog, daily
 videos, and hourly thumbnails are separately archived products.

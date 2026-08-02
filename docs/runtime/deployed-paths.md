@@ -1,6 +1,8 @@
 # Deployed Paths
 
-Primary runtime paths come from `/etc/aurora-dashboard.env`.
+Primary runtime paths come from `/etc/aurora-dashboard.env`. Production and
+development share the same read-only mirror layout, but only production owns
+the normal raw and product writers.
 
 ## Main application paths
 
@@ -9,6 +11,14 @@ Primary runtime paths come from `/etc/aurora-dashboard.env`.
 - product root: `/data/aurora/products`
 - quicklook root: `/data/aurora/products/quicklooks`
 - interactive prewarm root: `/data/aurora/products/dashboard/prewarm`
+
+Development-only experiments must use:
+
+- raw/test inputs: `/project/aurora/dev-raw`
+- derived products: `/data/aurora/dev-products`
+
+The development dashboard may read mirrored products from
+`/data/aurora/products`; it must not write experimental output there.
 
 ## Important deployed products
 

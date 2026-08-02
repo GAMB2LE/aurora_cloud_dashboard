@@ -15,7 +15,7 @@ archived from this VM.
 
 These in-scope HDR JPG/MP4 files are the durable WXcam source archive and are
 copied additively to both GWS and object storage. They, rather than the mutable
-pixel Zarr, provide raw-retention evidence. The catalogue, daily videos, and
+pixel Zarr, provide raw-retention evidence. The catalog, daily videos, and
 hourly thumbnails are archived separately as products after their 30-hour
 verification settle window.
 
@@ -47,7 +47,7 @@ contained `48414` FISH HDR image records, `48413` PANO HDR image records, and
 
 ### Read-only standby access
 
-The warm-standby droplet receives this catalog by replication and serves it
+The development host receives this catalog by replication and serves it
 from `data-ocean.gamb2le.co.uk` without running WXcam writer timers. Dashboard
 readers must therefore treat the catalog as read-only:
 

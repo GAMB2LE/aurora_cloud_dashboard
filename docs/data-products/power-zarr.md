@@ -120,8 +120,8 @@ traces needed by the APS summary panels. That lets the interactive browser
 switch Power windows without repeatedly opening and merging multi-day
 one-second APS samples.
 
-When checked on `2026-05-21`, this derived store had `time=21547`, 25 data
-variables, sorted unique timestamps, and coverage from
+In a historical validation snapshot on `2026-05-21`, this derived store had
+`time=21547`, 25 data variables, sorted unique timestamps, and coverage from
 `2026-05-05 15:15:00` to `2026-05-21 20:10:00`.
 
 Important variables include:
@@ -164,9 +164,11 @@ The visible scenario panel is populated from the operating-mode product
 described below. It always includes seven stable comparisons: CL61, CL61 +
 Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, and HATPRO.
 
-The **SOC 96 h Forecast** P10/P90 traces hold the detected current system mode
-and load fixed for every member. They vary only the ECMWF solar member, so
-planned instrument schedules cannot widen this operational uncertainty range.
+The **SOC 96 h Forecast** P10/P90 traces describe the current system as-is,
+not different future instrument schedules. Version 7 varies ECMWF weather,
+recent whole-station load residuals, and calibrated battery parameters while
+holding the current operating plan fixed. Planned instrument combinations are
+shown separately in the operating-scenario product.
 
 When `/data/aurora/products/power/power_soc_forecast_skill.zarr` is available,
 the display summary also includes past-facing forecast verification traces:

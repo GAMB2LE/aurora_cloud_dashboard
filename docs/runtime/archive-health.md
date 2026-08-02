@@ -12,7 +12,7 @@ The cloud archive monitor publishes:
 
 `ARCHIVE_HEALTH_PATH` may override that path. The dashboard merges the stable
 `metrics` object into its operations snapshot and exposes the source path in
-the mobile catalogue. It must not infer pruning safety from display artefacts
+the mobile catalog. It must not infer pruning safety from display artifacts
 or enable, stop, or repair archive writers.
 
 ## What the status means
