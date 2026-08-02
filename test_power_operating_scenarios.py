@@ -17,6 +17,7 @@ from power_operating_scenarios import (
     SCENARIO_DC_ONLY,
     SCENARIO_OPTIMIZED,
     _align_ensemble_solar_contract,
+    _validate_scenario_invariants,
     build_operating_scenarios,
     evaluate_custom_schedule,
     fit_operating_model,
@@ -339,7 +340,7 @@ class OperatingScenarioTests(unittest.TestCase):
         scenarios["ScenarioLoadP50Watts"].values[0, 0] += 50.0
         self.assertNotEqual(scenario_publication_signature(scenarios), first)
 
-    def test_current_scenario_matches_system_ensemble_load_and_soc_anchor(self) -> None:
+    def test_current_scenario_uses_the_finite_operating_state_and_soc_anchor(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
         issue = pd.Timestamp(power["time"].values[-1])
@@ -356,12 +357,55 @@ class OperatingScenarioTests(unittest.TestCase):
 
         self.assertEqual(pd.Timestamp(scenarios.time.values[0]), issue)
         self.assertEqual(float(current["ScenarioSOCP50"].isel(time=0)), 86.0)
-        expected_load = float(ensemble["ForecastLoadWattsEnsemble"].isel(time=0).median("member"))
-        self.assertAlmostEqual(float(current["ScenarioLoadP50Watts"].isel(time=0)), expected_load, places=5)
+        expected_load = float(scenarios.attrs["modeled_current_load_p50_w"])
+        self.assertAlmostEqual(float(current["ScenarioLoadP50Watts"].isel(time=0)), expected_load, places=3)
         self.assertEqual(
             scenarios.attrs["load_baseline_source"],
-            "measured_system_anchor_for_current_plus_unadjusted_learned_components",
+            "finite_state_component_model_for_all_operational_scenarios",
         )
+        self.assertEqual(scenarios.attrs["load_state_contract"], "finite_operating_state_v1")
+        np.testing.assert_allclose(np.diff(current["ScenarioLoadP50Watts"].values), 0.0)
+
+    def test_current_scenario_reuses_the_shared_system_as_is_state_distribution(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        deterministic.attrs.update(
+            {
+                "load_state_contract": "finite_operating_state_v1",
+                "load_state_hold_policy": "hold_latest_confirmed_state_until_explicit_schedule_transition",
+            }
+        )
+        ensemble["ForecastLoadWattsEnsemble"][:] = 515.0
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+        current = scenarios.sel(scenario=SCENARIO_CURRENT)
+
+        np.testing.assert_allclose(current["ScenarioLoadP50Watts"].values, 515.0)
+        self.assertEqual(
+            scenarios.attrs["current_system_load_source"],
+            "shared_system_as_is_finite_state_contract",
+        )
+
+    def test_scenario_validation_rejects_load_drift_inside_one_mode(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        scenarios = build_operating_scenarios(power, deterministic, model, ensemble=ensemble)
+        current_index = int(np.flatnonzero(scenarios["scenario"].values == SCENARIO_CURRENT)[0])
+        for name in ("ScenarioLoadP10Watts", "ScenarioLoadP50Watts", "ScenarioLoadP90Watts"):
+            scenarios[name].values[current_index, 1] += 25.0
+
+        with self.assertRaisesRegex(ValueError, "without an operating-state transition"):
+            _validate_scenario_invariants(scenarios)
 
     def test_all_instruments_uas_tier3_uses_tier_profile_and_stays_above_dc(self) -> None:
         power, pdu = _training_data()

@@ -24,6 +24,11 @@ from ecmwf_forecast_provider import (
 )
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
 from power_battery_model import BatteryModel, fit_battery_model, soc_delta_percent
+from power_load_contract import (
+    CONTROLLED_LOAD_CONTRACT,
+    STATE_HOLD_POLICY,
+    estimate_controlled_load,
+)
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 POWER_SOC_FORECAST_ZARR_PATH = Path(
@@ -83,8 +88,8 @@ DEFAULT_OPEN_DATA_SOURCE = os.environ.get("AURORA_POWER_ECMWF_OPEN_DATA_SOURCE",
 DEFAULT_SKILL_WINDOW_HOURS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_WINDOW_HOURS", "24"))
 DEFAULT_SKILL_RETENTION_DAYS = float(os.environ.get("AURORA_POWER_SOC_FORECAST_SKILL_RETENTION_DAYS", "7"))
 ECMWF_PARAM = "ssrd"
-LOAD_MODEL_NAME = "mode_conditioned_energy_balance_v7"
-LOAD_MODEL_VERSION = 7
+LOAD_MODEL_NAME = "finite_controlled_state_v8"
+LOAD_MODEL_VERSION = 8
 PDU_OUTLET_KIT_NAMES = {
     4: "UAS",
     5: "CL61",
@@ -2015,44 +2020,40 @@ def build_forecast_dataset(
             mode_source=mode_source,
             signature=mode_signature,
         )
-        learned_entry = load_mode_registry.get(load_mode, {})
-        learned_count = int(learned_entry.get("observation_count", 0) or 0)
-        # A newly observed signature is informative but not yet a calibrated
-        # mode. Keep the measured current level until the robust mode median
-        # has enough separated stable observations.
-        if learned_count >= DEFAULT_MODE_MIN_OBSERVATIONS and abs(learned_load_w - raw_load_w) <= max(75.0, 0.25 * raw_load_w):
-            load_w = learned_load_w
-        else:
-            load_w = raw_load_w
     else:
-        mode_entry = load_mode_registry.get(load_mode, {})
-        try:
-            learned_level_w = float(mode_entry.get("learned_level_w", np.nan))
-            learned_observations = int(mode_entry.get("observation_count", 0) or 0)
-        except Exception:
-            learned_level_w = np.nan
-            learned_observations = 0
-        if (
-            np.isfinite(learned_level_w)
-            and learned_observations >= DEFAULT_MODE_MIN_OBSERVATIONS
-            and abs(learned_level_w - raw_load_w) <= max(75.0, 0.25 * raw_load_w)
-        ):
-            load_w = learned_level_w
-        else:
-            load_w = raw_load_w
-    learned_reference_w = float(load_w)
-    # The operational system-as-is forecast is always anchored to the recent
-    # measured whole-station balance. Learned mode/component levels are
-    # diagnostics and scenario inputs, not replacements for the physical load.
-    load_w = raw_load_w
+        learned_load_w = np.nan
     component_load_w = (
         float(clean_dc_only_level_w) + float(pdu_active_watts)
-        if mode_source == "pdu_signature" and np.isfinite(pdu_active_watts) and clean_dc_only_level_w is not None
+        if mode_source in {"pdu_signature", "pdu_ac_signature"}
+        and np.isfinite(pdu_active_watts)
+        and clean_dc_only_level_w is not None
         else np.nan
     )
-    load_anchor_disagreement_w = float(component_load_w - raw_load_w) if np.isfinite(component_load_w) else np.nan
     mode_entry = load_mode_registry.get(load_mode, {})
     learning_observations = int(mode_entry.get("observation_count", 0) or 0)
+    try:
+        learned_reference_w = float(mode_entry.get("learned_level_w", learned_load_w))
+    except (TypeError, ValueError):
+        learned_reference_w = np.nan
+    learned_levels = []
+    for observation in mode_entry.get("observations", []):
+        try:
+            value = float(observation["level_w"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(value) and value >= 0.0:
+            learned_levels.append(value)
+    controlled_load = estimate_controlled_load(
+        mode=load_mode,
+        measured_current_w=raw_load_w,
+        learned_observations_w=learned_levels,
+        learned_level_w=learned_reference_w,
+        component_estimate_w=component_load_w,
+        dc_only_estimate_w=clean_dc_only_level_w,
+        minimum_observations=DEFAULT_MODE_MIN_OBSERVATIONS,
+    )
+    load_w = controlled_load.p50_w
+    load_anchor_disagreement_w = float(load_w - raw_load_w)
     load_diagnostics.update(
         {
             "load_mode": load_mode,
@@ -2070,7 +2071,8 @@ def build_forecast_dataset(
             "load_component_estimate_w": component_load_w,
             "load_anchor_disagreement_w": load_anchor_disagreement_w,
             "load_learned_reference_w": learned_reference_w,
-            "load_anchor_method": "median_latest_30_minutes_whole_station_balance",
+            "load_anchor_method": controlled_load.source,
+            "load_distribution_sample_count": controlled_load.sample_count,
         }
     )
     # Bias learned by retired load models is not transferable across operating
@@ -2086,6 +2088,9 @@ def build_forecast_dataset(
         capacity_kwh=battery_model.usable_capacity_kwh,
         battery_model=battery_model,
     )
+    forecast["ForecastLoadP10Watts"] = controlled_load.p10_w
+    forecast["ForecastLoadP50Watts"] = controlled_load.p50_w
+    forecast["ForecastLoadP90Watts"] = controlled_load.p90_w
     for scenario_load_w in SCENARIO_LOADS_W:
         scenario = integrate_soc_forecast(
             initial_soc=latest_soc,
@@ -2140,11 +2145,21 @@ def build_forecast_dataset(
             "solar_calibration": "physical panel factor plus independent-cycle lead-specific MOS",
             "solar_calibration_contract_id": solar_contract_id,
             "forecast_load_w": f"{load_w:.6g}",
+            "forecast_load_p10_w": f"{controlled_load.p10_w:.6g}",
+            "forecast_load_p50_w": f"{controlled_load.p50_w:.6g}",
+            "forecast_load_p90_w": f"{controlled_load.p90_w:.6g}",
             "raw_forecast_load_w": f"{raw_load_w:.6g}",
             "load_bias_correction_w": f"{load_bias_correction:.6g}",
             "soc_bias_correction_pct_points_by_bucket": json.dumps(soc_bias_corrections, sort_keys=True),
             "load_model": LOAD_MODEL_NAME,
             "load_model_version": str(LOAD_MODEL_VERSION),
+            "load_state_contract": CONTROLLED_LOAD_CONTRACT,
+            "load_state_hold_policy": STATE_HOLD_POLICY,
+            "load_state_uncertainty_source": (
+                "exact_state_observations"
+                if controlled_load.sample_count >= DEFAULT_MODE_MIN_OBSERVATIONS
+                else "no_cross_state_spread"
+            ),
             "load_mode": load_mode,
             "load_mode_source": mode_source,
             "load_mode_active_kits": ",".join(active_kits),
@@ -2170,6 +2185,7 @@ def build_forecast_dataset(
             "adaptive_alpha": f"{adaptive_alpha:.6g}",
             "previous_forecast_metrics": json.dumps(previous_metrics, sort_keys=True),
             "scenario_loads_w": ",".join(str(load_w) for load_w in SCENARIO_LOADS_W),
+            "scenario_loads_role": "legacy_fixed_load_sensitivity_only",
             "scenario_solar_mode": "ecmwf",
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
         },
@@ -2183,6 +2199,9 @@ def build_forecast_dataset(
     out["ECMWFSolarIrradiance"].attrs["units"] = "W m-2"
     out["ForecastSolarWatts"].attrs["units"] = "W"
     out["ForecastLoadWatts"].attrs["units"] = "W"
+    for name in ("ForecastLoadP10Watts", "ForecastLoadP50Watts", "ForecastLoadP90Watts"):
+        out[name].attrs["units"] = "W"
+        out[name].attrs["load_state_contract"] = CONTROLLED_LOAD_CONTRACT
     out["ForecastSOCMAERecent"].attrs["units"] = "percentage points"
     for bucket, _, _ in LEAD_BUCKETS:
         out[f"ForecastSOCMAE_{bucket}"].attrs["units"] = "percentage points"

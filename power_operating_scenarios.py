@@ -15,6 +15,11 @@ import pandas as pd
 import xarray as xr
 
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+from power_load_contract import (
+    CONTROLLED_LOAD_CONTRACT,
+    STATE_HOLD_POLICY,
+    validate_state_held_load,
+)
 from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
@@ -24,7 +29,7 @@ from power_battery_model import BatteryModel
 MODEL_NAME = "hybrid_state_space_v7"
 MODEL_VERSION = 7
 STATE_SCHEMA_VERSION = 3
-SCENARIO_SCHEMA_VERSION = 4
+SCENARIO_SCHEMA_VERSION = 5
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -1452,6 +1457,22 @@ def _validate_scenario_invariants(output: xr.Dataset) -> None:
         )
         if np.any(all_on + 1e-5 < dc):
             raise ValueError("All-instruments UAS tier 3 load cannot be below DC-only load")
+    for scenario_index in range(int(output.sizes.get("scenario", 0))):
+        mode_codes = np.asarray(
+            output["ScenarioModeCode"].isel(scenario=scenario_index).values,
+            dtype=np.int16,
+        )
+        load_quantiles = np.stack(
+            [
+                np.asarray(output[name].isel(scenario=scenario_index).values, dtype=np.float64)
+                for name in (
+                    "ScenarioLoadP10Watts",
+                    "ScenarioLoadP50Watts",
+                    "ScenarioLoadP90Watts",
+                )
+            ]
+        )
+        validate_state_held_load(mode_codes, load_quantiles)
 
 
 def build_operating_scenarios(
@@ -1523,13 +1544,30 @@ def build_operating_scenarios(
         component_members,
         tuple(base_mode for _ in times),
     )
-    current_system_load = _current_system_load_members(
+    upstream_current_load = _current_system_load_members(
         deterministic,
         ensemble,
         times,
         member_count,
         fallback=modeled_current_load,
     )
+    current_system_load = modeled_current_load
+    current_system_load_source = "scenario_component_model"
+    has_shared_contract = (
+        str(deterministic.attrs.get("load_state_contract", "")) == CONTROLLED_LOAD_CONTRACT
+        and str(deterministic.attrs.get("load_state_hold_policy", "")) == STATE_HOLD_POLICY
+    )
+    if has_shared_contract:
+        try:
+            validate_state_held_load(
+                np.full(len(times), mode_code(base_mode), dtype=np.int16),
+                upstream_current_load,
+            )
+        except ValueError:
+            pass
+        else:
+            current_system_load = upstream_current_load
+            current_system_load_source = "shared_system_as_is_finite_state_contract"
     optimized = optimize_cl61_schedule(
         times=times,
         solar_members_w=solar_members,
@@ -1616,8 +1654,6 @@ def build_operating_scenarios(
             member_discharge_efficiency=member_discharge_efficiency,
         )
         if scenario_id == SCENARIO_CURRENT:
-            # This is the same system-as-is forecast shown in the 96-hour
-            # ensemble panel, so use its exact load members as a hard contract.
             loads = current_system_load
             soc = integrate_soc_members(
                 initial_soc=initial_soc,
@@ -1712,10 +1748,14 @@ def build_operating_scenarios(
             "observed_modes": json.dumps(list(model.observed_modes)),
             "mode_maturity": json.dumps(model.mode_maturity, sort_keys=True),
             "scenario_base_mode": base_mode,
-            "load_baseline_source": "measured_system_anchor_for_current_plus_unadjusted_learned_components",
+            "load_baseline_source": "finite_state_component_model_for_all_operational_scenarios",
+            "load_state_contract": CONTROLLED_LOAD_CONTRACT,
+            "load_state_hold_policy": STATE_HOLD_POLICY,
+            "current_system_load_source": current_system_load_source,
             "current_system_load_p50_w": f"{float(np.nanmedian(current_system_load)):.6g}",
             "modeled_current_load_p50_w": f"{float(np.nanmedian(modeled_current_load)):.6g}",
-            "current_load_model_disagreement_w": f"{float(np.nanmedian(current_system_load - modeled_current_load)):.6g}",
+            "upstream_current_load_p50_w": f"{float(np.nanmedian(upstream_current_load)):.6g}",
+            "current_load_model_disagreement_w": f"{float(np.nanmedian(upstream_current_load - modeled_current_load)):.6g}",
             "uas_tier_profiles": json.dumps(model.uas_tier_profiles, sort_keys=True),
             "forecast_horizon_hours": str(actual_horizon),
             "optimization_horizon_hours": str(min(optimization_hours, actual_horizon)),
