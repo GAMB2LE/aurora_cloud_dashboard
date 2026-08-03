@@ -23,6 +23,7 @@ class InstrumentContract:
     summary_supported: bool = True
     pdu_outlet: int | None = None
     pdu_title: str | None = None
+    automatic_phase_labels: tuple[tuple[str, str], ...] = ()
 
 
 INSTRUMENTS: tuple[InstrumentContract, ...] = (
@@ -45,6 +46,7 @@ INSTRUMENTS: tuple[InstrumentContract, ...] = (
         ("ceilometer__HK_Ceilometer", "ceilometer__hk_ceilometer"),
         pdu_outlet=5,
         pdu_title="CL61",
+        automatic_phase_labels=(("fan_high", "On with Heater/Blower"),),
     ),
     InstrumentContract(
         "cloud-radar",

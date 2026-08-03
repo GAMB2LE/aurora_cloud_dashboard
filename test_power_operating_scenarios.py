@@ -423,8 +423,15 @@ class OperatingScenarioTests(unittest.TestCase):
 
         self.assertEqual(pd.Timestamp(scenarios.time.values[0]), issue)
         self.assertEqual(float(current["ScenarioSOCP50"].isel(time=0)), 86.0)
-        expected_load = float(scenarios.attrs["modeled_current_load_p50_w"])
-        self.assertAlmostEqual(float(current["ScenarioLoadP50Watts"].isel(time=0)), expected_load, places=3)
+        self.assertAlmostEqual(
+            float(current["ScenarioLoadP50Watts"].isel(time=0)),
+            420.0,
+            places=3,
+        )
+        self.assertEqual(
+            scenarios.attrs["current_system_load_source"],
+            "fresh_exact_state_phase_model",
+        )
         self.assertEqual(
             scenarios.attrs["load_baseline_source"],
             "finite_state_component_model_for_all_operational_scenarios",
@@ -434,7 +441,7 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertIn("ScenarioLoadPhaseEpoch", scenarios)
         np.testing.assert_allclose(np.diff(current["ScenarioLoadP50Watts"].values), 0.0)
 
-    def test_current_scenario_reuses_the_shared_system_as_is_state_distribution(self) -> None:
+    def test_current_scenario_prefers_the_fresh_operating_phase_over_stale_planning_load(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
         issue = pd.Timestamp(power["time"].values[-1])
@@ -443,6 +450,8 @@ class OperatingScenarioTests(unittest.TestCase):
             {
                 "load_state_contract": "finite_operating_state_phases_v2",
                 "load_state_hold_policy": "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition",
+                "load_exact_state_id": "dc_cl61",
+                "load_current_phase": "fan_low",
             }
         )
         ensemble["ForecastLoadWattsEnsemble"][:] = 515.0
@@ -455,12 +464,74 @@ class OperatingScenarioTests(unittest.TestCase):
             horizon_hours=96,
         )
         current = scenarios.sel(scenario=SCENARIO_CURRENT)
+        cl61 = scenarios.sel(scenario=SCENARIO_CL61)
 
-        np.testing.assert_allclose(current["ScenarioLoadP50Watts"].values, 515.0)
+        self.assertFalse(np.allclose(current["ScenarioLoadP50Watts"].values, 515.0))
+        np.testing.assert_allclose(
+            current["ScenarioLoadP50Watts"].values,
+            cl61["ScenarioLoadP50Watts"].values,
+        )
         self.assertEqual(
             scenarios.attrs["current_system_load_source"],
-            "shared_system_as_is_finite_state_contract",
+            "fresh_exact_state_phase_model",
         )
+
+    def test_cl61_heater_phase_is_the_current_cl61_scenario_load(self) -> None:
+        times = pd.date_range("2026-08-01T06:00:00", periods=97, freq="15min")
+        low_high = np.asarray(
+            [270.0] * 16
+            + [460.0] * 16
+            + [270.0] * 16
+            + [460.0] * 16
+            + [270.0] * 16
+            + [460.0] * 17
+        )
+        power = xr.Dataset(
+            {
+                "BatterySOC": (("time",), np.linspace(96.0, 90.0, len(times))),
+                "BatteryWatts": (("time",), -low_high),
+                "SolarWatts_East": (("time",), np.zeros(len(times))),
+                "SolarWatts_South": (("time",), np.zeros(len(times))),
+                "SolarWatts_West": (("time",), np.zeros(len(times))),
+                "ACOutputWatts": (("time",), low_high - 240.0),
+                "DCInverterWatts": (("time",), np.full(len(times), 8.0)),
+            },
+            coords={"time": times},
+        )
+        pdu = xr.Dataset(
+            {
+                "PDUOutlet4Watts": (("time",), np.zeros(len(times))),
+                "PDUOutlet4State": (("time",), np.zeros(len(times))),
+                "PDUOutlet5Watts": (("time",), np.where(low_high > 400.0, 223.0, 38.0)),
+                "PDUOutlet5State": (("time",), np.ones(len(times))),
+                "PDUOutlet6Watts": (("time",), np.zeros(len(times))),
+                "PDUOutlet6State": (("time",), np.zeros(len(times))),
+                "PDUOutlet8Watts": (("time",), np.zeros(len(times))),
+                "PDUOutlet8State": (("time",), np.zeros(len(times))),
+            },
+            coords={"time": times},
+        )
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        deterministic, ensemble = _forecast_inputs(pd.Timestamp(times[-1]))
+        ensemble["ForecastLoadWattsEnsemble"][:] = 270.0
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+        current = scenarios.sel(scenario=SCENARIO_CURRENT)
+        cl61 = scenarios.sel(scenario=SCENARIO_CL61)
+
+        self.assertEqual(model.current_mode, mode_id(("CL61",)))
+        self.assertEqual(model.mode_load_profiles[model.current_mode].current_phase, "fan_high")
+        np.testing.assert_allclose(
+            current["ScenarioLoadP50Watts"].values,
+            cl61["ScenarioLoadP50Watts"].values,
+        )
+        self.assertGreater(float(current["ScenarioLoadP50Watts"].isel(time=0)), 400.0)
 
     def test_scenario_validation_rejects_load_drift_inside_one_mode(self) -> None:
         power, pdu = _training_data()

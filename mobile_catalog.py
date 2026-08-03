@@ -49,6 +49,7 @@ PDU_INSTRUMENTS = tuple(
 )
 PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
+AUTOMATIC_PHASE_FRESHNESS_MINUTES = 30.0
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
 OPERATIONS_TREND_CACHE_SECONDS = 60.0
@@ -1074,10 +1075,11 @@ def _instrument_power_states(
 ) -> list[dict[str, Any]]:
     """Return PDU power states plus collection states for DC science streams."""
     states, detail = _pdu_power_snapshot()
+    automatic_labels = _automatic_power_labels()
     science_source_times = science_source_times or {}
 
     pdu_rows = [
-        _pdu_instrument_status(instrument_id, states, detail)
+        _pdu_instrument_status(instrument_id, states, detail, automatic_labels)
         for instrument_id, _title, _icon, _outlet in PDU_INSTRUMENTS
     ]
     science_rows = []
@@ -1120,7 +1122,12 @@ def pdu_instrument_status(instrument_id: str) -> dict[str, Any] | None:
     if instrument_id not in PDU_INSTRUMENT_BY_ID:
         return None
     states, detail = _pdu_power_snapshot()
-    return _pdu_instrument_status(instrument_id, states, detail)
+    return _pdu_instrument_status(
+        instrument_id,
+        states,
+        detail,
+        _automatic_power_labels(),
+    )
 
 
 def pdu_outlet_states() -> dict[int, bool] | None:
@@ -1156,14 +1163,64 @@ def _pdu_power_snapshot() -> tuple[dict[int, bool], str]:
     return states, detail
 
 
-def _pdu_instrument_status(instrument_id: str, states: dict[int, bool], detail: str) -> dict[str, Any]:
+def _automatic_power_labels() -> dict[str, str]:
+    """Return learned automatic subphase labels from a fresh operating-state product."""
+    path = Path(
+        os.environ.get(
+            "POWER_OPERATING_STATE_ZARR_PATH",
+            "/data/aurora/products/power/power_operating_state.zarr",
+        )
+    )
+    try:
+        import zarr
+
+        group = zarr.open_group(str(path), mode="r")
+        attrs = group.attrs
+        observation_time = _parse_utc(
+            attrs.get("last_observation_time_utc") or attrs.get("generated_at_utc")
+        )
+        if observation_time is None:
+            raise ValueError("operating-state time unavailable")
+        age_minutes = max((datetime.now(UTC) - observation_time).total_seconds() / 60, 0)
+        if age_minutes > AUTOMATIC_PHASE_FRESHNESS_MINUTES:
+            raise ValueError("stale operating-state phase")
+        current_mode = str(attrs.get("current_mode", "")).strip().lower()
+        raw_profiles = attrs.get("mode_load_profiles", {})
+        profiles = (
+            raw_profiles
+            if isinstance(raw_profiles, dict)
+            else json.loads(str(raw_profiles or "{}"))
+        )
+        current_profile = profiles.get(current_mode, {}) if isinstance(profiles, dict) else {}
+        current_phase = str(current_profile.get("current_phase", ""))
+        labels: dict[str, str] = {}
+        mode_tokens = set(current_mode.split("_"))
+        for instrument in PDU_INSTRUMENT_CONTRACTS:
+            phase_label = dict(instrument.automatic_phase_labels).get(current_phase)
+            mode_token = str(instrument.pdu_title or instrument.title).strip().lower().replace(" ", "-")
+            if phase_label and mode_token in mode_tokens:
+                labels[instrument.id] = phase_label
+        return labels
+    except (ImportError, json.JSONDecodeError, KeyError, OSError, TypeError, ValueError):
+        return {}
+
+
+def _pdu_instrument_status(
+    instrument_id: str,
+    states: dict[int, bool],
+    detail: str,
+    automatic_labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
     title, icon, outlet = PDU_INSTRUMENT_BY_ID[instrument_id]
     powered = states.get(outlet)
+    state = "On" if powered is True else "Off" if powered is False else "Unknown"
+    if powered is True:
+        state = (automatic_labels or {}).get(instrument_id, state)
     return {
         "id": instrument_id,
         "title": title,
         "systemImage": icon,
-        "state": "On" if powered is True else "Off" if powered is False else "Unknown",
+        "state": state,
         "level": "green" if powered is True else "unknown" if powered is False else "amber",
         "detail": detail,
     }

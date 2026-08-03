@@ -1708,7 +1708,7 @@ def build_operating_scenarios(
         component_members,
         tuple(base_mode for _ in times),
     )
-    upstream_current_load, upstream_current_phases = _current_system_load_members(
+    upstream_current_load, _ = _current_system_load_members(
         deterministic,
         ensemble,
         times,
@@ -1716,29 +1716,7 @@ def build_operating_scenarios(
         fallback=modeled_current_load,
     )
     current_system_load = modeled_current_load
-    current_system_phases = np.full(
-        modeled_current_load.shape,
-        PHASE_CODES[PHASE_STEADY],
-        dtype=np.int8,
-    )
     current_system_load_source = "scenario_component_model"
-    has_shared_contract = (
-        str(deterministic.attrs.get("load_state_contract", "")) == CONTROLLED_LOAD_CONTRACT
-        and str(deterministic.attrs.get("load_state_hold_policy", "")) == STATE_HOLD_POLICY
-    )
-    if has_shared_contract:
-        try:
-            validate_state_held_load(
-                np.full(len(times), mode_code(base_mode), dtype=np.int16),
-                upstream_current_load,
-                phase_codes=upstream_current_phases,
-            )
-        except ValueError:
-            pass
-        else:
-            current_system_load = upstream_current_load
-            current_system_phases = upstream_current_phases
-            current_system_load_source = "shared_system_as_is_finite_state_contract"
     optimized = optimize_cl61_schedule(
         times=times,
         solar_members_w=solar_members,
@@ -1830,18 +1808,16 @@ def build_operating_scenarios(
             seed=seed,
         )
         if scenario_id == SCENARIO_CURRENT:
-            loads = current_system_load
-            member_load_phases = current_system_phases
-            soc = integrate_soc_members(
-                initial_soc=initial_soc,
-                times=times,
-                solar_members_w=solar_members,
-                load_members_w=loads,
-                capacity_kwh=capacity,
-                battery_model=battery_model,
-                member_capacity_kwh=member_capacity,
-                member_charge_efficiency=member_charge_efficiency,
-                member_discharge_efficiency=member_discharge_efficiency,
+            # The operating-state job runs much more often than the ECMWF
+            # planning retrieval. Keep the solar cycle, but anchor current load
+            # to the freshly detected exact state and its autonomous phase.
+            # Reusing an older planning load here can otherwise leave the
+            # current trace in CL61's low phase after its heater/blower starts.
+            current_system_load = loads.copy()
+            current_system_load_source = (
+                "fresh_exact_state_phase_model"
+                if base_mode in model.mode_load_profiles
+                else "scenario_component_model"
             )
         load_p10.append(np.nanquantile(loads, 0.10, axis=0))
         load_p50.append(np.nanquantile(loads, 0.50, axis=0))
