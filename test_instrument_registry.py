@@ -27,6 +27,12 @@ class InstrumentRegistryTests(unittest.TestCase):
         self.assertIs(mobile_catalog.INSTRUMENTS, instrument_registry.INSTRUMENTS)
         self.assertIs(mobile_catalog.INSTRUMENT_BY_ID, instrument_registry.INSTRUMENT_BY_ID)
 
+    def test_cl61_contract_names_its_automatic_high_load_phase(self):
+        self.assertEqual(
+            dict(instrument_registry.INSTRUMENT_BY_ID["ceilometer"].automatic_phase_labels),
+            {"fan_high": "On with Heater/Blower"},
+        )
+
     def test_browser_options_preserve_existing_labels(self):
         self.assertEqual(
             instrument_registry.browser_options(),

@@ -215,14 +215,21 @@ level; it does not infer a daily schedule. The mode name is included in the
 forecast-load legend. This version-10 model refreshes with every 15-minute
 learning run and uses calibrated battery capacity, directional efficiencies,
 and power limits for SOC integration.
+The CL61 can autonomously start its heater/blower without changing its PDU
+state. This is learned as the high phase inside the same `DC-Only + CL61`
+state, not as an operator-controlled mode. A fresh high-phase detection is
+shown in Overview as `On with Heater/Blower`; ordinary powered operation remains
+`On`.
 This product is operational guidance only and is stored separately from
 model-evaluation products.
 
 The **Suggested Instrument-Mode SOC Forecasts** panel uses the same ECMWF solar
 input and latest `BatterySOC` anchor for all eight fixed combinations. Each
 scenario includes the DC baseline and load distributions learned for its named
-instruments. Its current-mode trace reuses the same finite-state system-as-is
-load shown in the 96-hour panel. The eighth scenario keeps CL61, Radar, HATPRO, and UAS on with UAS
+instruments. Its current-mode trace is rebuilt by the frequent operating-state
+job from the latest exact state and automatic phase; it does not reuse a stale
+load phase from the twice-daily planning cycle. The eighth scenario keeps CL61,
+Radar, HATPRO, and UAS on with UAS
 effective tier 3. It remains explicitly provisional until tier 3 has at least
 three independent episodes and six observed hours; its fallback P10/P50/P90
 UAS loads are `55/108/302 W`. The separate optimized CL61 plan maximizes

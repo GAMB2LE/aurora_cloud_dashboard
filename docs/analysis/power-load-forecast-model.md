@@ -46,6 +46,13 @@ startup, steady operation, or a low/high fan regime. It never extrapolates an
 instrument switch from the clock, invents an intermediate configuration, or
 borrows a load trajectory from another operating state.
 
+For CL61, the high automatic phase represents its heater/blower. Operators
+control whether CL61 has PDU power, but the instrument controls this subphase.
+The dashboard therefore keeps the finite state as `DC + CL61`, learns the
+low/high load distributions inside that state, and reports `On with
+Heater/Blower` while the fresh learned high phase is active. It never presents
+the heater/blower as a separately commandable scenario.
+
 The load estimate follows a conservative priority order: fresh PDU component
 power plus a clean DC-only baseline, a clean DC-only observation when no kit is
 active, a mature distribution learned for that exact state, then the latest
@@ -177,6 +184,11 @@ states. Three CL61 starts initially used about `459-471 W` before settling near
 settling around `810-893 W`. These observations justify startup and fan phases,
 but not a free-running time-of-day load forecast.
 
+On 2026-08-03, outlet 5 supplied about `38 W` from 20:00 through 02:45 UTC and
+then stepped to about `223 W` at 03:00 UTC while every controllable instrument
+state remained unchanged. The exact-state learner detected `fan_high`; this is
+the direct operational example used for the CL61 heater/blower presentation.
+
 ## Learning, planning, and verification
 
 The operating-state job runs every five minutes, re-anchors SOC to the latest
@@ -185,6 +197,12 @@ learning. A separate planning job retrieves the latest eligible ECMWF 00 or 12
 UTC deterministic cycle twice daily and forecasts 240 hours. Its native cycle
 is reused by the faster state job, so a kit transition changes the load and SOC
 plans without redownloading ECMWF.
+
+The suggested-scenario `Current load / system as-is` trace always uses the
+fresh operating-state job's exact state and automatic phase. It reuses the
+planning product's solar cycle, not an older planning-cycle load trace. Thus,
+when CL61 is the only powered instrument, the current trace and the fixed CL61
+trace start from the same detected heater/blower phase.
 
 The optimizer considers CL61 on/off schedules over the first 96 hours, then
 propagates each candidate with CL61 off through the complete 240-hour planning

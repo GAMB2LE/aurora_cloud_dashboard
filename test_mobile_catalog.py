@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
@@ -738,6 +740,40 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual((meteorology["state"], meteorology["level"]), ("Collecting", "green"))
         self.assertEqual((radiation["state"], radiation["level"]), ("Collecting", "green"))
         self.assertIn("Source sample", meteorology["detail"])
+
+    def test_cl61_overview_names_the_learned_heater_blower_phase(self) -> None:
+        fake_group = SimpleNamespace(
+            attrs={
+                "current_mode": "dc_cl61",
+                "last_observation_time_utc": mobile_catalog.utc_now_iso(),
+                "mode_load_profiles": json.dumps(
+                    {"dc_cl61": {"current_phase": "fan_high"}}
+                ),
+            }
+        )
+        fake_zarr = SimpleNamespace(open_group=lambda *_args, **_kwargs: fake_group)
+        with patch.dict(sys.modules, {"zarr": fake_zarr}):
+            labels = mobile_catalog._automatic_power_labels()
+
+        self.assertEqual(labels, {"ceilometer": "On with Heater/Blower"})
+        row = mobile_catalog._pdu_instrument_status(
+            "ceilometer",
+            {5: True},
+            "PDU sample 2m old",
+            labels,
+        )
+        self.assertEqual(row["state"], "On with Heater/Blower")
+        self.assertEqual(row["level"], "green")
+
+    def test_cl61_heater_blower_label_never_overrides_powered_off(self) -> None:
+        row = mobile_catalog._pdu_instrument_status(
+            "ceilometer",
+            {5: False},
+            "PDU sample 2m old",
+            {"ceilometer": "On with Heater/Blower"},
+        )
+
+        self.assertEqual(row["state"], "Off")
 
     def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
