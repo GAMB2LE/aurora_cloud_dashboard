@@ -50,6 +50,7 @@ PDU_INSTRUMENTS = tuple(
 PDU_INSTRUMENT_BY_ID = {instrument_id: (title, icon, outlet) for instrument_id, title, icon, outlet in PDU_INSTRUMENTS}
 PDU_STATE_FRESHNESS_MINUTES = 30.0
 AUTOMATIC_PHASE_FRESHNESS_MINUTES = 30.0
+UAS_TIER_FRESHNESS_MINUTES = float(os.environ.get("UAS_STALE_AFTER_MINUTES", "5"))
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
 OPERATIONS_TREND_CACHE_SECONDS = 60.0
@@ -1075,11 +1076,11 @@ def _instrument_power_states(
 ) -> list[dict[str, Any]]:
     """Return PDU power states plus collection states for DC science streams."""
     states, detail = _pdu_power_snapshot()
-    automatic_labels = _automatic_power_labels()
+    powered_labels = _powered_instrument_labels(states)
     science_source_times = science_source_times or {}
 
     pdu_rows = [
-        _pdu_instrument_status(instrument_id, states, detail, automatic_labels)
+        _pdu_instrument_status(instrument_id, states, detail, powered_labels)
         for instrument_id, _title, _icon, _outlet in PDU_INSTRUMENTS
     ]
     science_rows = []
@@ -1126,7 +1127,7 @@ def pdu_instrument_status(instrument_id: str) -> dict[str, Any] | None:
         instrument_id,
         states,
         detail,
-        _automatic_power_labels(),
+        _powered_instrument_labels(states),
     )
 
 
@@ -1203,6 +1204,28 @@ def _automatic_power_labels() -> dict[str, str]:
         return labels
     except (ImportError, json.JSONDecodeError, KeyError, OSError, TypeError, ValueError):
         return {}
+
+
+def _powered_instrument_labels(states: dict[int, bool]) -> dict[str, str]:
+    """Return current labels that add context to a confirmed powered state."""
+    labels = _automatic_power_labels()
+    uas_outlet = PDU_INSTRUMENT_BY_ID["uas"][2]
+    if states.get(uas_outlet) is True:
+        if uas_label := _fresh_uas_tier_label():
+            labels["uas"] = uas_label
+    return labels
+
+
+def _fresh_uas_tier_label() -> str | None:
+    """Return the latest effective UAS tier when its mirrored record is fresh."""
+    result = load_uas_mqtt_log(uas_mqtt_log_path(), max_lines=200)
+    if not result.records:
+        return None
+    latest = result.records[-1]
+    age_minutes = max((datetime.now(UTC) - latest.timestamp).total_seconds() / 60, 0)
+    if age_minutes > UAS_TIER_FRESHNESS_MINUTES or latest.effective_tier < 1:
+        return None
+    return f"On (Tier {latest.effective_tier})"
 
 
 def _pdu_instrument_status(

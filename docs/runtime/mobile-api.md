@@ -64,7 +64,11 @@ token-protected, unknown mode values fail closed, and the legacy
   storage values come from the latest snapshot; source and GWS lag fall back to
   a cached, bounded read of the operations Zarr. Lag calculations exclude
   instruments with a fresh intentional PDU-off state.
-- `GET /overview` - the small first-load status cards and active alerts.
+- `GET /overview` - the small first-load status cards and active alerts. When
+  the UAS PDU outlet is on and the mirrored Menapia record is fresh, its state
+  includes the latest effective tier, for example `On (Tier 3)`. PDU `Off` and
+  `Unknown` remain authoritative, and stale tier records are not displayed as
+  current state.
 - `GET /power?window=24h|96h&group=...` - bounded native-chart traces from the
   section-specific Power display product when available (at most 260 points
   per trace). `current` reads observed variables only; `forecast` reads
