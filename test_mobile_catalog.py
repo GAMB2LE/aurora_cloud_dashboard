@@ -775,6 +775,57 @@ class MobileCatalogTests(unittest.TestCase):
 
         self.assertEqual(row["state"], "Off")
 
+    def test_uas_overview_includes_the_latest_fresh_effective_tier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "menapia_mqtt.log"
+            now = datetime.now(timezone.utc)
+            log.write_text(
+                "\n".join(
+                    [
+                        f"{(now - timedelta(minutes=2)):%Y-%m-%d %H:%M:%S}: 4 4",
+                        f"{now:%Y-%m-%d %H:%M:%S}: Tier change 4 3",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"UAS_MQTT_LOG_PATH": str(log)}):
+                labels = mobile_catalog._powered_instrument_labels({4: True})
+
+        self.assertEqual(labels.get("uas"), "On (Tier 3)")
+        row = mobile_catalog._pdu_instrument_status(
+            "uas",
+            {4: True},
+            "PDU sample 2m old",
+            labels,
+        )
+        self.assertEqual(row["state"], "On (Tier 3)")
+        self.assertEqual(row["level"], "green")
+
+    def test_uas_tier_never_overrides_powered_off(self) -> None:
+        row = mobile_catalog._pdu_instrument_status(
+            "uas",
+            {4: False},
+            "PDU sample 2m old",
+            {"uas": "On (Tier 3)"},
+        )
+
+        self.assertEqual(row["state"], "Off")
+
+    def test_uas_overview_ignores_a_stale_effective_tier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "menapia_mqtt.log"
+            stale = datetime.now(timezone.utc) - timedelta(
+                minutes=mobile_catalog.UAS_TIER_FRESHNESS_MINUTES + 1
+            )
+            log.write_text(
+                f"{stale:%Y-%m-%d %H:%M:%S}: 3 3\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"UAS_MQTT_LOG_PATH": str(log)}):
+                label = mobile_catalog._fresh_uas_tier_label()
+
+        self.assertIsNone(label)
+
     def test_wxcam_discovers_videos_and_thumbnails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

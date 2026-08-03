@@ -132,6 +132,11 @@ This tab shows the mirrored Menapia MQTT tier log, including the current
 reported/effective tier, freshness, tier-change history, and recent parsed log
 records. It starts its periodic refresh only after the tab is opened.
 
+The Overview instrument list combines this effective tier with the assigned
+UAS PDU outlet. A freshly powered UAS is shown as `On (Tier N)` when the tier
+record is current. It remains `Off` when the outlet is off, regardless of the
+last requested tier, and falls back to `On` when tier telemetry is stale.
+
 ## Operations Dashboard
 
 This tab is a live status dashboard rather than a static quicklook browser.
