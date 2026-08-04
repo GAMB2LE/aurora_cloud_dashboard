@@ -116,12 +116,12 @@ separate parasitic term is currently zero because the measured whole-station
 balance already contains system losses. Estimating another parasitic load from
 the same signal would double count it.
 
-Deterministic, ensemble, and scenario products share one versioned solar
-calibration contract. If the planning forecast and ensemble were generated from
-different calibration snapshots, the scenario builder reapplies the planning
-factor profile to the ensemble's raw irradiance members and records both source
-and target contract IDs. It stops rather than combining products when those raw
-members are unavailable. The ensemble varies ECMWF weather, calibrated battery
+The actionable 96-hour decision forecast preserves the current ensemble's
+versioned solar-calibration contract. The older deterministic planning cycle is
+used only to extend the reserve tail after native ensemble coverage ends. When
+the two contracts differ, both IDs and the transition are recorded explicitly;
+the current ensemble is not recalibrated with an older planning snapshot. The
+ensemble varies ECMWF weather, calibrated battery
 parameters, and only the learned uncertainty within the detected operating
 state. If the state has a repeatable startup, members sample its learned
 duration and phase-specific load. If it has low/high fan regimes, members
@@ -136,8 +136,11 @@ model has learned. The fixed comparison set also includes CL61, CL61 + Radar,
 CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, HATPRO, and **all
 instruments + UAS tier 3**. The old `100-600 W` plot is retained only as a
 backwards-compatible data contract and is no longer the operating interface.
-The current-mode scenario reuses the same version-10 system-as-is load
-distribution, so the two panels cannot disagree about the current state.
+The dashboard derives canonical `SystemAsIsDecision*` traces from the freshly
+re-anchored current-mode scenario. The SOC 96 h panel and the current line in
+the scenario panel therefore share one SOC anchor, issue, weather basis, load
+distribution, and endpoint. The standalone ensemble remains the explicit
+fallback when a current operating-scenario product is unavailable.
 
 ## Evidence
 

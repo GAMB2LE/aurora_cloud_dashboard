@@ -228,6 +228,21 @@ POWER_SOC_ENSEMBLE_FORECAST_FIELDS = (
     "BatterySOCForecastMaximum",
     SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,
 )
+SYSTEM_AS_IS_DECISION_FIELD_SOURCES = OrderedDict(
+    (
+        ("SystemAsIsDecisionSOCP10", ("OperatingCurrentSOCP10", ("BatterySOCForecastP10",))),
+        (
+            "SystemAsIsDecisionSOCP50",
+            ("OperatingCurrentSOCP50", ("BatterySOCForecastP50", "BatterySOCForecast")),
+        ),
+        ("SystemAsIsDecisionSOCP90", ("OperatingCurrentSOCP90", ("BatterySOCForecastP90",))),
+        (
+            "SystemAsIsDecisionBelow40Probability",
+            ("OperatingCurrentBelow40Probability", (SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,)),
+        ),
+    )
+)
+SYSTEM_AS_IS_DECISION_FIELDS = tuple(SYSTEM_AS_IS_DECISION_FIELD_SOURCES)
 POWER_SOC_ENSEMBLE_SKILL_FIELDS = (
     "ForecastSOCCRPS_0_6h",
     "ForecastSOCCRPS_6_24h",
@@ -299,6 +314,7 @@ POWER_FUTURE_DISPLAY_FIELDS = tuple(
     dict.fromkeys(
         POWER_SOC_FORECAST_FIELDS
         + POWER_SOC_ENSEMBLE_FORECAST_FIELDS
+        + SYSTEM_AS_IS_DECISION_FIELDS
         + OPERATING_SCENARIO_DISPLAY_FIELDS
     )
 )
@@ -590,8 +606,8 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         },
         "soc_ecmwf_forecast": {
             "title": "SOC 96 h forecast",
-            "summary": "The system-as-is ECMWF ensemble outlook for battery SOC and the risk of crossing the operational minimum.",
-            "implementation": "Every member starts from the latest valid APS SOC and the latest confirmed finite instrument state. The controllable state is fixed; the load distribution represents its current sustained phase plus only recurrent startup or fan phases learned within that same state. The ensemble combines that within-state load uncertainty with ECMWF solar weather and bounded battery-capacity and efficiency uncertainty. These are system-as-is outcomes, not alternative instrument schedules.",
+            "summary": "The same 96-hour system-as-is forecast used as the reference in the instrument-scenario comparison.",
+            "implementation": "Every member starts from one latest valid APS SOC observation and one latest confirmed finite instrument state. The controllable state is fixed; the load distribution represents its current sustained phase plus only recurrent startup or fan phases learned within that same state. The ensemble combines that within-state load uncertainty with ECMWF solar weather and bounded battery-capacity and efficiency uncertainty. The displayed P10, median, P90, and threshold risk are all from this single re-anchored decision snapshot.",
             "metrics": [
                 {"label": "P10", "detail": "Lower-end SOC outcome across ECMWF solar members; use it for conservative planning."},
                 {"label": "Central / P90", "detail": "Central estimate and upper-end solar outcome for the same system-as-is load."},
@@ -912,6 +928,10 @@ HUMAN_LABELS = {
     "BatterySOCForecastMinimum": "ECMWF Ensemble Minimum",
     "BatterySOCForecastMaximum": "ECMWF Ensemble Maximum",
     SOC_BELOW_THRESHOLD_PROBABILITY_FIELD: f"Probability SOC Below {MINIMUM_OPERATIONAL_SOC_LABEL}",
+    "SystemAsIsDecisionSOCP10": "System As-Is Decision P10",
+    "SystemAsIsDecisionSOCP50": "System As-Is Decision Median",
+    "SystemAsIsDecisionSOCP90": "System As-Is Decision P90",
+    "SystemAsIsDecisionBelow40Probability": f"System As-Is Probability SOC Below {MINIMUM_OPERATIONAL_SOC_LABEL}",
     "ForecastSOCCRPS_0_6h": "SOC CRPS 0-6 h",
     "ForecastSOCCRPS_6_24h": "SOC CRPS 6-24 h",
     "ForecastSOCCRPS_24_48h": "SOC CRPS 24-48 h",
@@ -1096,6 +1116,10 @@ HUMAN_UNITS = {
     "BatterySOCForecastMinimum": "%",
     "BatterySOCForecastMaximum": "%",
     SOC_BELOW_THRESHOLD_PROBABILITY_FIELD: "1",
+    "SystemAsIsDecisionSOCP10": "%",
+    "SystemAsIsDecisionSOCP50": "%",
+    "SystemAsIsDecisionSOCP90": "%",
+    "SystemAsIsDecisionBelow40Probability": "1",
     "ForecastSOCCRPS_0_6h": "percentage points",
     "ForecastSOCCRPS_6_24h": "percentage points",
     "ForecastSOCCRPS_24_48h": "percentage points",
@@ -1474,10 +1498,10 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             "SOC [%]",
             f"Probability SOC Below {MINIMUM_OPERATIONAL_SOC_LABEL} [%]",
             (
-                TraceSpec("BatterySOCForecastP10", "System as-is - ECMWF P10", COLOR["light_blue"], valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecastP90", "System as-is - ECMWF P90", COLOR["light_blue"], dash="dot", valid_min=0.0, valid_max=100.0),
-                TraceSpec("BatterySOCForecast", "System as-is - ECMWF central", COLOR["green"], valid_min=0.0, valid_max=100.0),
-                TraceSpec(SOC_BELOW_THRESHOLD_PROBABILITY_FIELD, f"Probability Below {MINIMUM_OPERATIONAL_SOC_LABEL}", COLOR["red"], axis="right", scale=100.0, valid_min=0.0, valid_max=1.0),
+                TraceSpec("SystemAsIsDecisionSOCP10", "System as-is - P10", COLOR["light_blue"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("SystemAsIsDecisionSOCP90", "System as-is - P90", COLOR["light_blue"], dash="dot", valid_min=0.0, valid_max=100.0),
+                TraceSpec("SystemAsIsDecisionSOCP50", "System as-is - central", COLOR["green"], valid_min=0.0, valid_max=100.0),
+                TraceSpec("SystemAsIsDecisionBelow40Probability", f"Probability Below {MINIMUM_OPERATIONAL_SOC_LABEL}", COLOR["red"], axis="right", scale=100.0, valid_min=0.0, valid_max=1.0),
             ),
         ),
         PanelSpec(
@@ -2460,6 +2484,58 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     return frame[~frame.index.duplicated(keep="last")]
 
 
+def _with_system_as_is_decision_fields(
+    ds: xr.Dataset,
+    *,
+    prefer_operating_scenario: bool,
+) -> tuple[xr.Dataset, str]:
+    """Attach one internally consistent system-as-is decision contract.
+
+    The operational scenario product is re-anchored from the freshest APS SOC
+    and finite instrument state. When its complete current-state distribution
+    is present, both the 96-hour card and the scenario reference must use it.
+    Older deployments can still fall back to one ensemble product; the helper
+    never mixes a deterministic median with ensemble bounds.
+    """
+    operating_sources = {
+        target: operating_source
+        for target, (operating_source, _fallback_sources) in SYSTEM_AS_IS_DECISION_FIELD_SOURCES.items()
+    }
+    fallback_sources: dict[str, str] = {}
+    for target, (_operating_source, candidates) in SYSTEM_AS_IS_DECISION_FIELD_SOURCES.items():
+        source = next((name for name in candidates if name in ds and ds[name].dims == ("time",)), None)
+        if source is not None:
+            fallback_sources[target] = source
+
+    use_operating = prefer_operating_scenario and all(
+        source in ds and ds[source].dims == ("time",)
+        for source in operating_sources.values()
+    )
+    if use_operating:
+        selected_sources = operating_sources
+        source_kind = "operating_scenario"
+    elif len(fallback_sources) == len(SYSTEM_AS_IS_DECISION_FIELDS):
+        selected_sources = fallback_sources
+        source_kind = (
+            "ensemble_fallback"
+            if fallback_sources.get("SystemAsIsDecisionSOCP50") == "BatterySOCForecastP50"
+            else "legacy_forecast_fallback"
+        )
+    else:
+        return ds, "unavailable"
+
+    result = ds.copy()
+    result.attrs = dict(ds.attrs)
+    for target, source in selected_sources.items():
+        result[target] = result[source].copy(deep=False)
+        result[target].attrs = dict(result[source].attrs)
+        result[target].attrs["units"] = (
+            "1" if target.endswith("Below40Probability") else "%"
+        )
+    result.attrs["system_as_is_decision_source"] = source_kind
+    return result, source_kind
+
+
 def operating_mode_intervals(times: pd.DatetimeIndex, codes: np.ndarray) -> list[tuple[pd.Timestamp, pd.Timestamp, str, str]]:
     """Return contiguous planned-instrument intervals for forecast plot bands."""
     values = np.asarray(codes, dtype=np.float64)
@@ -2551,6 +2627,9 @@ def _operating_scenario_attrs(
         ("control_authority", "operating_control_authority"),
         ("solar_member_source", "operating_solar_member_source"),
         ("native_ensemble_end_time", "operating_native_ensemble_end_time"),
+        ("initial_soc_time", "operating_initial_soc_time"),
+        ("generated_at_utc", "operating_generated_at_utc"),
+        ("operating_decision_horizon_hours", "operating_decision_horizon_hours"),
         ("planning_forecast_generated_at_utc", "operating_planning_forecast_generated_at_utc"),
         ("planning_forecast_initial_soc_time", "operating_planning_forecast_initial_soc_time"),
         ("planning_forecast_refresh_kind", "operating_planning_forecast_refresh_kind"),
@@ -2621,13 +2700,21 @@ def merge_operating_scenarios_into_display_summary(
     # Display summaries may contain an older pre-merged operating plan. The
     # standalone scenario product is authoritative, including its unavailable
     # state, so never retain those stale traces.
-    stale_fields = [name for name in display_ds.data_vars if name.startswith("Operating")]
+    stale_fields = [
+        name
+        for name in display_ds.data_vars
+        if name.startswith("Operating") or name in SYSTEM_AS_IS_DECISION_FIELDS
+    ]
     base_ds = display_ds.drop_vars(stale_fields) if stale_fields else display_ds
     aligned, alignment_reason = _operating_scenario_alignment(base_ds, operating_scenarios_ds)
     frame = _operating_scenario_frame(operating_scenarios_ds) if aligned else pd.DataFrame()
     if frame.empty:
         base_ds = base_ds.copy()
         base_ds.attrs = dict(display_ds.attrs)
+        base_ds, _decision_source = _with_system_as_is_decision_fields(
+            base_ds,
+            prefer_operating_scenario=False,
+        )
         base_ds.attrs.update(
             _operating_scenario_attrs(
                 operating_scenarios_ds,
@@ -2650,6 +2737,10 @@ def merge_operating_scenarios_into_display_summary(
     merged = xr.merge((base_ds, scenario_ds), join="outer", compat="override", combine_attrs="override").sortby("time")
     merged.attrs = dict(display_ds.attrs)
     merged.attrs.update(_operating_scenario_attrs(operating_scenarios_ds))
+    merged, _decision_source = _with_system_as_is_decision_fields(
+        merged,
+        prefer_operating_scenario=True,
+    )
     merged.attrs["time_coverage_end"] = pd.Timestamp(merged["time"].values[-1]).isoformat()
     return merged
 
@@ -2832,6 +2923,10 @@ def build_power_display_summary_dataset(
         coords={"time": display_frame.index.to_numpy(dtype="datetime64[ns]")},
         attrs=summary_attrs,
     )
+    out, _decision_source = _with_system_as_is_decision_fields(
+        out,
+        prefer_operating_scenario=operating_aligned and not operating_frame.empty,
+    )
     for name in out.data_vars:
         unit = human_unit(name)
         if unit:
@@ -2971,6 +3066,12 @@ def _metek_wind_assignments(ds: xr.Dataset) -> dict[str, xr.DataArray]:
 def prepare_summary_dataset(ds: xr.Dataset, instrument: str) -> xr.Dataset:
     if instrument not in {"power", "vaisalamet"} or "time" not in ds or ds.sizes.get("time", 0) == 0:
         return ds
+
+    if instrument == "power":
+        ds, _decision_source = _with_system_as_is_decision_fields(
+            ds,
+            prefer_operating_scenario=True,
+        )
 
     times = pd.DatetimeIndex(ds["time"].values)
     if len(times) == 0:

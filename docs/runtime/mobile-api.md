@@ -79,7 +79,11 @@ token-protected, unknown mode values fail closed, and the legacy
   forecast panel includes an `info` object with its summary,
   implementation-specific assumptions, and metric definitions for the native
   per-plot Info sheet. Verification panels also retain their live `guidance`
-  evidence and score cards. The
+  evidence and score cards. Decision panels also include a `forecastContext`
+  with the physical SOC anchor, generation time, common decision endpoint, and
+  `horizonHours`. The SOC 96 h and instrument-scenario cards use the same
+  re-anchored system-as-is values and stop at `anchorTime + 96 h`; the longer
+  internal reserve tail is not returned as a 96-hour decision value. The
   legacy `all`, `observed`, `forecast_24h`, `forecast_96h`, and `verification`
   groups remain supported.
 - `GET /media/power/figure/current|forecast` - an ETag-backed prewarmed Plotly

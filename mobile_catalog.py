@@ -1581,7 +1581,11 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                 continue
             forecast_panel = POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in {"forecast_24h", "forecast_96h"}
             panel_start = _forecast_panel_start(dataset, times, panel) if forecast_panel else start
-            panel_end = end if forecast_panel else now
+            panel_end = (
+                _power_forecast_panel_end(dataset, panel.key, default=end)
+                if forecast_panel
+                else now
+            )
             traces = []
             for trace in panel.traces:
                 if trace.var not in dataset or dataset[trace.var].dims != ("time",):
@@ -1652,7 +1656,11 @@ def _forecast_panel_start(dataset, times, panel):
     preferred_fields = {
         "soc_projection": ("BatterySOCForecast",),
         "soc_24h_forecast": ("BatterySOCForecast",),
-        "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
+        "soc_ecmwf_forecast": (
+            "SystemAsIsDecisionSOCP50",
+            "BatterySOCForecastP50",
+            "BatterySOCForecast",
+        ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCurrentSOCP50", "OperatingCL61OptimizedSOCP50"),
         "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
@@ -1668,7 +1676,55 @@ def _forecast_panel_start(dataset, times, panel):
     return pd.Timestamp(datetime.now(UTC)).tz_localize(None)
 
 
-def _power_forecast_context(dataset, panel_key: str, traces: list[dict[str, Any]]) -> dict[str, str] | None:
+def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
+    """Return label, SOC anchor, issue time, and horizon for one card."""
+    operating_panel = panel_key.startswith("operating_plan")
+    system_uses_operating = (
+        panel_key == "soc_ecmwf_forecast"
+        and str(dataset.attrs.get("system_as_is_decision_source", "")) == "operating_scenario"
+    )
+    if operating_panel or system_uses_operating:
+        horizon_value = dataset.attrs.get(
+            "operating_decision_horizon_hours",
+            dataset.attrs.get("operating_optimization_horizon_hours", 96),
+        )
+        try:
+            horizon = max(int(float(horizon_value)), 1)
+        except (TypeError, ValueError):
+            horizon = 96
+        kind = "Operating-plan forecast" if operating_panel else "System-as-is decision forecast"
+        return (
+            kind,
+            str(dataset.attrs.get("operating_initial_soc_time", "")),
+            str(dataset.attrs.get("operating_generated_at_utc", "")),
+            horizon,
+        )
+    return (
+        "System forecast",
+        str(dataset.attrs.get("forecast_initial_soc_time", "")),
+        str(dataset.attrs.get("forecast_generated_at_utc", "")),
+        96 if panel_key == "soc_ecmwf_forecast" else 24,
+    )
+
+
+def _power_forecast_panel_end(dataset, panel_key: str, *, default):
+    """Clamp decision panels to their declared horizon from the SOC anchor."""
+    import pandas as pd
+
+    if panel_key not in {
+        "soc_ecmwf_forecast",
+        "operating_plan_scenarios",
+        "operating_plan_schedule",
+    }:
+        return default
+    _kind, anchor, _issued, horizon = _power_forecast_basis(dataset, panel_key)
+    parsed = pd.to_datetime(anchor, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return default
+    return pd.Timestamp(parsed).tz_convert("UTC").tz_localize(None) + pd.Timedelta(hours=horizon)
+
+
+def _power_forecast_context(dataset, panel_key: str, traces: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return one anchor and one valid time for all values shown on a forecast card."""
     import pandas as pd
 
@@ -1691,20 +1747,14 @@ def _power_forecast_context(dataset, panel_key: str, traces: list[dict[str, Any]
             end_times.append(pd.Timestamp(value).tz_convert("UTC").tz_localize(None))
     if not end_times:
         return None
-    if panel_key.startswith("operating_plan"):
-        anchor = dataset.attrs.get("operating_planning_forecast_initial_soc_time", "")
-        issued = dataset.attrs.get("operating_planning_forecast_generated_at_utc", "")
-        kind = "Operating-plan forecast"
-    else:
-        anchor = dataset.attrs.get("forecast_initial_soc_time", "")
-        issued = dataset.attrs.get("forecast_generated_at_utc", "")
-        kind = "System forecast"
+    kind, anchor, issued, horizon = _power_forecast_basis(dataset, panel_key)
     return {
         "kind": kind,
         "anchorTime": str(anchor),
         "issuedTime": str(issued),
         # The minimum end time is the last valid point shared by every trace.
         "validTime": min(end_times).isoformat() + "Z",
+        "horizonHours": horizon,
     }
 
 
