@@ -916,63 +916,24 @@ def _align_ensemble_solar_contract(
     deterministic: xr.Dataset,
     ensemble: xr.Dataset | None,
 ) -> tuple[xr.Dataset | None, dict[str, str]]:
-    """Reapply the planning forecast's solar calibration to raw ensemble irradiance."""
+    """Preserve the native decision ensemble and describe reserve-tail provenance.
+
+    The ensemble is the authoritative weather distribution for the actionable
+    96-hour decision period. Recalibrating it with an older long-range planning
+    cycle made the system and scenario cards disagree. The deterministic
+    planning product is still used to extend the reserve tail after native
+    ensemble coverage ends, and its separate contract is recorded explicitly.
+    """
     target_contract = str(deterministic.attrs.get("solar_calibration_contract_id", ""))
     source_contract = str(ensemble.attrs.get("solar_calibration_contract_id", "")) if ensemble is not None else ""
     metadata = {
         "solar_ensemble_source_calibration_contract_id": source_contract,
+        "solar_decision_calibration_contract_id": source_contract or target_contract,
+        "solar_reserve_tail_calibration_contract_id": target_contract,
         "solar_ensemble_recalibrated": "false",
+        "solar_contracts_differ": str(bool(source_contract and target_contract and source_contract != target_contract)).lower(),
     }
-    if ensemble is None or not target_contract or source_contract == target_contract:
-        return ensemble, metadata
-    required_deterministic = {"ForecastSolarWatts", "ECMWFSolarIrradiance"}
-    if not required_deterministic.issubset(deterministic.data_vars) or "time" not in deterministic:
-        raise ValueError(
-            "Cannot align ensemble solar calibration: planning forecast lacks raw irradiance"
-        )
-    if "ECMWFSolarIrradianceEnsemble" not in ensemble or "time" not in ensemble:
-        raise ValueError(
-            "Cannot align ensemble solar calibration: ensemble lacks raw irradiance members"
-        )
-
-    deterministic_times = pd.DatetimeIndex(deterministic["time"].values)
-    deterministic_solar = pd.Series(
-        np.asarray(deterministic["ForecastSolarWatts"].values, dtype=np.float64),
-        index=deterministic_times,
-    )
-    deterministic_irradiance = pd.Series(
-        np.asarray(deterministic["ECMWFSolarIrradiance"].values, dtype=np.float64),
-        index=deterministic_times,
-    )
-    inferred_factor = (
-        deterministic_solar
-        / deterministic_irradiance.where(deterministic_irradiance > 1.0)
-    ).replace([np.inf, -np.inf], np.nan)
-    source_times = pd.DatetimeIndex(ensemble["time"].values)
-    fallback_factor = float(
-        deterministic.attrs.get("solar_calibration_factor_w_per_wm2", 1.0)
-    )
-    factor_profile = (
-        inferred_factor.reindex(source_times, method="nearest", tolerance=pd.Timedelta(hours=2))
-        .ffill()
-        .bfill()
-        .fillna(fallback_factor)
-        .clip(lower=0.0)
-    )
-    raw = ensemble["ECMWFSolarIrradianceEnsemble"]
-    if "member" not in raw.dims or "time" not in raw.dims:
-        raise ValueError("Ensemble raw irradiance must use member and time dimensions")
-    aligned = ensemble.copy()
-    factors = xr.DataArray(
-        factor_profile.to_numpy(dtype=np.float64),
-        dims=("time",),
-        coords={"time": ensemble["time"]},
-    )
-    aligned["ForecastSolarWattsEnsemble"] = (raw * factors).clip(min=0.0)
-    aligned.attrs = dict(ensemble.attrs)
-    aligned.attrs["solar_calibration_contract_id"] = target_contract
-    metadata["solar_ensemble_recalibrated"] = "true"
-    return aligned, metadata
+    return ensemble, metadata
 
 
 def _hourly_solar_members(
@@ -1650,6 +1611,7 @@ def build_operating_scenarios(
     capacity_kwh: float | None = None,
 ) -> xr.Dataset:
     deterministic_solar_contract = str(deterministic.attrs.get("solar_calibration_contract_id", ""))
+    ensemble_solar_contract = str(ensemble.attrs.get("solar_calibration_contract_id", "")) if ensemble is not None else ""
     ensemble, solar_alignment_metadata = _align_ensemble_solar_contract(
         deterministic,
         ensemble,
@@ -1679,7 +1641,7 @@ def build_operating_scenarios(
     )
     solar_metadata.update(
         {
-            "solar_calibration_contract_id": deterministic_solar_contract,
+            "solar_calibration_contract_id": ensemble_solar_contract or deterministic_solar_contract,
             "solar_calibration_factor_w_per_wm2": str(
                 deterministic.attrs.get("solar_calibration_factor_w_per_wm2", "")
             ),

@@ -1330,6 +1330,8 @@ class PowerSocForecastTests(unittest.TestCase):
                 "model": "hybrid_state_space_v5",
                 "model_version": "5",
                 "initial_soc_time": forecast_times[0].isoformat(),
+                "generated_at_utc": "2026-07-20T20:05:00+00:00",
+                "operating_decision_horizon_hours": "96",
             },
         )
         ensemble.attrs["initial_soc_time"] = forecast_times[0].isoformat()
@@ -1358,6 +1360,20 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertIn("OperatingCL61OptimizedSOCP10", summary)
         self.assertIn("OperatingCL61OptimizedModeCode", summary)
         self.assertIn("OperatingLearned1SOCP50", summary)
+        self.assertIn("SystemAsIsDecisionSOCP50", summary)
+        np.testing.assert_allclose(
+            summary["SystemAsIsDecisionSOCP50"],
+            summary["OperatingCurrentSOCP50"],
+            equal_nan=True,
+        )
+        np.testing.assert_allclose(
+            summary["SystemAsIsDecisionSOCP10"],
+            summary["OperatingCurrentSOCP10"],
+            equal_nan=True,
+        )
+        self.assertEqual(summary.attrs["system_as_is_decision_source"], "operating_scenario")
+        self.assertEqual(summary.attrs["operating_initial_soc_time"], forecast_times[0].isoformat())
+        self.assertEqual(summary.attrs["operating_decision_horizon_hours"], "96")
         self.assertEqual(summary.attrs["operating_learned_1_label"], "DC + Radar")
         self.assertEqual(summary.attrs["operating_current_mode_label"], "DC + CL61")
         self.assertEqual(summary.attrs["forecast_load_mode"], "DC-Only")
@@ -1373,6 +1389,11 @@ class PowerSocForecastTests(unittest.TestCase):
         display_with_anchor.attrs["forecast_initial_soc_time"] = forecast_times[0].isoformat()
         merged = merge_operating_scenarios_into_display_summary(display_with_anchor, operating)
         self.assertIn("OperatingLearned1SOCP50", merged)
+        np.testing.assert_allclose(
+            merged["SystemAsIsDecisionSOCP50"],
+            merged["OperatingCurrentSOCP50"],
+            equal_nan=True,
+        )
         self.assertEqual(merged.attrs["operating_learned_1_label"], "DC + Radar")
         self.assertEqual(pd.Timestamp(merged["time"].values[-1]), forecast_times[-1])
 
@@ -1393,6 +1414,24 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertIn("OperatingCL61OptimizedSOCP50", merged)
         self.assertEqual(merged.attrs["operating_planning_status"], "ready")
+
+    def test_system_as_is_decision_uses_one_ensemble_fallback(self) -> None:
+        times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
+        display = xr.Dataset(
+            {
+                "BatterySOCForecastP10": (("time",), [88.0, 82.0, 76.0]),
+                "BatterySOCForecastP50": (("time",), [90.0, 86.0, 82.0]),
+                "BatterySOCForecastP90": (("time",), [92.0, 90.0, 88.0]),
+                SOC_BELOW_THRESHOLD_PROBABILITY_FIELD: (("time",), [0.0, 0.0, 0.1]),
+                "BatterySOCForecast": (("time",), [99.0, 99.0, 99.0]),
+            },
+            coords={"time": times},
+        )
+
+        merged = merge_operating_scenarios_into_display_summary(display, None)
+
+        np.testing.assert_allclose(merged["SystemAsIsDecisionSOCP50"], [90.0, 86.0, 82.0])
+        self.assertEqual(merged.attrs["system_as_is_decision_source"], "ensemble_fallback")
 
     def test_mismatched_operating_plan_anchor_is_withheld_from_display(self) -> None:
         times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")

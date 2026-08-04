@@ -164,8 +164,17 @@ The visible scenario panel is populated from the operating-mode product
 described below. It always includes seven stable comparisons: CL61, CL61 +
 Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, and HATPRO.
 
-The **SOC 96 h Forecast** P10/P90 traces describe the current system as-is,
-not different future instrument schedules. Version 10 varies ECMWF weather,
+The **SOC 96 h Forecast** is rendered from the canonical
+`SystemAsIsDecisionSOCP10`, `SystemAsIsDecisionSOCP50`,
+`SystemAsIsDecisionSOCP90`, and
+`SystemAsIsDecisionBelow40Probability` display fields. When a fresh operating
+scenario is available, those fields are aliases of its current-mode
+distribution. Otherwise they fall back to one ensemble product. The panel
+therefore never combines a deterministic central trace with separately issued
+ensemble bounds.
+
+These traces describe the current system as-is, not different future
+instrument schedules. Version 10 varies ECMWF weather,
 calibrated battery parameters, and the learned P10-P90 startup/fan behavior for
 the one detected operating state. Every member keeps that exact state through
 the horizon. Planned instrument combinations are shown separately in the
@@ -385,9 +394,11 @@ Development paths:
 - `/data/aurora/dev-products/power/power_operating_scenarios.zarr`
 
 The 240-hour planning forecast is refreshed from the ECMWF 00 and 12 UTC cycles.
-It retains native deterministic output through 240 hours and extends shorter
-native ensemble input against that deterministic solar curve rather than
-holding the final irradiance value constant.
+The first 96 actionable hours preserve the current ensemble and its calibration
+contract. After native ensemble coverage ends, the reserve tail extends each
+member against the deterministic planning solar curve rather than holding the
+final irradiance value constant. Decision-ensemble and reserve-tail calibration
+contract IDs are stored separately.
 
 `generate_power_operating_scenarios.py` runs every five minutes. It re-anchors
 all scenarios to the latest finite `BatterySOC`, derives observed total load as
@@ -447,6 +458,9 @@ planning forecast, a minimum 12-hour run, and no more than one start per UTC
 day. Hours 97-240 retain the base mode with CL61 off so
 the full planning horizon still exposes later battery risk. Recommendations are
 advisory only; the forecast service does not issue PDU commands. The dashboard
+clamps both the SOC 96 h card and the scenario comparison to exactly 96 hours
+from the latest physical SOC anchor; the reserve tail is retained for safety
+analysis but is not labelled as part of the 96-hour decision display. The dashboard
 also evaluates a user-selected CL61 start and duration directly from the stored
 solar and component ensembles, so edits react without another ECMWF download.
 

@@ -603,6 +603,80 @@ class MobileCatalogTests(unittest.TestCase):
             [80.0, 72.0, 64.0, 56.0],
         )
 
+    def test_96_hour_system_and_scenario_cards_share_anchor_values_and_endpoint(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            display_path = root / "power_forecast_display.zarr"
+            scenario_path = root / "power_operating_scenarios.zarr"
+            anchor = pd.Timestamp("2026-07-20T07:00:00")
+            times = pd.date_range(anchor, periods=121, freq="1h")
+            fallback = np.linspace(90.0, 50.0, len(times))
+            xr.Dataset(
+                {
+                    "BatterySOCForecastP10": (("time",), fallback - 5.0),
+                    "BatterySOCForecastP50": (("time",), fallback),
+                    "BatterySOCForecastP90": (("time",), fallback + 5.0),
+                    "BatterySOCBelow40Probability": (("time",), np.zeros(len(times))),
+                },
+                coords={"time": times},
+                attrs={
+                    "forecast_initial_soc_time": anchor.isoformat(),
+                    "forecast_generated_at_utc": "2026-07-20T07:05:00+00:00",
+                },
+            ).to_zarr(display_path, mode="w", consolidated=True)
+            current = np.linspace(90.0, 30.0, len(times))
+            xr.Dataset(
+                {
+                    "ScenarioSOCP10": (("scenario", "time"), [current - 4.0]),
+                    "ScenarioSOCP50": (("scenario", "time"), [current]),
+                    "ScenarioSOCP90": (("scenario", "time"), [current + 4.0]),
+                    "ScenarioBelow40Probability": (
+                        ("scenario", "time"),
+                        [(current < 40.0).astype(float)],
+                    ),
+                    "scenario_label": (("scenario",), ["Current: DC + CL61"]),
+                },
+                coords={"scenario": ["current_mode"], "time": times},
+                attrs={
+                    "planning_status": "ready",
+                    "initial_soc_time": anchor.isoformat(),
+                    "generated_at_utc": "2026-07-20T07:10:00+00:00",
+                    "operating_decision_horizon_hours": "96",
+                    "planning_forecast_initial_soc_time": "2026-07-19T20:00:00",
+                },
+            ).to_zarr(scenario_path, mode="w", consolidated=True)
+            with patch.dict(
+                os.environ,
+                {
+                    "POWER_FORECAST_DISPLAY_ZARR_PATH": str(display_path),
+                    "POWER_OPERATING_SCENARIOS_ZARR_PATH": str(scenario_path),
+                },
+            ), patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
+                response = mobile_catalog.power(window="96h", group="forecast_96h")
+
+        system = next(panel for panel in response["panels"] if panel["id"] == "soc_ecmwf_forecast")
+        scenarios = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_scenarios")
+        system_central = next(
+            trace for trace in system["traces"] if trace["id"] == "SystemAsIsDecisionSOCP50"
+        )
+        scenario_current = next(
+            trace for trace in scenarios["traces"] if trace["id"] == "OperatingCurrentSOCP50"
+        )
+        self.assertEqual(system_central["points"], scenario_current["points"])
+        self.assertEqual(system["forecastContext"]["anchorTime"], anchor.isoformat())
+        self.assertEqual(scenarios["forecastContext"]["anchorTime"], anchor.isoformat())
+        self.assertEqual(system["forecastContext"]["horizonHours"], 96)
+        self.assertEqual(system["forecastContext"]["validTime"], "2026-07-24T07:00:00Z")
+        self.assertEqual(
+            system["forecastContext"]["validTime"],
+            scenarios["forecastContext"]["validTime"],
+        )
+
     def test_overview_matches_browser_mobile_card_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
