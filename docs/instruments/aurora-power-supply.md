@@ -232,13 +232,16 @@ load phase from the twice-daily planning cycle. The eighth scenario keeps CL61,
 Radar, HATPRO, and UAS on with UAS
 effective tier 3. It remains explicitly provisional until tier 3 has at least
 three independent episodes and six observed hours; its fallback P10/P50/P90
-UAS loads are `55/108/302 W`. The separate optimized CL61 plan controls CL61
-only and holds the current DC, Radar, HATPRO, and UAS states fixed. It maximizes
-collection time over 96 hours while keeping P10 SOC at or above 40%, requiring
-a 12-hour minimum run, and allowing no more than one start per UTC day. If the
-fixed baseline is unsafe even with CL61 off, the dashboard reports **No Feasible
-CL61 Schedule**; its zero trace is a diagnostic fallback, not advice to switch
-CL61 off. The custom-plan editor
+UAS loads are `55/108/302 W`. The separate advisory scheduler proposes CL61,
+Radar, and HATPRO states in that strict priority order. It maximizes each
+instrument's collection hours over 96 hours without reducing a
+higher-priority result, while keeping the DC baseline and current UAS state
+fixed. Every controlled instrument requires a 12-hour minimum run and permits
+at most one planned start per UTC day. P10 SOC must remain at or above 40%
+through the complete 240-hour forecast, including a reserve tail with all three
+controlled instruments off. If even that reserve case is unsafe, the dashboard
+reports **No Feasible Instrument Schedule**; zero traces are diagnostic, not
+PDU instructions. The custom CL61 plan editor
 evaluates a selected start and duration against the stored ensembles
 immediately. All plans are advisory only.
 

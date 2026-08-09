@@ -306,6 +306,8 @@ OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     for _source, suffix in OPERATING_SCENARIO_SOURCE_FIELDS
 ) + (
     "OperatingCL61OptimizedCL61On",
+    "OperatingCL61OptimizedRadarOn",
+    "OperatingCL61OptimizedHATPROOn",
     "OperatingSolarP10Watts",
     "OperatingSolarP50Watts",
     "OperatingSolarP90Watts",
@@ -396,8 +398,10 @@ def _schedule_attr(ds: xr.Dataset | None, name: str) -> str:
 
 
 def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentation:
-    """Describe the CL61 plan without calling an unsafe fallback a recommendation."""
+    """Describe legacy CL61 or current priority plans without overstating safety."""
     status = _schedule_attr(ds, "optimized_status")
+    priority_order = _schedule_attr(ds, "optimized_priority_order")
+    priority_plan = bool(priority_order)
     safe_text = _schedule_attr(ds, "optimized_safe").lower()
     collection_text = _schedule_attr(ds, "optimized_collection_hours")
     try:
@@ -421,10 +425,18 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
         )
         return CL61SchedulePresentation(
             status=status,
-            title="No Feasible CL61 Schedule",
+            title=("No Feasible Instrument Schedule" if priority_plan else "No Feasible CL61 Schedule"),
             trace_label="Unsafe fallback (CL61 off)",
-            annotation="No safe CL61-only plan; operator review required",
-            summary="The CL61-only optimiser could not satisfy the SOC reserve under the fixed current loads.",
+            annotation=(
+                "No safe instrument plan; operator review required"
+                if priority_plan
+                else "No safe CL61-only plan; operator review required"
+            ),
+            summary=(
+                "The priority scheduler could not satisfy the SOC reserve even with its controlled instruments off."
+                if priority_plan
+                else "The CL61-only optimiser could not satisfy the SOC reserve under the fixed current loads."
+            ),
             explanation=explanation,
         )
     if status == "reserve_only":
@@ -433,22 +445,47 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
         )
         return CL61SchedulePresentation(
             status=status,
-            title="CL61 Reserve-Only Plan",
+            title=("Instrument Reserve-Only Plan" if priority_plan else "CL61 Reserve-Only Plan"),
             trace_label="CL61 remains off",
-            annotation="No safe CL61 collection window",
-            summary="Keeping CL61 off is the only reserve-preserving CL61 plan under the fixed current loads.",
+            annotation=(
+                "No safe controlled-instrument window"
+                if priority_plan
+                else "No safe CL61 collection window"
+            ),
+            summary=(
+                "Keeping CL61, Radar, and HATPRO off is the reserve-preserving advisory plan."
+                if priority_plan
+                else "Keeping CL61 off is the only reserve-preserving CL61 plan under the fixed current loads."
+            ),
             explanation=explanation,
         )
     if status == "safe_schedule":
         explanation = reason or (
-            "The optimiser found a CL61 collection schedule that satisfies the operational SOC reserve while other instrument states remain fixed."
+            (
+                "The priority scheduler found an advisory CL61, Radar, and HATPRO timetable "
+                "that satisfies the operational SOC reserve."
+            )
+            if priority_plan
+            else "The optimiser found a CL61 collection schedule that satisfies the operational SOC reserve while other instrument states remain fixed."
         )
         return CL61SchedulePresentation(
             status=status,
-            title="Recommended CL61 Collection Schedule",
+            title=(
+                "Recommended Instrument Operating Schedule"
+                if priority_plan
+                else "Recommended CL61 Collection Schedule"
+            ),
             trace_label="Recommended CL61 schedule",
-            annotation="No CL61 collection interval selected",
-            summary="The on/off timetable for the feasible advisory CL61 plan.",
+            annotation=(
+                "No controlled-instrument interval selected"
+                if priority_plan
+                else "No CL61 collection interval selected"
+            ),
+            summary=(
+                "The advisory on/off timetable, prioritising CL61, then Radar, then HATPRO."
+                if priority_plan
+                else "The on/off timetable for the feasible advisory CL61 plan."
+            ),
             explanation=explanation,
         )
     return CL61SchedulePresentation(
@@ -473,20 +510,50 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
             maturity = str(ds.attrs.get("operating_current_mode_maturity", "")).strip()
             suffix = f" ({maturity})" if maturity else ""
             return f"Current load / system as-is: {mode}{suffix}"
-    if trace.var == "OperatingCL61OptimizedCL61On":
-        return cl61_schedule_presentation(ds).trace_label
+    if trace.var in {
+        "OperatingCL61OptimizedCL61On",
+        "OperatingCL61OptimizedRadarOn",
+        "OperatingCL61OptimizedHATPROOn",
+    }:
+        instrument = trace.var.removeprefix("OperatingCL61Optimized").removesuffix("On")
+        presentation = cl61_schedule_presentation(ds)
+        if instrument == "CL61":
+            return presentation.trace_label
+        if presentation.status == "no_safe_schedule":
+            return f"Unsafe fallback ({instrument} off)"
+        if presentation.status == "reserve_only":
+            return f"{instrument} remains off"
+        return f"Recommended {instrument} schedule"
     if trace.var == "OperatingCL61OptimizedLoadP50Watts":
+        priority_plan = bool(_schedule_attr(ds, "optimized_priority_order"))
         status = cl61_schedule_presentation(ds).status
         if status == "no_safe_schedule":
-            return "Unsafe fallback load (CL61 off)"
+            return (
+                "Unsafe all-controlled-off fallback load"
+                if priority_plan
+                else "Unsafe fallback load (CL61 off)"
+            )
         if status == "reserve_only":
-            return "Reserve-only load (CL61 off)"
+            return (
+                "Reserve-only controlled-instrument load"
+                if priority_plan
+                else "Reserve-only load (CL61 off)"
+            )
     if trace.var == "OperatingCL61OptimizedSOCP50":
+        priority_plan = bool(_schedule_attr(ds, "optimized_priority_order"))
         status = cl61_schedule_presentation(ds).status
         if status == "no_safe_schedule":
-            return "Unsafe CL61-off fallback"
+            return (
+                "Unsafe all-controlled-off fallback"
+                if priority_plan
+                else "Unsafe CL61-off fallback"
+            )
         if status == "reserve_only":
-            return "Reserve-only CL61-off plan"
+            return (
+                "Reserve-only controlled-instrument plan"
+                if priority_plan
+                else "Reserve-only CL61-off plan"
+            )
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -737,22 +804,23 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             ],
         },
         "operating_plan_schedule": {
-            "title": "CL61 collection schedule",
-            "summary": "The CL61-only optimiser result, including whether the SOC constraint was feasible.",
-            "implementation": "A value of 1 selects CL61 collection for that interval and 0 leaves CL61 off. Radar, HATPRO, UAS, and the DC baseline are not controlled by this optimiser; their current states remain fixed. A zero trace is operational advice only when the product says the plan is safe.",
+            "title": "Instrument operating schedule",
+            "summary": "The advisory priority schedule and whether its SOC constraint is feasible.",
+            "implementation": "Each trace is 1 when that instrument is selected and 0 when it is off. The scheduler maximises CL61 hours first, then Radar, then HATPRO. It requires full-horizon P10 SOC at or above the operational reserve, 12-hour minimum runs, and no more than one scheduled start per UTC day. UAS and the DC baseline are not controlled. The plan is advisory and never operates PDU outlets.",
             "metrics": [
-                {"label": "1 / 0", "detail": "Selected CL61 collection on / off; always read this with the feasibility status."},
+                {"label": "1 / 0", "detail": "Selected instrument on / off; always read this with the feasibility status."},
+                {"label": "Priority", "detail": "CL61 first, then Radar, then HATPRO; lower-priority loads never displace a safe higher-priority hour."},
                 {"label": "Constraint", "detail": f"P10 SOC is held at or above the {minimum} operational reference over the planning horizon."},
             ],
         },
         "ecmwf_solar_forecast": {
             "title": "ECMWF solar and load forecast",
             "summary": "The weather input and electrical assumptions used by the SOC forecast and operating plans.",
-            "implementation": "ECMWF irradiance is converted to expected solar charging using the currently learned station conversion. The current-load trace holds the detected system configuration fixed; the CL61-plan load trace applies the optimiser result and must be read with its feasibility status.",
+            "implementation": "ECMWF irradiance is converted to expected solar charging using the currently learned station conversion. The current-load trace holds the detected system configuration fixed; the recommended-instrument load trace applies the priority scheduler result and must be read with its feasibility status.",
             "metrics": [
                 {"label": "ECMWF solar", "detail": "Forecast irradiance from the meteorological ensemble input."},
                 {"label": "Solar charging", "detail": "Estimated battery charging after the learned solar conversion."},
-                {"label": "Load traces", "detail": "Current system-as-is load versus the CL61-plan load. An unsafe fallback is diagnostic, not operational advice."},
+                {"label": "Load traces", "detail": "Current system-as-is load versus the prioritized CL61, Radar, and HATPRO plan. An unsafe fallback is diagnostic, not operational advice."},
             ],
         },
         "soc_forecast_skill": {
@@ -795,7 +863,7 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             **info,
             "title": presentation.title,
             "summary": presentation.summary,
-            "implementation": presentation.explanation,
+            "implementation": f"{presentation.explanation} {info['implementation']}",
         }
     return {"id": panel_key, **info}
 
@@ -1660,11 +1728,13 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "operating_plan_schedule",
-            "Recommended CL61 Collection Schedule",
-            "CL61 state (0 off, 1 on)",
+            "Recommended Instrument Operating Schedule",
+            "Instrument state (0 off, 1 on)",
             None,
             (
-                TraceSpec("OperatingCL61OptimizedCL61On", "Recommended CL61 schedule", COLOR["teal"], step=True, valid_min=0.0, valid_max=1.0, line_width=3.0),
+                TraceSpec("OperatingCL61OptimizedCL61On", "Recommended CL61 schedule", COLOR["red"], step=True, valid_min=0.0, valid_max=1.0, line_width=3.0),
+                TraceSpec("OperatingCL61OptimizedRadarOn", "Recommended Radar schedule", COLOR["blue"], dash="dash", step=True, valid_min=0.0, valid_max=1.0, line_width=2.5),
+                TraceSpec("OperatingCL61OptimizedHATPROOn", "Recommended HATPRO schedule", COLOR["purple"], dash="dot", step=True, valid_min=0.0, valid_max=1.0, line_width=2.5),
             ),
         ),
         PanelSpec(
@@ -1676,7 +1746,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("ECMWFSolarIrradiance", "ECMWF Solar Power", COLOR["brown"], valid_min=0.0),
                 TraceSpec("ForecastSolarWatts", "Forecast Solar Charging", COLOR["green"], axis="right", dash="dot", valid_min=0.0),
                 TraceSpec("OperatingCurrentLoadP50Watts", "Current Instrument Load", COLOR["slate"], axis="right", dash="dot", valid_min=0.0),
-                TraceSpec("OperatingCL61OptimizedLoadP50Watts", "Recommended CL61 Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0, line_width=3.0),
+                TraceSpec("OperatingCL61OptimizedLoadP50Watts", "Recommended Instrument Load", COLOR["red"], axis="right", dash="dashdot", valid_min=0.0, line_width=3.0),
             ),
         ),
         PanelSpec(
@@ -2557,6 +2627,8 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
         if scenario_id == "optimized_cl61" and "ScenarioModeCode" in ds:
             codes = np.asarray(ds["ScenarioModeCode"].isel(scenario=index).values, dtype=np.int64)
             values["OperatingCL61OptimizedCL61On"] = ((codes & 1) > 0).astype(np.float64)
+            values["OperatingCL61OptimizedRadarOn"] = ((codes & 2) > 0).astype(np.float64)
+            values["OperatingCL61OptimizedHATPROOn"] = ((codes & 4) > 0).astype(np.float64)
     for scenario_id, prefix in OPERATING_SUGGESTED_PREFIXES.items():
         if scenario_id not in scenario_ids:
             continue
@@ -2759,6 +2831,12 @@ def _operating_scenario_attrs(
         ("optimized_base_mode_label", "operating_optimized_base_mode_label"),
         ("optimized_blocking_instruments", "operating_optimized_blocking_instruments"),
         ("optimized_operator_action_required", "operating_optimized_operator_action_required"),
+        ("optimized_priority_order", "operating_optimized_priority_order"),
+        ("optimized_controlled_instruments", "operating_optimized_controlled_instruments"),
+        ("optimized_instrument_hours", "operating_optimized_instrument_hours"),
+        ("optimized_instrument_starts", "operating_optimized_instrument_starts"),
+        ("minimum_controlled_run_hours", "operating_minimum_controlled_run_hours"),
+        ("max_controlled_starts_per_utc_day", "operating_max_controlled_starts_per_utc_day"),
     ):
         if source_name in ds.attrs:
             attrs[target_name] = str(ds.attrs[source_name])
@@ -4119,8 +4197,20 @@ def build_summary_plotly(
         if instrument == "power" and panel.key in OPERATING_SCHEDULE_SHADE_PANELS:
             _add_operating_schedule_bands(fig, ds, row=row_index)
         if instrument == "power" and panel.key == "operating_plan_schedule":
-            schedule_codes = np.asarray(ds["OperatingCL61OptimizedCL61On"].values, dtype=np.float64) if "OperatingCL61OptimizedCL61On" in ds else np.asarray([])
-            if not np.any(np.isfinite(schedule_codes) & (schedule_codes > 0)):
+            schedule_fields = (
+                "OperatingCL61OptimizedCL61On",
+                "OperatingCL61OptimizedRadarOn",
+                "OperatingCL61OptimizedHATPROOn",
+            )
+            schedule_has_on = any(
+                np.any(
+                    np.isfinite(np.asarray(ds[name].values, dtype=np.float64))
+                    & (np.asarray(ds[name].values, dtype=np.float64) > 0)
+                )
+                for name in schedule_fields
+                if name in ds
+            )
+            if not schedule_has_on:
                 presentation = cl61_schedule_presentation(ds)
                 fig.add_annotation(
                     text=presentation.annotation,

@@ -29,9 +29,11 @@ from power_operating_scenarios import (
     mode_kits,
     load_operating_events,
     optimize_cl61_schedule,
+    optimize_priority_schedule,
     _tier_profile_members,
 )
 from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_load_dynamics import LoadDistribution, StateLoadDynamics
 from generate_power_operating_scenarios import (
     _verification_for_record,
     _planning_forecast_provenance,
@@ -366,7 +368,7 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertTrue(diagnostic.operator_action_required)
         self.assertIn("not a recommendation to switch CL61 off", diagnostic.reason)
 
-    def test_scenario_contract_explains_unsafe_fixed_instrument_baseline(self) -> None:
+    def test_scenario_contract_explains_unsafe_dc_baseline(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
         model.current_mode = mode_id(("CL61", "Radar", "HATPRO"))
@@ -394,9 +396,55 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(scenarios.attrs["optimized_status"], "no_safe_schedule")
         self.assertEqual(
             json.loads(scenarios.attrs["optimized_blocking_instruments"]),
-            ["Radar", "HATPRO"],
+            [],
         )
+        self.assertEqual(
+            json.loads(scenarios.attrs["optimized_priority_order"]),
+            ["CL61", "Radar", "HATPRO"],
+        )
+        self.assertIn("all three controlled instruments off", scenarios.attrs["optimized_reason"])
         self.assertEqual(scenarios.attrs["optimized_operator_action_required"], "true")
+
+    def test_priority_schedule_falls_back_when_phase_aware_p10_is_unsafe(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        cl61_mode = mode_id(("CL61",))
+        model.current_mode = cl61_mode
+        model.current_confidence = 1.0
+        model.mode_load_profiles = {
+            cl61_mode: StateLoadDynamics(
+                state=cl61_mode,
+                current_phase="steady",
+                state_started_at="2026-07-15T06:00:00",
+                phase_started_at="2026-07-15T06:00:00",
+                startup_duration_p10_minutes=0.0,
+                startup_duration_p50_minutes=0.0,
+                startup_duration_p90_minutes=0.0,
+                phase_profiles={"steady": LoadDistribution(5000.0, 5000.0, 5000.0, 24)},
+                phase_weights={"steady": 1.0},
+                phase_dwell_minutes={"steady": 24.0 * 60.0},
+                sample_count=24,
+                episode_count=2,
+                change_count=0,
+            )
+        }
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+            optimization_hours=96,
+        )
+
+        optimized = scenarios.sel(scenario=SCENARIO_OPTIMIZED)
+        optimized_modes = [mode_from_code(value) for value in optimized["ScenarioModeCode"].values]
+        self.assertTrue(all("CL61" not in mode_kits(value) for value in optimized_modes))
+        self.assertEqual(scenarios.attrs["optimized_phase_validation_fallback"], "true")
+        self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
 
     def test_native_ensemble_is_preserved_for_the_decision_horizon(self) -> None:
         power, pdu = _training_data()
@@ -714,6 +762,45 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(len(start_days), len(set(start_days)))
         self.assertGreaterEqual(result.minimum_p10_soc, 40.0)
 
+    def test_priority_optimizer_keeps_cl61_on_before_lower_priority_loads(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
+        solar = np.zeros((20, len(times)))
+        components = np.tile(
+            np.array([40.0, 40.0, 250.0, 200.0, 0.0, 0.0]),
+            (20, 1),
+        )
+
+        result = optimize_priority_schedule(
+            times=times,
+            solar_members_w=solar,
+            component_members=components,
+            initial_soc=100.0,
+            capacity_kwh=26.0,
+            base_mode=mode_id(("CL61",)),
+            horizon_hours=96,
+        )
+
+        self.assertTrue(result.safe)
+        self.assertGreaterEqual(result.minimum_p10_soc, 40.0)
+        self.assertEqual(
+            sum("CL61" in mode_kits(value) for value in result.modes[1:97]),
+            96,
+        )
+        self.assertEqual(
+            sum("Radar" in mode_kits(value) for value in result.modes[1:97]),
+            0,
+        )
+        self.assertEqual(
+            sum("HATPRO" in mode_kits(value) for value in result.modes[1:97]),
+            0,
+        )
+        self.assertTrue(
+            all(
+                not ({"CL61", "Radar", "HATPRO"} & set(mode_kits(value)))
+                for value in result.modes[97:]
+            )
+        )
+
     def test_optimizer_protects_reserve_through_full_planning_horizon(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
         solar = np.zeros((20, len(times)))
@@ -858,10 +945,15 @@ class OperatingScenarioTests(unittest.TestCase):
             self.assertTrue(paths["model"].exists())
             self.assertTrue(paths["recommendations"].exists())
             archive = json.loads(paths["recommendations"].read_text(encoding="utf-8"))
-            self.assertEqual(archive["schema_version"], 2)
+            self.assertEqual(archive["schema_version"], 3)
             record = archive["recommendations"][-1]
             self.assertEqual(record["decision_horizon_hours"], 96)
             self.assertEqual(record["safety_constraint"], "P10 SOC must remain at or above 40%")
+            self.assertEqual(record["instrument_priority"], ["CL61", "Radar", "HATPRO"])
+            self.assertEqual(set(record["instrument_hours"]), {"CL61", "Radar", "HATPRO"})
+            self.assertEqual(set(record["instrument_starts"]), {"CL61", "Radar", "HATPRO"})
+            self.assertEqual(record["minimum_run_hours"], 12.0)
+            self.assertEqual(record["maximum_starts_per_utc_day"], 1)
             self.assertIn(record["recommendation_status"], {"safe_schedule", "reserve_only"})
             self.assertIn("reason", record)
             self.assertIn("blocking_instruments", record)

@@ -207,17 +207,19 @@ planning product's solar cycle, not an older planning-cycle load trace. Thus,
 when CL61 is the only powered instrument, the current trace and the fixed CL61
 trace start from the same detected heater/blower phase.
 
-The optimizer considers CL61 on/off schedules over the first 96 hours, then
-propagates each candidate with CL61 off through the complete 240-hour planning
-forecast. It controls only CL61: the DC baseline and the current Radar, HATPRO,
-and UAS states remain fixed. It maximizes collection time only among candidates
-whose P10 SOC stays at or above 40% for all 240 hours, with a minimum 12-hour
-CL61 run and at most one start per UTC day. If that fixed baseline crosses the
-reserve even with CL61 off, no feasible CL61 schedule exists. The all-zero CL61
-trace is then retained only as an unsafe fallback and is explicitly not a
-recommendation to switch CL61 off. It is advisory only. A custom start/duration
-editor runs the same ensemble calculation immediately and marks the plan safe,
-marginal, or unsafe from its minimum P10 SOC.
+The advisory scheduler considers CL61, Radar, and HATPRO on/off states over the
+first 96 hours. It first maximizes safe CL61 hours, freezes that result, then
+maximizes Radar and finally HATPRO. This makes the priority explicit rather than
+trading a CL61 hour for a lower-priority instrument. The DC baseline and current
+UAS state remain fixed. Each controlled instrument has a minimum 12-hour run
+and at most one planned start per UTC day. All three are off through the rest of
+the 240-hour planning forecast, and every candidate must keep P10 SOC at or
+above 40% across that full horizon. Learned startup, fan, and heater/blower
+phases are checked again before publication. If the fixed DC/UAS reserve case
+still crosses 40%, no feasible schedule exists; zero traces are retained only
+as an unsafe diagnostic fallback. The scheduler is advisory only and never
+issues PDU commands. The existing custom CL61 start/duration editor remains an
+independent what-if calculation.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
 skill only use rows from a matching model version, preventing retired model

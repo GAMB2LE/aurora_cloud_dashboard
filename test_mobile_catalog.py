@@ -655,6 +655,65 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertIn("not a recommendation", panel["explanation"])
         self.assertEqual(panel["info"]["title"], "No Feasible CL61 Schedule")
 
+    def test_priority_schedule_exposes_three_instrument_traces(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            display_path = root / "power_forecast_display.zarr"
+            scenario_path = root / "power_operating_scenarios.zarr"
+            anchor = pd.Timestamp("2026-07-20T07:00:00")
+            times = pd.date_range(anchor, periods=5, freq="1h")
+            xr.Dataset(
+                {"BatterySOCForecastP50": (("time",), np.linspace(80.0, 76.0, len(times)))},
+                coords={"time": times},
+                attrs={"forecast_initial_soc_time": anchor.isoformat()},
+            ).to_zarr(display_path, mode="w", consolidated=True)
+            xr.Dataset(
+                {
+                    "ScenarioModeCode": (("scenario", "time"), np.asarray([[0, 1, 3, 7, 0]])),
+                    "ScenarioSOCP50": (("scenario", "time"), np.linspace(80.0, 76.0, len(times))[None, :]),
+                    "scenario_label": (("scenario",), ["Priority Instrument Schedule"]),
+                },
+                coords={"scenario": ["optimized_cl61"], "time": times},
+                attrs={
+                    "planning_status": "ready",
+                    "initial_soc_time": anchor.isoformat(),
+                    "optimized_safe": "true",
+                    "optimized_collection_hours": "3",
+                    "optimized_status": "safe_schedule",
+                    "optimized_priority_order": '["CL61", "Radar", "HATPRO"]',
+                    "optimized_reason": "A safe advisory priority schedule keeps P10 SOC above 40%.",
+                },
+            ).to_zarr(scenario_path, mode="w", consolidated=True)
+            with patch.dict(
+                os.environ,
+                {
+                    "POWER_FORECAST_DISPLAY_ZARR_PATH": str(display_path),
+                    "POWER_OPERATING_SCENARIOS_ZARR_PATH": str(scenario_path),
+                },
+            ), patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
+                response = mobile_catalog.power(window="96h", group="forecast_96h")
+
+        panel = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_schedule")
+        self.assertEqual(panel["title"], "Recommended Instrument Operating Schedule")
+        traces = {trace["id"]: trace for trace in panel["traces"]}
+        self.assertEqual(
+            [point["value"] for point in traces["OperatingCL61OptimizedCL61On"]["points"]],
+            [0.0, 1.0, 1.0, 1.0, 0.0],
+        )
+        self.assertEqual(
+            [point["value"] for point in traces["OperatingCL61OptimizedRadarOn"]["points"]],
+            [0.0, 0.0, 1.0, 1.0, 0.0],
+        )
+        self.assertEqual(
+            [point["value"] for point in traces["OperatingCL61OptimizedHATPROOn"]["points"]],
+            [0.0, 0.0, 0.0, 1.0, 0.0],
+        )
+
     def test_96_hour_system_and_scenario_cards_share_anchor_values_and_endpoint(self) -> None:
         import numpy as np
         import pandas as pd

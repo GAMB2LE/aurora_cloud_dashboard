@@ -122,6 +122,15 @@ def _json_string_list(value: object) -> list[str]:
     return [str(item) for item in value if str(item)]
 
 
+def _json_object(value: object) -> dict[str, object]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _schedule_windows(times: pd.DatetimeIndex, mode_codes: np.ndarray) -> list[dict[str, object]]:
     """Store compact, human-auditable operating-mode windows for a decision."""
     if len(times) == 0:
@@ -235,7 +244,24 @@ def _archive_recommendation(
         "issued_at_utc": _utc_now(),
         "decision_horizon_hours": decision_hours,
         "safety_constraint": "P10 SOC must remain at or above 40%",
-        "optimization_objective": "maximize CL61 collection hours subject to the safety constraint",
+        "optimization_objective": (
+            "maximize safe collection lexicographically for CL61, Radar, then HATPRO"
+        ),
+        "instrument_priority": _json_string_list(
+            scenarios.attrs.get("optimized_priority_order", "[]")
+        ),
+        "instrument_hours": _json_object(
+            scenarios.attrs.get("optimized_instrument_hours", "{}")
+        ),
+        "instrument_starts": _json_object(
+            scenarios.attrs.get("optimized_instrument_starts", "{}")
+        ),
+        "minimum_run_hours": float(
+            scenarios.attrs.get("minimum_controlled_run_hours", 12.0)
+        ),
+        "maximum_starts_per_utc_day": int(
+            scenarios.attrs.get("max_controlled_starts_per_utc_day", 1)
+        ),
         "initial_soc_time": str(scenarios.attrs.get("initial_soc_time", "")),
         "initial_soc_pct": float(scenarios.attrs.get("initial_soc_pct", "nan")),
         "model": str(scenarios.attrs.get("model", "")),
@@ -298,7 +324,7 @@ def _archive_recommendation(
     _write_json_atomic(
         path,
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "verification_method": "archived forecast versus later BatterySOC and PDU-detected operating mode",
             "control_authority": "advisory_only",
             "updated_at_utc": _utc_now(),

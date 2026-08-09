@@ -165,6 +165,33 @@ def test_unsafe_cl61_fallback_is_labelled_as_infeasible() -> None:
     assert power_trace_label(ds, load_trace) == "Unsafe fallback load (CL61 off)"
 
 
+def test_priority_schedule_uses_three_instrument_labels() -> None:
+    panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "operating_plan_schedule")
+    ds = xr.Dataset(
+        attrs={
+            "operating_optimized_safe": "true",
+            "operating_optimized_status": "safe_schedule",
+            "operating_optimized_priority_order": '["CL61", "Radar", "HATPRO"]',
+            "operating_optimized_reason": (
+                "A safe advisory priority schedule keeps P10 SOC at or above 40%."
+            ),
+        }
+    )
+
+    presentation = cl61_schedule_presentation(ds)
+    labels = [power_trace_label(ds, trace) for trace in panel.traces]
+
+    assert presentation.title == "Recommended Instrument Operating Schedule"
+    assert labels == [
+        "Recommended CL61 schedule",
+        "Recommended Radar schedule",
+        "Recommended HATPRO schedule",
+    ]
+    implementation = build_power_forecast_info(panel.key, ds)["implementation"]
+    assert "maximises CL61 hours first" in implementation
+    assert "then Radar, then HATPRO" in implementation
+
+
 def _power_layout_panels() -> tuple[PanelSpec, ...]:
     panel_specs = (
         ("renewables", "Renewables", "observed_1"),
