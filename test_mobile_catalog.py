@@ -552,6 +552,8 @@ class MobileCatalogTests(unittest.TestCase):
         panel = next(panel for panel in response["panels"] if panel["id"] == "ecmwf_solar_forecast")
         self.assertEqual(panel["info"]["title"], "ECMWF solar and load forecast")
         self.assertTrue(panel["info"]["implementation"])
+        self.assertEqual(panel["forecastContext"]["horizonHours"], 96)
+        self.assertEqual(panel["forecastContext"]["validTime"], "2026-07-20T13:00:00Z")
         for trace in panel["traces"]:
             self.assertTrue(all(point["time"] >= "2026-07-20T07:00:00" for point in trace["points"]))
 
@@ -782,7 +784,13 @@ class MobileCatalogTests(unittest.TestCase):
         scenario_current = next(
             trace for trace in scenarios["traces"] if trace["id"] == "OperatingCurrentSOCP50"
         )
+        probability = next(
+            trace
+            for trace in system["traces"]
+            if trace["id"] == "SystemAsIsDecisionBelow40Probability"
+        )
         self.assertEqual(system_central["points"], scenario_current["points"])
+        self.assertEqual(probability["unit"], "%")
         self.assertEqual(
             near_term_central["points"],
             [

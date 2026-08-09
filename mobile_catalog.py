@@ -1626,7 +1626,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                         "color": trace.color,
                         "axis": trace.axis,
                         "dash": trace.dash,
-                        "unit": str(dataset[trace.var].attrs.get("units", "")),
+                        "unit": _power_trace_display_unit(dataset, trace),
                         "points": [
                             {"time": pd.Timestamp(moment).isoformat() + "Z", "value": round(float(value), 5), "segment": segment}
                             for moment, value, segment in zip(selected_times, selected_values, segment_ids, strict=True)
@@ -1717,12 +1717,25 @@ def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
             str(dataset.attrs.get("operating_generated_at_utc", "")),
             horizon,
         )
+    system_horizons = {
+        "soc_24h_forecast": 24,
+        "soc_ecmwf_forecast": 96,
+        "ecmwf_solar_forecast": 96,
+    }
     return (
         "System forecast",
         str(dataset.attrs.get("forecast_initial_soc_time", "")),
         str(dataset.attrs.get("forecast_generated_at_utc", "")),
-        96 if panel_key == "soc_ecmwf_forecast" else 24,
+        system_horizons.get(panel_key, 24),
     )
+
+
+def _power_trace_display_unit(dataset, trace) -> str:
+    """Return the unit after applying the trace's display scaling."""
+    unit = str(dataset[trace.var].attrs.get("units", ""))
+    if float(trace.scale) == 100.0 and unit.strip().lower() in {"", "1", "dimensionless"}:
+        return "%"
+    return unit
 
 
 def _power_forecast_panel_end(dataset, panel_key: str, *, default):
@@ -1732,6 +1745,7 @@ def _power_forecast_panel_end(dataset, panel_key: str, *, default):
     if panel_key not in {
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
+        "ecmwf_solar_forecast",
         "operating_plan_scenarios",
         "operating_plan_schedule",
     }:

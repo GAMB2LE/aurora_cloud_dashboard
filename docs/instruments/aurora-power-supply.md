@@ -78,15 +78,17 @@ Typical panels include:
   - temperature sensors 1-4
   - left and right y-axes both use the same `Temperature [C]` range
 - **SOC 24 h Forecast**
-  - `State of Charge`
-  - `30 min fit +24 h`, a display-only polynomial fit to the latest 30 minutes
-    of `BatterySOC`
-  - `2 h fit +24 h`, a display-only polynomial fit to the latest 2 hours of
-    `BatterySOC`
+  - the first 24 hours of the central system-as-is decision forecast
+  - uses the same SOC anchor, detected load state, and solar input as the
+    96-hour system forecast
+  - ends exactly at the SOC anchor plus 24 hours
 - **SOC 96 h Forecast**
-  - ECMWF-informed SOC forecast, shown when the forecast product is available
-  - ECMWF solar power in `W m-2`
-  - forecast solar charging and expected load
+  - ECMWF-informed system-as-is P10, central, and P90 SOC traces
+  - probability of falling below the 40% minimum, displayed in percent
+  - ends exactly at the SOC anchor plus 96 hours
+- **ECMWF Solar & Load Forecast**
+  - calibrated forecast solar charging and the detected finite load state
+  - carries the same 96-hour planning horizon as the SOC and scenario cards
 - **Suggested Instrument-Mode SOC Forecasts**
   - CL61, CL61 + Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar,
     Radar, HATPRO, and all instruments + UAS tier 3
