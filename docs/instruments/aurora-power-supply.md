@@ -17,6 +17,11 @@ and iPad:
   ECMWF 96-hour outlook, operating-mode scenarios, custom operating plan, and
   verification evidence.
 
+The 24-hour card is a near-term slice of the central system-as-is trace in the
+96-hour ensemble card. Both therefore use the same SOC anchor, confirmed
+instrument state, load phase, and forecast issue; only the displayed horizon
+differs.
+
 This split changes only presentation and bounded API selection. It does not
 change the forecast calculations or stored products.
 
@@ -33,8 +38,8 @@ the dashboard. The key distinctions are:
   schedules, and their load does not change state during the horizon.
 - **Operating-mode scenarios** are separate advisory simulations. Each includes
   the DC baseline plus the instruments named in its legend. Shaded intervals on
-  the solar/load panel identify recommended CL61-on periods and do not indicate
-  forecast probability or an automatic PDU command.
+  the solar/load panel identify feasible advisory CL61-on periods and do not
+  indicate forecast probability or an automatic PDU command.
 - **Hindcasts and verification scores** look backwards: archived forecasts are
   matched to later APS observations. MAE, CRPS, and Brier scores are lower-is-
   better; P10-P90 coverage targets 0.80.
@@ -73,15 +78,17 @@ Typical panels include:
   - temperature sensors 1-4
   - left and right y-axes both use the same `Temperature [C]` range
 - **SOC 24 h Forecast**
-  - `State of Charge`
-  - `30 min fit +24 h`, a display-only polynomial fit to the latest 30 minutes
-    of `BatterySOC`
-  - `2 h fit +24 h`, a display-only polynomial fit to the latest 2 hours of
-    `BatterySOC`
+  - the first 24 hours of the central system-as-is decision forecast
+  - uses the same SOC anchor, detected load state, and solar input as the
+    96-hour system forecast
+  - ends exactly at the SOC anchor plus 24 hours
 - **SOC 96 h Forecast**
-  - ECMWF-informed SOC forecast, shown when the forecast product is available
-  - ECMWF solar power in `W m-2`
-  - forecast solar charging and expected load
+  - ECMWF-informed system-as-is P10, central, and P90 SOC traces
+  - probability of falling below the 40% minimum, displayed in percent
+  - ends exactly at the SOC anchor plus 96 hours
+- **ECMWF Solar & Load Forecast**
+  - calibrated forecast solar charging and the detected finite load state
+  - carries the same 96-hour planning horizon as the SOC and scenario cards
 - **Suggested Instrument-Mode SOC Forecasts**
   - CL61, CL61 + Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar,
     Radar, HATPRO, and all instruments + UAS tier 3
@@ -232,10 +239,16 @@ load phase from the twice-daily planning cycle. The eighth scenario keeps CL61,
 Radar, HATPRO, and UAS on with UAS
 effective tier 3. It remains explicitly provisional until tier 3 has at least
 three independent episodes and six observed hours; its fallback P10/P50/P90
-UAS loads are `55/108/302 W`. The separate optimized CL61 plan maximizes
-collection time over 96
-hours while keeping P10 SOC at or above 40%, requiring a 12-hour minimum run,
-and allowing no more than one start per UTC day. The custom-plan editor
+UAS loads are `55/108/302 W`. The separate advisory scheduler proposes CL61,
+Radar, and HATPRO states in that strict priority order. It maximizes each
+instrument's collection hours over 96 hours without reducing a
+higher-priority result, while keeping the DC baseline and current UAS state
+fixed. Every controlled instrument requires a 12-hour minimum run and permits
+at most one planned start per UTC day. P10 SOC must remain at or above 40%
+through the complete 240-hour forecast, including a reserve tail with all three
+controlled instruments off. If even that reserve case is unsafe, the dashboard
+reports **No Feasible Instrument Schedule**; zero traces are diagnostic, not
+PDU instructions. The custom CL61 plan editor
 evaluates a selected start and duration against the stored ensembles
 immediately. All plans are advisory only.
 

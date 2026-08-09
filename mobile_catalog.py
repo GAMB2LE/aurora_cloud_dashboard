@@ -1535,7 +1535,10 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             SUMMARY_LAYOUTS,
             build_power_forecast_info,
             build_power_verification_guidance,
+            cl61_schedule_presentation,
             merge_operating_scenarios_into_display_summary,
+            power_panel_label,
+            power_trace_label,
         )
 
         now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
@@ -1579,6 +1582,11 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
         for panel in SUMMARY_LAYOUTS["power"]:
             if panel.key not in panel_keys:
                 continue
+            schedule_presentation = (
+                cl61_schedule_presentation(dataset)
+                if panel.key == "operating_plan_schedule"
+                else None
+            )
             forecast_panel = POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in {"forecast_24h", "forecast_96h"}
             panel_start = _forecast_panel_start(dataset, times, panel) if forecast_panel else start
             panel_end = (
@@ -1614,11 +1622,11 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                 traces.append(
                     {
                         "id": trace.var,
-                        "label": trace.label,
+                        "label": power_trace_label(dataset, trace),
                         "color": trace.color,
                         "axis": trace.axis,
                         "dash": trace.dash,
-                        "unit": str(dataset[trace.var].attrs.get("units", "")),
+                        "unit": _power_trace_display_unit(dataset, trace),
                         "points": [
                             {"time": pd.Timestamp(moment).isoformat() + "Z", "value": round(float(value), 5), "segment": segment}
                             for moment, value, segment in zip(selected_times, selected_values, segment_ids, strict=True)
@@ -1630,8 +1638,12 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                 payload["panels"].append(
                     {
                         "id": panel.key,
-                        "title": panel.label,
-                        "explanation": panel.description,
+                        "title": power_panel_label(dataset, panel),
+                        "explanation": (
+                            schedule_presentation.explanation
+                            if schedule_presentation is not None
+                            else panel.description
+                        ),
                         "info": build_power_forecast_info(panel.key, dataset),
                         "guidance": build_power_verification_guidance(panel.key, dataset),
                         "leftAxisLabel": panel.left_axis_label,
@@ -1655,7 +1667,7 @@ def _forecast_panel_start(dataset, times, panel):
 
     preferred_fields = {
         "soc_projection": ("BatterySOCForecast",),
-        "soc_24h_forecast": ("BatterySOCForecast",),
+        "soc_24h_forecast": ("SystemAsIsDecisionSOCP50",),
         "soc_ecmwf_forecast": (
             "SystemAsIsDecisionSOCP50",
             "BatterySOCForecastP50",
@@ -1663,7 +1675,11 @@ def _forecast_panel_start(dataset, times, panel):
         ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCurrentSOCP50", "OperatingCL61OptimizedSOCP50"),
-        "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
+        "operating_plan_schedule": (
+            "OperatingCL61OptimizedCL61On",
+            "OperatingCL61OptimizedRadarOn",
+            "OperatingCL61OptimizedHATPROOn",
+        ),
     }
     fields = preferred_fields.get(panel.key, tuple(trace.var for trace in panel.traces))
     for field in fields:
@@ -1680,7 +1696,7 @@ def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
     """Return label, SOC anchor, issue time, and horizon for one card."""
     operating_panel = panel_key.startswith("operating_plan")
     system_uses_operating = (
-        panel_key == "soc_ecmwf_forecast"
+        panel_key in {"soc_24h_forecast", "soc_ecmwf_forecast"}
         and str(dataset.attrs.get("system_as_is_decision_source", "")) == "operating_scenario"
     )
     if operating_panel or system_uses_operating:
@@ -1692,6 +1708,8 @@ def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
             horizon = max(int(float(horizon_value)), 1)
         except (TypeError, ValueError):
             horizon = 96
+        if panel_key == "soc_24h_forecast":
+            horizon = min(horizon, 24)
         kind = "Operating-plan forecast" if operating_panel else "System-as-is decision forecast"
         return (
             kind,
@@ -1699,12 +1717,25 @@ def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
             str(dataset.attrs.get("operating_generated_at_utc", "")),
             horizon,
         )
+    system_horizons = {
+        "soc_24h_forecast": 24,
+        "soc_ecmwf_forecast": 96,
+        "ecmwf_solar_forecast": 96,
+    }
     return (
         "System forecast",
         str(dataset.attrs.get("forecast_initial_soc_time", "")),
         str(dataset.attrs.get("forecast_generated_at_utc", "")),
-        96 if panel_key == "soc_ecmwf_forecast" else 24,
+        system_horizons.get(panel_key, 24),
     )
+
+
+def _power_trace_display_unit(dataset, trace) -> str:
+    """Return the unit after applying the trace's display scaling."""
+    unit = str(dataset[trace.var].attrs.get("units", ""))
+    if float(trace.scale) == 100.0 and unit.strip().lower() in {"", "1", "dimensionless"}:
+        return "%"
+    return unit
 
 
 def _power_forecast_panel_end(dataset, panel_key: str, *, default):
@@ -1712,7 +1743,9 @@ def _power_forecast_panel_end(dataset, panel_key: str, *, default):
     import pandas as pd
 
     if panel_key not in {
+        "soc_24h_forecast",
         "soc_ecmwf_forecast",
+        "ecmwf_solar_forecast",
         "operating_plan_scenarios",
         "operating_plan_schedule",
     }:

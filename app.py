@@ -65,6 +65,8 @@ from grouped_timeseries import (
     is_summary_instrument,
     merge_operating_scenarios_into_display_summary,
     operating_mode_intervals,
+    power_panel_label,
+    power_trace_label,
     summary_daily_png,
     summary_latest_png,
     summary_source_instruments,
@@ -8939,11 +8941,19 @@ def _mobile_trace_values(
 def _mobile_forecast_panel_start(ds: xr.Dataset, panel) -> pd.Timestamp | None:
     preferred_fields = {
         "soc_projection": ("BatterySOCForecast",),
-        "soc_24h_forecast": ("BatterySOCForecast",),
-        "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
+        "soc_24h_forecast": ("SystemAsIsDecisionSOCP50",),
+        "soc_ecmwf_forecast": (
+            "SystemAsIsDecisionSOCP50",
+            "BatterySOCForecastP50",
+            "BatterySOCForecast",
+        ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
-        "operating_plan_schedule": ("OperatingCL61OptimizedCL61On",),
+        "operating_plan_schedule": (
+            "OperatingCL61OptimizedCL61On",
+            "OperatingCL61OptimizedRadarOn",
+            "OperatingCL61OptimizedHATPROOn",
+        ),
     }
     times = pd.DatetimeIndex(ds["time"].values)
     for field in preferred_fields.get(panel.key, tuple(trace.var for trace in panel.traces)):
@@ -9035,7 +9045,7 @@ def _forecast_plot_info_control(panel, ds: xr.Dataset, *, mobile: bool = False):
 
     button.on_click(toggle)
     title = pn.pane.HTML(
-        f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(panel.label)}</div>",
+        f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(power_panel_label(ds, panel))}</div>",
         sizing_mode="stretch_width",
         margin=0,
     )
@@ -9052,6 +9062,7 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
         "operating_plan_scenarios",
+        "operating_plan_schedule",
         "ecmwf_solar_forecast",
     }
     include_future = panel.key in forecast_panel_keys
@@ -9072,10 +9083,11 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
             dash_class = " mobile-plot-card__legend-line--dot"
         else:
             dash_class = ""
+        trace_label = power_trace_label(ds, trace)
         legend_items.append(
             "<span class='mobile-plot-card__legend-item'>"
             f"<span class='mobile-plot-card__legend-line{dash_class}' style='color:{escape(trace.color)}'></span>"
-            f"<span class='mobile-plot-card__legend-label'>{escape(trace.label)}</span>"
+            f"<span class='mobile-plot-card__legend-label'>{escape(trace_label)}</span>"
             "</span>"
         )
         fig.add_trace(
@@ -9083,11 +9095,11 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
                 x=times,
                 y=values,
                 mode="lines",
-                name=trace.label,
+                name=trace_label,
                 yaxis="y2" if use_right else "y",
                 line=dict(color=trace.color, width=trace.line_width, dash=trace.dash or "solid", shape="hv" if trace.step else "linear"),
                 opacity=trace.opacity,
-                hovertemplate=f"Time=%{{x}}<br>{trace.label}=%{{y:.4g}}<extra></extra>",
+                hovertemplate=f"Time=%{{x}}<br>{trace_label}=%{{y:.4g}}<extra></extra>",
                 connectgaps=False,
             )
         )

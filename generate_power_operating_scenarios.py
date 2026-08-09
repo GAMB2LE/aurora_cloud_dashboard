@@ -111,6 +111,26 @@ def _json_float(value: object) -> float | None:
     return result if np.isfinite(result) else None
 
 
+def _json_string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def _json_object(value: object) -> dict[str, object]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _schedule_windows(times: pd.DatetimeIndex, mode_codes: np.ndarray) -> list[dict[str, object]]:
     """Store compact, human-auditable operating-mode windows for a decision."""
     if len(times) == 0:
@@ -224,7 +244,24 @@ def _archive_recommendation(
         "issued_at_utc": _utc_now(),
         "decision_horizon_hours": decision_hours,
         "safety_constraint": "P10 SOC must remain at or above 40%",
-        "optimization_objective": "maximize CL61 collection hours subject to the safety constraint",
+        "optimization_objective": (
+            "maximize safe collection lexicographically for CL61, Radar, then HATPRO"
+        ),
+        "instrument_priority": _json_string_list(
+            scenarios.attrs.get("optimized_priority_order", "[]")
+        ),
+        "instrument_hours": _json_object(
+            scenarios.attrs.get("optimized_instrument_hours", "{}")
+        ),
+        "instrument_starts": _json_object(
+            scenarios.attrs.get("optimized_instrument_starts", "{}")
+        ),
+        "minimum_run_hours": float(
+            scenarios.attrs.get("minimum_controlled_run_hours", 12.0)
+        ),
+        "maximum_starts_per_utc_day": int(
+            scenarios.attrs.get("max_controlled_starts_per_utc_day", 1)
+        ),
         "initial_soc_time": str(scenarios.attrs.get("initial_soc_time", "")),
         "initial_soc_pct": float(scenarios.attrs.get("initial_soc_pct", "nan")),
         "model": str(scenarios.attrs.get("model", "")),
@@ -237,6 +274,18 @@ def _archive_recommendation(
         "final_p10_soc": float(scenarios["ScenarioFinalP10SOC"].values[index]),
         "starts": int(scenarios["ScenarioStarts"].values[index]),
         "safe": bool(scenarios["ScenarioSafe"].values[index] >= 0.5),
+        "recommendation_status": str(scenarios.attrs.get("optimized_status", "")),
+        "reason_code": str(scenarios.attrs.get("optimized_reason_code", "")),
+        "reason": str(scenarios.attrs.get("optimized_reason", "")),
+        "optimization_base_mode": str(scenarios.attrs.get("optimized_base_mode", "")),
+        "optimization_base_mode_label": str(scenarios.attrs.get("optimized_base_mode_label", "")),
+        "blocking_instruments": _json_string_list(
+            scenarios.attrs.get("optimized_blocking_instruments", "[]")
+        ),
+        "operator_action_required": str(
+            scenarios.attrs.get("optimized_operator_action_required", "false")
+        ).lower()
+        == "true",
         "control_authority": "advisory_only",
         "recommended_mode_windows": _schedule_windows(decision_times, mode_codes),
         "forecast_trace": {
@@ -275,7 +324,7 @@ def _archive_recommendation(
     _write_json_atomic(
         path,
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "verification_method": "archived forecast versus later BatterySOC and PDU-detected operating mode",
             "control_authority": "advisory_only",
             "updated_at_utc": _utc_now(),
@@ -365,11 +414,16 @@ def scenario_publication_signature(scenarios: xr.Dataset) -> str:
         return np.rint(finite / float(step)).astype(np.int32).ravel().tolist()
 
     payload = {
-        "schema": 1,
+        "schema": 2,
+        "scenario_schema_version": str(attrs.get("schema_version", "")),
         "anchor_30min": anchor_bucket,
         "initial_soc_pct": round(float(attrs.get("initial_soc_pct", 0.0))),
         "model_version": str(attrs.get("model_version", "")),
         "current_mode": str(attrs.get("current_mode", "")),
+        "optimized_status": str(attrs.get("optimized_status", "")),
+        "optimized_reason_code": str(attrs.get("optimized_reason_code", "")),
+        "optimized_base_mode": str(attrs.get("optimized_base_mode", "")),
+        "optimized_blocking_instruments": str(attrs.get("optimized_blocking_instruments", "[]")),
         "solar_contract": str(attrs.get("solar_calibration_contract_id", "")),
         "planning_cycle": str(attrs.get("planning_forecast_generated_at_utc", "")),
         "scenario_ids": [str(value) for value in scenarios.get_index("scenario")],

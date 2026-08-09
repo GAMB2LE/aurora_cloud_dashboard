@@ -436,7 +436,7 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - current recognised mode
 - DC-Only
 - DC + CL61 continuously on
-- optimized CL61 schedule
+- prioritized CL61, Radar, and HATPRO schedule
 - CL61
 - CL61 + Radar
 - CL61 + HATPRO
@@ -452,27 +452,41 @@ the UAS effective tier to 3 for the complete horizon. Until tier-3 evidence is
 mature it is labelled provisional and uses P10/P50/P90 fallback loads of
 `55/108/302 W`; mature observed tier-3 quantiles replace that fallback.
 
-The optimized plan maximizes CL61 collection time over the first 96 hours while
-requiring P10 SOC to remain at or above 40% across the complete 240-hour
-planning forecast, a minimum 12-hour run, and no more than one start per UTC
-day. Hours 97-240 retain the base mode with CL61 off so
-the full planning horizon still exposes later battery risk. Recommendations are
-advisory only; the forecast service does not issue PDU commands. The dashboard
+The optimized plan controls the proposed states of CL61, Radar, and HATPRO in
+strict priority order: maximize CL61 hours first, then Radar hours without
+reducing the chosen CL61 plan, then HATPRO hours without reducing either
+higher-priority plan. The DC baseline and current UAS state remain fixed. Each
+controlled instrument has a minimum 12-hour run and at most one planned start
+per UTC day. The first 96 hours are decision hours; all three instruments are
+off in hours 97-240 so P10 SOC can be checked across the complete reserve tail.
+P10 SOC must remain at or above 40% throughout. A final check applies learned
+startup, fan, and heater/blower phases; a phase-aware breach falls back to the
+all-controlled-off reserve case rather than publishing an unsafe timetable.
+Recommendations are advisory only; the forecast service does not issue PDU
+commands. The dashboard
 clamps both the SOC 96 h card and the scenario comparison to exactly 96 hours
 from the latest physical SOC anchor; the reserve tail is retained for safety
 analysis but is not labelled as part of the 96-hour decision display. The dashboard
 also evaluates a user-selected CL61 start and duration directly from the stored
 solar and component ensembles, so edits react without another ECMWF download.
 
+The scenario contract distinguishes a feasible prioritized schedule, a safe
+reserve-only plan, and an infeasible result. If the fixed DC/UAS baseline
+breaches the reserve even with CL61, Radar, and HATPRO off, the stored zero
+schedule is an unsafe fallback for diagnosis, not an instruction to operate the
+PDU. The product records the fixed base mode, priority, per-instrument hours and
+starts, reason, and `operator_action_required=true`; browser and iOS clients
+present that result as **No Feasible Instrument Schedule**.
+
 Every hourly advisory cycle is also written to
 `power_operating_recommendations.json`. A decision record includes the first
 96-hour proposed operating-mode windows; hourly P10, P50, and P90 SOC and load
-traces; the forecast/model provenance; collection objective; and the 40% P10
-safety constraint. As later telemetry arrives, the same record accumulates a
+traces; the forecast/model provenance; feasibility status and reason; fixed
+base mode; collection objective; and the 40% P10 safety constraint. As later
+telemetry arrives, the same record accumulates a
 hindcast comparison against actual SOC and PDU-detected mode: SOC MAE and bias,
 minimum actual SOC, 40% breaches, mode adherence, and coverage. These records
-are evidence for trusting future PDU control; they do not themselves actuate a
-PDU.
+are evidence for assessing advisory-schedule quality; they never actuate a PDU.
 
 The public deterministic and scenario products are not rewritten when a new
 timer run has the same semantic publication signature. State and health still

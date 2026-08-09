@@ -221,7 +221,7 @@ class PowerSocForecastTests(unittest.TestCase):
         panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "soc_24h_forecast")
 
         self.assertEqual(panel.label, "SOC Next 24 h Forecast")
-        self.assertEqual([trace.var for trace in panel.traces], ["BatterySOCForecast"])
+        self.assertEqual([trace.var for trace in panel.traces], ["SystemAsIsDecisionSOCP50"])
         trace = panel.traces[0]
         self.assertEqual(trace.display_horizon_hours, 24.0)
 

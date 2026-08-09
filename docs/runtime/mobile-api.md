@@ -83,7 +83,13 @@ token-protected, unknown mode values fail closed, and the legacy
   with the physical SOC anchor, generation time, common decision endpoint, and
   `horizonHours`. The SOC 96 h and instrument-scenario cards use the same
   re-anchored system-as-is values and stop at `anchorTime + 96 h`; the longer
-  internal reserve tail is not returned as a 96-hour decision value. The
+  internal reserve tail is not returned as a 96-hour decision value. The SOC
+  next 24 h card is the first 24 hours of that same central system-as-is trace,
+  with the same SOC anchor and load/state assumptions; it is not a separate
+  deterministic forecast. The ECMWF solar/load input card is bounded to the
+  same 96-hour planning horizon. Dimensionless probability fields that are
+  scaled from fractions to percentages are returned with unit `%`, so clients
+  do not have to infer display units. The
   legacy `all`, `observed`, `forecast_24h`, `forecast_96h`, and `verification`
   groups remain supported.
 - `GET /media/power/figure/current|forecast` - an ETag-backed prewarmed Plotly
