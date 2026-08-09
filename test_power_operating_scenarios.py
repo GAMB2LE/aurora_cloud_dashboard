@@ -20,6 +20,7 @@ from power_operating_scenarios import (
     _validate_scenario_invariants,
     build_observation_frame,
     build_operating_scenarios,
+    describe_cl61_schedule,
     evaluate_custom_schedule,
     fit_operating_model,
     integrate_soc_members,
@@ -351,6 +352,52 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
         self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
 
+    def test_unsafe_zero_schedule_is_not_described_as_a_recommendation(self) -> None:
+        diagnostic = describe_cl61_schedule(
+            current_mode=mode_id(("CL61", "Radar", "HATPRO")),
+            safe=False,
+            collection_hours=0.0,
+            minimum_p10_soc=0.0,
+        )
+
+        self.assertEqual(diagnostic.status, "no_safe_schedule")
+        self.assertEqual(diagnostic.base_mode, mode_id(("Radar", "HATPRO")))
+        self.assertEqual(diagnostic.blocking_instruments, ("Radar", "HATPRO"))
+        self.assertTrue(diagnostic.operator_action_required)
+        self.assertIn("not a recommendation to switch CL61 off", diagnostic.reason)
+
+    def test_scenario_contract_explains_unsafe_fixed_instrument_baseline(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        model.current_mode = mode_id(("CL61", "Radar", "HATPRO"))
+        model.current_confidence = 1.0
+        model.component_mean[:] = [200.0, 220.0, 320.0, 250.0, 0.0, 0.0]
+        model.component_covariance[:] = np.diag([4.0, 4.0, 4.0, 4.0, 4.0, 4.0])
+        model.mode_load_profiles = {}
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        deterministic["ForecastSolarWatts"][:] = 0.0
+        ensemble["ForecastSolarWattsEnsemble"][:] = 0.0
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+            optimization_hours=96,
+        )
+
+        optimized = scenarios.sel(scenario=SCENARIO_OPTIMIZED)
+        self.assertEqual(float(optimized["ScenarioCollectionHours"]), 0.0)
+        self.assertEqual(float(optimized["ScenarioSafe"]), 0.0)
+        self.assertEqual(scenarios.attrs["optimized_status"], "no_safe_schedule")
+        self.assertEqual(
+            json.loads(scenarios.attrs["optimized_blocking_instruments"]),
+            ["Radar", "HATPRO"],
+        )
+        self.assertEqual(scenarios.attrs["optimized_operator_action_required"], "true")
+
     def test_native_ensemble_is_preserved_for_the_decision_horizon(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
@@ -408,6 +455,10 @@ class OperatingScenarioTests(unittest.TestCase):
         scenarios.attrs["generated_at_utc"] = "2099-01-01T00:00:00+00:00"
 
         self.assertEqual(scenario_publication_signature(scenarios), first)
+        scenarios.attrs["optimized_status"] = "changed"
+        self.assertNotEqual(scenario_publication_signature(scenarios), first)
+        scenarios.attrs["optimized_status"] = "safe_schedule"
+        first = scenario_publication_signature(scenarios)
         scenarios["ScenarioLoadP50Watts"].values[0, 0] += 50.0
         self.assertNotEqual(scenario_publication_signature(scenarios), first)
 
@@ -811,6 +862,9 @@ class OperatingScenarioTests(unittest.TestCase):
             record = archive["recommendations"][-1]
             self.assertEqual(record["decision_horizon_hours"], 96)
             self.assertEqual(record["safety_constraint"], "P10 SOC must remain at or above 40%")
+            self.assertIn(record["recommendation_status"], {"safe_schedule", "reserve_only"})
+            self.assertIn("reason", record)
+            self.assertIn("blocking_instruments", record)
             self.assertEqual(len(record["forecast_trace"]["time_utc"]), 96)
             self.assertEqual(len(record["forecast_trace"]["soc_p50_pct"]), 96)
             self.assertTrue(record["recommended_mode_windows"])

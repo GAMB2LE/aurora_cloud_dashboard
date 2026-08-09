@@ -452,10 +452,11 @@ the UAS effective tier to 3 for the complete horizon. Until tier-3 evidence is
 mature it is labelled provisional and uses P10/P50/P90 fallback loads of
 `55/108/302 W`; mature observed tier-3 quantiles replace that fallback.
 
-The optimized plan maximizes CL61 collection time over the first 96 hours while
-requiring P10 SOC to remain at or above 40% across the complete 240-hour
-planning forecast, a minimum 12-hour run, and no more than one start per UTC
-day. Hours 97-240 retain the base mode with CL61 off so
+The optimized plan controls CL61 only. It holds the current DC baseline and the
+current Radar, HATPRO, and UAS states fixed, then maximizes CL61 collection time
+over the first 96 hours while requiring P10 SOC to remain at or above 40%
+across the complete 240-hour planning forecast, a minimum 12-hour run, and no
+more than one start per UTC day. Hours 97-240 retain the base mode with CL61 off so
 the full planning horizon still exposes later battery risk. Recommendations are
 advisory only; the forecast service does not issue PDU commands. The dashboard
 clamps both the SOC 96 h card and the scenario comparison to exactly 96 hours
@@ -464,11 +465,20 @@ analysis but is not labelled as part of the 96-hour decision display. The dashbo
 also evaluates a user-selected CL61 start and duration directly from the stored
 solar and component ensembles, so edits react without another ECMWF download.
 
+The scenario contract distinguishes a feasible CL61 schedule, a safe
+reserve-only plan, and an infeasible result. If the fixed non-CL61 baseline
+breaches the reserve even with CL61 off, the stored zero schedule is an unsafe
+fallback for diagnosis, not a recommendation to turn CL61 off. The product
+records the fixed base mode, blocking instruments, reason, and
+`operator_action_required=true`; browser and iOS clients present that result as
+**No Feasible CL61 Schedule**.
+
 Every hourly advisory cycle is also written to
 `power_operating_recommendations.json`. A decision record includes the first
 96-hour proposed operating-mode windows; hourly P10, P50, and P90 SOC and load
-traces; the forecast/model provenance; collection objective; and the 40% P10
-safety constraint. As later telemetry arrives, the same record accumulates a
+traces; the forecast/model provenance; feasibility status and reason; fixed
+base mode; collection objective; and the 40% P10 safety constraint. As later
+telemetry arrives, the same record accumulates a
 hindcast comparison against actual SOC and PDU-detected mode: SOC MAE and bias,
 minimum actual SOC, 40% breaches, mode adherence, and coverage. These records
 are evidence for trusting future PDU control; they do not themselves actuate a

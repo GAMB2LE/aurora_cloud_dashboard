@@ -20,7 +20,10 @@ from grouped_timeseries import (
     _plotly_time_tick_options,
     build_power_forecast_info,
     build_summary_plotly,
+    cl61_schedule_presentation,
     operating_mode_intervals,
+    power_panel_label,
+    power_trace_label,
 )
 
 
@@ -129,6 +132,37 @@ def test_operating_scenarios_start_with_current_state_reference() -> None:
     assert info is not None
     assert "current exact instrument state is the reference" in info["summary"]
     assert "states are never blended" in info["implementation"]
+
+
+def test_unsafe_cl61_fallback_is_labelled_as_infeasible() -> None:
+    panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "operating_plan_schedule")
+    ds = xr.Dataset(
+        attrs={
+            "operating_optimized_safe": "false",
+            "operating_optimized_status": "no_safe_schedule",
+            "operating_optimized_reason": "Radar and HATPRO remain fixed on. This is not a recommendation.",
+            "operating_optimized_base_mode_label": "DC + Radar + HATPRO",
+        }
+    )
+
+    presentation = cl61_schedule_presentation(ds)
+    info = build_power_forecast_info(panel.key, ds)
+
+    assert presentation.title == "No Feasible CL61 Schedule"
+    assert presentation.trace_label == "Unsafe fallback (CL61 off)"
+    assert power_panel_label(ds, panel) == presentation.title
+    assert info is not None
+    assert info["title"] == presentation.title
+    assert "not a recommendation" in info["implementation"]
+
+    load_trace = next(
+        trace
+        for candidate in SUMMARY_LAYOUTS["power"]
+        if candidate.key == "ecmwf_solar_forecast"
+        for trace in candidate.traces
+        if trace.var == "OperatingCL61OptimizedLoadP50Watts"
+    )
+    assert power_trace_label(ds, load_trace) == "Unsafe fallback load (CL61 off)"
 
 
 def _power_layout_panels() -> tuple[PanelSpec, ...]:

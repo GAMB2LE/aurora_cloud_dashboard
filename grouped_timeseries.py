@@ -375,7 +375,94 @@ class PanelSpec:
     description: str | None = None
 
 
-def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
+@dataclass(frozen=True)
+class CL61SchedulePresentation:
+    status: str
+    title: str
+    trace_label: str
+    annotation: str
+    summary: str
+    explanation: str
+
+
+def _schedule_attr(ds: xr.Dataset | None, name: str) -> str:
+    if ds is None:
+        return ""
+    for key in (f"operating_{name}", name):
+        value = str(ds.attrs.get(key, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentation:
+    """Describe the CL61 plan without calling an unsafe fallback a recommendation."""
+    status = _schedule_attr(ds, "optimized_status")
+    safe_text = _schedule_attr(ds, "optimized_safe").lower()
+    collection_text = _schedule_attr(ds, "optimized_collection_hours")
+    try:
+        collection_hours = float(collection_text)
+    except ValueError:
+        collection_hours = float("nan")
+    if not status:
+        if safe_text == "false":
+            status = "no_safe_schedule"
+        elif safe_text == "true" and np.isfinite(collection_hours):
+            status = "safe_schedule" if collection_hours > 0.0 else "reserve_only"
+        else:
+            status = "unknown"
+
+    reason = _schedule_attr(ds, "optimized_reason")
+    base_label = _schedule_attr(ds, "optimized_base_mode_label") or "fixed station load"
+    if status == "no_safe_schedule":
+        explanation = reason or (
+            f"Even with CL61 off, the {base_label} baseline falls below the operational SOC reserve. "
+            "The zero trace is an unsafe fallback, not an instruction to switch CL61 off. Operator review is required."
+        )
+        return CL61SchedulePresentation(
+            status=status,
+            title="No Feasible CL61 Schedule",
+            trace_label="Unsafe fallback (CL61 off)",
+            annotation="No safe CL61-only plan; operator review required",
+            summary="The CL61-only optimiser could not satisfy the SOC reserve under the fixed current loads.",
+            explanation=explanation,
+        )
+    if status == "reserve_only":
+        explanation = reason or (
+            "No CL61 collection interval satisfies the operational SOC reserve while the other current loads remain fixed."
+        )
+        return CL61SchedulePresentation(
+            status=status,
+            title="CL61 Reserve-Only Plan",
+            trace_label="CL61 remains off",
+            annotation="No safe CL61 collection window",
+            summary="Keeping CL61 off is the only reserve-preserving CL61 plan under the fixed current loads.",
+            explanation=explanation,
+        )
+    if status == "safe_schedule":
+        explanation = reason or (
+            "The optimiser found a CL61 collection schedule that satisfies the operational SOC reserve while other instrument states remain fixed."
+        )
+        return CL61SchedulePresentation(
+            status=status,
+            title="Recommended CL61 Collection Schedule",
+            trace_label="Recommended CL61 schedule",
+            annotation="No CL61 collection interval selected",
+            summary="The on/off timetable for the feasible advisory CL61 plan.",
+            explanation=explanation,
+        )
+    return CL61SchedulePresentation(
+        status="unknown",
+        title="CL61 Collection Schedule",
+        trace_label="CL61 schedule",
+        annotation="No CL61 collection interval in this plan",
+        summary="The CL61 schedule status is not available in this forecast product.",
+        explanation="Regenerate the operating-plan product before interpreting a zero schedule as operational advice.",
+    )
+
+
+def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
+    """Return a trace label that reflects CL61 plan feasibility."""
     if trace.var == "ForecastLoadWatts":
         mode = str(ds.attrs.get("forecast_load_mode", ds.attrs.get("load_mode", ""))).strip()
         if mode:
@@ -386,6 +473,20 @@ def _trace_display_label(ds: xr.Dataset, trace: TraceSpec) -> str:
             maturity = str(ds.attrs.get("operating_current_mode_maturity", "")).strip()
             suffix = f" ({maturity})" if maturity else ""
             return f"Current load / system as-is: {mode}{suffix}"
+    if trace.var == "OperatingCL61OptimizedCL61On":
+        return cl61_schedule_presentation(ds).trace_label
+    if trace.var == "OperatingCL61OptimizedLoadP50Watts":
+        status = cl61_schedule_presentation(ds).status
+        if status == "no_safe_schedule":
+            return "Unsafe fallback load (CL61 off)"
+        if status == "reserve_only":
+            return "Reserve-only load (CL61 off)"
+    if trace.var == "OperatingCL61OptimizedSOCP50":
+        status = cl61_schedule_presentation(ds).status
+        if status == "no_safe_schedule":
+            return "Unsafe CL61-off fallback"
+        if status == "reserve_only":
+            return "Reserve-only CL61-off plan"
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -583,7 +684,6 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
     than repeating its trace labels.  It is kept here so the Panel browser and
     native mobile API cannot drift apart.
     """
-    del ds  # The wording is stable; the plotted values remain product-driven.
     minimum = MINIMUM_OPERATIONAL_SOC_LABEL
     notes: dict[str, dict[str, object]] = {
         "soc_projection": {
@@ -637,22 +737,22 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             ],
         },
         "operating_plan_schedule": {
-            "title": "Recommended CL61 collection schedule",
-            "summary": "The on/off timetable behind the recommended advisory CL61 plan.",
-            "implementation": "A value of 1 means the optimiser recommends CL61 collection for that interval; 0 means it recommends it remain off. The schedule is calculated from the same constrained P10 SOC plan and is never sent to the PDU automatically.",
+            "title": "CL61 collection schedule",
+            "summary": "The CL61-only optimiser result, including whether the SOC constraint was feasible.",
+            "implementation": "A value of 1 selects CL61 collection for that interval and 0 leaves CL61 off. Radar, HATPRO, UAS, and the DC baseline are not controlled by this optimiser; their current states remain fixed. A zero trace is operational advice only when the product says the plan is safe.",
             "metrics": [
-                {"label": "1 / 0", "detail": "Recommended collection on / off."},
+                {"label": "1 / 0", "detail": "Selected CL61 collection on / off; always read this with the feasibility status."},
                 {"label": "Constraint", "detail": f"P10 SOC is held at or above the {minimum} operational reference over the planning horizon."},
             ],
         },
         "ecmwf_solar_forecast": {
             "title": "ECMWF solar and load forecast",
             "summary": "The weather input and electrical assumptions used by the SOC forecast and operating plans.",
-            "implementation": "ECMWF irradiance is converted to expected solar charging using the currently learned station conversion. The current-load trace holds the detected system configuration fixed; the recommended-load trace applies the advisory CL61 schedule.",
+            "implementation": "ECMWF irradiance is converted to expected solar charging using the currently learned station conversion. The current-load trace holds the detected system configuration fixed; the CL61-plan load trace applies the optimiser result and must be read with its feasibility status.",
             "metrics": [
                 {"label": "ECMWF solar", "detail": "Forecast irradiance from the meteorological ensemble input."},
                 {"label": "Solar charging", "detail": "Estimated battery charging after the learned solar conversion."},
-                {"label": "Load traces", "detail": "Current system-as-is load versus the advisory recommended-plan load."},
+                {"label": "Load traces", "detail": "Current system-as-is load versus the CL61-plan load. An unsafe fallback is diagnostic, not operational advice."},
             ],
         },
         "soc_forecast_skill": {
@@ -689,6 +789,14 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
     info = notes.get(panel_key)
     if info is None:
         return None
+    if panel_key == "operating_plan_schedule" and ds is not None:
+        presentation = cl61_schedule_presentation(ds)
+        info = {
+            **info,
+            "title": presentation.title,
+            "summary": presentation.summary,
+            "implementation": presentation.explanation,
+        }
     return {"id": panel_key, **info}
 
 
@@ -2587,13 +2695,18 @@ def _add_operating_schedule_bands(fig: go.Figure, ds: xr.Dataset, *, row: int) -
         )
 
 
-def _power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
+def power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
     """Mark forecast plots that are using a re-anchored cached ECMWF cycle."""
+    label = (
+        cl61_schedule_presentation(ds).title
+        if panel.key == "operating_plan_schedule"
+        else panel.label
+    )
     if panel.key not in {"ecmwf_solar_forecast", "soc_ecmwf_forecast", "operating_plan_scenarios", "operating_plan_schedule"}:
-        return panel.label
+        return label
     if str(ds.attrs.get("operating_planning_forecast_refresh_kind", "")).strip() == "cached_reanchor":
-        return f"{panel.label} [Cached forecast - reduced confidence]"
-    return panel.label
+        return f"{label} [Cached forecast - reduced confidence]"
+    return label
 
 
 def _operating_scenario_attrs(
@@ -2636,6 +2749,16 @@ def _operating_scenario_attrs(
         ("planning_forecast_verification_eligible", "operating_planning_forecast_verification_eligible"),
         ("planning_forecast_time_coverage_start", "operating_planning_forecast_time_coverage_start"),
         ("planning_forecast_time_coverage_end", "operating_planning_forecast_time_coverage_end"),
+        ("optimized_safe", "operating_optimized_safe"),
+        ("optimized_collection_hours", "operating_optimized_collection_hours"),
+        ("optimized_minimum_p10_soc", "operating_optimized_minimum_p10_soc"),
+        ("optimized_status", "operating_optimized_status"),
+        ("optimized_reason_code", "operating_optimized_reason_code"),
+        ("optimized_reason", "operating_optimized_reason"),
+        ("optimized_base_mode", "operating_optimized_base_mode"),
+        ("optimized_base_mode_label", "operating_optimized_base_mode_label"),
+        ("optimized_blocking_instruments", "operating_optimized_blocking_instruments"),
+        ("optimized_operator_action_required", "operating_optimized_operator_action_required"),
     ):
         if source_name in ds.attrs:
             attrs[target_name] = str(ds.attrs[source_name])
@@ -3707,7 +3830,7 @@ def save_summary_png(
             trace_times, trace_values = _trace_plot_values(times, values, max_time_samples, trace)
             if len(trace_times) == 0:
                 continue
-            trace_label = _trace_display_label(ds, trace)
+            trace_label = power_trace_label(ds, trace)
             target.plot(
                 trace_times,
                 trace_values,
@@ -3910,7 +4033,7 @@ def build_summary_plotly(
         shared_xaxes=not separate_time_axes,
         vertical_spacing=vertical_spacing,
         specs=[[{"secondary_y": panel.right_axis_label is not None}] for panel, _rows in panels],
-        subplot_titles=[_power_panel_label(ds, panel) if instrument == "power" else panel.label for panel, _rows in panels],
+        subplot_titles=[power_panel_label(ds, panel) if instrument == "power" else panel.label for panel, _rows in panels],
     )
 
     panel_height = (1.0 - vertical_spacing * (len(panels) - 1)) / len(panels)
@@ -3970,7 +4093,7 @@ def build_summary_plotly(
             else:
                 left_axis_values.append(trace_values)
                 left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
-            trace_label = _trace_display_label(ds, trace)
+            trace_label = power_trace_label(ds, trace)
             # Power's standard current view contains many independent line
             # traces. WebGL avoids creating thousands of SVG nodes on phones
             # and browsers, while stepped state schedules stay SVG so their
@@ -3998,8 +4121,9 @@ def build_summary_plotly(
         if instrument == "power" and panel.key == "operating_plan_schedule":
             schedule_codes = np.asarray(ds["OperatingCL61OptimizedCL61On"].values, dtype=np.float64) if "OperatingCL61OptimizedCL61On" in ds else np.asarray([])
             if not np.any(np.isfinite(schedule_codes) & (schedule_codes > 0)):
+                presentation = cl61_schedule_presentation(ds)
                 fig.add_annotation(
-                    text="No recommended CL61 collection window",
+                    text=presentation.annotation,
                     xref=f"x{row_index}" if row_index > 1 else "x",
                     yref=f"y{row_index}" if row_index > 1 else "y",
                     x=panel_time_start + (panel_time_end - panel_time_start) / 2 if panel_time_start is not None and panel_time_end is not None else base_time_start + (base_time_end - base_time_start) / 2,

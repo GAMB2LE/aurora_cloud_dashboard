@@ -1535,7 +1535,10 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
             SUMMARY_LAYOUTS,
             build_power_forecast_info,
             build_power_verification_guidance,
+            cl61_schedule_presentation,
             merge_operating_scenarios_into_display_summary,
+            power_panel_label,
+            power_trace_label,
         )
 
         now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
@@ -1579,6 +1582,11 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
         for panel in SUMMARY_LAYOUTS["power"]:
             if panel.key not in panel_keys:
                 continue
+            schedule_presentation = (
+                cl61_schedule_presentation(dataset)
+                if panel.key == "operating_plan_schedule"
+                else None
+            )
             forecast_panel = POWER_PANEL_TIME_GROUP_BY_KEY.get(panel.key) in {"forecast_24h", "forecast_96h"}
             panel_start = _forecast_panel_start(dataset, times, panel) if forecast_panel else start
             panel_end = (
@@ -1614,7 +1622,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                 traces.append(
                     {
                         "id": trace.var,
-                        "label": trace.label,
+                        "label": power_trace_label(dataset, trace),
                         "color": trace.color,
                         "axis": trace.axis,
                         "dash": trace.dash,
@@ -1630,8 +1638,12 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
                 payload["panels"].append(
                     {
                         "id": panel.key,
-                        "title": panel.label,
-                        "explanation": panel.description,
+                        "title": power_panel_label(dataset, panel),
+                        "explanation": (
+                            schedule_presentation.explanation
+                            if schedule_presentation is not None
+                            else panel.description
+                        ),
                         "info": build_power_forecast_info(panel.key, dataset),
                         "guidance": build_power_verification_guidance(panel.key, dataset),
                         "leftAxisLabel": panel.left_axis_label,

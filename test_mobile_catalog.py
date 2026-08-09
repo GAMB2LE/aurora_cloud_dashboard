@@ -603,6 +603,58 @@ class MobileCatalogTests(unittest.TestCase):
             [80.0, 72.0, 64.0, 56.0],
         )
 
+    def test_unsafe_cl61_fallback_is_explained_in_mobile_power_payload(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            display_path = root / "power_forecast_display.zarr"
+            scenario_path = root / "power_operating_scenarios.zarr"
+            anchor = pd.Timestamp("2026-07-20T07:00:00")
+            times = pd.date_range(anchor, periods=5, freq="1h")
+            xr.Dataset(
+                {"BatterySOCForecastP50": (("time",), np.linspace(80.0, 76.0, len(times)))},
+                coords={"time": times},
+                attrs={"forecast_initial_soc_time": anchor.isoformat()},
+            ).to_zarr(display_path, mode="w", consolidated=True)
+            xr.Dataset(
+                {
+                    "ScenarioModeCode": (("scenario", "time"), np.full((1, len(times)), 6)),
+                    "ScenarioSOCP50": (("scenario", "time"), np.linspace(80.0, 20.0, len(times))[None, :]),
+                    "scenario_label": (("scenario",), ["Optimized CL61 Schedule"]),
+                },
+                coords={"scenario": ["optimized_cl61"], "time": times},
+                attrs={
+                    "planning_status": "ready",
+                    "initial_soc_time": anchor.isoformat(),
+                    "optimized_safe": "false",
+                    "optimized_collection_hours": "0",
+                    "optimized_status": "no_safe_schedule",
+                    "optimized_reason": (
+                        "Radar and HATPRO remain fixed on. The zero trace is an unsafe fallback, "
+                        "not a recommendation to switch CL61 off."
+                    ),
+                    "optimized_base_mode_label": "DC + Radar + HATPRO",
+                },
+            ).to_zarr(scenario_path, mode="w", consolidated=True)
+            with patch.dict(
+                os.environ,
+                {
+                    "POWER_FORECAST_DISPLAY_ZARR_PATH": str(display_path),
+                    "POWER_OPERATING_SCENARIOS_ZARR_PATH": str(scenario_path),
+                },
+            ), patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
+                response = mobile_catalog.power(window="96h", group="forecast_96h")
+
+        panel = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_schedule")
+        self.assertEqual(panel["title"], "No Feasible CL61 Schedule")
+        self.assertEqual(panel["traces"][0]["label"], "Unsafe fallback (CL61 off)")
+        self.assertIn("not a recommendation", panel["explanation"])
+        self.assertEqual(panel["info"]["title"], "No Feasible CL61 Schedule")
+
     def test_96_hour_system_and_scenario_cards_share_anchor_values_and_endpoint(self) -> None:
         import numpy as np
         import pandas as pd

@@ -209,10 +209,14 @@ trace start from the same detected heater/blower phase.
 
 The optimizer considers CL61 on/off schedules over the first 96 hours, then
 propagates each candidate with CL61 off through the complete 240-hour planning
-forecast. It maximizes collection time only among candidates whose P10 SOC
-stays at or above 40% for all 240 hours, with a minimum 12-hour CL61 run and at
-most one start per UTC day. It is advisory only. A custom start/duration editor
-runs the same ensemble calculation immediately and marks the plan safe,
+forecast. It controls only CL61: the DC baseline and the current Radar, HATPRO,
+and UAS states remain fixed. It maximizes collection time only among candidates
+whose P10 SOC stays at or above 40% for all 240 hours, with a minimum 12-hour
+CL61 run and at most one start per UTC day. If that fixed baseline crosses the
+reserve even with CL61 off, no feasible CL61 schedule exists. The all-zero CL61
+trace is then retained only as an unsafe fallback and is explicitly not a
+recommendation to switch CL61 off. It is advisory only. A custom start/duration
+editor runs the same ensemble calculation immediately and marks the plan safe,
 marginal, or unsafe from its minimum P10 SOC.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and

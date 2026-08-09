@@ -65,6 +65,7 @@ from grouped_timeseries import (
     is_summary_instrument,
     merge_operating_scenarios_into_display_summary,
     operating_mode_intervals,
+    power_panel_label,
     summary_daily_png,
     summary_latest_png,
     summary_source_instruments,
@@ -9035,7 +9036,7 @@ def _forecast_plot_info_control(panel, ds: xr.Dataset, *, mobile: bool = False):
 
     button.on_click(toggle)
     title = pn.pane.HTML(
-        f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(panel.label)}</div>",
+        f"<div class='{'mobile-plot-card__title' if mobile else 'forecast-plot-info__title'}'>{escape(power_panel_label(ds, panel))}</div>",
         sizing_mode="stretch_width",
         margin=0,
     )

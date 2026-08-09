@@ -111,6 +111,17 @@ def _json_float(value: object) -> float | None:
     return result if np.isfinite(result) else None
 
 
+def _json_string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
 def _schedule_windows(times: pd.DatetimeIndex, mode_codes: np.ndarray) -> list[dict[str, object]]:
     """Store compact, human-auditable operating-mode windows for a decision."""
     if len(times) == 0:
@@ -237,6 +248,18 @@ def _archive_recommendation(
         "final_p10_soc": float(scenarios["ScenarioFinalP10SOC"].values[index]),
         "starts": int(scenarios["ScenarioStarts"].values[index]),
         "safe": bool(scenarios["ScenarioSafe"].values[index] >= 0.5),
+        "recommendation_status": str(scenarios.attrs.get("optimized_status", "")),
+        "reason_code": str(scenarios.attrs.get("optimized_reason_code", "")),
+        "reason": str(scenarios.attrs.get("optimized_reason", "")),
+        "optimization_base_mode": str(scenarios.attrs.get("optimized_base_mode", "")),
+        "optimization_base_mode_label": str(scenarios.attrs.get("optimized_base_mode_label", "")),
+        "blocking_instruments": _json_string_list(
+            scenarios.attrs.get("optimized_blocking_instruments", "[]")
+        ),
+        "operator_action_required": str(
+            scenarios.attrs.get("optimized_operator_action_required", "false")
+        ).lower()
+        == "true",
         "control_authority": "advisory_only",
         "recommended_mode_windows": _schedule_windows(decision_times, mode_codes),
         "forecast_trace": {
@@ -365,11 +388,16 @@ def scenario_publication_signature(scenarios: xr.Dataset) -> str:
         return np.rint(finite / float(step)).astype(np.int32).ravel().tolist()
 
     payload = {
-        "schema": 1,
+        "schema": 2,
+        "scenario_schema_version": str(attrs.get("schema_version", "")),
         "anchor_30min": anchor_bucket,
         "initial_soc_pct": round(float(attrs.get("initial_soc_pct", 0.0))),
         "model_version": str(attrs.get("model_version", "")),
         "current_mode": str(attrs.get("current_mode", "")),
+        "optimized_status": str(attrs.get("optimized_status", "")),
+        "optimized_reason_code": str(attrs.get("optimized_reason_code", "")),
+        "optimized_base_mode": str(attrs.get("optimized_base_mode", "")),
+        "optimized_blocking_instruments": str(attrs.get("optimized_blocking_instruments", "[]")),
         "solar_contract": str(attrs.get("solar_calibration_contract_id", "")),
         "planning_cycle": str(attrs.get("planning_forecast_generated_at_utc", "")),
         "scenario_ids": [str(value) for value in scenarios.get_index("scenario")],

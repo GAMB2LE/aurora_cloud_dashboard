@@ -39,7 +39,7 @@ from power_battery_model import BatteryModel
 MODEL_NAME = "hybrid_state_space_phases_v10"
 MODEL_VERSION = 10
 STATE_SCHEMA_VERSION = 6
-SCENARIO_SCHEMA_VERSION = 8
+SCENARIO_SCHEMA_VERSION = 9
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -136,6 +136,99 @@ def mode_label(value: str) -> str:
     if kits:
         return "DC + " + " + ".join(kits)
     return str(value).replace("_", " ").title()
+
+
+@dataclass(frozen=True)
+class CL61ScheduleDiagnostic:
+    """Explain whether the CL61-only optimiser found an actionable plan."""
+
+    status: str
+    reason_code: str
+    reason: str
+    base_mode: str
+    base_mode_label: str
+    blocking_instruments: tuple[str, ...]
+    operator_action_required: bool
+
+
+def _human_list(values: Sequence[str]) -> str:
+    items = [str(value) for value in values if str(value)]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
+def describe_cl61_schedule(
+    *,
+    current_mode: str,
+    safe: bool,
+    collection_hours: float,
+    minimum_p10_soc: float,
+    minimum_soc: float = MINIMUM_OPERATIONAL_SOC_PCT,
+) -> CL61ScheduleDiagnostic:
+    """Classify a CL61 plan without implying control over other instruments."""
+    fixed_kits = tuple(name for name in KIT_ORDER if name != "CL61" and name in mode_kits(current_mode))
+    base_mode = mode_id(fixed_kits)
+    base_label = mode_label(base_mode)
+    minimum_text = (
+        f"{float(minimum_p10_soc):.1f}%"
+        if np.isfinite(float(minimum_p10_soc))
+        else "an unknown value"
+    )
+    fixed_detail = (
+        f"{_human_list(fixed_kits)} remain fixed on"
+        if fixed_kits
+        else "the station DC baseline remains fixed"
+    )
+    if not safe:
+        reason = (
+            f"No CL61 schedule can keep P10 SOC at or above {float(minimum_soc):g}%. "
+            f"With CL61 off, the fixed {base_label} baseline still reaches {minimum_text}; "
+            f"{fixed_detail} because this optimiser controls only CL61. The zero trace is an "
+            "unsafe fallback, not a recommendation to switch CL61 off. Operator review is required."
+        )
+        return CL61ScheduleDiagnostic(
+            status="no_safe_schedule",
+            reason_code="fixed_baseline_below_reserve",
+            reason=reason,
+            base_mode=base_mode,
+            base_mode_label=base_label,
+            blocking_instruments=fixed_kits,
+            operator_action_required=True,
+        )
+    if float(collection_hours) <= 0.0:
+        reason = (
+            f"No CL61 collection interval satisfies the {float(minimum_soc):g}% P10 reserve while "
+            f"the fixed {base_label} baseline continues. Keeping CL61 off is the reserve-preserving "
+            "advisory plan; other instrument states are not changed."
+        )
+        return CL61ScheduleDiagnostic(
+            status="reserve_only",
+            reason_code="no_safe_collection_window",
+            reason=reason,
+            base_mode=base_mode,
+            base_mode_label=base_label,
+            blocking_instruments=fixed_kits,
+            operator_action_required=False,
+        )
+    reason = (
+        f"A safe advisory CL61 schedule provides {float(collection_hours):.0f} collection hours while "
+        f"holding the fixed {base_label} baseline unchanged and keeping P10 SOC at or above "
+        f"{float(minimum_soc):g}%."
+    )
+    return CL61ScheduleDiagnostic(
+        status="safe_schedule",
+        reason_code="safe_collection_window",
+        reason=reason,
+        base_mode=base_mode,
+        base_mode_label=base_label,
+        blocking_instruments=fixed_kits,
+        operator_action_required=False,
+    )
 
 
 def mode_code(value: str) -> int:
@@ -1818,6 +1911,14 @@ def build_operating_scenarios(
         stop_times.append(times[stops_found[-1]].to_datetime64() if stops_found.size else np.datetime64("NaT", "ns"))
         labels.setdefault(scenario_id, mode_label(modes[0]))
 
+    optimized_index = scenario_ids.index(SCENARIO_OPTIMIZED)
+    optimized_diagnostic = describe_cl61_schedule(
+        current_mode=base_mode,
+        safe=bool(safe_values[optimized_index] >= 0.5),
+        collection_hours=collection_hours[optimized_index],
+        minimum_p10_soc=minimum_p10[optimized_index],
+    )
+
     output = xr.Dataset(
         {
             "ScenarioLoadP10Watts": (("scenario", "time"), np.asarray(load_p10, dtype=np.float32)),
@@ -1903,9 +2004,16 @@ def build_operating_scenarios(
             "minimum_cl61_run_hours": str(MIN_RUN_HOURS),
             "max_cl61_starts_per_utc_day": str(MAX_STARTS_PER_UTC_DAY),
             "control_authority": "advisory_only",
-            "optimized_safe": str(bool(optimized.safe)).lower(),
-            "optimized_collection_hours": f"{optimized.collection_hours:.6g}",
-            "optimized_minimum_p10_soc": f"{optimized.minimum_p10_soc:.6g}",
+            "optimized_safe": str(bool(safe_values[optimized_index] >= 0.5)).lower(),
+            "optimized_collection_hours": f"{collection_hours[optimized_index]:.6g}",
+            "optimized_minimum_p10_soc": f"{minimum_p10[optimized_index]:.6g}",
+            "optimized_status": optimized_diagnostic.status,
+            "optimized_reason_code": optimized_diagnostic.reason_code,
+            "optimized_reason": optimized_diagnostic.reason,
+            "optimized_base_mode": optimized_diagnostic.base_mode,
+            "optimized_base_mode_label": optimized_diagnostic.base_mode_label,
+            "optimized_blocking_instruments": json.dumps(list(optimized_diagnostic.blocking_instruments)),
+            "optimized_operator_action_required": str(optimized_diagnostic.operator_action_required).lower(),
             **solar_metadata,
             **battery_model.attrs(),
         },

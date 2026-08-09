@@ -33,8 +33,8 @@ the dashboard. The key distinctions are:
   schedules, and their load does not change state during the horizon.
 - **Operating-mode scenarios** are separate advisory simulations. Each includes
   the DC baseline plus the instruments named in its legend. Shaded intervals on
-  the solar/load panel identify recommended CL61-on periods and do not indicate
-  forecast probability or an automatic PDU command.
+  the solar/load panel identify feasible advisory CL61-on periods and do not
+  indicate forecast probability or an automatic PDU command.
 - **Hindcasts and verification scores** look backwards: archived forecasts are
   matched to later APS observations. MAE, CRPS, and Brier scores are lower-is-
   better; P10-P90 coverage targets 0.80.
@@ -232,10 +232,13 @@ load phase from the twice-daily planning cycle. The eighth scenario keeps CL61,
 Radar, HATPRO, and UAS on with UAS
 effective tier 3. It remains explicitly provisional until tier 3 has at least
 three independent episodes and six observed hours; its fallback P10/P50/P90
-UAS loads are `55/108/302 W`. The separate optimized CL61 plan maximizes
-collection time over 96
-hours while keeping P10 SOC at or above 40%, requiring a 12-hour minimum run,
-and allowing no more than one start per UTC day. The custom-plan editor
+UAS loads are `55/108/302 W`. The separate optimized CL61 plan controls CL61
+only and holds the current DC, Radar, HATPRO, and UAS states fixed. It maximizes
+collection time over 96 hours while keeping P10 SOC at or above 40%, requiring
+a 12-hour minimum run, and allowing no more than one start per UTC day. If the
+fixed baseline is unsafe even with CL61 off, the dashboard reports **No Feasible
+CL61 Schedule**; its zero trace is a diagnostic fallback, not advice to switch
+CL61 off. The custom-plan editor
 evaluates a selected start and duration against the stored ensembles
 immediately. All plans are advisory only.
 
