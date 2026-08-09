@@ -1667,7 +1667,7 @@ def _forecast_panel_start(dataset, times, panel):
 
     preferred_fields = {
         "soc_projection": ("BatterySOCForecast",),
-        "soc_24h_forecast": ("BatterySOCForecast",),
+        "soc_24h_forecast": ("SystemAsIsDecisionSOCP50",),
         "soc_ecmwf_forecast": (
             "SystemAsIsDecisionSOCP50",
             "BatterySOCForecastP50",
@@ -1696,7 +1696,7 @@ def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
     """Return label, SOC anchor, issue time, and horizon for one card."""
     operating_panel = panel_key.startswith("operating_plan")
     system_uses_operating = (
-        panel_key == "soc_ecmwf_forecast"
+        panel_key in {"soc_24h_forecast", "soc_ecmwf_forecast"}
         and str(dataset.attrs.get("system_as_is_decision_source", "")) == "operating_scenario"
     )
     if operating_panel or system_uses_operating:
@@ -1708,6 +1708,8 @@ def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
             horizon = max(int(float(horizon_value)), 1)
         except (TypeError, ValueError):
             horizon = 96
+        if panel_key == "soc_24h_forecast":
+            horizon = min(horizon, 24)
         kind = "Operating-plan forecast" if operating_panel else "System-as-is decision forecast"
         return (
             kind,
@@ -1728,6 +1730,7 @@ def _power_forecast_panel_end(dataset, panel_key: str, *, default):
     import pandas as pd
 
     if panel_key not in {
+        "soc_24h_forecast",
         "soc_ecmwf_forecast",
         "operating_plan_scenarios",
         "operating_plan_schedule",

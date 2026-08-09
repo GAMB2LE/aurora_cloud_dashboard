@@ -1659,8 +1659,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             None,
             (
                 TraceSpec(
-                    "BatterySOCForecast",
-                    "ECMWF SOC Forecast",
+                    "SystemAsIsDecisionSOCP50",
+                    "System as-is - central",
                     COLOR["green"],
                     valid_min=0.0,
                     valid_max=100.0,

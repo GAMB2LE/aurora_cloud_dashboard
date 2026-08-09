@@ -768,10 +768,14 @@ class MobileCatalogTests(unittest.TestCase):
                 },
             ), patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
                 mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
-                response = mobile_catalog.power(window="96h", group="forecast_96h")
+                response = mobile_catalog.power(window="96h", group="forecast")
 
+        near_term = next(panel for panel in response["panels"] if panel["id"] == "soc_24h_forecast")
         system = next(panel for panel in response["panels"] if panel["id"] == "soc_ecmwf_forecast")
         scenarios = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_scenarios")
+        near_term_central = next(
+            trace for trace in near_term["traces"] if trace["id"] == "SystemAsIsDecisionSOCP50"
+        )
         system_central = next(
             trace for trace in system["traces"] if trace["id"] == "SystemAsIsDecisionSOCP50"
         )
@@ -779,6 +783,17 @@ class MobileCatalogTests(unittest.TestCase):
             trace for trace in scenarios["traces"] if trace["id"] == "OperatingCurrentSOCP50"
         )
         self.assertEqual(system_central["points"], scenario_current["points"])
+        self.assertEqual(
+            near_term_central["points"],
+            [
+                point
+                for point in system_central["points"]
+                if point["time"] <= "2026-07-21T07:00:00Z"
+            ],
+        )
+        self.assertEqual(near_term["forecastContext"]["anchorTime"], anchor.isoformat())
+        self.assertEqual(near_term["forecastContext"]["horizonHours"], 24)
+        self.assertEqual(near_term["forecastContext"]["validTime"], "2026-07-21T07:00:00Z")
         self.assertEqual(system["forecastContext"]["anchorTime"], anchor.isoformat())
         self.assertEqual(scenarios["forecastContext"]["anchorTime"], anchor.isoformat())
         self.assertEqual(system["forecastContext"]["horizonHours"], 96)

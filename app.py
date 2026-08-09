@@ -8941,8 +8941,12 @@ def _mobile_trace_values(
 def _mobile_forecast_panel_start(ds: xr.Dataset, panel) -> pd.Timestamp | None:
     preferred_fields = {
         "soc_projection": ("BatterySOCForecast",),
-        "soc_24h_forecast": ("BatterySOCForecast",),
-        "soc_ecmwf_forecast": ("BatterySOCForecastP50", "BatterySOCForecast"),
+        "soc_24h_forecast": ("SystemAsIsDecisionSOCP50",),
+        "soc_ecmwf_forecast": (
+            "SystemAsIsDecisionSOCP50",
+            "BatterySOCForecastP50",
+            "BatterySOCForecast",
+        ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
         "operating_plan_schedule": (

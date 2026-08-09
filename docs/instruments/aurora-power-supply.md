@@ -17,6 +17,11 @@ and iPad:
   ECMWF 96-hour outlook, operating-mode scenarios, custom operating plan, and
   verification evidence.
 
+The 24-hour card is a near-term slice of the central system-as-is trace in the
+96-hour ensemble card. Both therefore use the same SOC anchor, confirmed
+instrument state, load phase, and forecast issue; only the displayed horizon
+differs.
+
 This split changes only presentation and bounded API selection. It does not
 change the forecast calculations or stored products.
 
