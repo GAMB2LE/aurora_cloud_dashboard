@@ -227,6 +227,11 @@ def _archive_recommendation(
     if "optimized_cl61" not in scenario_ids:
         return
     index = scenario_ids.index("optimized_cl61")
+    continuation_index = (
+        scenario_ids.index("p50_continuation")
+        if "p50_continuation" in scenario_ids
+        else None
+    )
     start = scenarios["ScenarioStartTime"].values[index]
     stop = scenarios["ScenarioStopTime"].values[index]
     decision_hours = min(int(scenarios.attrs.get("optimization_horizon_hours", 96)), len(scenarios["time"]))
@@ -287,6 +292,38 @@ def _archive_recommendation(
         ).lower()
         == "true",
         "control_authority": "advisory_only",
+        "p50_continuation": {
+            "scenario_id": "p50_continuation",
+            "eligible": str(
+                scenarios.attrs.get("p50_continuation_eligible", "false")
+            ).lower()
+            == "true",
+            "status": str(scenarios.attrs.get("p50_continuation_status", "")),
+            "reason_code": str(
+                scenarios.attrs.get("p50_continuation_reason_code", "")
+            ),
+            "reason": str(scenarios.attrs.get("p50_continuation_reason", "")),
+            "held_instruments": _json_string_list(
+                scenarios.attrs.get("p50_continuation_held_instruments", "[]")
+            ),
+            "recovery_soc_pct": float(
+                scenarios.attrs.get("p50_continuation_recovery_soc_pct", 95.0)
+            ),
+            "minimum_soc_pct": float(
+                scenarios.attrs.get("p50_continuation_minimum_soc_pct", 40.0)
+            ),
+            "recovery_time_utc": str(
+                scenarios.attrs.get("p50_continuation_recovery_time_utc", "")
+            )
+            or None,
+            "minimum_soc_before_recovery_pct": _json_float(
+                scenarios.attrs.get(
+                    "p50_continuation_minimum_soc_before_recovery_pct",
+                    None,
+                )
+            ),
+            "control_authority": "advisory_only",
+        },
         "recommended_mode_windows": _schedule_windows(decision_times, mode_codes),
         "forecast_trace": {
             "time_utc": [value.isoformat() for value in decision_times],
@@ -310,6 +347,28 @@ def _archive_recommendation(
             "soc_p90_pct": [
                 _json_float(value) for value in scenarios["ScenarioSOCP90"].values[index, :decision_hours]
             ],
+            "p50_continuation_mode_code": (
+                [
+                    int(value)
+                    for value in scenarios["ScenarioModeCode"].values[
+                        continuation_index,
+                        :decision_hours,
+                    ]
+                ]
+                if continuation_index is not None
+                else []
+            ),
+            "p50_continuation_soc_p50_pct": (
+                [
+                    _json_float(value)
+                    for value in scenarios["ScenarioSOCP50"].values[
+                        continuation_index,
+                        :decision_hours,
+                    ]
+                ]
+                if continuation_index is not None
+                else []
+            ),
         },
     }
     record["verification"] = _verification_for_record(record, power=power, operating_state=operating_state)
@@ -324,7 +383,7 @@ def _archive_recommendation(
     _write_json_atomic(
         path,
         {
-            "schema_version": 3,
+            "schema_version": 4,
             "verification_method": "archived forecast versus later BatterySOC and PDU-detected operating mode",
             "control_authority": "advisory_only",
             "updated_at_utc": _utc_now(),

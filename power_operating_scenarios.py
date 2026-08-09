@@ -39,7 +39,7 @@ from power_battery_model import BatteryModel
 MODEL_NAME = "hybrid_state_space_phases_v10"
 MODEL_VERSION = 10
 STATE_SCHEMA_VERSION = 6
-SCENARIO_SCHEMA_VERSION = 10
+SCENARIO_SCHEMA_VERSION = 11
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -59,6 +59,8 @@ MIN_RELIABLE_SAMPLES = 12
 MIN_REGIME_SAMPLES = 4
 MIN_RUN_HOURS = 12
 MAX_STARTS_PER_UTC_DAY = 1
+P50_CONTINUATION_RECOVERY_SOC_PCT = 95.0
+P50_CONTINUATION_MINIMUM_SOC_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 UAS_TIER_RELIABLE_EPISODES = 3
 UAS_TIER_RELIABLE_HOURS = 6.0
 UAS_TIER3_FALLBACK_P10_W = 55.0
@@ -69,7 +71,14 @@ SCENARIO_CURRENT = "current_mode"
 SCENARIO_DC_ONLY = "dc_only"
 SCENARIO_CL61 = "cl61_continuous"
 SCENARIO_OPTIMIZED = "optimized_cl61"
-CORE_SCENARIOS = (SCENARIO_CURRENT, SCENARIO_DC_ONLY, SCENARIO_CL61, SCENARIO_OPTIMIZED)
+SCENARIO_P50_CONTINUATION = "p50_continuation"
+CORE_SCENARIOS = (
+    SCENARIO_CURRENT,
+    SCENARIO_DC_ONLY,
+    SCENARIO_CL61,
+    SCENARIO_OPTIMIZED,
+    SCENARIO_P50_CONTINUATION,
+)
 DEFAULT_EVENTS_PATH = Path(__file__).with_name("config") / "power_operating_events.csv"
 
 
@@ -1407,6 +1416,143 @@ class ScheduleResult:
     starts: int
 
 
+@dataclass(frozen=True)
+class P50ContinuationDecision:
+    """Describe a forecast-only rule for equipment that is already on."""
+
+    eligible: bool
+    status: str
+    reason_code: str
+    reason: str
+    held_instruments: tuple[str, ...]
+    recovery_time: pd.Timestamp | None
+    hold_through_index: int | None
+    minimum_p50_soc_before_recovery: float
+
+
+def evaluate_p50_continuation_rule(
+    *,
+    times: pd.DatetimeIndex,
+    soc_p50: Sequence[float],
+    current_mode: str,
+    controlled_instruments: Sequence[str] = OPERATING_PRIORITY,
+    horizon_hours: int = 96,
+    recovery_soc: float = P50_CONTINUATION_RECOVERY_SOC_PCT,
+    minimum_soc: float = P50_CONTINUATION_MINIMUM_SOC_PCT,
+) -> P50ContinuationDecision:
+    """Allow currently-on instruments to bridge a safe median-SOC recovery.
+
+    This is a recommendation rule only. It never starts an instrument and has
+    no control path to a PDU. The conservative P10 schedule remains a separate
+    scenario and is used whenever this median rule is not eligible.
+    """
+    forecast_times = pd.DatetimeIndex(times)
+    values = np.asarray(soc_p50, dtype=np.float64).reshape(-1)
+    if len(forecast_times) != len(values):
+        raise ValueError("P50 continuation times and SOC values must have equal length")
+
+    held = tuple(
+        str(instrument)
+        for instrument in controlled_instruments
+        if str(instrument) in mode_kits(current_mode)
+    )
+    count = min(len(forecast_times), max(int(horizon_hours), 0) + 1)
+    unavailable = P50ContinuationDecision(
+        eligible=False,
+        status="not_applicable" if not held else "unavailable",
+        reason_code="no_currently_on_controlled_instruments" if not held else "insufficient_forecast",
+        reason=(
+            "No controlled instrument is currently on, so there is nothing for the P50 continuation rule to hold."
+            if not held
+            else "The P50 continuation rule needs a complete future median-SOC forecast."
+        ),
+        held_instruments=held,
+        recovery_time=None,
+        hold_through_index=None,
+        minimum_p50_soc_before_recovery=float("nan"),
+    )
+    if not held or count < 2:
+        return unavailable
+    decision_values = values[:count]
+    if not np.isfinite(decision_values).all():
+        return unavailable
+
+    below_target = np.flatnonzero(decision_values[1:] < float(recovery_soc) - 1e-9) + 1
+    if decision_values[0] >= float(recovery_soc) and below_target.size == 0:
+        recovery_index = count - 1
+        reason_code = "p50_stays_at_recovery_target"
+    else:
+        search_start = int(below_target[0] + 1) if decision_values[0] >= float(recovery_soc) else 1
+        recovery_candidates = np.flatnonzero(
+            decision_values[search_start:] >= float(recovery_soc) - 1e-9
+        )
+        if recovery_candidates.size == 0:
+            return P50ContinuationDecision(
+                eligible=False,
+                status="not_eligible",
+                reason_code="p50_does_not_recover",
+                reason=(
+                    f"P50 SOC does not recover to {float(recovery_soc):g}% within the "
+                    f"{int(horizon_hours)}-hour decision horizon, so the conservative P10 plan remains in use."
+                ),
+                held_instruments=held,
+                recovery_time=None,
+                hold_through_index=None,
+                minimum_p50_soc_before_recovery=float(np.nanmin(decision_values)),
+            )
+        recovery_index = search_start + int(recovery_candidates[0])
+        reason_code = "safe_p50_recovery"
+
+    minimum_before_recovery = float(np.nanmin(decision_values[: recovery_index + 1]))
+    recovery_time = pd.Timestamp(forecast_times[recovery_index])
+    if minimum_before_recovery < float(minimum_soc) - 1e-9:
+        return P50ContinuationDecision(
+            eligible=False,
+            status="not_eligible",
+            reason_code="p50_breaches_minimum_before_recovery",
+            reason=(
+                f"P50 SOC falls to {minimum_before_recovery:.1f}% before recovering to "
+                f"{float(recovery_soc):g}%, below the {float(minimum_soc):g}% floor. "
+                "The conservative P10 plan remains in use."
+            ),
+            held_instruments=held,
+            recovery_time=recovery_time,
+            hold_through_index=None,
+            minimum_p50_soc_before_recovery=minimum_before_recovery,
+        )
+
+    held_text = _human_list(held)
+    return P50ContinuationDecision(
+        eligible=True,
+        status="eligible",
+        reason_code=reason_code,
+        reason=(
+            f"The advisory P50 continuation scenario keeps {held_text} on through "
+            f"{recovery_time.isoformat()} because median SOC stays at or above "
+            f"{float(minimum_soc):g}% and reaches {float(recovery_soc):g}%. "
+            "It does not operate any PDU outlet."
+        ),
+        held_instruments=held,
+        recovery_time=recovery_time,
+        hold_through_index=recovery_index,
+        minimum_p50_soc_before_recovery=minimum_before_recovery,
+    )
+
+
+def apply_p50_continuation_rule(
+    modes: Sequence[str],
+    decision: P50ContinuationDecision,
+) -> tuple[str, ...]:
+    """Overlay an eligible P50 hold on a copy of the P10 advisory modes."""
+    result = [str(value) for value in modes]
+    if not decision.eligible or decision.hold_through_index is None:
+        return tuple(result)
+    last = min(int(decision.hold_through_index), len(result) - 1)
+    for index in range(last + 1):
+        result[index] = mode_id(set(mode_kits(result[index])) | set(decision.held_instruments))
+    return tuple(result)
+
+
 @dataclass
 class _Candidate:
     modes: tuple[str, ...]
@@ -2234,6 +2380,28 @@ def build_operating_scenarios(
     )
     current_system_load = modeled_current_load
     current_system_load_source = "scenario_component_model"
+    current_modes_for_rule = tuple(base_mode for _ in times)
+    _, current_soc_for_rule, _ = _scenario_members(
+        current_modes_for_rule,
+        times=times,
+        solar_members=solar_members,
+        component_members=component_members,
+        initial_soc=initial_soc,
+        capacity_kwh=capacity,
+        battery_model=battery_model,
+        member_capacity_kwh=member_capacity,
+        member_charge_efficiency=member_charge_efficiency,
+        member_discharge_efficiency=member_discharge_efficiency,
+        mode_load_profiles=model.mode_load_profiles,
+        current_mode=base_mode,
+        seed=seed,
+    )
+    p50_continuation = evaluate_p50_continuation_rule(
+        times=times,
+        soc_p50=np.nanquantile(current_soc_for_rule, 0.50, axis=0),
+        current_mode=base_mode,
+        horizon_hours=min(optimization_hours, actual_horizon),
+    )
     optimized = optimize_priority_schedule(
         times=times,
         solar_members_w=solar_members,
@@ -2277,11 +2445,16 @@ def build_operating_scenarios(
         reserve_mode = mode_id(set(mode_kits(base_mode)) - set(OPERATING_PRIORITY))
         optimized_modes = [reserve_mode] * len(times)
         phase_validation_fallback = True
+    p50_continuation_modes = apply_p50_continuation_rule(
+        optimized_modes,
+        p50_continuation,
+    )
 
     scenario_modes: dict[str, tuple[str, ...]] = {
         SCENARIO_CURRENT: tuple(base_mode for _ in times),
         SCENARIO_DC_ONLY: tuple(MODE_DC_ONLY for _ in times),
         SCENARIO_OPTIMIZED: tuple(optimized_modes),
+        SCENARIO_P50_CONTINUATION: p50_continuation_modes,
     }
     scenario_uas_tiers: dict[str, int] = {}
     for definition in SUGGESTED_OPERATING_SCENARIOS:
@@ -2301,6 +2474,11 @@ def build_operating_scenarios(
         SCENARIO_DC_ONLY: "DC-Only",
         SCENARIO_CL61: "DC + CL61 Continuously On",
         SCENARIO_OPTIMIZED: "Priority Instrument Schedule",
+        SCENARIO_P50_CONTINUATION: (
+            f"P50 continuation: keep {_human_list(p50_continuation.held_instruments)} on"
+            if p50_continuation.eligible
+            else "P50 continuation unavailable: P10 priority plan"
+        ),
     }
     labels.update(
         {definition.scenario_id: definition.label for definition in SUGGESTED_OPERATING_SCENARIOS}
@@ -2318,6 +2496,8 @@ def build_operating_scenarios(
     collection_hours: list[float] = []
     minimum_p10: list[float] = []
     final_p10: list[float] = []
+    minimum_p50: list[float] = []
+    final_p50: list[float] = []
     starts: list[int] = []
     start_times: list[np.datetime64] = []
     stop_times: list[np.datetime64] = []
@@ -2365,7 +2545,8 @@ def build_operating_scenarios(
         load_p90.append(np.nanquantile(loads, 0.90, axis=0))
         p10 = np.nanquantile(soc, 0.10, axis=0)
         soc_p10.append(p10)
-        soc_p50.append(np.nanquantile(soc, 0.50, axis=0))
+        p50 = np.nanquantile(soc, 0.50, axis=0)
+        soc_p50.append(p50)
         soc_p90.append(np.nanquantile(soc, 0.90, axis=0))
         below_probability.append(np.mean(soc < MINIMUM_OPERATIONAL_SOC_PCT, axis=0))
         scenario_mode_codes = np.asarray([mode_code(value) for value in modes], dtype=np.int16)
@@ -2388,6 +2569,8 @@ def build_operating_scenarios(
         collection_hours.append(float(np.count_nonzero(on[1:])))
         minimum_p10.append(float(np.nanmin(p10)))
         final_p10.append(float(p10[-1]))
+        minimum_p50.append(float(np.nanmin(p50)))
+        final_p50.append(float(p50[-1]))
         safe_values.append(float(np.nanmin(p10) >= MINIMUM_OPERATIONAL_SOC_PCT))
         uas_tier_values.append(np.full(len(times), tier if tier is not None else -1, dtype=np.int16))
         transitions = np.flatnonzero(on & ~np.r_[False, on[:-1]])
@@ -2439,6 +2622,8 @@ def build_operating_scenarios(
             "ScenarioCollectionHours": (("scenario",), np.asarray(collection_hours, dtype=np.float32)),
             "ScenarioMinimumP10SOC": (("scenario",), np.asarray(minimum_p10, dtype=np.float32)),
             "ScenarioFinalP10SOC": (("scenario",), np.asarray(final_p10, dtype=np.float32)),
+            "ScenarioMinimumP50SOC": (("scenario",), np.asarray(minimum_p50, dtype=np.float32)),
+            "ScenarioFinalP50SOC": (("scenario",), np.asarray(final_p50, dtype=np.float32)),
             "ScenarioSafe": (("scenario",), np.asarray(safe_values, dtype=np.float32)),
             "ScenarioStarts": (("scenario",), np.asarray(starts, dtype=np.int16)),
             "ScenarioStartTime": (("scenario",), np.asarray(start_times, dtype="datetime64[ns]")),
@@ -2521,6 +2706,25 @@ def build_operating_scenarios(
             "minimum_cl61_run_hours": str(MIN_RUN_HOURS),
             "max_cl61_starts_per_utc_day": str(MAX_STARTS_PER_UTC_DAY),
             "control_authority": "advisory_only",
+            "p50_continuation_control_authority": "advisory_only",
+            "p50_continuation_eligible": str(p50_continuation.eligible).lower(),
+            "p50_continuation_status": p50_continuation.status,
+            "p50_continuation_reason_code": p50_continuation.reason_code,
+            "p50_continuation_reason": p50_continuation.reason,
+            "p50_continuation_held_instruments": json.dumps(list(p50_continuation.held_instruments)),
+            "p50_continuation_recovery_soc_pct": f"{P50_CONTINUATION_RECOVERY_SOC_PCT:g}",
+            "p50_continuation_minimum_soc_pct": f"{P50_CONTINUATION_MINIMUM_SOC_PCT:g}",
+            "p50_continuation_recovery_time_utc": (
+                p50_continuation.recovery_time.isoformat()
+                if p50_continuation.recovery_time is not None
+                else ""
+            ),
+            "p50_continuation_minimum_soc_before_recovery_pct": (
+                f"{p50_continuation.minimum_p50_soc_before_recovery:.6g}"
+                if np.isfinite(p50_continuation.minimum_p50_soc_before_recovery)
+                else ""
+            ),
+            "p50_continuation_fallback": "existing_p10_priority_schedule",
             "optimized_safe": str(bool(safe_values[optimized_index] >= 0.5)).lower(),
             "optimized_collection_hours": f"{collection_hours[optimized_index]:.6g}",
             "optimized_minimum_p10_soc": f"{minimum_p10[optimized_index]:.6g}",
@@ -2535,7 +2739,15 @@ def build_operating_scenarios(
             **battery_model.attrs(),
         },
     )
-    for name in ("ScenarioSOCP10", "ScenarioSOCP50", "ScenarioSOCP90", "ScenarioMinimumP10SOC", "ScenarioFinalP10SOC"):
+    for name in (
+        "ScenarioSOCP10",
+        "ScenarioSOCP50",
+        "ScenarioSOCP90",
+        "ScenarioMinimumP10SOC",
+        "ScenarioFinalP10SOC",
+        "ScenarioMinimumP50SOC",
+        "ScenarioFinalP50SOC",
+    ):
         output[name].attrs["units"] = "%"
     for name in (
         "ScenarioLoadP10Watts",
