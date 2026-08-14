@@ -104,7 +104,10 @@ SOURCE_HOSTS = {
         "host_id": "aps",
         "user_env": "POWER_SOURCE_USER",
         "host_env": "POWER_SOURCE_HOST",
-        "path_default": "/data",
+        # Probe the dedicated filesystem at its canonical mount. Applications
+        # use /data through a managed bind mount, but this metric must remain
+        # distinct from root even if that bind mount is ever absent.
+        "path_default": "/home/aurora/data",
         "auth": "tailscale",
     },
     "host_aps_root": {
