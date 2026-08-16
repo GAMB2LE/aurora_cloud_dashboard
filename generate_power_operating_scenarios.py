@@ -245,7 +245,8 @@ def _archive_recommendation(
         "decision_horizon_hours": decision_hours,
         "safety_constraint": "P10 SOC must remain at or above 40%",
         "optimization_objective": (
-            "maximize safe collection lexicographically for CL61, Radar, then HATPRO"
+            "maximize safe additive controlled energy, then total instrument-hours; "
+            "use CL61, Radar, HATPRO as the tie-break order"
         ),
         "instrument_priority": _json_string_list(
             scenarios.attrs.get("optimized_priority_order", "[]")
@@ -255,6 +256,15 @@ def _archive_recommendation(
         ),
         "instrument_starts": _json_object(
             scenarios.attrs.get("optimized_instrument_starts", "{}")
+        ),
+        "total_instrument_hours": _json_float(
+            scenarios.attrs.get("optimized_total_instrument_hours")
+        ),
+        "controlled_energy_kwh": _json_float(
+            scenarios.attrs.get("optimized_controlled_energy_kwh")
+        ),
+        "daily_operations": _json_object(
+            scenarios.attrs.get("optimized_daily_operations", "{}")
         ),
         "minimum_run_hours": float(
             scenarios.attrs.get("minimum_controlled_run_hours", 12.0)
@@ -292,6 +302,10 @@ def _archive_recommendation(
             "time_utc": [value.isoformat() for value in decision_times],
             "mode_code": [int(value) for value in mode_codes],
             "mode_label": [mode_label(mode_from_code(int(value))) for value in mode_codes],
+            "active_instrument_count": [
+                int(value)
+                for value in scenarios["ScenarioActiveInstrumentCount"].values[index, :decision_hours]
+            ],
             "load_p10_w": [
                 _json_float(value) for value in scenarios["ScenarioLoadP10Watts"].values[index, :decision_hours]
             ],

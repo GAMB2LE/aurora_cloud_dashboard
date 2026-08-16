@@ -8950,6 +8950,7 @@ def _mobile_forecast_panel_start(ds: xr.Dataset, panel) -> pd.Timestamp | None:
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
         "operating_plan_schedule": (
+            "OperatingCL61OptimizedActiveCount",
             "OperatingCL61OptimizedCL61On",
             "OperatingCL61OptimizedRadarOn",
             "OperatingCL61OptimizedHATPROOn",

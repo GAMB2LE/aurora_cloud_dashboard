@@ -295,6 +295,7 @@ OPERATING_SCENARIO_SOURCE_FIELDS = (
     ("ScenarioLoadP90Watts", "LoadP90Watts"),
     ("ScenarioBelow40Probability", "Below40Probability"),
     ("ScenarioModeCode", "ModeCode"),
+    ("ScenarioActiveInstrumentCount", "ActiveCount"),
 )
 OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     f"{prefix}{suffix}"
@@ -308,6 +309,7 @@ OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     "OperatingCL61OptimizedCL61On",
     "OperatingCL61OptimizedRadarOn",
     "OperatingCL61OptimizedHATPROOn",
+    "OperatingCL61OptimizedActiveCount",
     "OperatingSolarP10Watts",
     "OperatingSolarP50Watts",
     "OperatingSolarP90Watts",
@@ -445,7 +447,7 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
         )
         return CL61SchedulePresentation(
             status=status,
-            title=("Instrument Reserve-Only Plan" if priority_plan else "CL61 Reserve-Only Plan"),
+            title=("Additive Instrument Reserve-Only Plan" if priority_plan else "CL61 Reserve-Only Plan"),
             trace_label="CL61 remains off",
             annotation=(
                 "No safe controlled-instrument window"
@@ -471,7 +473,7 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
         return CL61SchedulePresentation(
             status=status,
             title=(
-                "Recommended Instrument Operating Schedule"
+                "Recommended Additive Instrument Schedule"
                 if priority_plan
                 else "Recommended CL61 Collection Schedule"
             ),
@@ -482,7 +484,7 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
                 else "No CL61 collection interval selected"
             ),
             summary=(
-                "The advisory on/off timetable, prioritising CL61, then Radar, then HATPRO."
+                "The power-maximising additive on/off timetable; CL61, Radar, then HATPRO break ties."
                 if priority_plan
                 else "The on/off timetable for the feasible advisory CL61 plan."
             ),
@@ -510,6 +512,8 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
             maturity = str(ds.attrs.get("operating_current_mode_maturity", "")).strip()
             suffix = f" ({maturity})" if maturity else ""
             return f"Current load / system as-is: {mode}{suffix}"
+    if trace.var == "OperatingCL61OptimizedActiveCount":
+        return "Total active instruments (additive sum)"
     if trace.var in {
         "OperatingCL61OptimizedCL61On",
         "OperatingCL61OptimizedRadarOn",
@@ -804,12 +808,13 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             ],
         },
         "operating_plan_schedule": {
-            "title": "Instrument operating schedule",
-            "summary": "The advisory priority schedule and whether its SOC constraint is feasible.",
-            "implementation": "Each trace is 1 when that instrument is selected and 0 when it is off. The scheduler maximises CL61 hours first, then Radar, then HATPRO. It requires full-horizon P10 SOC at or above the operational reserve, 12-hour minimum runs, and no more than one scheduled start per UTC day. UAS and the DC baseline are not controlled. The plan is advisory and never operates PDU outlets.",
+            "title": "Additive instrument operating schedule",
+            "summary": "The advisory additive schedule and whether its SOC constraint is feasible.",
+            "implementation": "Each instrument trace is 1 when selected and 0 when off; the total trace is their additive sum from 0 to 3. Stored UTC-day summaries make each instrument's on-hours plus off-hours equal the available hours in that day. The joint scheduler maximises controlled energy first, then total instrument-hours. CL61, then Radar, then HATPRO breaks otherwise-equivalent plans. It includes learned startup and fan phases while searching, requires full-horizon P10 SOC at or above the operational reserve, 12-hour minimum runs, and no more than one scheduled start per UTC day. UAS and the DC baseline are not controlled. The plan is advisory and never operates PDU outlets.",
             "metrics": [
-                {"label": "1 / 0", "detail": "Selected instrument on / off; always read this with the feasibility status."},
-                {"label": "Priority", "detail": "CL61 first, then Radar, then HATPRO; lower-priority loads never displace a safe higher-priority hour."},
+                {"label": "1 / 0", "detail": "Each instrument selected on / off; always read this with the feasibility status."},
+                {"label": "Additive sum", "detail": "Total active instruments is CL61 + Radar + HATPRO at each hour (0 to 3). Integrating it gives daily instrument-hours, up to 72 per complete UTC day."},
+                {"label": "Objective", "detail": "Maximise safe controlled energy, then total instrument-hours; CL61 > Radar > HATPRO is the tie-break."},
                 {"label": "Constraint", "detail": f"P10 SOC is held at or above the {minimum} operational reference over the planning horizon."},
             ],
         },
@@ -859,11 +864,35 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         return None
     if panel_key == "operating_plan_schedule" and ds is not None:
         presentation = cl61_schedule_presentation(ds)
+        metrics = list(info["metrics"])
+        total_hours = _schedule_attr(ds, "optimized_total_instrument_hours")
+        energy_kwh = _schedule_attr(ds, "optimized_controlled_energy_kwh")
+        try:
+            total_hours_value = float(total_hours)
+        except ValueError:
+            total_hours_value = float("nan")
+        try:
+            energy_kwh_value = float(energy_kwh)
+        except ValueError:
+            energy_kwh_value = float("nan")
+        if np.isfinite(total_hours_value) or np.isfinite(energy_kwh_value):
+            total_text = (
+                f"{total_hours_value:.0f} instrument-hours"
+                if np.isfinite(total_hours_value)
+                else "instrument-hours unavailable"
+            )
+            energy_text = (
+                f"{energy_kwh_value:.2f} kWh controlled energy"
+                if np.isfinite(energy_kwh_value)
+                else "controlled energy unavailable"
+            )
+            metrics.append({"label": "Selected total", "detail": f"{total_text}; {energy_text}."})
         info = {
             **info,
             "title": presentation.title,
             "summary": presentation.summary,
             "implementation": f"{presentation.explanation} {info['implementation']}",
+            "metrics": metrics,
         }
     return {"id": panel_key, **info}
 
@@ -1728,10 +1757,11 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
         ),
         PanelSpec(
             "operating_plan_schedule",
-            "Recommended Instrument Operating Schedule",
-            "Instrument state (0 off, 1 on)",
+            "Recommended Additive Instrument Schedule",
+            "Additive activity (sum 0-3; each instrument 0/1)",
             None,
             (
+                TraceSpec("OperatingCL61OptimizedActiveCount", "Total active instruments", COLOR["green"], step=True, valid_min=0.0, valid_max=3.0, line_width=3.5),
                 TraceSpec("OperatingCL61OptimizedCL61On", "Recommended CL61 schedule", COLOR["red"], step=True, valid_min=0.0, valid_max=1.0, line_width=3.0),
                 TraceSpec("OperatingCL61OptimizedRadarOn", "Recommended Radar schedule", COLOR["blue"], dash="dash", step=True, valid_min=0.0, valid_max=1.0, line_width=2.5),
                 TraceSpec("OperatingCL61OptimizedHATPROOn", "Recommended HATPRO schedule", COLOR["purple"], dash="dot", step=True, valid_min=0.0, valid_max=1.0, line_width=2.5),
@@ -2629,6 +2659,11 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
             values["OperatingCL61OptimizedCL61On"] = ((codes & 1) > 0).astype(np.float64)
             values["OperatingCL61OptimizedRadarOn"] = ((codes & 2) > 0).astype(np.float64)
             values["OperatingCL61OptimizedHATPROOn"] = ((codes & 4) > 0).astype(np.float64)
+            values["OperatingCL61OptimizedActiveCount"] = (
+                values["OperatingCL61OptimizedCL61On"]
+                + values["OperatingCL61OptimizedRadarOn"]
+                + values["OperatingCL61OptimizedHATPROOn"]
+            )
     for scenario_id, prefix in OPERATING_SUGGESTED_PREFIXES.items():
         if scenario_id not in scenario_ids:
             continue
@@ -2835,6 +2870,12 @@ def _operating_scenario_attrs(
         ("optimized_controlled_instruments", "operating_optimized_controlled_instruments"),
         ("optimized_instrument_hours", "operating_optimized_instrument_hours"),
         ("optimized_instrument_starts", "operating_optimized_instrument_starts"),
+        ("optimized_total_instrument_hours", "operating_optimized_total_instrument_hours"),
+        ("optimized_controlled_energy_kwh", "operating_optimized_controlled_energy_kwh"),
+        ("optimized_daily_operations", "operating_optimized_daily_operations"),
+        ("optimized_active_instrument_count_max", "operating_optimized_active_instrument_count_max"),
+        ("optimized_phase_aware_search", "operating_optimized_phase_aware_search"),
+        ("optimized_phase_validation_minimum_p10_soc", "operating_optimized_phase_validation_minimum_p10_soc"),
         ("minimum_controlled_run_hours", "operating_minimum_controlled_run_hours"),
         ("max_controlled_starts_per_utc_day", "operating_max_controlled_starts_per_utc_day"),
     ):

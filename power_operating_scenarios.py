@@ -6,7 +6,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -39,7 +39,7 @@ from power_battery_model import BatteryModel
 MODEL_NAME = "hybrid_state_space_phases_v10"
 MODEL_VERSION = 10
 STATE_SCHEMA_VERSION = 6
-SCENARIO_SCHEMA_VERSION = 10
+SCENARIO_SCHEMA_VERSION = 11
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -240,8 +240,9 @@ def describe_priority_schedule(
     minimum_p10_soc: float,
     priorities: Sequence[str] = OPERATING_PRIORITY,
     minimum_soc: float = MINIMUM_OPERATIONAL_SOC_PCT,
+    controlled_energy_kwh: float | None = None,
 ) -> CL61ScheduleDiagnostic:
-    """Explain the advisory hierarchy without implying automatic PDU control."""
+    """Explain the additive advisory plan without implying automatic PDU control."""
     controlled = tuple(str(value) for value in priorities)
     fixed_kits = tuple(
         name for name in KIT_ORDER if name not in controlled and name in mode_kits(current_mode)
@@ -298,10 +299,18 @@ def describe_priority_schedule(
             operator_action_required=False,
         )
 
+    total_hours = float(sum(max(float(instrument_hours.get(name, 0.0)), 0.0) for name in controlled))
+    energy_text = (
+        f" and {float(controlled_energy_kwh):.2f} kWh of additive controlled energy"
+        if controlled_energy_kwh is not None and np.isfinite(float(controlled_energy_kwh))
+        else ""
+    )
     reason = (
-        f"The advisory scheduler maximises collection in priority order {priority_text}. "
-        f"This plan provides {_human_list(selected)} while keeping full-horizon P10 SOC at or above "
-        f"{float(minimum_soc):g}%. It never operates PDU outlets automatically."
+        "The additive advisory scheduler maximises controlled energy first, then total "
+        f"instrument-hours; {priority_text} breaks otherwise-equal plans. This plan provides "
+        f"{_human_list(selected)}, totalling {total_hours:.0f} instrument-hours{energy_text}, while "
+        f"keeping full-horizon P10 SOC at or above {float(minimum_soc):g}%. It never operates "
+        "PDU outlets automatically."
     )
     return CL61ScheduleDiagnostic(
         status="safe_schedule",
@@ -1405,6 +1414,9 @@ class ScheduleResult:
     final_p10_soc: float
     safe: bool
     starts: int
+    instrument_hours: dict[str, float] = field(default_factory=dict)
+    total_instrument_hours: float = 0.0
+    controlled_energy_kwh: float = 0.0
 
 
 @dataclass
@@ -1423,6 +1435,37 @@ class _Candidate:
 def _candidate_score(candidate: _Candidate) -> tuple[float, float, float, float]:
     first = candidate.first_start_index if candidate.first_start_index is not None else 10**6
     return (float(candidate.on_hours), float(-candidate.starts), float(candidate.minimum_p10), float(-first))
+
+
+@dataclass
+class _AdditiveCandidate:
+    """One phase-aware joint schedule candidate for all controlled instruments."""
+
+    modes: tuple[str, ...]
+    soc: np.ndarray
+    active: tuple[bool, ...]
+    run_hours: tuple[float, ...]
+    last_start_days: tuple[object | None, ...]
+    starts: tuple[int, ...]
+    instrument_hours: tuple[float, ...]
+    controlled_energy_wh: float
+    minimum_p10: float
+    first_active_index: int | None
+    segment_start_index: int
+
+
+def _additive_candidate_score(candidate: _AdditiveCandidate) -> tuple[float, ...]:
+    """Rank by additive power use, total use, then declared instrument priority."""
+    first = candidate.first_active_index if candidate.first_active_index is not None else 10**6
+    return (
+        float(candidate.controlled_energy_wh),
+        float(sum(candidate.instrument_hours)),
+        *(float(value) for value in candidate.instrument_hours),
+        float(-sum(candidate.starts)),
+        float(candidate.minimum_p10),
+        float(np.nanmedian(candidate.soc)),
+        float(-first),
+    )
 
 
 def optimize_cl61_schedule(
@@ -1688,6 +1731,65 @@ def _instrument_starts(modes: Sequence[str], kit: str, *, limit: int | None = No
             for index in range(1, count)
         )
     )
+
+
+def _daily_operating_summary(
+    times: pd.DatetimeIndex,
+    modes: Sequence[str],
+    *,
+    kits: Sequence[str],
+    component_power_w: Mapping[str, float],
+    limit: int,
+) -> dict[str, dict[str, float]]:
+    """Integrate binary schedules into auditable UTC-day operating totals."""
+    count = min(len(times), len(modes), max(int(limit), 0))
+    summary: dict[str, dict[str, float]] = {}
+    for index in range(1, count):
+        interval_start = pd.Timestamp(times[index - 1])
+        interval_end = pd.Timestamp(times[index])
+        if interval_end <= interval_start:
+            continue
+        active = tuple(kit for kit in kits if kit in mode_kits(modes[index]))
+        cursor = interval_start
+        while cursor < interval_end:
+            next_day = cursor.normalize() + pd.Timedelta(days=1)
+            stop = min(interval_end, next_day)
+            hours = float((stop - cursor) / pd.Timedelta(hours=1))
+            day = cursor.date().isoformat()
+            row = summary.setdefault(
+                day,
+                {
+                    **{kit: 0.0 for kit in kits},
+                    "available_clock_hours": 0.0,
+                    "active_clock_hours": 0.0,
+                    "total_instrument_hours": 0.0,
+                    "controlled_energy_kwh": 0.0,
+                },
+            )
+            row["available_clock_hours"] += hours
+            if active:
+                row["active_clock_hours"] += hours
+            for kit in active:
+                row[kit] += hours
+            row["total_instrument_hours"] += hours * len(active)
+            row["controlled_energy_kwh"] += (
+                hours * sum(max(float(component_power_w.get(kit, 0.0)), 0.0) for kit in active) / 1000.0
+            )
+            cursor = stop
+    for row in summary.values():
+        row["idle_clock_hours"] = max(
+            row["available_clock_hours"] - row["active_clock_hours"],
+            0.0,
+        )
+        for kit in kits:
+            row[f"{kit}_on_hours"] = row[kit]
+            row[f"{kit}_off_hours"] = max(
+                row["available_clock_hours"] - row[kit],
+                0.0,
+            )
+        for key, value in tuple(row.items()):
+            row[key] = round(float(value), 6)
+    return summary
 
 
 def _optimize_one_instrument_schedule(
@@ -1971,9 +2073,19 @@ def optimize_priority_schedule(
     minimum_soc: float = MINIMUM_OPERATIONAL_SOC_PCT,
     minimum_run_hours: int = MIN_RUN_HOURS,
     max_starts_per_day: int = MAX_STARTS_PER_UTC_DAY,
-    beam_width: int = 300,
+    beam_width: int = 600,
+    mode_load_profiles: Mapping[str, StateLoadDynamics] | None = None,
+    current_mode: str | None = None,
+    seed: int = 0,
 ) -> ScheduleResult:
-    """Build a hierarchical CL61, Radar, then HATPRO advisory timetable."""
+    """Jointly maximise safe additive controlled energy across all instruments.
+
+    The primary objective is additive component energy, followed by total
+    instrument-hours. ``priorities`` is a deterministic tie-break, not a set of
+    sequential budgets. Learned exact-state startup/fan phases are included in
+    the search itself, so a lower-priority addition can be rejected without
+    erasing a safe higher-value subset.
+    """
     controlled = tuple(str(value) for value in priorities)
     if not controlled or len(set(controlled)) != len(controlled):
         raise ValueError("Operating priorities must contain unique instruments")
@@ -1981,37 +2093,385 @@ def optimize_priority_schedule(
     if unknown:
         raise ValueError(f"Unknown operating priorities: {', '.join(unknown)}")
 
+    if max_starts_per_day not in {0, 1}:
+        raise ValueError("The advisory scheduler supports at most one start per UTC day")
+
     full_times = pd.DatetimeIndex(times)
+    full_solar = np.asarray(solar_members_w, dtype=np.float64)
+    components = np.asarray(component_members, dtype=np.float64)
+    if len(full_times) == 0:
+        raise ValueError("Instrument optimization requires at least one forecast time")
+    if full_solar.ndim != 2 or full_solar.shape[1] < len(full_times):
+        raise ValueError("Solar members must be a member x time array covering the forecast")
+    full_solar = full_solar[:, : len(full_times)]
+    member_count = full_solar.shape[0]
+    if components.shape != (member_count, len(COMPONENTS)):
+        raise ValueError("Component members must match the solar members and component schema")
+
+    energy_model = battery_model or BatteryModel(
+        usable_capacity_kwh=capacity_kwh,
+        charge_efficiency=1.0,
+        discharge_efficiency=1.0,
+        max_charge_w=20_000.0,
+        max_discharge_w=20_000.0,
+    )
+    capacities = (
+        np.asarray(member_capacity_kwh, dtype=np.float64)
+        if member_capacity_kwh is not None
+        else np.full(member_count, energy_model.usable_capacity_kwh)
+    )
+    charge_efficiencies = (
+        np.asarray(member_charge_efficiency, dtype=np.float64)
+        if member_charge_efficiency is not None
+        else np.full(member_count, energy_model.charge_efficiency)
+    )
+    discharge_efficiencies = (
+        np.asarray(member_discharge_efficiency, dtype=np.float64)
+        if member_discharge_efficiency is not None
+        else np.full(member_count, energy_model.discharge_efficiency)
+    )
+    if any(
+        values.shape != (member_count,)
+        for values in (capacities, charge_efficiencies, discharge_efficiencies)
+    ):
+        raise ValueError("Battery member parameters must match the solar member dimension")
+    capacities = np.clip(capacities, 10.0, 40.0)
+    charge_efficiencies = np.clip(charge_efficiencies, 0.65, 1.0)
+    discharge_efficiencies = np.clip(discharge_efficiencies, 0.65, 1.0)
+
     fixed_kits = set(mode_kits(base_mode)) - set(controlled)
-    modes = tuple(mode_id(fixed_kits) for _ in full_times)
-    stage_results: dict[str, ScheduleResult] = {}
-    for kit in controlled:
-        stage = _optimize_one_instrument_schedule(
-            times=full_times,
-            solar_members_w=solar_members_w,
-            component_members=component_members,
-            initial_soc=initial_soc,
-            capacity_kwh=capacity_kwh,
-            base_modes=modes,
-            kit=kit,
-            initially_on=kit in mode_kits(base_mode),
-            battery_model=battery_model,
-            member_capacity_kwh=member_capacity_kwh,
-            member_charge_efficiency=member_charge_efficiency,
-            member_discharge_efficiency=member_discharge_efficiency,
-            horizon_hours=horizon_hours,
-            minimum_soc=minimum_soc,
-            minimum_run_hours=minimum_run_hours,
-            max_starts_per_day=max_starts_per_day,
-            beam_width=beam_width,
+    reserve_mode = mode_id(fixed_kits)
+    initial_active = tuple(kit in mode_kits(base_mode) for kit in controlled)
+    component_power_w = {
+        kit: max(float(np.nanmedian(components[:, COMPONENT_INDEX[kit]])), 0.0)
+        for kit in controlled
+    }
+    profiles = mode_load_profiles or {}
+    held_current_mode = str(current_mode or base_mode)
+    segment_load_cache: dict[tuple[str, int], np.ndarray] = {}
+
+    def segment_load(mode: str, segment_start: int, index: int) -> np.ndarray:
+        key = (str(mode), int(segment_start))
+        if key not in segment_load_cache:
+            baseline = _load_members_for_modes(components, (mode,))[:, 0]
+            profile = profiles.get(str(mode))
+            if profile is None:
+                loads = np.repeat(baseline[:, np.newaxis], len(full_times) - segment_start, axis=1)
+            else:
+                if segment_start > 0 or str(mode) != held_current_mode:
+                    profile = force_startup(profile, full_times[segment_start])
+                fallback = ControlledLoadEstimate(
+                    p10_w=float(np.nanquantile(baseline, 0.10)),
+                    p50_w=float(np.nanquantile(baseline, 0.50)),
+                    p90_w=float(np.nanquantile(baseline, 0.90)),
+                    source="finite_state_component_fallback",
+                    sample_count=int(len(baseline)),
+                ).validated()
+                loads, _ = controlled_load_member_profiles(
+                    profile,
+                    full_times[segment_start:],
+                    fallback,
+                    member_count,
+                    seed=int(
+                        seed
+                        + segment_start * 1009
+                        + sum(ord(character) for character in str(mode))
+                    ),
+                )
+            segment_load_cache[key] = np.asarray(loads, dtype=np.float64)
+        return segment_load_cache[key][:, index - segment_start]
+
+    initial_members = np.full(member_count, float(initial_soc), dtype=np.float64)
+    candidates = [
+        _AdditiveCandidate(
+            modes=(str(base_mode),),
+            soc=initial_members,
+            active=initial_active,
+            # Existing loads were not started by this advisory plan and may be
+            # shed at the first decision boundary.
+            run_hours=tuple(float(minimum_run_hours) if value else 0.0 for value in initial_active),
+            last_start_days=tuple(None for _ in controlled),
+            starts=tuple(0 for _ in controlled),
+            instrument_hours=tuple(0.0 for _ in controlled),
+            controlled_energy_wh=0.0,
+            minimum_p10=float(initial_soc),
+            # t0 is an observed state, not a scheduled interval. Track the
+            # first future operating interval so equally valuable plans prefer
+            # earlier science collection.
+            first_active_index=None,
+            segment_start_index=0,
         )
-        stage_results[kit] = stage
-        modes = stage.modes
-        if not stage.safe:
+    ]
+    decision_count = min(len(full_times), int(horizon_hours) + 1)
+    search_complete = decision_count == 1
+    for index in range(1, decision_count):
+        day = full_times[index].date()
+        step_hours = max(
+            float((full_times[index] - full_times[index - 1]) / pd.Timedelta(hours=1)),
+            0.0,
+        )
+        next_candidates: list[_AdditiveCandidate] = []
+        for candidate in candidates:
+            for mask in range(1 << len(controlled)):
+                active = tuple(bool(mask & (1 << position)) for position in range(len(controlled)))
+                if any(
+                    candidate.active[position]
+                    and candidate.run_hours[position] < float(minimum_run_hours) - 1e-9
+                    and not active[position]
+                    for position in range(len(controlled))
+                ):
+                    continue
+                is_start = tuple(
+                    active[position] and not candidate.active[position]
+                    for position in range(len(controlled))
+                )
+                if any(
+                    is_start[position]
+                    and (
+                        max_starts_per_day <= 0
+                        or candidate.last_start_days[position] == day
+                    )
+                    for position in range(len(controlled))
+                ):
+                    continue
+
+                mode = mode_id(fixed_kits | {
+                    kit for position, kit in enumerate(controlled) if active[position]
+                })
+                segment_start = (
+                    candidate.segment_start_index
+                    if mode == candidate.modes[-1]
+                    else index
+                )
+                load = segment_load(mode, segment_start, index)
+                soc = np.clip(
+                    candidate.soc
+                    + _member_soc_delta_percent(
+                        full_solar[:, index] - load,
+                        step_hours,
+                        energy_model,
+                        capacities,
+                        charge_efficiencies,
+                        discharge_efficiencies,
+                    ),
+                    0.0,
+                    100.0,
+                )
+                p10 = float(np.nanquantile(soc, 0.10))
+                if p10 < float(minimum_soc) - 1e-9:
+                    continue
+                run_hours = tuple(
+                    (
+                        candidate.run_hours[position] + step_hours
+                        if candidate.active[position]
+                        else step_hours
+                    )
+                    if active[position]
+                    else 0.0
+                    for position in range(len(controlled))
+                )
+                instrument_hours = tuple(
+                    candidate.instrument_hours[position] + (step_hours if active[position] else 0.0)
+                    for position in range(len(controlled))
+                )
+                last_start_days = tuple(
+                    day if is_start[position] else candidate.last_start_days[position]
+                    for position in range(len(controlled))
+                )
+                starts = tuple(
+                    candidate.starts[position] + int(is_start[position])
+                    for position in range(len(controlled))
+                )
+                controlled_power = sum(
+                    component_power_w[kit]
+                    for position, kit in enumerate(controlled)
+                    if active[position]
+                )
+                next_candidates.append(
+                    _AdditiveCandidate(
+                        modes=candidate.modes + (mode,),
+                        soc=soc,
+                        active=active,
+                        run_hours=run_hours,
+                        last_start_days=last_start_days,
+                        starts=starts,
+                        instrument_hours=instrument_hours,
+                        controlled_energy_wh=(
+                            candidate.controlled_energy_wh + controlled_power * step_hours
+                        ),
+                        minimum_p10=min(candidate.minimum_p10, p10),
+                        first_active_index=(
+                            index
+                            if any(active) and candidate.first_active_index is None
+                            else candidate.first_active_index
+                        ),
+                        segment_start_index=segment_start,
+                    )
+                )
+        if not next_candidates:
+            candidates = []
             break
 
-    final = stage_results[next(reversed(stage_results))]
-    decision_count = min(len(full_times), int(horizon_hours) + 1)
+        grouped: dict[tuple[object, ...], _AdditiveCandidate] = {}
+        for candidate in next_candidates:
+            key = (
+                candidate.active,
+                tuple(min(int(value), int(minimum_run_hours)) for value in candidate.run_hours),
+                candidate.last_start_days,
+                candidate.segment_start_index,
+                int(np.nanmedian(candidate.soc)),
+                int(candidate.minimum_p10),
+            )
+            incumbent = grouped.get(key)
+            if incumbent is None or _additive_candidate_score(candidate) > _additive_candidate_score(incumbent):
+                grouped[key] = candidate
+        ranked = sorted(grouped.values(), key=_additive_candidate_score, reverse=True)
+        width = max(int(beam_width), 1)
+        # A global power-first cut can retain only plans that spend too much
+        # reserve to survive the post-decision tail. Keep a stratified frontier
+        # across current P10 SOC so lower-energy candidates remain available for
+        # the final full-horizon safety check.
+        by_soc_bucket: dict[int, list[_AdditiveCandidate]] = {}
+        for candidate in ranked:
+            bucket = int(float(np.nanquantile(candidate.soc, 0.10)) // 2.0)
+            by_soc_bucket.setdefault(bucket, []).append(candidate)
+        bucket_count = max(len(by_soc_bucket), 1)
+        per_bucket = max(width // bucket_count, 1)
+        candidates = []
+        selected_ids: set[int] = set()
+        for bucket in sorted(by_soc_bucket, reverse=True):
+            for candidate in by_soc_bucket[bucket][:per_bucket]:
+                if len(candidates) >= width:
+                    break
+                candidates.append(candidate)
+                selected_ids.add(id(candidate))
+        if len(candidates) < width:
+            for candidate in ranked:
+                if id(candidate) in selected_ids:
+                    continue
+                candidates.append(candidate)
+                if len(candidates) >= width:
+                    break
+        reserve_candidate = next(
+            (
+                value
+                for value in next_candidates
+                if not any(value.active)
+                and not any(value.starts)
+                and sum(value.instrument_hours) == 0.0
+            ),
+            None,
+        )
+        if reserve_candidate is not None and all(value is not reserve_candidate for value in candidates):
+            candidates = candidates[: max(width - 1, 0)] + [reserve_candidate]
+        search_complete = index == decision_count - 1
+
+    valid = [] if not search_complete else [
+        candidate
+        for candidate in candidates
+        if all(
+            not candidate.active[position]
+            or candidate.run_hours[position] >= float(minimum_run_hours) - 1e-9
+            for position in range(len(controlled))
+        )
+    ]
+
+    def extend_candidate(
+        candidate: _AdditiveCandidate,
+    ) -> tuple[_AdditiveCandidate, tuple[str, ...], float, float]:
+        modes = list(candidate.modes)
+        soc = candidate.soc.copy()
+        minimum_p10 = float(candidate.minimum_p10)
+        previous_mode = modes[-1]
+        segment_start = candidate.segment_start_index
+        for index in range(decision_count, len(full_times)):
+            if previous_mode != reserve_mode:
+                previous_mode = reserve_mode
+                segment_start = index
+            step_hours = max(
+                float((full_times[index] - full_times[index - 1]) / pd.Timedelta(hours=1)),
+                0.0,
+            )
+            load = segment_load(reserve_mode, segment_start, index)
+            soc = np.clip(
+                soc
+                + _member_soc_delta_percent(
+                    full_solar[:, index] - load,
+                    step_hours,
+                    energy_model,
+                    capacities,
+                    charge_efficiencies,
+                    discharge_efficiencies,
+                ),
+                0.0,
+                100.0,
+            )
+            minimum_p10 = min(minimum_p10, float(np.nanquantile(soc, 0.10)))
+            modes.append(reserve_mode)
+        return candidate, tuple(modes), minimum_p10, float(np.nanquantile(soc, 0.10))
+
+    evaluated = [extend_candidate(candidate) for candidate in valid]
+    safe_evaluated = [value for value in evaluated if value[2] >= float(minimum_soc) - 1e-9]
+    if safe_evaluated:
+        best, modes, minimum_p10, final_p10 = max(
+            safe_evaluated,
+            key=lambda value: (
+                *_additive_candidate_score(value[0]),
+                float(value[2]),
+                float(value[3]),
+            ),
+        )
+    else:
+        # Preserve the issue-time state at t0, then shed every controlled load.
+        # This is safe only when the fixed baseline itself clears the reserve.
+        fallback_modes = tuple(
+            str(base_mode) if index == 0 else reserve_mode
+            for index in range(len(full_times))
+        )
+        fallback_loads = np.empty((member_count, len(full_times)), dtype=np.float64)
+        segment_start = 0
+        previous_mode = fallback_modes[0]
+        fallback_loads[:, 0] = segment_load(previous_mode, segment_start, 0)
+        for index in range(1, len(full_times)):
+            if fallback_modes[index] != previous_mode:
+                previous_mode = fallback_modes[index]
+                segment_start = index
+            fallback_loads[:, index] = segment_load(previous_mode, segment_start, index)
+        fallback_soc = integrate_soc_members(
+            initial_soc=initial_soc,
+            times=full_times,
+            solar_members_w=full_solar,
+            load_members_w=fallback_loads,
+            capacity_kwh=capacity_kwh,
+            battery_model=energy_model,
+            member_capacity_kwh=capacities,
+            member_charge_efficiency=charge_efficiencies,
+            member_discharge_efficiency=discharge_efficiencies,
+        )
+        fallback_p10 = np.nanquantile(fallback_soc, 0.10, axis=0)
+        minimum_p10 = float(np.nanmin(fallback_p10))
+        final_p10 = float(fallback_p10[-1])
+        modes = fallback_modes
+        best = _AdditiveCandidate(
+            modes=fallback_modes[:decision_count],
+            soc=fallback_soc[:, decision_count - 1],
+            active=tuple(False for _ in controlled),
+            run_hours=tuple(0.0 for _ in controlled),
+            last_start_days=tuple(None for _ in controlled),
+            starts=tuple(0 for _ in controlled),
+            instrument_hours=tuple(0.0 for _ in controlled),
+            controlled_energy_wh=0.0,
+            minimum_p10=minimum_p10,
+            first_active_index=None,
+            segment_start_index=1 if len(full_times) > 1 else 0,
+        )
+
+    instrument_hours = {
+        kit: float(best.instrument_hours[position])
+        for position, kit in enumerate(controlled)
+    }
+    if np.isclose(minimum_p10, float(minimum_soc), rtol=0.0, atol=1e-9):
+        minimum_p10 = float(minimum_soc)
     cl61_on = [index for index, value in enumerate(modes) if "CL61" in mode_kits(value)]
     start_time = full_times[cl61_on[0]] if cl61_on else None
     stop_time = None
@@ -2019,18 +2479,16 @@ def optimize_priority_schedule(
         stop_time = full_times[cl61_on[-1] + 1]
     return ScheduleResult(
         modes=modes,
-        collection_hours=_instrument_hours(
-            full_times,
-            modes,
-            "CL61",
-            limit=decision_count,
-        ),
+        collection_hours=float(instrument_hours.get("CL61", 0.0)),
         start_time=start_time,
         stop_time=stop_time,
-        minimum_p10_soc=final.minimum_p10_soc,
-        final_p10_soc=final.final_p10_soc,
-        safe=final.safe,
-        starts=_instrument_starts(modes, "CL61", limit=decision_count),
+        minimum_p10_soc=float(minimum_p10),
+        final_p10_soc=float(final_p10),
+        safe=bool(minimum_p10 >= float(minimum_soc) - 1e-9),
+        starts=int(best.starts[controlled.index("CL61")]) if "CL61" in controlled else 0,
+        instrument_hours=instrument_hours,
+        total_instrument_hours=float(sum(instrument_hours.values())),
+        controlled_energy_kwh=float(best.controlled_energy_wh / 1000.0),
     )
 
 
@@ -2247,6 +2705,9 @@ def build_operating_scenarios(
         base_mode=base_mode,
         priorities=OPERATING_PRIORITY,
         horizon_hours=min(optimization_hours, actual_horizon),
+        mode_load_profiles=model.mode_load_profiles,
+        current_mode=base_mode,
+        seed=seed,
     )
     optimized_modes = list(optimized.modes)
     if len(optimized_modes) < len(times):
@@ -2254,9 +2715,9 @@ def build_operating_scenarios(
         tail_mode = mode_id(tail_kits)
         optimized_modes.extend([tail_mode] * (len(times) - len(optimized_modes)))
 
-    # The beam search uses the finite-state component ensemble. Recheck the
-    # selected timetable with learned startup/fan phases before publishing it.
-    # A phase-aware breach must never appear as a safe advisory schedule.
+    # The joint beam search already uses exact-state startup/fan phases. Repeat
+    # the calculation through the publication path as a contract check; never
+    # erase a safe subset merely because a larger combination was unsafe.
     phase_validation_fallback = False
     _, optimized_phase_soc, _ = _scenario_members(
         optimized_modes,
@@ -2273,10 +2734,13 @@ def build_operating_scenarios(
         current_mode=base_mode,
         seed=seed,
     )
-    if float(np.nanmin(np.nanquantile(optimized_phase_soc, 0.10, axis=0))) < MINIMUM_OPERATIONAL_SOC_PCT:
-        reserve_mode = mode_id(set(mode_kits(base_mode)) - set(OPERATING_PRIORITY))
-        optimized_modes = [reserve_mode] * len(times)
-        phase_validation_fallback = True
+    optimized_phase_minimum_p10 = float(
+        np.nanmin(np.nanquantile(optimized_phase_soc, 0.10, axis=0))
+    )
+    if optimized.safe and optimized_phase_minimum_p10 < MINIMUM_OPERATIONAL_SOC_PCT - 1e-6:
+        raise ValueError(
+            "Phase-aware additive scheduler produced an inconsistent unsafe publication path"
+        )
 
     scenario_modes: dict[str, tuple[str, ...]] = {
         SCENARIO_CURRENT: tuple(base_mode for _ in times),
@@ -2323,6 +2787,7 @@ def build_operating_scenarios(
     stop_times: list[np.datetime64] = []
     safe_values: list[float] = []
     uas_tier_values: list[np.ndarray] = []
+    active_instrument_counts: list[np.ndarray] = []
     for scenario_id, modes in scenario_modes.items():
         scenario_components = component_members
         tier = scenario_uas_tiers.get(scenario_id)
@@ -2370,6 +2835,12 @@ def build_operating_scenarios(
         below_probability.append(np.mean(soc < MINIMUM_OPERATIONAL_SOC_PCT, axis=0))
         scenario_mode_codes = np.asarray([mode_code(value) for value in modes], dtype=np.int16)
         mode_codes.append(scenario_mode_codes)
+        active_instrument_counts.append(
+            np.asarray(
+                [sum(kit in mode_kits(value) for kit in OPERATING_PRIORITY) for value in modes],
+                dtype=np.int8,
+            )
+        )
         central_phases = np.asarray(
             [
                 int(np.bincount(member_load_phases[:, index].astype(np.int64)).argmax())
@@ -2386,9 +2857,19 @@ def build_operating_scenarios(
         load_phase_epochs.append(np.cumsum(phase_changed).astype(np.int16))
         on = np.asarray(["CL61" in mode_kits(value) for value in modes], dtype=bool)
         collection_hours.append(float(np.count_nonzero(on[1:])))
-        minimum_p10.append(float(np.nanmin(p10)))
+        scenario_minimum_p10 = float(np.nanmin(p10))
+        if np.isclose(
+            scenario_minimum_p10,
+            MINIMUM_OPERATIONAL_SOC_PCT,
+            rtol=0.0,
+            atol=1e-6,
+        ):
+            scenario_minimum_p10 = float(MINIMUM_OPERATIONAL_SOC_PCT)
+        minimum_p10.append(scenario_minimum_p10)
         final_p10.append(float(p10[-1]))
-        safe_values.append(float(np.nanmin(p10) >= MINIMUM_OPERATIONAL_SOC_PCT))
+        safe_values.append(
+            float(scenario_minimum_p10 >= MINIMUM_OPERATIONAL_SOC_PCT - 1e-6)
+        )
         uas_tier_values.append(np.full(len(times), tier if tier is not None else -1, dtype=np.int16))
         transitions = np.flatnonzero(on & ~np.r_[False, on[:-1]])
         stops_found = np.flatnonzero(~on & np.r_[False, on[:-1]])
@@ -2416,12 +2897,31 @@ def build_operating_scenarios(
         )
         for kit in OPERATING_PRIORITY
     }
+    optimized_total_instrument_hours = float(sum(optimized_instrument_hours.values()))
+    optimized_component_power_w = {
+        kit: max(float(np.nanmedian(component_members[:, COMPONENT_INDEX[kit]])), 0.0)
+        for kit in OPERATING_PRIORITY
+    }
+    optimized_daily_operations = _daily_operating_summary(
+        times,
+        optimized_modes,
+        kits=OPERATING_PRIORITY,
+        component_power_w=optimized_component_power_w,
+        limit=decision_count,
+    )
+    optimized_controlled_energy_kwh = float(
+        sum(
+            float(row.get("controlled_energy_kwh", 0.0))
+            for row in optimized_daily_operations.values()
+        )
+    )
     optimized_diagnostic = describe_priority_schedule(
         current_mode=base_mode,
         safe=bool(safe_values[optimized_index] >= 0.5),
         instrument_hours=optimized_instrument_hours,
         minimum_p10_soc=minimum_p10[optimized_index],
         priorities=OPERATING_PRIORITY,
+        controlled_energy_kwh=optimized_controlled_energy_kwh,
     )
 
     output = xr.Dataset(
@@ -2434,6 +2934,10 @@ def build_operating_scenarios(
             "ScenarioSOCP90": (("scenario", "time"), np.asarray(soc_p90, dtype=np.float32)),
             "ScenarioBelow40Probability": (("scenario", "time"), np.asarray(below_probability, dtype=np.float32)),
             "ScenarioModeCode": (("scenario", "time"), np.asarray(mode_codes, dtype=np.int16)),
+            "ScenarioActiveInstrumentCount": (
+                ("scenario", "time"),
+                np.asarray(active_instrument_counts, dtype=np.int8),
+            ),
             "ScenarioLoadPhaseCode": (("scenario", "time"), np.asarray(load_phase_codes, dtype=np.int8)),
             "ScenarioLoadPhaseEpoch": (("scenario", "time"), np.asarray(load_phase_epochs, dtype=np.int16)),
             "ScenarioCollectionHours": (("scenario",), np.asarray(collection_hours, dtype=np.float32)),
@@ -2506,16 +3010,25 @@ def build_operating_scenarios(
             "operating_decision_horizon_hours": str(min(optimization_hours, actual_horizon)),
             "operating_safety_constraint": f"P10 SOC >= {MINIMUM_OPERATIONAL_SOC_PCT:g}% across the full planning horizon",
             "operating_optimization_objective": (
-                "hierarchically maximize CL61, then Radar, then HATPRO collection hours "
+                "maximize additive controlled energy, then total instrument-hours; use "
+                "CL61, Radar, HATPRO priority order to break otherwise-equivalent plans "
                 "within the 96-hour decision horizon"
             ),
             "optimized_priority_order": json.dumps(list(OPERATING_PRIORITY)),
             "optimized_controlled_instruments": json.dumps(list(OPERATING_PRIORITY)),
             "optimized_instrument_hours": json.dumps(optimized_instrument_hours, sort_keys=True),
             "optimized_instrument_starts": json.dumps(optimized_instrument_starts, sort_keys=True),
+            "optimized_total_instrument_hours": f"{optimized_total_instrument_hours:.6g}",
+            "optimized_controlled_energy_kwh": f"{optimized_controlled_energy_kwh:.6g}",
+            "optimized_daily_operations": json.dumps(optimized_daily_operations, sort_keys=True),
+            "optimized_active_instrument_count_max": str(
+                int(np.nanmax(active_instrument_counts[optimized_index]))
+            ),
             "minimum_controlled_run_hours": str(MIN_RUN_HOURS),
             "max_controlled_starts_per_utc_day": str(MAX_STARTS_PER_UTC_DAY),
             "optimized_phase_validation_fallback": str(phase_validation_fallback).lower(),
+            "optimized_phase_aware_search": "true",
+            "optimized_phase_validation_minimum_p10_soc": f"{optimized_phase_minimum_p10:.6g}",
             # Legacy keys remain for consumers that have not yet adopted the
             # three-instrument schedule metadata.
             "minimum_cl61_run_hours": str(MIN_RUN_HOURS),
@@ -2549,6 +3062,10 @@ def build_operating_scenarios(
     ):
         output[name].attrs["units"] = "W"
     output["ScenarioBelow40Probability"].attrs["units"] = "1"
+    output["ScenarioActiveInstrumentCount"].attrs["units"] = "count"
+    output["ScenarioActiveInstrumentCount"].attrs["description"] = (
+        "additive count of scheduled CL61, Radar, and HATPRO states (0 to 3)"
+    )
     output["ScenarioUASEffectiveTier"].attrs["units"] = "tier"
     output["BatteryUsableCapacityKWhEnsemble"].attrs["units"] = "kWh"
     output["BatteryChargeEfficiencyEnsemble"].attrs["units"] = "1"
