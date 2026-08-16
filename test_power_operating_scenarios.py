@@ -16,11 +16,14 @@ from power_operating_scenarios import (
     SCENARIO_CURRENT,
     SCENARIO_DC_ONLY,
     SCENARIO_OPTIMIZED,
+    SCENARIO_P50_CONTINUATION,
     _align_ensemble_solar_contract,
     _validate_scenario_invariants,
     build_observation_frame,
     build_operating_scenarios,
     describe_cl61_schedule,
+    apply_p50_continuation_rule,
+    evaluate_p50_continuation_rule,
     evaluate_custom_schedule,
     fit_operating_model,
     integrate_soc_members,
@@ -100,6 +103,69 @@ def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.D
 
 
 class OperatingScenarioTests(unittest.TestCase):
+    def test_p50_continuation_holds_only_currently_on_controlled_instruments(self) -> None:
+        times = pd.date_range("2026-08-09T00:00:00", periods=6, freq="1h")
+        decision = evaluate_p50_continuation_rule(
+            times=times,
+            soc_p50=[100.0, 82.0, 61.0, 95.0, 92.0, 88.0],
+            current_mode=mode_id(("CL61", "UAS")),
+            horizon_hours=5,
+        )
+
+        modes = apply_p50_continuation_rule(
+            [MODE_DC_ONLY] * len(times),
+            decision,
+        )
+
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.held_instruments, ("CL61",))
+        self.assertEqual(decision.recovery_time, times[3])
+        self.assertEqual(decision.minimum_p50_soc_before_recovery, 61.0)
+        self.assertTrue(all("CL61" in mode_kits(value) for value in modes[:4]))
+        self.assertTrue(all("CL61" not in mode_kits(value) for value in modes[4:]))
+        self.assertTrue(all("UAS" not in mode_kits(value) for value in modes))
+
+    def test_p50_continuation_rejects_a_floor_breach_before_recovery(self) -> None:
+        times = pd.date_range("2026-08-09T00:00:00", periods=4, freq="1h")
+
+        decision = evaluate_p50_continuation_rule(
+            times=times,
+            soc_p50=[90.0, 39.0, 70.0, 95.0],
+            current_mode=mode_id(("CL61",)),
+        )
+
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.reason_code, "p50_breaches_minimum_before_recovery")
+        self.assertIsNone(decision.hold_through_index)
+
+    def test_p50_continuation_rejects_a_forecast_without_recovery(self) -> None:
+        times = pd.date_range("2026-08-09T00:00:00", periods=4, freq="1h")
+
+        decision = evaluate_p50_continuation_rule(
+            times=times,
+            soc_p50=[90.0, 82.0, 76.0, 70.0],
+            current_mode=mode_id(("CL61",)),
+        )
+
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.reason_code, "p50_does_not_recover")
+
+    def test_p50_continuation_keeps_current_instrument_on_when_soc_stays_recovered(self) -> None:
+        times = pd.date_range("2026-08-09T00:00:00", periods=5, freq="1h")
+
+        decision = evaluate_p50_continuation_rule(
+            times=times,
+            soc_p50=[100.0, 99.0, 98.0, 97.0, 96.0],
+            current_mode=mode_id(("Radar",)),
+            horizon_hours=4,
+        )
+        modes = apply_p50_continuation_rule([MODE_DC_ONLY] * len(times), decision)
+
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reason_code, "p50_stays_at_recovery_target")
+        self.assertEqual(decision.recovery_time, times[-1])
+        self.assertTrue(all("Radar" in mode_kits(value) for value in modes))
+
     def test_validation_reanchors_a_planning_forecast_with_an_old_soc_anchor(self) -> None:
         power, _ = _training_data()
         forecast, _ = _forecast_inputs(pd.Timestamp("2026-07-15T00:00:00"), horizon_hours=240)
@@ -347,12 +413,41 @@ class OperatingScenarioTests(unittest.TestCase):
         )
 
         scenario_ids = set(str(value) for value in scenarios["scenario"].values)
-        self.assertTrue({SCENARIO_DC_ONLY, SCENARIO_CL61, SCENARIO_OPTIMIZED}.issubset(scenario_ids))
+        self.assertTrue(
+            {
+                SCENARIO_DC_ONLY,
+                SCENARIO_CL61,
+                SCENARIO_OPTIMIZED,
+                SCENARIO_P50_CONTINUATION,
+            }.issubset(scenario_ids)
+        )
         self.assertNotIn("BatterySOCForecast_Load100W", scenarios)
         self.assertEqual(float(scenarios["ScenarioSOCP50"].isel(time=0).min()), 86.0)
         optimized = scenarios.sel(scenario=SCENARIO_OPTIMIZED)
         self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
+        expected_active = sum(
+            ((np.asarray(optimized["ScenarioModeCode"].values, dtype=np.int16) & bit) > 0).astype(np.int8)
+            for bit in (1, 2, 4)
+        )
+        np.testing.assert_array_equal(
+            optimized["ScenarioActiveInstrumentCount"].values,
+            expected_active,
+        )
+        daily = json.loads(scenarios.attrs["optimized_daily_operations"])
+        self.assertAlmostEqual(
+            sum(float(value["total_instrument_hours"]) for value in daily.values()),
+            float(scenarios.attrs["optimized_total_instrument_hours"]),
+        )
+        for value in daily.values():
+            for kit in ("CL61", "Radar", "HATPRO"):
+                self.assertAlmostEqual(
+                    float(value[f"{kit}_on_hours"]) + float(value[f"{kit}_off_hours"]),
+                    float(value["available_clock_hours"]),
+                )
+        self.assertEqual(scenarios.attrs["optimized_phase_aware_search"], "true")
         self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
+        self.assertEqual(scenarios.attrs["p50_continuation_control_authority"], "advisory_only")
+        self.assertIn(scenarios.attrs["p50_continuation_status"], {"eligible", "not_eligible", "not_applicable"})
 
     def test_unsafe_zero_schedule_is_not_described_as_a_recommendation(self) -> None:
         diagnostic = describe_cl61_schedule(
@@ -405,15 +500,21 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertIn("all three controlled instruments off", scenarios.attrs["optimized_reason"])
         self.assertEqual(scenarios.attrs["optimized_operator_action_required"], "true")
 
-    def test_priority_schedule_falls_back_when_phase_aware_p10_is_unsafe(self) -> None:
+    def test_phase_aware_joint_search_retains_safe_single_instrument_subsets(self) -> None:
         power, pdu = _training_data()
         model = fit_operating_model(power, pdu, lookback_days=2)
         cl61_mode = mode_id(("CL61",))
         model.current_mode = cl61_mode
         model.current_confidence = 1.0
+        unsafe_combined_modes = (
+            mode_id(("CL61", "Radar")),
+            mode_id(("CL61", "HATPRO")),
+            mode_id(("Radar", "HATPRO")),
+            mode_id(("CL61", "Radar", "HATPRO")),
+        )
         model.mode_load_profiles = {
-            cl61_mode: StateLoadDynamics(
-                state=cl61_mode,
+            unsafe_mode: StateLoadDynamics(
+                state=unsafe_mode,
                 current_phase="steady",
                 state_started_at="2026-07-15T06:00:00",
                 phase_started_at="2026-07-15T06:00:00",
@@ -427,6 +528,7 @@ class OperatingScenarioTests(unittest.TestCase):
                 episode_count=2,
                 change_count=0,
             )
+            for unsafe_mode in unsafe_combined_modes
         }
         issue = pd.Timestamp(power["time"].values[-1])
         deterministic, ensemble = _forecast_inputs(issue)
@@ -441,9 +543,11 @@ class OperatingScenarioTests(unittest.TestCase):
         )
 
         optimized = scenarios.sel(scenario=SCENARIO_OPTIMIZED)
-        optimized_modes = [mode_from_code(value) for value in optimized["ScenarioModeCode"].values]
-        self.assertTrue(all("CL61" not in mode_kits(value) for value in optimized_modes))
-        self.assertEqual(scenarios.attrs["optimized_phase_validation_fallback"], "true")
+        active_count = np.asarray(optimized["ScenarioActiveInstrumentCount"].values, dtype=np.int8)
+        self.assertGreater(int(np.max(active_count[1:])), 0)
+        self.assertLessEqual(int(np.max(active_count[1:])), 1)
+        self.assertGreater(float(scenarios.attrs["optimized_total_instrument_hours"]), 0.0)
+        self.assertEqual(scenarios.attrs["optimized_phase_validation_fallback"], "false")
         self.assertGreaterEqual(float(optimized["ScenarioMinimumP10SOC"]), 40.0)
 
     def test_native_ensemble_is_preserved_for_the_decision_horizon(self) -> None:
@@ -762,7 +866,7 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(len(start_days), len(set(start_days)))
         self.assertGreaterEqual(result.minimum_p10_soc, 40.0)
 
-    def test_priority_optimizer_keeps_cl61_on_before_lower_priority_loads(self) -> None:
+    def test_priority_optimizer_maximizes_additive_controlled_energy(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
         solar = np.zeros((20, len(times)))
         components = np.tile(
@@ -782,24 +886,45 @@ class OperatingScenarioTests(unittest.TestCase):
 
         self.assertTrue(result.safe)
         self.assertGreaterEqual(result.minimum_p10_soc, 40.0)
-        self.assertEqual(
-            sum("CL61" in mode_kits(value) for value in result.modes[1:97]),
-            96,
-        )
-        self.assertEqual(
-            sum("Radar" in mode_kits(value) for value in result.modes[1:97]),
-            0,
-        )
-        self.assertEqual(
-            sum("HATPRO" in mode_kits(value) for value in result.modes[1:97]),
-            0,
-        )
+        self.assertEqual(result.instrument_hours, {"CL61": 15.0, "Radar": 12.0, "HATPRO": 12.0})
+        self.assertEqual(result.total_instrument_hours, 39.0)
+        self.assertAlmostEqual(result.controlled_energy_kwh, 6.0)
+        for kit in ("CL61", "Radar", "HATPRO"):
+            on = np.asarray([kit in mode_kits(value) for value in result.modes[:97]], dtype=bool)
+            starts = np.flatnonzero(on[1:] & ~on[:-1]) + 1
+            self.assertEqual(len(starts), len({times[index].date() for index in starts}))
+            for start in starts:
+                stop_candidates = np.flatnonzero(~on[start:])
+                stop = start + int(stop_candidates[0]) if stop_candidates.size else len(on)
+                self.assertGreaterEqual(stop - start, 12)
         self.assertTrue(
             all(
                 not ({"CL61", "Radar", "HATPRO"} & set(mode_kits(value)))
                 for value in result.modes[97:]
             )
         )
+
+    def test_additive_optimizer_uses_priority_only_to_break_equal_plans(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
+        solar = np.zeros((20, len(times)))
+        components = np.tile(
+            np.array([40.0, 490.0, 490.0, 490.0, 0.0, 0.0]),
+            (20, 1),
+        )
+
+        result = optimize_priority_schedule(
+            times=times,
+            solar_members_w=solar,
+            component_members=components,
+            initial_soc=100.0,
+            capacity_kwh=26.0,
+            base_mode=MODE_DC_ONLY,
+            horizon_hours=96,
+        )
+
+        self.assertTrue(result.safe)
+        self.assertEqual(result.instrument_hours, {"CL61": 12.0, "Radar": 0.0, "HATPRO": 0.0})
+        self.assertAlmostEqual(result.controlled_energy_kwh, 5.88)
 
     def test_optimizer_protects_reserve_through_full_planning_horizon(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
@@ -945,7 +1070,7 @@ class OperatingScenarioTests(unittest.TestCase):
             self.assertTrue(paths["model"].exists())
             self.assertTrue(paths["recommendations"].exists())
             archive = json.loads(paths["recommendations"].read_text(encoding="utf-8"))
-            self.assertEqual(archive["schema_version"], 3)
+            self.assertEqual(archive["schema_version"], 4)
             record = archive["recommendations"][-1]
             self.assertEqual(record["decision_horizon_hours"], 96)
             self.assertEqual(record["safety_constraint"], "P10 SOC must remain at or above 40%")
@@ -957,6 +1082,22 @@ class OperatingScenarioTests(unittest.TestCase):
             self.assertIn(record["recommendation_status"], {"safe_schedule", "reserve_only"})
             self.assertIn("reason", record)
             self.assertIn("blocking_instruments", record)
+            self.assertEqual(
+                record["p50_continuation"]["control_authority"],
+                "advisory_only",
+            )
+            self.assertEqual(
+                record["p50_continuation"]["scenario_id"],
+                SCENARIO_P50_CONTINUATION,
+            )
+            self.assertEqual(
+                len(record["forecast_trace"]["p50_continuation_mode_code"]),
+                96,
+            )
+            self.assertEqual(
+                len(record["forecast_trace"]["p50_continuation_soc_p50_pct"]),
+                96,
+            )
             self.assertEqual(len(record["forecast_trace"]["time_utc"]), 96)
             self.assertEqual(len(record["forecast_trace"]["soc_p50_pct"]), 96)
             self.assertTrue(record["recommended_mode_windows"])

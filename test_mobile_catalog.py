@@ -653,11 +653,15 @@ class MobileCatalogTests(unittest.TestCase):
 
         panel = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_schedule")
         self.assertEqual(panel["title"], "No Feasible CL61 Schedule")
-        self.assertEqual(panel["traces"][0]["label"], "Unsafe fallback (CL61 off)")
+        traces = {trace["id"]: trace for trace in panel["traces"]}
+        self.assertEqual(
+            traces["OperatingCL61OptimizedCL61On"]["label"],
+            "Unsafe fallback (CL61 off)",
+        )
         self.assertIn("not a recommendation", panel["explanation"])
         self.assertEqual(panel["info"]["title"], "No Feasible CL61 Schedule")
 
-    def test_priority_schedule_exposes_three_instrument_traces(self) -> None:
+    def test_priority_schedule_exposes_additive_sum_and_three_instrument_traces(self) -> None:
         import numpy as np
         import pandas as pd
         import xarray as xr
@@ -701,8 +705,12 @@ class MobileCatalogTests(unittest.TestCase):
                 response = mobile_catalog.power(window="96h", group="forecast_96h")
 
         panel = next(panel for panel in response["panels"] if panel["id"] == "operating_plan_schedule")
-        self.assertEqual(panel["title"], "Recommended Instrument Operating Schedule")
+        self.assertEqual(panel["title"], "Recommended Additive Instrument Schedule")
         traces = {trace["id"]: trace for trace in panel["traces"]}
+        self.assertEqual(
+            [point["value"] for point in traces["OperatingCL61OptimizedActiveCount"]["points"]],
+            [0.0, 1.0, 2.0, 3.0, 0.0],
+        )
         self.assertEqual(
             [point["value"] for point in traces["OperatingCL61OptimizedCL61On"]["points"]],
             [0.0, 1.0, 1.0, 1.0, 0.0],
@@ -714,6 +722,10 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(
             [point["value"] for point in traces["OperatingCL61OptimizedHATPROOn"]["points"]],
             [0.0, 0.0, 0.0, 1.0, 0.0],
+        )
+        self.assertEqual(
+            panel["leftAxisLabel"],
+            "Additive activity (sum 0-3; each instrument 0/1)",
         )
 
     def test_96_hour_system_and_scenario_cards_share_anchor_values_and_endpoint(self) -> None:

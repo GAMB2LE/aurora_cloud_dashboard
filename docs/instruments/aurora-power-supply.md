@@ -252,6 +252,13 @@ PDU instructions. The custom CL61 plan editor
 evaluates a selected start and duration against the stored ensembles
 immediately. All plans are advisory only.
 
+A separate **P50 continuation** comparison can keep controlled instruments
+that are already on in the plotted recommendation until median SOC next
+recovers to 95%, but only if median SOC stays at or above 40% before that
+recovery. It never recommends starting an instrument and does not weaken or
+hide the P10 safety result. When the rule is not eligible, its trace uses the
+existing conservative P10 timetable. Neither rule controls a PDU outlet.
+
 The hybrid learner combines a finite-state/HMM-like mode classifier with robust
 Kalman updates for the DC and kit load components. It saves the full component
 covariance and only learns from observations newer than its persisted cursor,

@@ -127,10 +127,13 @@ def test_operating_scenarios_start_with_current_state_reference() -> None:
 
     assert panel.traces[0].var == "OperatingCurrentSOCP50"
     assert panel.traces[0].label == "Current load / system as-is"
+    assert panel.traces[1].var == "OperatingP50ContinuationSOCP50"
     assert panel.traces[0].line_width > max(trace.line_width for trace in panel.traces[1:])
     info = build_power_forecast_info(panel.key)
     assert info is not None
     assert "current exact instrument state is the reference" in info["summary"]
+    assert "P50 continuation" in info["summary"]
+    assert "never operate PDU outlets" in info["implementation"]
     assert "states are never blended" in info["implementation"]
 
 
@@ -165,7 +168,7 @@ def test_unsafe_cl61_fallback_is_labelled_as_infeasible() -> None:
     assert power_trace_label(ds, load_trace) == "Unsafe fallback load (CL61 off)"
 
 
-def test_priority_schedule_uses_three_instrument_labels() -> None:
+def test_priority_schedule_uses_additive_sum_and_three_instrument_labels() -> None:
     panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "operating_plan_schedule")
     ds = xr.Dataset(
         attrs={
@@ -181,15 +184,17 @@ def test_priority_schedule_uses_three_instrument_labels() -> None:
     presentation = cl61_schedule_presentation(ds)
     labels = [power_trace_label(ds, trace) for trace in panel.traces]
 
-    assert presentation.title == "Recommended Instrument Operating Schedule"
+    assert presentation.title == "Recommended Additive Instrument Schedule"
     assert labels == [
+        "Total active instruments (additive sum)",
         "Recommended CL61 schedule",
         "Recommended Radar schedule",
         "Recommended HATPRO schedule",
     ]
     implementation = build_power_forecast_info(panel.key, ds)["implementation"]
-    assert "maximises CL61 hours first" in implementation
-    assert "then Radar, then HATPRO" in implementation
+    assert "maximises controlled energy first" in implementation
+    assert "CL61, then Radar, then HATPRO breaks" in implementation
+    assert "additive sum from 0 to 3" in implementation
 
 
 def _power_layout_panels() -> tuple[PanelSpec, ...]:
