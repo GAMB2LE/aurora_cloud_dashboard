@@ -4,7 +4,8 @@ The dashboard is a read-only consumer of archive state. Transfer, verification,
 object-store, and pruning services are owned by `aurora-cloud-infra` and
 `aurora-edge-infra`.
 
-The cloud archive monitor publishes:
+The cloud archive monitor publishes a `health-v2` payload at the stable
+compatibility path:
 
 ```text
 /data/aurora/internal/archive_status/health-v1.json
@@ -15,7 +16,8 @@ The cloud archive monitor publishes:
 the mobile catalog. It must not infer pruning safety from display artifacts
 or enable, stop, or repair archive writers.
 
-The mobile response also exposes `operations.archiveDelivery`. This is
+The mobile response exposes `operations.archiveDelivery` and
+`operations.archiveStatus`. These are
 presentation-only telemetry for the newest-first raw queue: total pending
 files and bytes, independent GWS/object-store pending counts, oldest pending
 age, last successful delivery, and the current strict-audit job/phase. Queue
@@ -45,11 +47,16 @@ The contract deliberately separates current delivery from archive failure:
 The dashboard renders the infrastructure contract's `operator_status` rather
 than rebuilding severity from raw metric names:
 
-- green means delivery and the latest complete strict audit are healthy;
-- amber means verification is running or delayed while the last complete
-  report was clean and no measured gaps exist; pruning is paused;
-- red means a settled file is missing or mismatched, a required writer failed,
-  or the last complete evidence is unsafe.
+- green means no settled gap is proven, newest-first delivery is current, and
+  certified raw evidence is within its SLO;
+- amber means delivery or certification exceeded its warning SLO without a
+  proven gap;
+- red means a settled file is missing or mismatched, delivery is stalled, or
+  certified safety evidence has been unavailable for 24 hours.
+
+Routine audit activity and a pending second retention confirmation are status,
+not active alerts. The archive card continues to show audit progress and
+whether pruning is ready or paused.
 
 For example, a JASMIN object-store listing timeout after a clean report is
 shown as “Archive verification failed” with the affected job and a clear

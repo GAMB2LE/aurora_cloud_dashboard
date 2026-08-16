@@ -567,6 +567,12 @@ def operations() -> dict[str, Any]:
         "streamStates": stream_states,
         "rootCauseGroups": _root_cause_groups(snapshot, stream_states),
         "archiveDelivery": _archive_delivery(archive_health, snapshot),
+        "archiveStatus": {
+            "delivery": archive_health.get("delivery", {}),
+            "durability": archive_health.get("durability", {}),
+            "verification": archive_health.get("verification", {}),
+            "retention": archive_health.get("retention", {}),
+        },
         "alerts": active_alerts,
         "trendCards": _trend_cards(snapshot),
         "sources": {
@@ -706,6 +712,12 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
 def _archive_delivery(
     archive_health: dict[str, Any], snapshot: dict[str, Any]
 ) -> dict[str, Any]:
+    delivery = archive_health.get("delivery")
+    if not isinstance(delivery, dict):
+        delivery = {}
+    verification = archive_health.get("verification")
+    if not isinstance(verification, dict):
+        verification = {}
     evidence = archive_health.get("evidence")
     if not isinstance(evidence, dict):
         evidence = {}
@@ -713,28 +725,49 @@ def _archive_delivery(
     if not isinstance(progress, dict):
         progress = {}
     return {
-        "mode": "newest-first",
-        "pendingFiles": int(snapshot.get("archive_delivery_pending_count") or 0),
-        "pendingBytes": int(snapshot.get("archive_delivery_pending_bytes") or 0),
+        "level": normalize_level(delivery.get("level") or "unknown"),
+        "mode": str(delivery.get("mode") or "newest-first"),
+        "pendingFiles": int(
+            delivery.get("pending_files")
+            or snapshot.get("archive_delivery_pending_count")
+            or 0
+        ),
+        "pendingBytes": int(
+            delivery.get("pending_bytes")
+            or snapshot.get("archive_delivery_pending_bytes")
+            or 0
+        ),
         "gwsPendingFiles": int(
-            snapshot.get("archive_delivery_gws_pending_count") or 0
+            delivery.get("gws_pending_files")
+            or snapshot.get("archive_delivery_gws_pending_count")
+            or 0
         ),
         "objectStorePendingFiles": int(
-            snapshot.get("archive_delivery_object_store_pending_count") or 0
+            delivery.get("object_store_pending_files")
+            or snapshot.get("archive_delivery_object_store_pending_count")
+            or 0
         ),
         "oldestPendingAgeMinutes": float(
-            snapshot.get("archive_delivery_oldest_pending_age_minutes") or 0
+            delivery.get("oldest_pending_age_minutes")
+            or snapshot.get("archive_delivery_oldest_pending_age_minutes")
+            or 0
         ),
-        "lastSuccessAgeMinutes": snapshot.get(
-            "archive_delivery_last_success_age_minutes"
-        ),
+        "lastSuccessAgeMinutes": delivery.get("last_success_age_minutes")
+        if delivery.get("last_success_age_minutes") is not None
+        else snapshot.get("archive_delivery_last_success_age_minutes"),
         "strictAudit": {
-            "state": progress.get("state"),
-            "completedJobs": progress.get("completed_jobs", []),
-            "totalJobs": int(progress.get("total_jobs") or 0),
-            "currentJobs": progress.get("current_jobs")
+            "state": verification.get("state") or progress.get("state"),
+            "completedJobs": verification.get("completed_jobs")
+            or progress.get("completed_jobs", []),
+            "totalJobs": int(
+                verification.get("total_jobs") or progress.get("total_jobs") or 0
+            ),
+            "currentJobs": verification.get("current_jobs")
+            or progress.get("current_jobs")
             or ([progress.get("current_job")] if progress.get("current_job") else []),
-            "phase": progress.get("phase"),
+            "phase": verification.get("phase") or progress.get("phase"),
+            "lastCompleteAt": verification.get("last_complete_at"),
+            "lastCertifiedRawAt": verification.get("last_certified_raw_at"),
         },
     }
 

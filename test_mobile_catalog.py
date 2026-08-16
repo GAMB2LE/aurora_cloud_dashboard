@@ -217,6 +217,73 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(archive_alerts[0]["id"], "archive:verification")
         self.assertEqual(archive_alerts[0]["title"], "Archive verification is running")
 
+    def test_v2_clean_audit_activity_is_status_not_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot.json"
+            health = root / "health.json"
+            archive = root / "archive.json"
+            alerts = root / "alerts.json"
+            snapshot.write_text('{"time_utc":"2026-08-16T12:00:00Z"}')
+            health.write_text('{"overall_level":"green"}')
+            archive.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "health-v2",
+                        "generated_at": "2026-08-16T12:00:00Z",
+                        "overall_level": "green",
+                        "operator_status": {
+                            "level": "green",
+                            "title": "Archive copies are healthy",
+                            "detail": (
+                                "Newest files are being delivered; a routine strict "
+                                "audit is running in the background."
+                            ),
+                            "pruning_paused": True,
+                        },
+                        "delivery": {
+                            "level": "green",
+                            "mode": "newest-first",
+                            "pending_files": 12,
+                            "gws_pending_files": 12,
+                            "object_store_pending_files": 12,
+                            "oldest_pending_age_minutes": 14,
+                            "last_success_age_minutes": 2,
+                        },
+                        "verification": {
+                            "state": "running",
+                            "completed_jobs": ["raw"],
+                            "total_jobs": 5,
+                            "current_jobs": ["products"],
+                            "last_certified_raw_at": "2026-08-16T11:00:00Z",
+                        },
+                        "durability": {
+                            "raw_retention": {"clean": True},
+                            "products": {"clean": True},
+                        },
+                        "retention": {"ready": False, "paused": True},
+                    }
+                )
+            )
+            alerts.write_text("{}")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                },
+            ):
+                response = mobile_catalog.operations()
+
+        self.assertEqual(response["overallLevel"], "green")
+        self.assertFalse(
+            any(alert["id"].startswith("archive:") for alert in response["alerts"])
+        )
+        self.assertEqual(response["archiveDelivery"]["strictAudit"]["state"], "running")
+        self.assertEqual(response["archiveStatus"]["retention"]["paused"], True)
+
     def test_power_trace_sampling_is_bounded_and_preserves_extrema(self) -> None:
         import numpy as np
 
