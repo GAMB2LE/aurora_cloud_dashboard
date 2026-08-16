@@ -437,6 +437,7 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - DC-Only
 - DC + CL61 continuously on
 - additive CL61, Radar, and HATPRO schedule
+- P50 continuation scenario for controlled instruments that are already on
 - CL61
 - CL61 + Radar
 - CL61 + HATPRO
@@ -470,6 +471,16 @@ from the latest physical SOC anchor; the reserve tail is retained for safety
 analysis but is not labelled as part of the 96-hour decision display. The dashboard
 also evaluates a user-selected CL61 start and duration directly from the stored
 solar and component ensembles, so edits react without another ECMWF download.
+
+The P50 continuation rule is published as a separate comparison scenario; it
+does not replace the conservative P10 plan. It can keep only CL61, Radar, or
+HATPRO instruments that are already on in the recommendation trace until the
+median SOC next reaches 95%, provided median SOC never falls below 40% first.
+It never starts an instrument. If no 95% recovery exists in the 96-hour
+decision window, or if the median path crosses 40% before recovery, the trace
+falls back to the existing P10 priority plan. The product records eligibility,
+held instruments, recovery time, minimum pre-recovery P50 SOC, and an explicit
+`advisory_only` authority marker.
 
 The scenario contract distinguishes a feasible additive schedule, a safe
 reserve-only plan, and an infeasible result. If the fixed DC/UAS baseline

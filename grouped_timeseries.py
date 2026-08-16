@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import timedelta
+import json
 import math
 import os
 from pathlib import Path
@@ -276,6 +277,7 @@ OPERATING_SCENARIO_PREFIXES = OrderedDict(
         ("dc_only", "OperatingDCOnly"),
         ("cl61_continuous", "OperatingCL61Continuous"),
         ("optimized_cl61", "OperatingCL61Optimized"),
+        ("p50_continuation", "OperatingP50Continuation"),
     )
 )
 OPERATING_SUGGESTED_PREFIXES = OrderedDict(
@@ -514,6 +516,16 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
             return f"Current load / system as-is: {mode}{suffix}"
     if trace.var == "OperatingCL61OptimizedActiveCount":
         return "Total active instruments (additive sum)"
+    if trace.var == "OperatingP50ContinuationSOCP50":
+        eligible = _schedule_attr(ds, "p50_continuation_eligible").lower() == "true"
+        instruments_text = _schedule_attr(ds, "p50_continuation_held_instruments")
+        try:
+            instruments = [str(value) for value in json.loads(instruments_text)]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            instruments = []
+        if eligible and instruments:
+            return f"P50 continuation: keep {' + '.join(instruments)} on to median recovery"
+        return "P50 continuation unavailable: conservative P10 plan"
     if trace.var in {
         "OperatingCL61OptimizedCL61On",
         "OperatingCL61OptimizedRadarOn",
@@ -797,11 +809,12 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
         },
         "operating_plan_scenarios": {
             "title": "Suggested instrument-mode SOC forecasts",
-            "summary": "The current exact instrument state is the reference, followed by eight explicit instrument combinations, including all instruments with UAS at tier 3.",
-            "implementation": "The system-as-is line uses the latest confirmed finite instrument state and its currently detected sustained load phase. Each comparison line uses the learned load distribution for exactly the named state; states are never blended. Recurrent startup and fan phases add uncertainty only within their own state. The UAS tier-3 load is learned separately and remains provisional until at least three independent episodes and six observed hours are available. All lines share the forecast issue, initial SOC, solar ensemble, and calibrated battery assumptions. They are advisory and never operate PDU outlets.",
+            "summary": "The current exact instrument state is the reference, with a P50 continuation recommendation and eight explicit instrument combinations, including all instruments with UAS at tier 3.",
+            "implementation": "The system-as-is line uses the latest confirmed finite instrument state and its currently detected sustained load phase. The P50 continuation line holds only controlled instruments that are already on until median SOC next reaches 95%, but only when median SOC stays at or above 40% before that recovery; otherwise it follows the conservative P10 priority timetable. It never starts an instrument. Each fixed comparison line uses the learned load distribution for exactly the named state; states are never blended. Recurrent startup and fan phases add uncertainty only within their own state. The UAS tier-3 load is learned separately and remains provisional until at least three independent episodes and six observed hours are available. All lines share the forecast issue, initial SOC, solar ensemble, and calibrated battery assumptions. They are advisory and never operate PDU outlets.",
             "metrics": [
                 {"label": "P50", "detail": "The median SOC path for each named instrument combination."},
                 {"label": "Current state", "detail": "Reference SOC path if the latest confirmed instrument state and detected load phase continue."},
+                {"label": "P50 continuation", "detail": "Keeps only currently-on controlled instruments on through the next 95% median-SOC recovery when the path first stays above the 40% floor. It is a scenario, not control."},
                 {"label": "Common basis", "detail": "Every line starts from the same measured SOC and uses the same weather forecast."},
                 {"label": "State loads", "detail": "The learned distribution for each exact named state, including recurrent startup or fan phases where supported."},
                 {"label": "UAS tier 3", "detail": "Tier-specific load estimate; provisional until the minimum independent evidence gate is met."},
@@ -1736,6 +1749,15 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     valid_min=0.0,
                     valid_max=100.0,
                     line_width=3.2,
+                ),
+                TraceSpec(
+                    "OperatingP50ContinuationSOCP50",
+                    "P50 continuation rule",
+                    COLOR["teal"],
+                    dash="longdash",
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=3.0,
                 ),
                 TraceSpec("OperatingSuggested1SOCP50", "CL61", COLOR["red"], valid_min=0.0, valid_max=100.0, line_width=2.1),
                 TraceSpec("OperatingSuggested2SOCP50", "CL61 + Radar", COLOR["blue"], valid_min=0.0, valid_max=100.0, line_width=2.1),
@@ -2876,6 +2898,20 @@ def _operating_scenario_attrs(
         ("optimized_active_instrument_count_max", "operating_optimized_active_instrument_count_max"),
         ("optimized_phase_aware_search", "operating_optimized_phase_aware_search"),
         ("optimized_phase_validation_minimum_p10_soc", "operating_optimized_phase_validation_minimum_p10_soc"),
+        ("p50_continuation_control_authority", "operating_p50_continuation_control_authority"),
+        ("p50_continuation_eligible", "operating_p50_continuation_eligible"),
+        ("p50_continuation_status", "operating_p50_continuation_status"),
+        ("p50_continuation_reason_code", "operating_p50_continuation_reason_code"),
+        ("p50_continuation_reason", "operating_p50_continuation_reason"),
+        ("p50_continuation_held_instruments", "operating_p50_continuation_held_instruments"),
+        ("p50_continuation_recovery_soc_pct", "operating_p50_continuation_recovery_soc_pct"),
+        ("p50_continuation_minimum_soc_pct", "operating_p50_continuation_minimum_soc_pct"),
+        ("p50_continuation_recovery_time_utc", "operating_p50_continuation_recovery_time_utc"),
+        (
+            "p50_continuation_minimum_soc_before_recovery_pct",
+            "operating_p50_continuation_minimum_soc_before_recovery_pct",
+        ),
+        ("p50_continuation_fallback", "operating_p50_continuation_fallback"),
         ("minimum_controlled_run_hours", "operating_minimum_controlled_run_hours"),
         ("max_controlled_starts_per_utc_day", "operating_max_controlled_starts_per_utc_day"),
     ):

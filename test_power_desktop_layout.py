@@ -127,10 +127,13 @@ def test_operating_scenarios_start_with_current_state_reference() -> None:
 
     assert panel.traces[0].var == "OperatingCurrentSOCP50"
     assert panel.traces[0].label == "Current load / system as-is"
+    assert panel.traces[1].var == "OperatingP50ContinuationSOCP50"
     assert panel.traces[0].line_width > max(trace.line_width for trace in panel.traces[1:])
     info = build_power_forecast_info(panel.key)
     assert info is not None
     assert "current exact instrument state is the reference" in info["summary"]
+    assert "P50 continuation" in info["summary"]
+    assert "never operate PDU outlets" in info["implementation"]
     assert "states are never blended" in info["implementation"]
 
 
