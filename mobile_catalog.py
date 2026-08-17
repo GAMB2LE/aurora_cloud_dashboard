@@ -52,6 +52,8 @@ PDU_STATE_FRESHNESS_MINUTES = 30.0
 AUTOMATIC_PHASE_FRESHNESS_MINUTES = 30.0
 UAS_TIER_FRESHNESS_MINUTES = float(os.environ.get("UAS_STALE_AFTER_MINUTES", "5"))
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
+POWER_FRESH_MINUTES = 30.0
+POWER_STALE_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
 OPERATIONS_TREND_CACHE_SECONDS = 60.0
 OPERATIONS_TREND_FRESHNESS = timedelta(minutes=30)
@@ -516,6 +518,16 @@ def operations() -> dict[str, Any]:
     )
 
     stream_states = [_stream_state(snapshot, spec) for spec in OPERATIONS_STREAMS]
+    power_alert = _power_freshness_alert(snapshot)
+    if power_alert:
+        for stream in stream_states:
+            if stream["id"] == "power":
+                stream["level"] = _worst_level(
+                    stream["level"], power_alert["level"]
+                )
+                stream["sourceHealthy"] = power_alert["level"]
+                stream["detail"] = power_alert["detail"]
+                break
     if any(stream["level"] == "red" for stream in stream_states):
         overall = "red"
     elif overall == "unknown" and any(
@@ -535,6 +547,12 @@ def operations() -> dict[str, Any]:
         for alert in _active_alerts(alert_state)
         if alert.get("id") not in {"archive:health_red", "archive:verification"}
     ]
+    if power_alert:
+        active_alerts = [
+            alert for alert in active_alerts if alert.get("id") != "power:freshness"
+        ]
+        active_alerts = [power_alert, *active_alerts]
+        overall = _worst_level(overall, power_alert["level"])
     if normalize_level(archive_status["level"]) in {"amber", "red"}:
         if archive_health:
             active_alerts = [
@@ -562,6 +580,7 @@ def operations() -> dict[str, Any]:
             health_error,
             snapshot_error,
             archive_status,
+            power_alert,
         ),
         "checkCounts": check_counts,
         "streamStates": stream_states,
@@ -621,15 +640,20 @@ def _operations_summary(
     health_error: Any,
     snapshot_error: Any,
     archive_status: dict[str, str],
+    power_alert: dict[str, Any] | None = None,
 ) -> str:
     if health_error:
         return f"Health JSON error: {health_error}"
     if snapshot_error:
         return f"Snapshot JSON error: {snapshot_error}"
+    if power_alert and normalize_level(power_alert.get("level")) == "red":
+        return str(power_alert["title"])
     red_count = sum(1 for stream in streams if stream["level"] == "red")
     unknown_count = sum(1 for stream in streams if stream["level"] == "unknown")
     if red_count:
         return f"{red_count} stream group{'s' if red_count != 1 else ''} need attention"
+    if power_alert:
+        return str(power_alert["title"])
     if unknown_count == len(streams):
         return "No operations snapshot available"
     if archive_status.get("level") == "amber":
@@ -984,20 +1008,17 @@ def overview() -> dict[str, Any]:
     # with the battery metrics. Opening the wide display Zarr here added several
     # seconds to every Overview/API request. Keep the direct read only as a
     # compatibility fallback for older snapshots.
-    latest_power_time = next(
-        (
-            snapshot.get(key)
-            for key in (
-                "power_latest_time_utc",
-                "aps_battery_power_time_utc",
-                "aps_battery_soc_time_utc",
-                "aps_battery_voltage_time_utc",
-            )
-            if snapshot.get(key)
-        ),
-        None,
-    ) or _latest_power_time()
-    depletion_value, depletion_detail = _battery_depletion_text(snapshot)
+    latest_power_time = _snapshot_power_time(snapshot) or _latest_power_time()
+    power_level = _age_level(
+        latest_power_time,
+        POWER_FRESH_MINUTES,
+        POWER_STALE_MINUTES,
+    )
+    depletion_value, depletion_detail = _battery_depletion_text(
+        snapshot,
+        power_level=power_level,
+        power_time=latest_power_time,
+    )
     environmental_cards = _environmental_signal_cards()
     science_source_times = {
         "vaisalamet": next(
@@ -1015,10 +1036,10 @@ def overview() -> dict[str, Any]:
     }
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
-        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
-        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
-        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
-        _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
+        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _freshness_guarded_level(_trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
+        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
+        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), power_level), latest_power_time, depletion_detail),
+        _overview_card("power", "Power Data", _power_time_text(latest_power_time), power_level, latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
         *environmental_cards,
     ]
@@ -1341,7 +1362,17 @@ def _latest_power_time() -> str | None:
             dataset.close()
 
 
-def _battery_depletion_text(snapshot: dict[str, Any]) -> tuple[str, str]:
+def _battery_depletion_text(
+    snapshot: dict[str, Any],
+    *,
+    power_level: str = "green",
+    power_time: str | None = None,
+) -> tuple[str, str]:
+    if normalize_level(power_level) in {"red", "unknown"}:
+        return (
+            "Unavailable",
+            _stale_power_detail(power_time),
+        )
     soc = _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))
     power_w = _metric_value(snapshot, ("aps_battery_power_w", "BatteryWatts"))
     if soc is None or power_w is None:
@@ -1415,6 +1446,78 @@ def _age_level(value: str | None, green_minutes: float, amber_minutes: float) ->
         return "unknown"
     age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
     return "green" if age_minutes < green_minutes else "amber" if age_minutes < amber_minutes else "red"
+
+
+def _snapshot_power_time(snapshot: dict[str, Any]) -> str | None:
+    return next(
+        (
+            str(snapshot[key])
+            for key in (
+                "power_latest_time_utc",
+                "aps_battery_power_time_utc",
+                "aps_battery_soc_time_utc",
+                "aps_battery_voltage_time_utc",
+            )
+            if snapshot.get(key)
+        ),
+        None,
+    )
+
+
+def _worst_level(*levels: Any) -> str:
+    normalized = [normalize_level(level) for level in levels]
+    for candidate in ("red", "amber", "green"):
+        if candidate in normalized:
+            return candidate
+    return "unknown"
+
+
+def _freshness_guarded_level(value_level: Any, freshness_level: Any) -> str:
+    if normalize_level(value_level) == "unknown":
+        return "unknown"
+    return _worst_level(value_level, freshness_level)
+
+
+def _stale_power_detail(value: str | None) -> str:
+    moment = _parse_utc(value)
+    if moment is None:
+        return "Latest APS power measurement is unavailable; depletion cannot be estimated"
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return (
+        f"APS power telemetry is {_duration_text(age_minutes / 60)} old; "
+        "depletion cannot be estimated from stale data"
+    )
+
+
+def _power_freshness_alert(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    latest_power_time = _snapshot_power_time(snapshot)
+    if latest_power_time is None:
+        return None
+    level = _age_level(
+        latest_power_time,
+        POWER_FRESH_MINUTES,
+        POWER_STALE_MINUTES,
+    )
+    if level not in {"amber", "red"}:
+        return None
+    moment = _parse_utc(latest_power_time)
+    if moment is None:
+        return None
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return {
+        "id": "power:freshness",
+        "title": (
+            "APS power telemetry is stale"
+            if level == "red"
+            else "APS power telemetry is delayed"
+        ),
+        "level": level,
+        "detail": (
+            f"No APS power sample since {moment.strftime('%H:%M UTC')} "
+            f"({_duration_text(age_minutes / 60)} ago). Battery SOC, voltage "
+            "and depletion are last-known values."
+        ),
+    }
 
 
 def _age_text(value: str | None) -> str:

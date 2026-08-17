@@ -929,7 +929,14 @@ class MobileCatalogTests(unittest.TestCase):
                     {"id": "air-temperature"},
                     {"id": "kt15"},
                 ],
-            ):
+            ), patch.object(
+                mobile_catalog,
+                "datetime",
+                wraps=datetime,
+            ) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(
+                    2026, 7, 5, 7, 30, tzinfo=timezone.utc
+                )
                 response = mobile_catalog.overview()
 
         self.assertEqual(
@@ -942,6 +949,77 @@ class MobileCatalogTests(unittest.TestCase):
         depletion = response["cards"][3]
         self.assertEqual(depletion["value"], "10d 15h")
         self.assertIn("14.6 kWh remaining", depletion["detail"])
+
+    def test_overview_propagates_stale_power_into_health_and_alerts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "latest.json"
+            health = root / "latest_health.json"
+            archive = root / "archive.json"
+            alerts = root / "state.json"
+            snapshot_payload: dict[str, int | float | str] = {
+                "time_utc": "2026-08-17T20:36:55Z",
+                "aps_battery_soc_pct": 100.0,
+                "aps_battery_soc_age_min": 133.0,
+                "aps_battery_voltage_v": 55.9,
+                "aps_battery_voltage_age_min": 133.0,
+                "aps_battery_power_w": 16.0,
+                "power_latest_time_utc": "2026-08-17T18:29:31Z",
+            }
+            for spec in mobile_catalog.OPERATIONS_STREAMS:
+                snapshot_payload[str(spec["source"])] = 1
+                for service in spec["services"]:
+                    snapshot_payload[str(service)] = 1
+            snapshot.write_text(json.dumps(snapshot_payload), encoding="utf-8")
+            health.write_text('{"overall_level":"green"}', encoding="utf-8")
+            archive.write_text("{}", encoding="utf-8")
+            alerts.write_text('{"active":{}}', encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                    "AURORACAM_RAW_ROOT": str(root / "camera"),
+                },
+            ), patch.object(
+                mobile_catalog,
+                "_environmental_signal_cards",
+                return_value=[],
+            ), patch.object(
+                mobile_catalog,
+                "datetime",
+                wraps=datetime,
+            ) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(
+                    2026, 8, 17, 20, 42, 31, tzinfo=timezone.utc
+                )
+                response = mobile_catalog.overview()
+
+        cards = {card["id"]: card for card in response["cards"]}
+        self.assertEqual(cards["operations"]["level"], "red")
+        self.assertEqual(cards["operations"]["detail"], "APS power telemetry is stale")
+        self.assertEqual(cards["battery-soc"]["level"], "red")
+        self.assertEqual(
+            cards["battery-soc"]["updatedAt"],
+            "2026-08-17T18:29:31Z",
+        )
+        self.assertEqual(cards["battery-voltage"]["level"], "red")
+        self.assertEqual(cards["battery-depletion"]["level"], "red")
+        self.assertEqual(cards["battery-depletion"]["value"], "Unavailable")
+        self.assertIn(
+            "depletion cannot be estimated from stale data",
+            cards["battery-depletion"]["detail"],
+        )
+        self.assertEqual(cards["power"]["level"], "red")
+        self.assertEqual(len(response["activeAlerts"]), 1)
+        self.assertEqual(response["activeAlerts"][0]["id"], "power:freshness")
+        self.assertEqual(
+            response["activeAlerts"][0]["title"],
+            "APS power telemetry is stale",
+        )
+        self.assertIn("18:29 UTC", response["activeAlerts"][0]["detail"])
 
     def test_environmental_signal_cards_derive_wind_and_preserve_source_times(self) -> None:
         with patch.object(
