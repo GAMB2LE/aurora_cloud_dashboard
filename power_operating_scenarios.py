@@ -486,7 +486,7 @@ def build_observation_frame(
         )
         observed["uas_tier_learning_eligible"] = [
             bool(
-                canonical is not None
+                pd.notna(canonical)
                 and tier_is_learning_source(raw, int(canonical))
             )
             for raw, canonical in zip(

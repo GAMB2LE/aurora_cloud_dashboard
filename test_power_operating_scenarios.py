@@ -136,6 +136,27 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertFalse(tier_is_learning_source(1, 1))
         self.assertFalse(tier_is_learning_source(2, 2))
 
+    def test_unknown_uas_tiers_are_ignored_by_learning(self) -> None:
+        power, pdu = _training_data()
+        times = pd.DatetimeIndex(power["time"].values)
+        tiers = pd.Series(
+            [11.0, np.nan, 999.0, 12.0],
+            index=times[:4],
+            dtype=float,
+        )
+
+        observations = build_observation_frame(
+            power,
+            pdu,
+            uas_tier=tiers,
+            lookback_days=2,
+        )
+
+        self.assertTrue(observations.loc[times[0], "uas_tier_learning_eligible"])
+        self.assertFalse(observations.loc[times[1], "uas_tier_learning_eligible"])
+        self.assertFalse(observations.loc[times[2], "uas_tier_learning_eligible"])
+        self.assertTrue(observations.loc[times[3], "uas_tier_learning_eligible"])
+
     def test_p50_continuation_holds_only_currently_on_controlled_instruments(self) -> None:
         times = pd.date_range("2026-08-09T00:00:00", periods=6, freq="1h")
         decision = evaluate_p50_continuation_rule(
