@@ -6,7 +6,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -24,6 +24,8 @@ from power_load_contract import (
 from power_load_dynamics import (
     LOAD_PHASE_SCHEMA_VERSION,
     PHASE_CODES,
+    PHASE_FAN_HIGH,
+    PHASE_FAN_LOW,
     PHASE_STEADY,
     StateLoadDynamics,
     controlled_load_member_profiles,
@@ -34,12 +36,28 @@ from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
 )
+from power_state_catalog import (
+    LEARNED_POWER_STATE_IDS,
+    POWER_STATE_SCENARIOS,
+    POWER_STATE_SCENARIO_IDS,
+    UAS_CHARGE_DURATION_HOURS,
+    UAS_CHARGE_ESTIMATE_W,
+    UAS_CHARGE_EVENT_KIT,
+    UAS_CHARGE_TIERS,
+    UAS_TIER_LEARNING_SOURCES,
+    canonical_uas_tier,
+    operating_load_state_id,
+    state_catalog_records,
+    tier_is_learning_source,
+    uas_state_id,
+    uas_state_label,
+)
 from power_battery_model import BatteryModel
 
-MODEL_NAME = "hybrid_state_space_phases_v10"
-MODEL_VERSION = 10
-STATE_SCHEMA_VERSION = 6
-SCENARIO_SCHEMA_VERSION = 11
+MODEL_NAME = "hybrid_canonical_uas_cl61_states_v11"
+MODEL_VERSION = 11
+STATE_SCHEMA_VERSION = 7
+SCENARIO_SCHEMA_VERSION = 12
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -63,6 +81,9 @@ P50_CONTINUATION_RECOVERY_SOC_PCT = 95.0
 P50_CONTINUATION_MINIMUM_SOC_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 UAS_TIER_RELIABLE_EPISODES = 3
 UAS_TIER_RELIABLE_HOURS = 6.0
+UAS_PROXY_TIER_RELIABLE_EPISODES = 2
+UAS_CHARGE_RELIABLE_EPISODES = 1
+UAS_CHARGE_RELIABLE_HOURS = 2.5
 UAS_TIER3_FALLBACK_P10_W = 55.0
 UAS_TIER3_FALLBACK_P50_W = 108.0
 UAS_TIER3_FALLBACK_P90_W = 302.0
@@ -104,7 +125,7 @@ def load_operating_events(path: Path | None = DEFAULT_EVENTS_PATH) -> tuple[Oper
             kit = str(row.get("kit", "")).strip()
             action = str(row.get("action", "")).strip().lower()
             timestamp = pd.to_datetime(row.get("time_utc"), errors="coerce", utc=True)
-            if kit not in KIT_ORDER or action not in {"on", "off"} or pd.isna(timestamp):
+            if kit not in (*KIT_ORDER, UAS_CHARGE_EVENT_KIT) or action not in {"on", "off"} or pd.isna(timestamp):
                 continue
             events.append(
                 OperatingEvent(
@@ -460,6 +481,27 @@ def build_observation_frame(
             method="ffill",
             tolerance=pd.Timedelta(minutes=30),
         )
+        observed["uas_canonical_tier"] = observed["uas_effective_tier"].map(
+            canonical_uas_tier
+        )
+        observed["uas_tier_learning_eligible"] = [
+            bool(
+                canonical is not None
+                and tier_is_learning_source(raw, int(canonical))
+            )
+            for raw, canonical in zip(
+                observed["uas_effective_tier"],
+                observed["uas_canonical_tier"],
+                strict=True,
+            )
+        ]
+
+    # Charging is an explicitly annotated state, not a wattage guess.  The
+    # current field estimate is used until UASCharge on/off events provide a
+    # complete observed episode for learning.
+    observed["uas_charging"] = np.nan
+    for event in (value for value in events if value.kit == UAS_CHARGE_EVENT_KIT):
+        observed.loc[observed.index >= event.time, "uas_charging"] = float(event.active)
 
     mode_values: list[str] = []
     evidence_values: list[str] = []
@@ -516,6 +558,11 @@ def build_observation_frame(
         if nearest.size == 0 or nearest[0] < 0:
             continue
         index = int(nearest[0])
+        if event.kit == UAS_CHARGE_EVENT_KIT:
+            observed.iloc[index, observed.columns.get_loc("operator_event")] = (
+                f"UAS charging {'on' if event.active else 'off'}"
+            )
+            continue
         raw_window = pdu_frame.loc[event.time - tolerance : event.time + tolerance] if not pdu_frame.empty else pd.DataFrame()
         watts = raw_window.get(f"{event.kit}_watts", pd.Series(dtype=float)).to_numpy(dtype=np.float64)
         states = raw_window.get(f"{event.kit}_state", pd.Series(dtype=float)).to_numpy(dtype=np.float64)
@@ -717,34 +764,198 @@ def _regime_component_moments(regimes: Mapping[str, Sequence[Mapping[str, float]
     return mean, float(weights @ (variances + (means - mean) ** 2))
 
 
-def _uas_tier_profiles(observations: pd.DataFrame) -> dict[str, dict[str, float | str]]:
+def _episode_count(mask: pd.Series, index: pd.DatetimeIndex) -> int:
+    continuous = index.to_series().diff().le(pd.Timedelta(minutes=30)).fillna(False)
+    starts = mask & ~(mask.shift(fill_value=False) & continuous)
+    return int(starts.sum())
+
+
+def _episode_durations_hours(mask: pd.Series, index: pd.DatetimeIndex) -> np.ndarray:
+    continuous = index.to_series().diff().le(pd.Timedelta(minutes=30)).fillna(False)
+    starts = mask & ~(mask.shift(fill_value=False) & continuous)
+    groups = starts.cumsum()
+    counts = groups.loc[mask].value_counts(sort=False).to_numpy(dtype=np.float64)
+    sample_hours = float(pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1))
+    return counts * sample_hours
+
+
+def _uas_tier_profiles(observations: pd.DataFrame) -> dict[str, dict[str, Any]]:
     if "uas_effective_tier" not in observations or "UAS_watts" not in observations:
         return {}
-    profiles: dict[str, dict[str, float | str]] = {}
-    tiers = observations["uas_effective_tier"]
-    watts = observations["UAS_watts"]
-    for tier_value in sorted(set(int(value) for value in tiers.dropna().to_numpy(dtype=np.float64))):
-        active = (tiers == tier_value) & np.isfinite(watts) & (watts >= PDU_ACTIVE_W)
-        selected = observations.loc[active, ["uas_effective_tier", "UAS_watts"]]
+    profiles: dict[str, dict[str, Any]] = {}
+    raw_tiers = pd.to_numeric(observations["uas_effective_tier"], errors="coerce")
+    watts = pd.to_numeric(observations["UAS_watts"], errors="coerce")
+    charging = pd.to_numeric(
+        observations.get("uas_charging", pd.Series(np.nan, index=observations.index)),
+        errors="coerce",
+    )
+    for tier_value, source_tiers in UAS_TIER_LEARNING_SOURCES.items():
+        selected_mask = raw_tiers.isin(source_tiers) & np.isfinite(watts) & ~(charging >= 0.5)
+        selected = observations.loc[selected_mask, ["uas_effective_tier", "UAS_watts"]]
         if selected.empty:
             continue
-        continuous = observations.index.to_series().diff().le(pd.Timedelta(minutes=30)).fillna(False)
-        episode_starts = active & ~(active.shift(fill_value=False) & continuous)
-        episodes = int(episode_starts.sum())
+        episodes = _episode_count(selected_mask, pd.DatetimeIndex(observations.index))
         hours = float(len(selected) * pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1))
         values = selected["UAS_watts"].to_numpy(dtype=np.float64)
         p10, p50, p90 = np.nanquantile(values, (0.10, 0.50, 0.90))
-        reliable = episodes >= UAS_TIER_RELIABLE_EPISODES and hours >= UAS_TIER_RELIABLE_HOURS
+        is_proxy = tier_value in {1, 2}
+        minimum_episodes = (
+            UAS_PROXY_TIER_RELIABLE_EPISODES if is_proxy else UAS_TIER_RELIABLE_EPISODES
+        )
+        reliable = episodes >= minimum_episodes and hours >= UAS_TIER_RELIABLE_HOURS
         profiles[str(tier_value)] = {
+            "state_id": uas_state_id(tier_value),
+            "label": uas_state_label(tier_value),
+            "canonical_tier": int(tier_value),
+            "source_effective_tiers": list(source_tiers),
             "p10_w": float(max(p10, 0.0)),
             "p50_w": float(max(p50, 0.0)),
             "p90_w": float(max(p90, 0.0)),
             "sample_count": float(len(values)),
             "episode_count": float(episodes),
             "observed_hours": hours,
-            "maturity": "reliable" if reliable else "provisional",
+            "maturity": (
+                "reliable_proxy" if reliable and is_proxy else
+                "reliable" if reliable else
+                "provisional_proxy" if is_proxy else
+                "provisional"
+            ),
         }
     return profiles
+
+
+def _uas_charge_profiles(
+    observations: pd.DataFrame,
+    tier_profiles: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = {}
+    raw_tiers = pd.to_numeric(
+        observations.get("uas_effective_tier", pd.Series(np.nan, index=observations.index)),
+        errors="coerce",
+    )
+    watts = pd.to_numeric(
+        observations.get("UAS_watts", pd.Series(np.nan, index=observations.index)),
+        errors="coerce",
+    )
+    charging = pd.to_numeric(
+        observations.get("uas_charging", pd.Series(np.nan, index=observations.index)),
+        errors="coerce",
+    )
+    for tier_value in UAS_CHARGE_TIERS:
+        state_id = uas_state_id(tier_value, charging=True)
+        source_tiers = UAS_TIER_LEARNING_SOURCES[tier_value]
+        selected_mask = raw_tiers.isin(source_tiers) & (charging >= 0.5) & np.isfinite(watts)
+        selected = watts.loc[selected_mask]
+        base_profile = tier_profiles.get(str(tier_value), {})
+        base_p50 = float(base_profile.get("p50_w", 0.0))
+        if selected.empty:
+            p10 = p50 = p90 = UAS_CHARGE_ESTIMATE_W
+            episodes = 0
+            hours = 0.0
+            duration_p10 = duration_p50 = duration_p90 = UAS_CHARGE_DURATION_HOURS
+            maturity = "estimated"
+        else:
+            increments = np.clip(selected.to_numpy(dtype=np.float64) - base_p50, 0.0, None)
+            p10, p50, p90 = np.nanquantile(increments, (0.10, 0.50, 0.90))
+            episodes = _episode_count(selected_mask, pd.DatetimeIndex(observations.index))
+            hours = float(len(selected) * pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1))
+            durations = _episode_durations_hours(
+                selected_mask, pd.DatetimeIndex(observations.index)
+            )
+            duration_p10, duration_p50, duration_p90 = np.nanquantile(
+                durations, (0.10, 0.50, 0.90)
+            )
+            maturity = (
+                "reliable"
+                if episodes >= UAS_CHARGE_RELIABLE_EPISODES
+                and hours >= UAS_CHARGE_RELIABLE_HOURS
+                and bool(base_profile)
+                else "provisional"
+            )
+        profiles[str(tier_value)] = {
+            "state_id": state_id,
+            "label": uas_state_label(tier_value, charging=True),
+            "base_state_id": uas_state_id(tier_value),
+            "canonical_tier": int(tier_value),
+            "source_effective_tiers": list(source_tiers),
+            "increment_p10_w": float(max(p10, 0.0)),
+            "increment_p50_w": float(max(p50, 0.0)),
+            "increment_p90_w": float(max(p90, p50, 0.0)),
+            "sample_count": float(len(selected)),
+            "episode_count": float(episodes),
+            "observed_hours": hours,
+            "duration_p10_hours": float(duration_p10),
+            "duration_p50_hours": float(duration_p50),
+            "duration_p90_hours": float(duration_p90),
+            "duration_hours": float(
+                duration_p50
+                if maturity == "reliable"
+                else UAS_CHARGE_DURATION_HOURS
+            ),
+            "maturity": maturity,
+            "fallback_increment_w": float(UAS_CHARGE_ESTIMATE_W),
+        }
+    return profiles
+
+
+def _cl61_state_profiles(observations: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if "CL61_watts" not in observations:
+        return {}
+    values = pd.to_numeric(observations["CL61_watts"], errors="coerce")
+    selected = values.loc[np.isfinite(values) & (values >= PDU_ACTIVE_W)].to_numpy(dtype=np.float64)
+    if not selected.size:
+        return {}
+    ordered = np.sort(selected)
+    split = int(np.argmax(np.diff(ordered))) + 1 if ordered.size >= 2 else 0
+    gap = float(ordered[split] - ordered[split - 1]) if 0 < split < ordered.size else 0.0
+    normal = ordered[:split]
+    heater = ordered[split:]
+    separated = (
+        normal.size >= MIN_REGIME_SAMPLES
+        and heater.size >= MIN_REGIME_SAMPLES
+        and gap >= 20.0
+    )
+    groups = {
+        "cl61": normal if separated else ordered,
+        "cl61_heater_on": heater if separated else np.empty(0, dtype=np.float64),
+    }
+    threshold = (
+        float((normal[-1] + heater[0]) / 2.0)
+        if separated
+        else float("nan")
+    )
+    profiles: dict[str, dict[str, Any]] = {}
+    for state_id, group in groups.items():
+        if not group.size:
+            continue
+        p10, p50, p90 = np.nanquantile(group, (0.10, 0.50, 0.90))
+        profiles[state_id] = {
+            "state_id": state_id,
+            "label": "CL61 (heater on)" if state_id == "cl61_heater_on" else "CL61",
+            "p10_w": float(max(p10, 0.0)),
+            "p50_w": float(max(p50, 0.0)),
+            "p90_w": float(max(p90, p50, 0.0)),
+            "sample_count": float(len(group)),
+            "maturity": "reliable" if len(group) >= MIN_RELIABLE_SAMPLES else "observed",
+            "classification_threshold_w": threshold,
+        }
+    return profiles
+
+
+def _cl61_state_series(
+    observations: pd.DataFrame,
+    profiles: Mapping[str, Mapping[str, Any]],
+) -> pd.Series:
+    values = pd.Series("off", index=observations.index, dtype=object)
+    modes = observations.get("direct_mode", pd.Series(MODE_DC_ONLY, index=observations.index))
+    active = modes.astype(str).map(lambda value: "CL61" in mode_kits(value))
+    values.loc[active] = "cl61"
+    heater = profiles.get("cl61_heater_on", {})
+    threshold = float(heater.get("classification_threshold_w", np.nan))
+    if np.isfinite(threshold) and "CL61_watts" in observations:
+        watts = pd.to_numeric(observations["CL61_watts"], errors="coerce")
+        values.loc[active & (watts >= threshold)] = "cl61_heater_on"
+    return values
 
 
 def _tier_profile_members(
@@ -753,7 +964,10 @@ def _tier_profile_members(
     *,
     seed: int,
 ) -> np.ndarray:
-    if profile is None or str(profile.get("maturity", "provisional")) != "reliable":
+    if profile is None or str(profile.get("maturity", "provisional")) not in {
+        "reliable",
+        "reliable_proxy",
+    }:
         p10, p50, p90 = UAS_TIER3_FALLBACK_P10_W, UAS_TIER3_FALLBACK_P50_W, UAS_TIER3_FALLBACK_P90_W
     else:
         p10 = float(profile.get("p10_w", UAS_TIER3_FALLBACK_P10_W))
@@ -764,6 +978,34 @@ def _tier_profile_members(
     quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
     rng.shuffle(quantiles)
     return np.interp(quantiles, (0.0, 0.10, 0.50, 0.90, 1.0), (ordered[0], ordered[0], ordered[1], ordered[2], ordered[2]))
+
+
+def _charge_increment_members(
+    profile: Mapping[str, Any] | None,
+    count: int,
+    *,
+    seed: int,
+) -> np.ndarray:
+    if profile is None or str(profile.get("maturity", "estimated")) != "reliable":
+        return np.full(max(int(count), 1), UAS_CHARGE_ESTIMATE_W, dtype=np.float64)
+    ordered = np.maximum.accumulate(
+        np.asarray(
+            [
+                max(float(profile.get("increment_p10_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
+                max(float(profile.get("increment_p50_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
+                max(float(profile.get("increment_p90_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
+            ],
+            dtype=np.float64,
+        )
+    )
+    rng = np.random.default_rng(seed)
+    quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
+    rng.shuffle(quantiles)
+    return np.interp(
+        quantiles,
+        (0.0, 0.10, 0.50, 0.90, 1.0),
+        (ordered[0], ordered[0], ordered[1], ordered[2], ordered[2]),
+    )
 
 
 @dataclass
@@ -777,9 +1019,17 @@ class OperatingModelResult:
     mode_maturity: dict[str, str]
     component_regimes: dict[str, list[dict[str, float]]]
     mode_load_profiles: dict[str, StateLoadDynamics]
-    uas_tier_profiles: dict[str, dict[str, float | str]]
+    uas_tier_profiles: dict[str, dict[str, Any]]
+    uas_charge_profiles: dict[str, dict[str, Any]]
+    cl61_state_profiles: dict[str, dict[str, Any]]
     current_mode: str
     current_confidence: float
+    current_load_state: str
+    current_uas_effective_tier: int | None
+    current_uas_tier: int | None
+    current_uas_charging: bool
+    current_uas_state: str | None
+    current_cl61_state: str
 
 
 def fit_operating_model(
@@ -926,7 +1176,42 @@ def fit_operating_model(
                     mode_load_profiles[str(name)] = profile
             except (KeyError, TypeError, ValueError):
                 continue
-    phase_observations = observations.loc[observations["direct_state_confirmed"].fillna(False).astype(bool)]
+    saved_cl61_profiles = raw_state.get("cl61_state_profiles") if compatible_state else None
+    cl61_state_profiles = (
+        {str(name): dict(values) for name, values in saved_cl61_profiles.items()}
+        if new_observation_count == 0 and isinstance(saved_cl61_profiles, Mapping)
+        else _cl61_state_profiles(observations)
+    )
+    observations["cl61_state"] = _cl61_state_series(observations, cl61_state_profiles)
+    observations["operating_load_state"] = [
+        operating_load_state_id(
+            str(mode),
+            uas_tier=(
+                int(tier)
+                if "UAS" in mode_kits(str(mode)) and pd.notna(tier)
+                else None
+            ),
+            uas_charging=bool(pd.notna(charging) and float(charging) >= 0.5),
+            cl61_heater_on=str(cl61_state) == "cl61_heater_on",
+        )
+        for mode, tier, charging, cl61_state in zip(
+            observations["direct_mode"],
+            observations.get(
+                "uas_canonical_tier",
+                pd.Series(np.nan, index=observations.index),
+            ),
+            observations.get(
+                "uas_charging",
+                pd.Series(np.nan, index=observations.index),
+            ),
+            observations["cl61_state"],
+            strict=True,
+        )
+    ]
+
+    phase_observations = observations.loc[
+        observations["direct_state_confirmed"].fillna(False).astype(bool)
+    ]
     confirmed_modes = sorted(
         set(str(value) for value in phase_observations["direct_mode"])
         - {MODE_UNKNOWN_AC}
@@ -937,11 +1222,49 @@ def fit_operating_model(
         profile = learn_state_load_dynamics(phase_observations, name)
         if profile is not None and profile.sample_count >= 8:
             mode_load_profiles[name] = profile
+    canonical_phase_observations = phase_observations.loc[
+        [
+            (
+                "UAS" not in mode_kits(str(mode))
+                or bool(eligible)
+            )
+            for mode, eligible in zip(
+                phase_observations["direct_mode"],
+                phase_observations.get(
+                    "uas_tier_learning_eligible",
+                    pd.Series(False, index=phase_observations.index),
+                ),
+                strict=True,
+            )
+        ]
+    ]
+    confirmed_load_states = sorted(
+        set(str(value) for value in canonical_phase_observations["operating_load_state"])
+        - {MODE_UNKNOWN_AC}
+    )
+    for name in confirmed_load_states:
+        if name in confirmed_modes:
+            continue
+        if new_observation_count == 0 and name in mode_load_profiles:
+            continue
+        profile = learn_state_load_dynamics(
+            canonical_phase_observations,
+            name,
+            mode_column="operating_load_state",
+        )
+        if profile is not None and profile.sample_count >= 8:
+            mode_load_profiles[name] = profile
     saved_tier_profiles = raw_state.get("uas_tier_profiles") if compatible_state else None
     uas_tier_profiles = (
         {str(name): dict(values) for name, values in saved_tier_profiles.items()}
         if new_observation_count == 0 and isinstance(saved_tier_profiles, Mapping)
         else _uas_tier_profiles(observations)
+    )
+    saved_charge_profiles = raw_state.get("uas_charge_profiles") if compatible_state else None
+    uas_charge_profiles = (
+        {str(name): dict(values) for name, values in saved_charge_profiles.items()}
+        if new_observation_count == 0 and isinstance(saved_charge_profiles, Mapping)
+        else _uas_charge_profiles(observations, uas_tier_profiles)
     )
     if new_observation_count > 0 or not compatible_state:
         for name, index in COMPONENT_INDEX.items():
@@ -954,6 +1277,102 @@ def fit_operating_model(
         covariance = eigenvectors @ np.diag(np.clip(eigenvalues, 1e-6, None)) @ eigenvectors.T
     current_mode = selected_modes[-1]
     current_confidence = confidences[-1]
+    latest_row = observations.iloc[-1]
+    latest_raw_tier = latest_row.get("uas_effective_tier", np.nan)
+    current_uas_effective_tier = (
+        int(latest_raw_tier) if pd.notna(latest_raw_tier) else None
+    )
+    latest_canonical_tier = latest_row.get("uas_canonical_tier", np.nan)
+    current_uas_tier = (
+        int(latest_canonical_tier)
+        if pd.notna(latest_canonical_tier) and "UAS" in mode_kits(current_mode)
+        else None
+    )
+    latest_charging = latest_row.get("uas_charging", np.nan)
+    current_uas_charging = bool(
+        current_uas_tier in UAS_CHARGE_TIERS
+        and pd.notna(latest_charging)
+        and float(latest_charging) >= 0.5
+    )
+    current_uas_state = (
+        uas_state_id(current_uas_tier, charging=current_uas_charging)
+        if current_uas_tier is not None
+        else None
+    )
+    current_cl61_state = (
+        str(latest_row.get("cl61_state", "cl61"))
+        if "CL61" in mode_kits(current_mode)
+        else "off"
+    )
+    current_load_state = operating_load_state_id(
+        current_mode,
+        uas_tier=current_uas_tier,
+        uas_charging=current_uas_charging,
+        cl61_heater_on=current_cl61_state == "cl61_heater_on",
+    )
+    operating_load_states = np.asarray(
+        [
+            operating_load_state_id(
+                mode,
+                uas_tier=(
+                    int(tier)
+                    if "UAS" in mode_kits(mode) and pd.notna(tier)
+                    else None
+                ),
+                uas_charging=bool(pd.notna(charging) and float(charging) >= 0.5),
+                cl61_heater_on=str(cl61_state) == "cl61_heater_on",
+            )
+            for mode, tier, charging, cl61_state in zip(
+                selected_modes,
+                observations.get(
+                    "uas_canonical_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ),
+                observations.get(
+                    "uas_charging",
+                    pd.Series(np.nan, index=observations.index),
+                ),
+                observations["cl61_state"],
+                strict=True,
+            )
+        ],
+        dtype=str,
+    )
+
+    catalog = state_catalog_records()
+    learned_state_p10: list[float] = []
+    learned_state_p50: list[float] = []
+    learned_state_p90: list[float] = []
+    learned_state_samples: list[float] = []
+    learned_state_maturity: list[str] = []
+    for definition in catalog:
+        state_id = str(definition["id"])
+        if state_id.startswith("uas_tier_"):
+            tier_value = int(state_id.split("_")[2])
+            base = uas_tier_profiles.get(str(tier_value), {})
+            charging_state = state_id.endswith("_charging")
+            charge = uas_charge_profiles.get(str(tier_value), {}) if charging_state else {}
+            learned_state_p10.append(
+                float(base.get("p10_w", np.nan))
+                + (float(charge.get("increment_p10_w", UAS_CHARGE_ESTIMATE_W)) if charging_state else 0.0)
+            )
+            learned_state_p50.append(
+                float(base.get("p50_w", np.nan))
+                + (float(charge.get("increment_p50_w", UAS_CHARGE_ESTIMATE_W)) if charging_state else 0.0)
+            )
+            learned_state_p90.append(
+                float(base.get("p90_w", np.nan))
+                + (float(charge.get("increment_p90_w", UAS_CHARGE_ESTIMATE_W)) if charging_state else 0.0)
+            )
+            learned_state_samples.append(float(charge.get("sample_count", 0.0) if charging_state else base.get("sample_count", 0.0)))
+            learned_state_maturity.append(str(charge.get("maturity", "estimated") if charging_state else base.get("maturity", "unobserved")))
+        else:
+            profile = cl61_state_profiles.get(state_id, {})
+            learned_state_p10.append(float(profile.get("p10_w", np.nan)))
+            learned_state_p50.append(float(profile.get("p50_w", np.nan)))
+            learned_state_p90.append(float(profile.get("p90_w", np.nan)))
+            learned_state_samples.append(float(profile.get("sample_count", 0.0)))
+            learned_state_maturity.append(str(profile.get("maturity", "unobserved")))
     latest_observation_time = pd.Timestamp(observations.index[-1])
     if not pd.isna(last_trained) and new_observation_count == 0:
         latest_observation_time = last_trained
@@ -971,6 +1390,7 @@ def fit_operating_model(
             ),
             "OperatingEventAgreement": (("time",), observations["operator_event_agreement"].to_numpy(dtype=np.float32)),
             "OperatingModeProbability": (("time", "mode"), probabilities.astype(np.float32)),
+            "OperatingLoadState": (("time",), operating_load_states),
             "ComponentRegimeMeanWatts": (("component", "regime"), np.asarray([
                 [component_regimes.get(component, [{}] * 2)[index].get("mean_w", np.nan) if index < len(component_regimes.get(component, ())) else np.nan for index in range(2)]
                 for component in COMPONENTS
@@ -994,12 +1414,57 @@ def fit_operating_model(
                     pd.Series(np.nan, index=observations.index),
                 ).to_numpy(dtype=np.float32),
             ),
+            "UASCanonicalTier": (
+                ("time",),
+                observations.get(
+                    "uas_canonical_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
+            "UASChargingState": (
+                ("time",),
+                observations.get(
+                    "uas_charging",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
+            "CL61StateCode": (
+                ("time",),
+                observations["cl61_state"].map(
+                    {"off": 0, "cl61": 1, "cl61_heater_on": 2}
+                ).to_numpy(dtype=np.int8),
+            ),
+            "LearnedStateLoadP10Watts": (
+                ("learned_state",),
+                np.asarray(learned_state_p10, dtype=np.float32),
+            ),
+            "LearnedStateLoadP50Watts": (
+                ("learned_state",),
+                np.asarray(learned_state_p50, dtype=np.float32),
+            ),
+            "LearnedStateLoadP90Watts": (
+                ("learned_state",),
+                np.asarray(learned_state_p90, dtype=np.float32),
+            ),
+            "LearnedStateSampleCount": (
+                ("learned_state",),
+                np.asarray(learned_state_samples, dtype=np.float32),
+            ),
         },
         coords={
             "time": observations.index.to_numpy(dtype="datetime64[ns]"),
             "mode": np.asarray(mode_names, dtype=str),
             "component": np.asarray(COMPONENTS, dtype=str),
             "regime": np.asarray(("low", "high"), dtype=str),
+            "learned_state": np.asarray(LEARNED_POWER_STATE_IDS, dtype=str),
+            "learned_state_label": (
+                ("learned_state",),
+                np.asarray([str(value["label"]) for value in catalog], dtype=str),
+            ),
+            "learned_state_maturity": (
+                ("learned_state",),
+                np.asarray(learned_state_maturity, dtype=str),
+            ),
         },
         attrs={
             "power_operating_state_product": "true",
@@ -1011,6 +1476,19 @@ def fit_operating_model(
             "current_mode": current_mode,
             "current_mode_label": mode_label(current_mode),
             "current_mode_confidence": f"{current_confidence:.6g}",
+            "current_load_state": current_load_state,
+            "current_uas_effective_tier": (
+                str(current_uas_effective_tier)
+                if current_uas_effective_tier is not None
+                else ""
+            ),
+            "current_uas_canonical_tier": (
+                str(current_uas_tier) if current_uas_tier is not None else ""
+            ),
+            "current_uas_charging": str(current_uas_charging).lower(),
+            "current_uas_state": current_uas_state or "",
+            "current_cl61_state": current_cl61_state,
+            "learned_power_state_catalog": json.dumps(catalog, sort_keys=True),
             "learned_modes": json.dumps(list(learned_modes)),
             "observed_modes": json.dumps(list(observed_modes)),
             "mode_maturity": json.dumps(mode_maturity, sort_keys=True),
@@ -1026,6 +1504,8 @@ def fit_operating_model(
                 {name: float(np.sqrt(max(covariance[index, index], 0.0))) for index, name in enumerate(COMPONENTS)}
             ),
             "uas_tier_profiles": json.dumps(uas_tier_profiles, sort_keys=True),
+            "uas_charge_profiles": json.dumps(uas_charge_profiles, sort_keys=True),
+            "cl61_state_profiles": json.dumps(cl61_state_profiles, sort_keys=True),
             "observation_frequency": OBSERVATION_FREQUENCY,
             "last_observation_time_utc": latest_observation_time.isoformat(),
             "new_observation_count": str(new_observation_count),
@@ -1036,12 +1516,46 @@ def fit_operating_model(
         {str(mode_code(value)): mode_label(value) for value in mode_names}, sort_keys=True
     )
     state_ds["OperatingModeConfidence"].attrs["units"] = "1"
+    state_ds["OperatingLoadState"].attrs["description"] = (
+        "composed PDU mode, canonical UAS tier/charge state, and CL61 heater state"
+    )
     state_ds["DirectStateConfirmed"].attrs.update(
         {
             "long_name": "complete four-outlet PDU state vector available",
             "flag_values": "0, 1",
         }
     )
+    state_ds["UASEffectiveTier"].attrs["description"] = (
+        "raw effective tier reported by Menapia; Tier 11 and 12 remain visible here"
+    )
+    state_ds["UASCanonicalTier"].attrs.update(
+        {
+            "description": "canonical UAS operating tier after mapping 11 to 1 and 12 to 2",
+            "units": "tier",
+        }
+    )
+    state_ds["UASChargingState"].attrs.update(
+        {
+            "description": (
+                "explicit UASCharge operator annotation; charging is never inferred from watts"
+            ),
+            "flag_values": "0, 1",
+        }
+    )
+    state_ds["CL61StateCode"].attrs.update(
+        {
+            "description": "CL61 state classified from the learned low/high load regimes",
+            "flag_values": "0, 1, 2",
+            "flag_meanings": "off cl61 cl61_heater_on",
+        }
+    )
+    for name in (
+        "LearnedStateLoadP10Watts",
+        "LearnedStateLoadP50Watts",
+        "LearnedStateLoadP90Watts",
+    ):
+        state_ds[name].attrs["units"] = "W"
+    state_ds["LearnedStateSampleCount"].attrs["units"] = "count"
     for name in ("ObservedLoadWatts", "EstimatedModeLoadWatts", "LoadInnovationWatts"):
         state_ds[name].attrs["units"] = "W"
 
@@ -1053,6 +1567,13 @@ def fit_operating_model(
         "updated_at_utc": _utc_now(),
         "current_mode": current_mode,
         "current_mode_confidence": current_confidence,
+        "current_load_state": current_load_state,
+        "current_uas_effective_tier": current_uas_effective_tier,
+        "current_uas_canonical_tier": current_uas_tier,
+        "current_uas_charging": current_uas_charging,
+        "current_uas_state": current_uas_state,
+        "current_cl61_state": current_cl61_state,
+        "learned_power_state_catalog": catalog,
         "last_observation_time_utc": latest_observation_time.isoformat(),
         "new_observation_count": new_observation_count,
         "confirmed_state_observation_count": int(observations["direct_state_confirmed"].sum()),
@@ -1064,6 +1585,8 @@ def fit_operating_model(
             name: profile.to_dict() for name, profile in mode_load_profiles.items()
         },
         "uas_tier_profiles": uas_tier_profiles,
+        "uas_charge_profiles": uas_charge_profiles,
+        "cl61_state_profiles": cl61_state_profiles,
         "components": {
             name: {
                 "mean_w": float(mean[index]),
@@ -1086,8 +1609,16 @@ def fit_operating_model(
         component_regimes=component_regimes,
         mode_load_profiles=mode_load_profiles,
         uas_tier_profiles=uas_tier_profiles,
+        uas_charge_profiles=uas_charge_profiles,
+        cl61_state_profiles=cl61_state_profiles,
         current_mode=current_mode,
         current_confidence=current_confidence,
+        current_load_state=current_load_state,
+        current_uas_effective_tier=current_uas_effective_tier,
+        current_uas_tier=current_uas_tier,
+        current_uas_charging=current_uas_charging,
+        current_uas_state=current_uas_state,
+        current_cl61_state=current_cl61_state,
     )
 
 
@@ -2669,19 +3200,44 @@ def _scenario_members(
     member_discharge_efficiency: np.ndarray | None = None,
     mode_load_profiles: Mapping[str, StateLoadDynamics] | None = None,
     current_mode: str | None = None,
+    profile_states: Sequence[str] | None = None,
+    forced_phases: Sequence[str | None] | None = None,
+    load_adjustments_w: np.ndarray | None = None,
+    adjustment_phase_codes: Sequence[int] | None = None,
     seed: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     loads = _load_members_for_modes(component_members, modes)
     phase_codes = np.full(loads.shape, PHASE_CODES[PHASE_STEADY], dtype=np.int8)
     profiles = mode_load_profiles or {}
+    states = tuple(profile_states) if profile_states is not None else tuple(str(value) for value in modes)
+    forced_phase_values = (
+        tuple(forced_phases)
+        if forced_phases is not None
+        else tuple(None for _ in modes)
+    )
+    if len(states) != len(modes) or len(forced_phase_values) != len(modes):
+        raise ValueError("Scenario profile state and phase arrays must match the mode timeline")
     start = 0
     while start < len(modes):
         stop = start + 1
-        while stop < len(modes) and modes[stop] == modes[start]:
+        while (
+            stop < len(modes)
+            and modes[stop] == modes[start]
+            and states[stop] == states[start]
+            and forced_phase_values[stop] == forced_phase_values[start]
+        ):
             stop += 1
-        profile = profiles.get(str(modes[start]))
+        profile = profiles.get(str(states[start])) or profiles.get(str(modes[start]))
         if profile is not None:
-            if start > 0 or str(modes[start]) != str(current_mode):
+            forced_phase = forced_phase_values[start]
+            if forced_phase is not None and forced_phase in profile.phase_profiles:
+                profile = replace(
+                    profile,
+                    current_phase=str(forced_phase),
+                    state_started_at=pd.Timestamp(times[start]).isoformat(),
+                    phase_started_at=pd.Timestamp(times[start]).isoformat(),
+                )
+            elif start > 0 or str(modes[start]) != str(current_mode):
                 profile = force_startup(profile, times[start])
             baseline = loads[:, start]
             fallback = ControlledLoadEstimate(
@@ -2691,7 +3247,7 @@ def _scenario_members(
                 source="finite_state_component_fallback",
                 sample_count=int(len(baseline)),
             ).validated()
-            profiled, phases = controlled_load_member_profiles(
+            profiled, segment_phases = controlled_load_member_profiles(
                 profile,
                 times[start:stop],
                 fallback,
@@ -2699,8 +3255,20 @@ def _scenario_members(
                 seed=int(seed + start * 1009 + sum(ord(character) for character in str(modes[start]))),
             )
             loads[:, start:stop] = profiled
-            phase_codes[:, start:stop] = phases
+            phase_codes[:, start:stop] = segment_phases
         start = stop
+    if load_adjustments_w is not None:
+        adjustments = np.asarray(load_adjustments_w, dtype=np.float64)
+        if adjustments.shape == (len(times),):
+            adjustments = np.repeat(adjustments[None, :], loads.shape[0], axis=0)
+        if adjustments.shape != loads.shape or not np.isfinite(adjustments).all():
+            raise ValueError("Scenario load adjustments must be finite member x time values")
+        loads = np.clip(loads + adjustments, 0.0, None)
+    if adjustment_phase_codes is not None:
+        codes = np.asarray(adjustment_phase_codes, dtype=np.int8)
+        if codes.shape != (len(times),):
+            raise ValueError("Scenario adjustment phase codes must match the time axis")
+        phase_codes[:] = codes[None, :]
     validate_state_held_load(
         np.asarray([mode_code(value) for value in modes], dtype=np.int16),
         loads,
@@ -2825,8 +3393,24 @@ def build_operating_scenarios(
         regimes=model.component_regimes,
     )
     base_mode = model.current_mode if model.current_mode != MODE_UNKNOWN_AC else MODE_DC_ONLY
+    planning_component_members = component_members.copy()
+    if model.current_uas_tier is not None and "UAS" in mode_kits(base_mode):
+        planning_component_members[:, COMPONENT_INDEX["UAS"]] = _tier_profile_members(
+            model.uas_tier_profiles.get(str(model.current_uas_tier)),
+            member_count,
+            seed=seed + model.current_uas_tier * 1009,
+        )
+    optimizer_profiles = {
+        name: profile
+        for name, profile in model.mode_load_profiles.items()
+        if "__" not in name
+        and not (
+            model.current_uas_tier is not None
+            and "UAS" in mode_kits(name)
+        )
+    }
     modeled_current_load = _load_members_for_modes(
-        component_members,
+        planning_component_members,
         tuple(base_mode for _ in times),
     )
     upstream_current_load, _ = _current_system_load_members(
@@ -2843,7 +3427,7 @@ def build_operating_scenarios(
         current_modes_for_rule,
         times=times,
         solar_members=solar_members,
-        component_members=component_members,
+        component_members=planning_component_members,
         initial_soc=initial_soc,
         capacity_kwh=capacity,
         battery_model=battery_model,
@@ -2852,6 +3436,7 @@ def build_operating_scenarios(
         member_discharge_efficiency=member_discharge_efficiency,
         mode_load_profiles=model.mode_load_profiles,
         current_mode=base_mode,
+        profile_states=tuple(model.current_load_state for _ in times),
         seed=seed,
     )
     p50_continuation = evaluate_p50_continuation_rule(
@@ -2863,7 +3448,7 @@ def build_operating_scenarios(
     optimized = optimize_priority_schedule(
         times=times,
         solar_members_w=solar_members,
-        component_members=component_members,
+        component_members=planning_component_members,
         initial_soc=initial_soc,
         capacity_kwh=capacity,
         battery_model=battery_model,
@@ -2873,7 +3458,7 @@ def build_operating_scenarios(
         base_mode=base_mode,
         priorities=OPERATING_PRIORITY,
         horizon_hours=min(optimization_hours, actual_horizon),
-        mode_load_profiles=model.mode_load_profiles,
+        mode_load_profiles=optimizer_profiles,
         current_mode=base_mode,
         seed=seed,
     )
@@ -2891,14 +3476,14 @@ def build_operating_scenarios(
         optimized_modes,
         times=times,
         solar_members=solar_members,
-        component_members=component_members,
+        component_members=planning_component_members,
         initial_soc=initial_soc,
         capacity_kwh=capacity,
         battery_model=battery_model,
         member_capacity_kwh=member_capacity,
         member_charge_efficiency=member_charge_efficiency,
         member_discharge_efficiency=member_discharge_efficiency,
-        mode_load_profiles=model.mode_load_profiles,
+        mode_load_profiles=optimizer_profiles,
         current_mode=base_mode,
         seed=seed,
     )
@@ -2921,12 +3506,30 @@ def build_operating_scenarios(
         SCENARIO_P50_CONTINUATION: p50_continuation_modes,
     }
     scenario_uas_tiers: dict[str, int] = {}
+    scenario_uas_charge_hours: dict[str, float] = {}
+    scenario_cl61_phases: dict[str, str] = {}
     for definition in SUGGESTED_OPERATING_SCENARIOS:
         scenario_modes[definition.scenario_id] = tuple(
             mode_id(definition.instruments) for _ in times
         )
         if definition.uas_effective_tier is not None:
             scenario_uas_tiers[definition.scenario_id] = int(definition.uas_effective_tier)
+    for definition in POWER_STATE_SCENARIOS:
+        scenario_modes[definition.scenario_id] = tuple(
+            mode_id(definition.instruments) for _ in times
+        )
+        if definition.uas_tier is not None:
+            scenario_uas_tiers[definition.scenario_id] = int(definition.uas_tier)
+        if definition.uas_charging:
+            scenario_uas_charge_hours[definition.scenario_id] = float(
+                model.uas_charge_profiles.get(str(definition.uas_tier), {}).get(
+                    "duration_hours", UAS_CHARGE_DURATION_HOURS
+                )
+            )
+        if definition.cl61_phase is not None:
+            scenario_cl61_phases[definition.scenario_id] = str(
+                definition.cl61_phase
+            )
     for observed_mode in model.observed_modes:
         if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
@@ -2947,6 +3550,12 @@ def build_operating_scenarios(
     labels.update(
         {definition.scenario_id: definition.label for definition in SUGGESTED_OPERATING_SCENARIOS}
     )
+    labels.update(
+        {definition.scenario_id: definition.label for definition in POWER_STATE_SCENARIOS}
+    )
+    power_state_definitions = {
+        definition.scenario_id: definition for definition in POWER_STATE_SCENARIOS
+    }
     load_p10: list[np.ndarray] = []
     load_p50: list[np.ndarray] = []
     load_p90: list[np.ndarray] = []
@@ -2967,17 +3576,84 @@ def build_operating_scenarios(
     stop_times: list[np.datetime64] = []
     safe_values: list[float] = []
     uas_tier_values: list[np.ndarray] = []
+    uas_charging_values: list[np.ndarray] = []
+    power_state_values: list[np.ndarray] = []
     active_instrument_counts: list[np.ndarray] = []
     for scenario_id, modes in scenario_modes.items():
-        scenario_components = component_members
+        has_uas = any("UAS" in mode_kits(value) for value in modes)
         tier = scenario_uas_tiers.get(scenario_id)
+        if tier is None and has_uas:
+            tier = model.current_uas_tier
+        scenario_components = component_members.copy()
         if tier is not None:
-            scenario_components = component_members.copy()
             scenario_components[:, COMPONENT_INDEX["UAS"]] = _tier_profile_members(
                 model.uas_tier_profiles.get(str(tier)),
                 member_count,
                 seed=seed + tier * 1009,
             )
+        charge_hours = scenario_uas_charge_hours.get(scenario_id, 0.0)
+        if (
+            charge_hours <= 0.0
+            and model.current_uas_charging
+            and scenario_id
+            in {SCENARIO_CURRENT, SCENARIO_OPTIMIZED, SCENARIO_P50_CONTINUATION}
+        ):
+            charge_hours = float(
+                model.uas_charge_profiles.get(str(tier), {}).get(
+                    "duration_hours", UAS_CHARGE_DURATION_HOURS
+                )
+            )
+        charge_mask = np.zeros(len(times), dtype=bool)
+        load_adjustments = None
+        adjustment_codes = None
+        if tier in UAS_CHARGE_TIERS and charge_hours > 0.0 and has_uas:
+            charge_mask = (
+                (times - times[0]) / pd.Timedelta(hours=1)
+                <= float(charge_hours) + 1e-9
+            )
+            increments = _charge_increment_members(
+                model.uas_charge_profiles.get(str(tier)),
+                member_count,
+                seed=seed + int(tier) * 2029,
+            )
+            load_adjustments = np.zeros((member_count, len(times)), dtype=np.float64)
+            load_adjustments[:, charge_mask] = increments[:, None]
+            adjustment_codes = np.full(
+                len(times), PHASE_CODES[PHASE_STEADY], dtype=np.int8
+            )
+            adjustment_codes[charge_mask] = PHASE_CODES.get(
+                "startup", PHASE_CODES[PHASE_STEADY]
+            )
+        forced_cl61_phase = scenario_cl61_phases.get(scenario_id)
+        forced_phases = tuple(forced_cl61_phase for _ in times)
+        heater_state = (
+            forced_cl61_phase == PHASE_FAN_HIGH
+            or (
+                scenario_id in {SCENARIO_CURRENT, SCENARIO_CL61}
+                and model.current_cl61_state == "cl61_heater_on"
+            )
+        )
+        profile_states = tuple(
+            operating_load_state_id(
+                value,
+                uas_tier=(tier if "UAS" in mode_kits(value) else None),
+                # Charge increment learning is separate from the base exact
+                # state profile, so it is added exactly once below.
+                uas_charging=False,
+                cl61_heater_on=heater_state and "CL61" in mode_kits(value),
+            )
+            for value in modes
+        )
+        scenario_profiles = model.mode_load_profiles
+        if tier is not None:
+            # A generic UAS mode may contain a mixture of field tiers.  When a
+            # canonical tier is requested, use its exact composed profile when
+            # available and otherwise fall back to the tier component profile.
+            scenario_profiles = {
+                name: profile
+                for name, profile in model.mode_load_profiles.items()
+                if "__" in name or "UAS" not in mode_kits(name)
+            }
         loads, soc, member_load_phases = _scenario_members(
             modes,
             times=times,
@@ -2989,8 +3665,12 @@ def build_operating_scenarios(
             member_capacity_kwh=member_capacity,
             member_charge_efficiency=member_charge_efficiency,
             member_discharge_efficiency=member_discharge_efficiency,
-            mode_load_profiles={} if tier is not None else model.mode_load_profiles,
+            mode_load_profiles=scenario_profiles,
             current_mode=base_mode,
+            profile_states=profile_states,
+            forced_phases=forced_phases,
+            load_adjustments_w=load_adjustments,
+            adjustment_phase_codes=adjustment_codes,
             seed=seed,
         )
         if scenario_id == SCENARIO_CURRENT:
@@ -3054,12 +3734,63 @@ def build_operating_scenarios(
         minimum_p50.append(float(np.nanmin(p50)))
         final_p50.append(float(p50[-1]))
         uas_tier_values.append(np.full(len(times), tier if tier is not None else -1, dtype=np.int16))
+        uas_charging_values.append(charge_mask.astype(np.int8))
+        power_state_values.append(
+            np.asarray(
+                [
+                    operating_load_state_id(
+                        value,
+                        uas_tier=(tier if "UAS" in mode_kits(value) else None),
+                        uas_charging=bool(charge_mask[index]),
+                        cl61_heater_on=(
+                            heater_state and "CL61" in mode_kits(value)
+                        ),
+                    )
+                    for index, value in enumerate(modes)
+                ],
+                dtype=str,
+            )
+        )
         transitions = np.flatnonzero(on & ~np.r_[False, on[:-1]])
         stops_found = np.flatnonzero(~on & np.r_[False, on[:-1]])
         starts.append(int(len(transitions)))
         start_times.append(times[transitions[0]].to_datetime64() if transitions.size else np.datetime64("NaT", "ns"))
         stop_times.append(times[stops_found[-1]].to_datetime64() if stops_found.size else np.datetime64("NaT", "ns"))
         labels.setdefault(scenario_id, mode_label(modes[0]))
+
+    def scenario_maturity(scenario_id: str) -> str:
+        if scenario_id in CORE_SCENARIOS:
+            return "core"
+        definition = power_state_definitions.get(scenario_id)
+        if definition is not None:
+            if definition.uas_tier is not None:
+                profiles = (
+                    model.uas_charge_profiles
+                    if definition.uas_charging
+                    else model.uas_tier_profiles
+                )
+                fallback = "estimated" if definition.uas_charging else "unobserved"
+                return str(
+                    profiles.get(str(definition.uas_tier), {}).get(
+                        "maturity", fallback
+                    )
+                )
+            return str(
+                model.cl61_state_profiles.get(definition.state_id, {}).get(
+                    "maturity", "unobserved"
+                )
+            )
+        if scenario_id in SUGGESTED_OPERATING_SCENARIO_IDS:
+            if scenario_id in scenario_uas_tiers:
+                return str(
+                    model.uas_tier_profiles.get(
+                        str(scenario_uas_tiers[scenario_id]), {}
+                    ).get("maturity", "provisional")
+                )
+            return "suggested"
+        return model.mode_maturity.get(
+            scenario_id.removeprefix("learned_"), "observed"
+        )
 
     optimized_index = scenario_ids.index(SCENARIO_OPTIMIZED)
     decision_count = min(len(times), int(optimization_hours) + 1)
@@ -3133,11 +3864,14 @@ def build_operating_scenarios(
             "ScenarioStartTime": (("scenario",), np.asarray(start_times, dtype="datetime64[ns]")),
             "ScenarioStopTime": (("scenario",), np.asarray(stop_times, dtype="datetime64[ns]")),
             "ScenarioUASEffectiveTier": (("scenario", "time"), np.asarray(uas_tier_values, dtype=np.int16)),
+            "ScenarioUASCanonicalTier": (("scenario", "time"), np.asarray(uas_tier_values, dtype=np.int16)),
+            "ScenarioUASCharging": (("scenario", "time"), np.asarray(uas_charging_values, dtype=np.int8)),
+            "ScenarioPowerState": (("scenario", "time"), np.asarray(power_state_values, dtype=str)),
             "SolarEnsembleWatts": (("member", "time"), solar_members.astype(np.float32)),
             "SolarP10Watts": (("time",), np.nanquantile(solar_members, 0.10, axis=0).astype(np.float32)),
             "SolarP50Watts": (("time",), np.nanquantile(solar_members, 0.50, axis=0).astype(np.float32)),
             "SolarP90Watts": (("time",), np.nanquantile(solar_members, 0.90, axis=0).astype(np.float32)),
-            "ComponentLoadWatts": (("member", "component"), component_members.astype(np.float32)),
+            "ComponentLoadWatts": (("member", "component"), planning_component_members.astype(np.float32)),
             "BatteryUsableCapacityKWhEnsemble": (("member",), member_capacity.astype(np.float32)),
             "BatteryChargeEfficiencyEnsemble": (("member",), member_charge_efficiency.astype(np.float32)),
             "BatteryDischargeEfficiencyEnsemble": (("member",), member_discharge_efficiency.astype(np.float32)),
@@ -3145,16 +3879,13 @@ def build_operating_scenarios(
         coords={
             "scenario": np.asarray(scenario_ids, dtype=str),
             "scenario_label": (("scenario",), np.asarray([labels[value] for value in scenario_ids], dtype=str)),
-            "scenario_mode_maturity": (("scenario",), np.asarray([
-                "core" if value in CORE_SCENARIOS else
-                (
-                    str(model.uas_tier_profiles.get(str(scenario_uas_tiers[value]), {}).get("maturity", "provisional"))
-                    if value in scenario_uas_tiers
-                    else "suggested"
-                ) if value in SUGGESTED_OPERATING_SCENARIO_IDS else
-                model.mode_maturity.get(value.removeprefix("learned_"), "observed")
-                for value in scenario_ids
-            ], dtype=str)),
+            "scenario_mode_maturity": (
+                ("scenario",),
+                np.asarray(
+                    [scenario_maturity(value) for value in scenario_ids],
+                    dtype=str,
+                ),
+            ),
             "time": times.to_numpy(dtype="datetime64[ns]"),
             "member": np.arange(1, member_count + 1, dtype=np.int16),
             "component": np.asarray(COMPONENTS, dtype=str),
@@ -3173,8 +3904,30 @@ def build_operating_scenarios(
             "current_mode_label": mode_label(model.current_mode),
             "current_mode_confidence": f"{model.current_confidence:.6g}",
             "current_mode_maturity": model.mode_maturity.get(model.current_mode, "observed"),
+            "current_load_state": model.current_load_state,
+            "current_uas_effective_tier": (
+                str(model.current_uas_effective_tier)
+                if model.current_uas_effective_tier is not None
+                else ""
+            ),
+            "current_uas_canonical_tier": (
+                str(model.current_uas_tier) if model.current_uas_tier is not None else ""
+            ),
+            "current_uas_charging": str(model.current_uas_charging).lower(),
+            "current_uas_state": model.current_uas_state or "",
+            "current_cl61_state": model.current_cl61_state,
             "observed_modes": json.dumps(list(model.observed_modes)),
             "mode_maturity": json.dumps(model.mode_maturity, sort_keys=True),
+            "learned_power_state_catalog": json.dumps(
+                state_catalog_records(), sort_keys=True
+            ),
+            "power_state_scenario_ids": json.dumps(list(POWER_STATE_SCENARIO_IDS)),
+            "uas_tier_learning_sources": json.dumps(
+                UAS_TIER_LEARNING_SOURCES, sort_keys=True
+            ),
+            "uas_charge_event_kit": UAS_CHARGE_EVENT_KIT,
+            "uas_charge_estimated_increment_w": f"{UAS_CHARGE_ESTIMATE_W:g}",
+            "uas_charge_estimated_duration_hours": f"{UAS_CHARGE_DURATION_HOURS:g}",
             "scenario_base_mode": base_mode,
             "load_baseline_source": "finite_state_component_model_for_all_operational_scenarios",
             "load_state_contract": CONTROLLED_LOAD_CONTRACT,
@@ -3189,6 +3942,8 @@ def build_operating_scenarios(
                 sort_keys=True,
             ),
             "uas_tier_profiles": json.dumps(model.uas_tier_profiles, sort_keys=True),
+            "uas_charge_profiles": json.dumps(model.uas_charge_profiles, sort_keys=True),
+            "cl61_state_profiles": json.dumps(model.cl61_state_profiles, sort_keys=True),
             "forecast_horizon_hours": str(actual_horizon),
             "optimization_horizon_hours": str(min(optimization_hours, actual_horizon)),
             "minimum_operational_soc_pct": f"{MINIMUM_OPERATIONAL_SOC_PCT:g}",
@@ -3279,6 +4034,24 @@ def build_operating_scenarios(
         "additive count of scheduled CL61, Radar, and HATPRO states (0 to 3)"
     )
     output["ScenarioUASEffectiveTier"].attrs["units"] = "tier"
+    output["ScenarioUASEffectiveTier"].attrs["description"] = (
+        "deprecated compatibility alias for ScenarioUASCanonicalTier"
+    )
+    output["ScenarioUASCanonicalTier"].attrs.update(
+        {
+            "units": "tier",
+            "description": "canonical tier; raw 11 is Tier 1 and raw 12 is Tier 2",
+        }
+    )
+    output["ScenarioUASCharging"].attrs.update(
+        {
+            "description": "UAS charging load is active for this forecast time",
+            "flag_values": "0, 1",
+        }
+    )
+    output["ScenarioPowerState"].attrs["description"] = (
+        "composed PDU mode, canonical UAS tier/charge state, and CL61 heater state"
+    )
     output["BatteryUsableCapacityKWhEnsemble"].attrs["units"] = "kWh"
     output["BatteryChargeEfficiencyEnsemble"].attrs["units"] = "1"
     output["BatteryDischargeEfficiencyEnsemble"].attrs["units"] = "1"

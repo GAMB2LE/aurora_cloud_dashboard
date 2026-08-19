@@ -411,12 +411,17 @@ The state product contains:
 
 - `OperatingModeCode` and `OperatingModeProbability`
 - `OperatingModeConfidence`
+- `OperatingLoadState`, the composed PDU mode plus canonical UAS and CL61
+  substate
 - `DirectStateConfirmed`, which is `1` only when all four assigned PDU outlets
   have direct state or watt evidence for that observation
 - `ObservedLoadWatts` and `EstimatedModeLoadWatts`
 - `LoadInnovationWatts` and `LoadObservationOutlier`
+- `UASEffectiveTier`, `UASCanonicalTier`, and `UASChargingState`
+- `CL61StateCode`
+- ten-entry `learned_state` load quantiles and maturity metadata
 
-The persisted `hybrid_state_space_phases_v10` learner combines a finite set of
+The persisted `hybrid_canonical_uas_cl61_states_v11` learner combines a finite set of
 named operating modes with robust component and exact-state phase learning. Its
 components are the DC baseline, CL61, Radar, HATPRO, UAS, and an unknown-AC
 increment. Existing observations are reclassified on each run, but component
@@ -428,8 +433,29 @@ cannot contaminate a named state's load distribution. Re-running unchanged data
 therefore does not double count evidence.
 The UAS MQTT effective tier is aligned with these 15-minute observations and
 the state stores tier-specific load quantiles, sample count, independent
-episode count, and observed duration. A tier is mature only after three
-episodes and six hours.
+episode count, and observed duration. Raw Tier 11 trains canonical Tier 1 and
+raw Tier 12 trains canonical Tier 2; those proxy profiles require two episodes
+and six hours. Tiers 3-5 require three episodes and six hours. Raw Tier 1/2 can
+be displayed as the current state but cannot train the proxy-backed profiles.
+
+The canonical learned-state catalogue is:
+
+- Tier 1
+- Tier 1 + UAS Charging
+- Tier 2
+- Tier 2 + UAS Charging
+- Tier 3
+- Tier 3 + UAS Charging
+- Tier 4 (12 V only)
+- Tier 5 (all off)
+- CL61
+- CL61 (heater on)
+
+Charging states use an explicit `UASCharge on`/`off` event contract. Before
+charge data are learned, Tiers 1-3 add `300 W` for the first three forecast
+hours and then return to their base tier. At least one complete 2.5-hour event
+is required before observed charging increments and median duration replace
+that estimate.
 
 The scenario product carries P10, P50, and P90 SOC and load for these plans:
 
@@ -446,6 +472,7 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - Radar
 - HATPRO
 - all instruments + UAS tier 3
+- the ten canonical learned-state scenarios listed above
 - each additional learned kit combination
 
 The all-instruments scenario keeps CL61, Radar, HATPRO, and UAS active and sets
