@@ -14,6 +14,31 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_float_health_states_are_normalized_and_counted(self) -> None:
+        self.assertEqual(mobile_catalog.normalize_level(1.0), "green")
+        self.assertEqual(mobile_catalog.normalize_level(0.0), "red")
+
+        spec = mobile_catalog.OPERATIONS_STREAMS[0]
+        snapshot = {str(spec["source"]): 1.0}
+        snapshot.update({str(key): 1.0 for key in spec["services"]})
+        state = mobile_catalog._stream_state(snapshot, spec)
+
+        self.assertEqual(state["level"], "green")
+        self.assertEqual(state["serviceHealthyCount"], state["serviceCount"])
+
+    def test_public_dashboard_group_uses_published_probe_keys(self) -> None:
+        snapshot = {
+            "dashboard_http_ok_state": 1.0,
+            "failover_primary_dashboard_http_ok_state": 1.0,
+            "failover_standby_dashboard_http_ok_state": 1.0,
+            "archive_health_level": "green",
+        }
+
+        groups = mobile_catalog._root_cause_groups(snapshot, [])
+        dashboard = next(group for group in groups if group["id"] == "dashboard")
+
+        self.assertEqual(dashboard["level"], "green")
+
     def test_operations_prefers_and_merges_archive_health(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

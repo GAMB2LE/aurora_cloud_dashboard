@@ -289,6 +289,13 @@ def display_artifacts() -> dict[str, Any]:
 
 
 def normalize_level(value: Any) -> str:
+    if isinstance(value, bool):
+        return "green" if value else "red"
+    if isinstance(value, int | float):
+        if value == 1:
+            return "green"
+        if value == 0:
+            return "red"
     text = str(value or "").strip().lower()
     if text in {"green", "ok", "healthy", "good", "1", "true"}:
         return "green"
@@ -680,7 +687,13 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
     source_issues = [stream["title"] for stream in streams if normalize_level(stream.get("sourceHealthy")) == "red"]
     service_issues = [stream["title"] for stream in streams if stream["level"] == "red" and stream["title"] not in source_issues]
     storage_level = "red" if any(float(snapshot.get(key, 0) or 0) >= 80 for key in ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")) else "green" if snapshot else "unknown"
-    dashboard_level = level_from_booleans([snapshot.get("dashboard_http_healthy_state"), snapshot.get("primary_dashboard_http_healthy_state"), snapshot.get("standby_dashboard_http_healthy_state")])
+    dashboard_level = level_from_booleans(
+        [
+            snapshot.get("dashboard_http_ok_state"),
+            snapshot.get("failover_primary_dashboard_http_ok_state"),
+            snapshot.get("failover_standby_dashboard_http_ok_state"),
+        ]
+    )
     archive_level = normalize_level(snapshot.get("archive_health_level"))
     archive_failures = snapshot.get("archive_health_failures")
     if not isinstance(archive_failures, list):
