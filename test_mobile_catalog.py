@@ -1199,7 +1199,8 @@ class MobileCatalogTests(unittest.TestCase):
             videos.mkdir(parents=True)
             thumbs.mkdir(parents=True)
             (videos / "20260705.mp4").write_bytes(b"video")
-            (thumbs / "sample.jpg").write_bytes(b"thumb")
+            thumbnail = thumbs / "HDR_20260705_123000.jpg"
+            thumbnail.write_bytes(b"thumb")
 
             with patch.dict(
                 os.environ,
@@ -1213,7 +1214,37 @@ class MobileCatalogTests(unittest.TestCase):
 
         self.assertTrue(response["video"]["exists"])
         self.assertEqual(response["availableDays"], ["2026-07-05"])
-        self.assertEqual(response["thumbnails"][0]["imageURL"], "/media/wxcam/thumb/fish_hdr/20260705/sample.jpg")
+        self.assertEqual(response["thumbnails"][0]["hourUTC"], 12)
+        self.assertEqual(
+            response["thumbnails"][0]["imageURL"],
+            "/media/wxcam/thumb/fish_hdr/20260705/HDR_20260705_123000.jpg",
+        )
+
+    def test_wxcam_thumbnails_deduplicate_candidates_and_use_filename_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            thumbs = root / "fish_hdr" / "20260818"
+            thumbs.mkdir(parents=True)
+            for hour in (0, 2):
+                for minute in range(0, 31, 5):
+                    (thumbs / f"HDR_20260818_{hour:02d}{minute:02d}39.jpg").write_bytes(b"thumb")
+            for minute in (0, 5, 10, 15):
+                (thumbs / f"HDR_20260818_14{minute:02d}39.jpg").write_bytes(b"thumb")
+            (thumbs / "sample.jpg").write_bytes(b"malformed")
+            (thumbs / "HDR_20260817_143000.jpg").write_bytes(b"wrong day")
+
+            with patch.dict(os.environ, {"WXCAM_HOURLY_THUMB_DIR": str(root)}):
+                records = mobile_catalog.wxcam_thumbnail_records("fish_hdr", "2026-08-18")
+
+        self.assertEqual([record["hourUTC"] for record in records], [0, 2, 14])
+        self.assertEqual(
+            [record["id"] for record in records],
+            [
+                "HDR_20260818_003039",
+                "HDR_20260818_023039",
+                "HDR_20260818_141539",
+            ],
+        )
 
     def test_wxcam_media_resolvers_reject_malformed_day_tokens(self) -> None:
         self.assertIsNone(mobile_catalog.resolve_wxcam_video_path("fish_hdr", ".."))

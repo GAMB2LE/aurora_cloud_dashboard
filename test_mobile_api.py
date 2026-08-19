@@ -328,7 +328,8 @@ class MobileAPITests(unittest.TestCase):
             videos.mkdir(parents=True)
             thumbs.mkdir(parents=True)
             (videos / "20260705.mp4").write_bytes(b"video")
-            (thumbs / "sample.jpg").write_bytes(b"thumb")
+            thumbnail_name = "HDR_20260705_123000.jpg"
+            (thumbs / thumbnail_name).write_bytes(b"thumb")
 
             with patch.dict(
                 os.environ,
@@ -349,12 +350,13 @@ class MobileAPITests(unittest.TestCase):
                     headers={"Authorization": "Bearer secret"},
                 )
                 thumb = self.client.get(
-                    "/media/wxcam/thumb/fish_hdr/20260705/sample.jpg",
+                    f"/media/wxcam/thumb/fish_hdr/20260705/{thumbnail_name}",
                     headers={"Authorization": "Bearer secret"},
                 )
 
         self.assertEqual(listing.status_code, 200)
         self.assertTrue(listing.json()["video"]["exists"])
+        self.assertEqual(listing.json()["thumbnails"][0]["hourUTC"], 12)
         self.assertEqual(video.status_code, 200)
         self.assertEqual(video.content, b"video")
         self.assertEqual(thumb.status_code, 200)

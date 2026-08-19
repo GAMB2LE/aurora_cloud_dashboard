@@ -21,6 +21,7 @@ from instrument_registry import (
     PDU_INSTRUMENTS as PDU_INSTRUMENT_CONTRACTS,
     SCIENCE_DC_INSTRUMENTS as SCIENCE_DC_INSTRUMENT_CONTRACTS,
 )
+from wxcam_catalog import parse_timestamp as parse_wxcam_timestamp
 
 
 UTC = timezone.utc
@@ -2171,13 +2172,28 @@ def wxcam_thumbnail_records(stream: str, day: str) -> list[dict[str, Any]]:
     directory = wxcam_hourly_thumbnail_root() / stream / token
     if not directory.exists():
         return []
+    selected: dict[int, tuple[tuple[int, int, str], Path]] = {}
+    for path in sorted(directory.glob("*.jpg")):
+        timestamp = parse_wxcam_timestamp(path)
+        if timestamp is None or timestamp.strftime("%Y%m%d") != token:
+            continue
+        seconds_after_hour = timestamp.minute * 60 + timestamp.second
+        score = (
+            abs(seconds_after_hour - 30 * 60),
+            seconds_after_hour,
+            path.name,
+        )
+        current = selected.get(timestamp.hour)
+        if current is None or score < current[0]:
+            selected[timestamp.hour] = (score, path)
+
     records = []
-    for index, path in enumerate(sorted(directory.glob("*.jpg"))[:24]):
+    for hour, (_score, path) in sorted(selected.items()):
         records.append(
             {
                 "id": path.stem,
                 "title": path.stem,
-                "hourUTC": index,
+                "hourUTC": hour,
                 "imageURL": media_url("wxcam", "thumb", stream, token, path.name),
                 **file_record(path),
             }
