@@ -58,6 +58,11 @@ The storage cards are intentionally broken out as:
 - AURORA Cloud product and AURORA Cloud root
 - JASMIN GWS
 
+APS data is probed at the dedicated filesystem's canonical
+`/home/aurora/data` mount. Applications continue to use `/data` through a
+managed bind mount; probing the canonical mount prevents a missing bind from
+misreporting the small root filesystem as the APS data disk.
+
 Each card subtitle uses the resolved `pwd -P` path that was actually probed for
 filesystem usage.
 

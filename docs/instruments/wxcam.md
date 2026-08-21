@@ -28,6 +28,8 @@ playback and seeking.
 The WXcam science view is image-driven:
 
 - each UTC hour uses the HDR JPG closest to `:30`
+- an hour is published only after it closes and the source-sync grace has
+  elapsed; its first settled thumbnail is then kept at a stable source URL
 - the quicklook page shows a `3 x 8` hourly grid
 - tiles only appear when an image exists for that hour
 - the page header and availability bar explicitly label the grid as UTC, and

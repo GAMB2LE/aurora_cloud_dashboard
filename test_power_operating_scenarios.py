@@ -12,6 +12,7 @@ import xarray as xr
 from power_operating_scenarios import (
     COMPONENT_INDEX,
     MODE_DC_ONLY,
+    OperatingEvent,
     SCENARIO_CL61,
     SCENARIO_CURRENT,
     SCENARIO_DC_ONLY,
@@ -36,6 +37,14 @@ from power_operating_scenarios import (
     _tier_profile_members,
 )
 from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_state_catalog import (
+    LEARNED_POWER_STATE_IDS,
+    POWER_STATE_SCENARIO_IDS,
+    UAS_CHARGE_DURATION_HOURS,
+    UAS_CHARGE_ESTIMATE_W,
+    canonical_uas_tier,
+    tier_is_learning_source,
+)
 from power_load_dynamics import LoadDistribution, StateLoadDynamics
 from generate_power_operating_scenarios import (
     _verification_for_record,
@@ -103,6 +112,51 @@ def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.D
 
 
 class OperatingScenarioTests(unittest.TestCase):
+    def test_canonical_power_state_catalog_matches_the_operator_contract(self) -> None:
+        self.assertEqual(
+            LEARNED_POWER_STATE_IDS,
+            (
+                "uas_tier_1",
+                "uas_tier_1_charging",
+                "uas_tier_2",
+                "uas_tier_2_charging",
+                "uas_tier_3",
+                "uas_tier_3_charging",
+                "uas_tier_4",
+                "uas_tier_5",
+                "cl61",
+                "cl61_heater_on",
+            ),
+        )
+        self.assertEqual(len(POWER_STATE_SCENARIO_IDS), 10)
+        self.assertEqual(canonical_uas_tier(11), 1)
+        self.assertEqual(canonical_uas_tier(12), 2)
+        self.assertTrue(tier_is_learning_source(11, 1))
+        self.assertTrue(tier_is_learning_source(12, 2))
+        self.assertFalse(tier_is_learning_source(1, 1))
+        self.assertFalse(tier_is_learning_source(2, 2))
+
+    def test_unknown_uas_tiers_are_ignored_by_learning(self) -> None:
+        power, pdu = _training_data()
+        times = pd.DatetimeIndex(power["time"].values)
+        tiers = pd.Series(
+            [11.0, np.nan, 999.0, 12.0],
+            index=times[:4],
+            dtype=float,
+        )
+
+        observations = build_observation_frame(
+            power,
+            pdu,
+            uas_tier=tiers,
+            lookback_days=2,
+        )
+
+        self.assertTrue(observations.loc[times[0], "uas_tier_learning_eligible"])
+        self.assertFalse(observations.loc[times[1], "uas_tier_learning_eligible"])
+        self.assertFalse(observations.loc[times[2], "uas_tier_learning_eligible"])
+        self.assertTrue(observations.loc[times[3], "uas_tier_learning_eligible"])
+
     def test_p50_continuation_holds_only_currently_on_controlled_instruments(self) -> None:
         times = pd.date_range("2026-08-09T00:00:00", periods=6, freq="1h")
         decision = evaluate_p50_continuation_rule(
@@ -350,6 +404,20 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertTrue(events[0].active)
         self.assertEqual(events[0].kit, "CL61")
+
+    def test_uas_charge_operator_events_are_accepted(self) -> None:
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.csv"
+            path.write_text(
+                "time_utc,action,kit,note\n"
+                "2026-07-15T02:00:00Z,on,UASCharge,charging\n"
+                "2026-07-15T05:00:00Z,off,UASCharge,complete\n",
+                encoding="utf-8",
+            )
+            events = load_operating_events(path)
+
+        self.assertEqual([value.kit for value in events], ["UASCharge", "UASCharge"])
+        self.assertEqual([value.active for value in events], [True, False])
 
     def test_stale_pdu_evidence_does_not_keep_cl61_active(self) -> None:
         power, pdu = _training_data()
@@ -732,14 +800,28 @@ class OperatingScenarioTests(unittest.TestCase):
         )
         current = scenarios.sel(scenario=SCENARIO_CURRENT)
         cl61 = scenarios.sel(scenario=SCENARIO_CL61)
+        cl61_normal = scenarios.sel(scenario="state_cl61")
+        cl61_heater = scenarios.sel(scenario="state_cl61_heater_on")
 
         self.assertEqual(model.current_mode, mode_id(("CL61",)))
         self.assertEqual(model.mode_load_profiles[model.current_mode].current_phase, "fan_high")
+        self.assertIn("cl61", model.cl61_state_profiles)
+        self.assertIn("cl61_heater_on", model.cl61_state_profiles)
         np.testing.assert_allclose(
             current["ScenarioLoadP50Watts"].values,
             cl61["ScenarioLoadP50Watts"].values,
         )
         self.assertGreater(float(current["ScenarioLoadP50Watts"].isel(time=0)), 400.0)
+        self.assertGreater(
+            float(cl61_heater["ScenarioLoadP50Watts"].isel(time=0)),
+            float(cl61_normal["ScenarioLoadP50Watts"].isel(time=0)),
+        )
+        self.assertTrue(
+            np.all(
+                cl61_heater["ScenarioPowerState"].values
+                == "dc_cl61__cl61_heater_on"
+            )
+        )
 
     def test_scenario_validation_rejects_load_drift_inside_one_mode(self) -> None:
         power, pdu = _training_data()
@@ -788,6 +870,110 @@ class OperatingScenarioTests(unittest.TestCase):
             str(tier3["scenario_mode_maturity"].item()),
             "provisional",
         )
+
+    def test_tier_11_and_12_train_canonical_tier_1_and_2_profiles(self) -> None:
+        power, pdu = _training_data()
+        sample_count = power.sizes["time"]
+        raw_tiers = np.r_[
+            np.full(13, 11.0),
+            np.full(12, 12.0),
+            np.full(12, 11.0),
+            np.full(sample_count - 37, 12.0),
+        ]
+        uas_watts = np.where(raw_tiers == 11.0, 115.0, 205.0)
+        pdu["PDUOutlet4Watts"] = (("time",), uas_watts)
+        pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
+        tiers = pd.Series(raw_tiers, index=pd.DatetimeIndex(power["time"].values))
+
+        result = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+
+        self.assertEqual(set(result.uas_tier_profiles), {"1", "2"})
+        self.assertEqual(result.uas_tier_profiles["1"]["source_effective_tiers"], [11])
+        self.assertEqual(result.uas_tier_profiles["2"]["source_effective_tiers"], [12])
+        self.assertEqual(result.uas_tier_profiles["1"]["maturity"], "reliable_proxy")
+        self.assertEqual(result.uas_tier_profiles["2"]["maturity"], "reliable_proxy")
+        self.assertAlmostEqual(result.uas_tier_profiles["1"]["p50_w"], 115.0)
+        self.assertAlmostEqual(result.uas_tier_profiles["2"]["p50_w"], 205.0)
+        self.assertEqual(result.current_uas_effective_tier, 12)
+        self.assertEqual(result.current_uas_tier, 2)
+        np.testing.assert_array_equal(
+            result.state_dataset["UASCanonicalTier"].values,
+            np.where(raw_tiers == 11.0, 1.0, 2.0),
+        )
+
+    def test_uas_charge_is_estimated_for_three_hours_then_returns_to_base_tier(self) -> None:
+        power, pdu = _training_data()
+        sample_count = power.sizes["time"]
+        pdu["PDUOutlet4Watts"] = (("time",), np.full(sample_count, 108.0))
+        pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
+        tiers = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
+        model = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+        base = scenarios.sel(scenario="state_uas_tier_3")
+        charging = scenarios.sel(scenario="state_uas_tier_3_charging")
+        difference = (
+            charging["ScenarioLoadP50Watts"].values
+            - base["ScenarioLoadP50Watts"].values
+        )
+
+        np.testing.assert_allclose(difference[:4], UAS_CHARGE_ESTIMATE_W)
+        np.testing.assert_allclose(difference[4:], 0.0)
+        np.testing.assert_array_equal(
+            charging["ScenarioUASCharging"].values[:5],
+            [1, 1, 1, 1, 0],
+        )
+        self.assertEqual(
+            pd.Timestamp(charging.time.values[3]) - pd.Timestamp(charging.time.values[0]),
+            pd.Timedelta(hours=UAS_CHARGE_DURATION_HOURS),
+        )
+        self.assertEqual(str(charging["scenario_mode_maturity"].item()), "estimated")
+        self.assertEqual(
+            str(charging["ScenarioPowerState"].isel(time=0).item()),
+            "dc_uas__uas_tier_3_charging",
+        )
+        self.assertEqual(
+            str(charging["ScenarioPowerState"].isel(time=4).item()),
+            "dc_uas__uas_tier_3",
+        )
+
+    def test_explicit_charge_episode_replaces_the_estimate_after_learning(self) -> None:
+        power, pdu = _training_data()
+        sample_count = power.sizes["time"]
+        uas_watts = np.full(sample_count, 105.0)
+        uas_watts[10:22] = 405.0
+        pdu["PDUOutlet4Watts"] = (("time",), uas_watts)
+        pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
+        tiers = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
+        times = pd.DatetimeIndex(power["time"].values)
+        events = (
+            OperatingEvent(times[10], "UASCharge", True, "charge started"),
+            OperatingEvent(times[22], "UASCharge", False, "charge complete"),
+        )
+
+        result = fit_operating_model(
+            power,
+            pdu,
+            uas_tier=tiers,
+            events=events,
+            lookback_days=2,
+        )
+        charge = result.uas_charge_profiles["3"]
+
+        self.assertEqual(charge["maturity"], "reliable")
+        self.assertEqual(charge["episode_count"], 1.0)
+        self.assertEqual(charge["observed_hours"], 3.0)
+        self.assertAlmostEqual(charge["increment_p50_w"], 300.0)
+        self.assertAlmostEqual(charge["duration_p50_hours"], 3.0)
+        self.assertAlmostEqual(charge["duration_hours"], 3.0)
 
     def test_provisional_uas_tier_profile_uses_conservative_fallback(self) -> None:
         members = _tier_profile_members(
@@ -1052,7 +1238,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "10")
+                self.assertEqual(state.attrs["model_version"], "11")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
                 scenario_ids = [str(value) for value in scenarios["scenario"].values]

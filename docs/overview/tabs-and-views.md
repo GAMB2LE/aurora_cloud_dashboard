@@ -9,8 +9,9 @@ dashboard. The tabs are **Overview**, **Interactive Data Browser**, **Power**,
 **Science Quicklooks**, **House Keeping Quicklooks**, **AURORACam**, **UAS**,
 and **Operations Dashboard**. Overview is an optional compact station landing
 view that shows the latest cached station snapshot and a manual refresh; it
-does not replace the full scientific browser. Only the selected tab is mounted in the browser, and
-the heavier quicklook, UAS, and Operations content remains lazy-loaded.
+does not replace the full scientific browser. Stable tab hosts remain mounted
+in the browser so switching views cannot lose pending updates, while the
+heavier quicklook, UAS, and Operations content remains lazy-loaded.
 When those full labels do not fit on a narrower desktop or tablet, the tab bar
 scrolls horizontally in one row instead of wrapping or abbreviating them.
 

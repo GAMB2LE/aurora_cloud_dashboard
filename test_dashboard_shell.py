@@ -221,7 +221,9 @@ class DashboardShellTests(TestCase):
             ],
         )
         self.assertEqual(len(app.desktop_tabs), len(labels))
-        self.assertTrue(app.desktop_tabs.dynamic)
+        # Content stays lazy, but stable tab hosts remain attached so Bokeh
+        # does not drop model patches while a tab is activated.
+        self.assertFalse(app.desktop_tabs.dynamic)
         self.assertIn("Overview", labels)
 
     def test_desktop_interactive_and_power_tabs_use_distinct_hosts(self) -> None:
@@ -302,10 +304,101 @@ class DashboardShellTests(TestCase):
         original_loaded = app._BROWSER_OVERVIEW_LOADED
         try:
             app._BROWSER_OVERVIEW_LOADED = True
-            with patch.object(app, "_mobile_overview", side_effect=AssertionError("overview rebuilt")):
+            with (
+                patch.object(app, "_mobile_overview_markup", side_effect=AssertionError("overview rebuilt")),
+                patch.object(app, "_browser_overview_instrument_markup", side_effect=AssertionError("overview rebuilt")),
+            ):
                 app._refresh_browser_overview()
         finally:
             app._BROWSER_OVERVIEW_LOADED = original_loaded
+
+    def test_overview_refresh_updates_stable_attached_panes(self) -> None:
+        original_loaded = app._BROWSER_OVERVIEW_LOADED
+        original_summary = app.browser_overview_summary_pane.object
+        original_instruments = app.browser_overview_instrument_pane.object
+        original_objects = tuple(app.browser_overview_container.objects)
+        try:
+            app._BROWSER_OVERVIEW_LOADED = False
+            with (
+                patch.object(app, "_mobile_overview_markup", return_value="<div>AURORA Overview fixture</div>"),
+                patch.object(app, "_browser_overview_instrument_markup", return_value="<div>Instrument fixture</div>"),
+            ):
+                app._refresh_browser_overview()
+
+            self.assertEqual(tuple(app.browser_overview_container.objects), original_objects)
+            self.assertEqual(app.browser_overview_summary_pane.object, "<div>AURORA Overview fixture</div>")
+            self.assertEqual(app.browser_overview_instrument_pane.object, "<div>Instrument fixture</div>")
+        finally:
+            app.browser_overview_summary_pane.object = original_summary
+            app.browser_overview_instrument_pane.object = original_instruments
+            app._BROWSER_OVERVIEW_LOADED = original_loaded
+
+    def test_housekeeping_refresh_updates_stable_attached_panes(self) -> None:
+        original_quicklook = app.housekeeping_quicklook_pane.object
+        original_status = app.hk_status_pane.object
+        original_availability = app.hk_availability_pane.object
+        original_objects = tuple(app.housekeeping_quicklook_container.objects)
+        try:
+            with (
+                patch.object(app, "_housekeeping_quicklook_image", return_value=app.pn.pane.HTML("<img class='quicklook-image__img'>")),
+                patch.object(app, "_current_hk_status_markup", return_value="<div>HK status fixture</div>"),
+                patch.object(app, "_current_hk_availability_markup", return_value="<div>HK availability fixture</div>"),
+            ):
+                app._refresh_housekeeping_tab_content()
+
+            self.assertEqual(tuple(app.housekeeping_quicklook_container.objects), original_objects)
+            self.assertIn("quicklook-image__img", app.housekeeping_quicklook_pane.object)
+            self.assertEqual(app.hk_status_pane.object, "<div>HK status fixture</div>")
+            self.assertEqual(app.hk_availability_pane.object, "<div>HK availability fixture</div>")
+        finally:
+            app.housekeeping_quicklook_pane.object = original_quicklook
+            app.hk_status_pane.object = original_status
+            app.hk_availability_pane.object = original_availability
+
+    def test_tab_is_selected_before_its_load_is_scheduled(self) -> None:
+        original_slug = app.ACTIVE_TAB_SLUG
+        original_active = app.desktop_tabs.active
+        try:
+            def assert_selected(slug: str) -> None:
+                self.assertEqual(slug, "overview")
+                self.assertEqual(app.desktop_tabs.active, app.TAB_INDEX_BY_SLUG[slug])
+
+            with (
+                patch.object(app, "_schedule_active_tab_load", side_effect=assert_selected) as schedule,
+                patch.object(app, "_refresh_share_and_download_state"),
+            ):
+                app._set_active_tab("overview")
+
+            schedule.assert_called_once_with("overview")
+        finally:
+            app.ACTIVE_TAB_SLUG = original_slug
+            app._desktop_tab_syncing = True
+            try:
+                app.desktop_tabs.active = original_active
+            finally:
+                app._desktop_tab_syncing = False
+
+    def test_only_stable_direct_link_tabs_are_prepared_during_bootstrap(self) -> None:
+        original_loaded_tabs = set(app._LOADED_TABS)
+        try:
+            app._LOADED_TABS.discard("housekeeping")
+            with (
+                patch.object(app, "_refresh_browser_overview") as overview,
+                patch.object(app, "_refresh_housekeeping_tab_content") as housekeeping,
+            ):
+                app._prepare_initial_stable_tab_content("interactive")
+                overview.assert_not_called()
+                housekeeping.assert_not_called()
+
+                app._prepare_initial_stable_tab_content("overview")
+                overview.assert_called_once_with()
+
+                app._prepare_initial_stable_tab_content("housekeeping")
+                housekeeping.assert_called_once_with()
+                self.assertIn("housekeeping", app._LOADED_TABS)
+        finally:
+            app._LOADED_TABS.clear()
+            app._LOADED_TABS.update(original_loaded_tabs)
 
     def test_overview_uses_cached_power_timestamp_without_opening_display_zarr(self) -> None:
         snapshot = {

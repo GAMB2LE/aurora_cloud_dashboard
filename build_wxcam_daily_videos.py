@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 import shutil
 import subprocess
@@ -28,6 +28,7 @@ QUICKLOOK_DEFAULT = Path("/data/aurora/products/quicklooks/wxcam")
 CATALOG_DEFAULT = Path("/data/aurora/products/wxcam/wxcam_catalog.sqlite")
 DAY_DIR_REGEX = re.compile(r"^\d{8}$")
 SETTLED_VIDEO_GRACE_SECONDS = 10 * 60
+THUMBNAIL_HOUR_SETTLE_GRACE_SECONDS = 10 * 60
 
 
 def _iter_day_dirs(stream_root: Path, reverse: bool = False):
@@ -151,12 +152,46 @@ def _thumbnail_path(thumbnail_root: Path, image_type: str, day_token: str, sourc
     return thumbnail_root / image_type / day_token / f"{source_path.stem}.jpg"
 
 
-def _representative_hourly_images(day_dir: Path, pattern: str) -> dict[int, Path]:
+def _existing_thumbnail_hours(directory: Path, day_token: str) -> set[int]:
+    hours: set[int] = set()
+    for path in directory.glob("*.jpg") if directory.exists() else ():
+        timestamp = parse_timestamp(path)
+        if timestamp is not None and timestamp.strftime("%Y%m%d") == day_token:
+            hours.add(timestamp.hour)
+    return hours
+
+
+def _thumbnail_build_before(now: datetime) -> datetime:
+    settled = now - timedelta(seconds=THUMBNAIL_HOUR_SETTLE_GRACE_SECONDS)
+    return settled.replace(minute=0, second=0, microsecond=0)
+
+
+def _unpublished_hourly_images(
+    hourly_images: dict[int, Path],
+    existing_thumbnail_hours: set[int],
+) -> dict[int, Path]:
+    return {
+        hour: path
+        for hour, path in hourly_images.items()
+        if hour not in existing_thumbnail_hours
+    }
+
+
+def _representative_hourly_images(
+    day_dir: Path,
+    pattern: str,
+    *,
+    before: datetime | None = None,
+) -> dict[int, Path]:
     chosen: dict[int, Path] = {}
     scores: dict[int, tuple[int, int, str]] = {}
     for image_path in _list_files(day_dir, pattern, recursive=True):
         timestamp = parse_timestamp(image_path)
         if timestamp is None:
+            continue
+        # Do not publish a provisional thumbnail for an hour that is still
+        # being acquired or settling through source sync.
+        if before is not None and timestamp >= before:
             continue
         hour = timestamp.hour
         seconds_after_hour = timestamp.minute * 60 + timestamp.second
@@ -204,8 +239,10 @@ def build_daily_videos(
     thumbs_skipped = 0
     thumbs_failed = 0
     day_tokens_seen: set[str] = set()
-    now_ts = datetime.now(timezone.utc).timestamp()
-    today_token = datetime.now(timezone.utc).strftime("%Y%m%d")
+    now = datetime.now(timezone.utc)
+    now_ts = now.timestamp()
+    thumbnail_build_before = _thumbnail_build_before(now)
+    today_token = now.strftime("%Y%m%d")
     today_iso = f"{today_token[:4]}-{today_token[4:6]}-{today_token[6:8]}"
     if catalog_path.exists():
         try:
@@ -264,8 +301,22 @@ def build_daily_videos(
 
         for day_dir in day_dirs:
             day_tokens_seen.add(day_dir.name)
-            hourly_images = _representative_hourly_images(day_dir, image_glob)
-            for image_path in hourly_images.values():
+            hourly_images = _representative_hourly_images(
+                day_dir,
+                image_glob,
+                before=thumbnail_build_before,
+            )
+            thumbnail_directory = thumbnail_root / image_type / day_dir.name
+            existing_thumbnail_hours = _existing_thumbnail_hours(thumbnail_directory, day_dir.name)
+            unpublished_images = _unpublished_hourly_images(
+                hourly_images,
+                existing_thumbnail_hours,
+            )
+            thumbs_skipped += len(hourly_images) - len(unpublished_images)
+            for hour, image_path in unpublished_images.items():
+                # Source-stem URLs are part of the desktop dashboard contract.
+                # Freeze the first settled representative instead of deleting
+                # or renaming a URL that an API client may still be loading.
                 thumb_path = _thumbnail_path(thumbnail_root, image_type, day_dir.name, image_path)
                 if _needs_refresh([image_path], thumb_path):
                     try:
@@ -276,6 +327,7 @@ def build_daily_videos(
                         continue
                     if built_thumb:
                         thumbs_built += 1
+                        existing_thumbnail_hours.add(hour)
                     else:
                         print(f"Skipping wxcam thumbnail {image_path}: no thumbnail produced")
                         thumbs_failed += 1

@@ -8368,8 +8368,13 @@ interactive_status_container = pn.Column(_lightweight_placeholder("Freshness and
 interactive_availability_container = pn.Column(_lightweight_placeholder("Data availability"), sizing_mode="stretch_width")
 science_status_container = pn.Column(_lightweight_placeholder("Science freshness and status"), sizing_mode="stretch_width")
 science_availability_container = pn.Column(_lightweight_placeholder("Science data availability"), sizing_mode="stretch_width")
-hk_status_container = pn.Column(_lightweight_placeholder("Housekeeping freshness and status"), sizing_mode="stretch_width")
-hk_availability_container = pn.Column(_lightweight_placeholder("Housekeeping data availability"), sizing_mode="stretch_width")
+# These panes stay in the Bokeh document for the whole session. Updating a
+# scalar ``object`` property is safe while a tab is attached; replacing the
+# surrounding Column with newly created models during activation is not.
+hk_status_pane = _lightweight_placeholder("Housekeeping freshness and status")
+hk_availability_pane = _lightweight_placeholder("Housekeeping data availability")
+hk_status_container = pn.Column(hk_status_pane, sizing_mode="stretch_width")
+hk_availability_container = pn.Column(hk_availability_pane, sizing_mode="stretch_width")
 
 
 def _activate_interactive_footer_metrics() -> None:
@@ -8476,10 +8481,35 @@ def _lazy_tab_placeholder(label: str) -> pn.pane.HTML:
 
 
 science_quicklook_container = pn.Column(_lazy_tab_placeholder("Science quicklooks"), sizing_mode="stretch_width")
-housekeeping_quicklook_container = pn.Column(_lazy_tab_placeholder("House keeping quicklooks"), sizing_mode="stretch_width")
+housekeeping_quicklook_pane = _lazy_tab_placeholder("House keeping quicklooks")
+housekeeping_quicklook_container = pn.Column(housekeeping_quicklook_pane, sizing_mode="stretch_width")
 uas_container = pn.Column(_lazy_tab_placeholder("UAS status"), sizing_mode="stretch_width")
 operations_container = pn.Column(_lazy_tab_placeholder("Operations dashboard"), sizing_mode="stretch_width")
 _LOADED_TABS: set[str] = set()
+
+
+def _pane_html_object(pane) -> str:
+    """Copy one simple quicklook pane into an already-attached HTML model."""
+    if isinstance(pane, pn.pane.HTML):
+        return str(pane.object or "")
+    return f"<div class='lazy-tab-message'>{escape(str(getattr(pane, 'object', '') or ''))}</div>"
+
+
+def _refresh_housekeeping_tab_content(*_events) -> None:
+    """Refresh housekeeping without introducing new Bokeh model references."""
+    rendered = _housekeeping_quicklook_image(hk_date.value, hk_instrument.value)
+    housekeeping_quicklook_pane.object = _pane_html_object(rendered)
+    hk_status_pane.object = _current_hk_status_markup()
+    hk_availability_pane.object = _current_hk_availability_markup()
+
+
+def _refresh_loaded_housekeeping_tab(_event=None) -> None:
+    if "housekeeping" in _LOADED_TABS:
+        _refresh_housekeeping_tab_content()
+
+
+hk_instrument.param.watch(_refresh_loaded_housekeeping_tab, "value")
+hk_date.param.watch(_refresh_loaded_housekeeping_tab, "value")
 power_browser_guidance_container = pn.Column(
     sizing_mode="stretch_width",
     margin=0,
@@ -8842,12 +8872,15 @@ def _mobile_overview() -> pn.Column:
 
 
 _BROWSER_OVERVIEW_LOADED = False
+browser_overview_summary_pane = pn.pane.HTML(
+    "<div class='mobile-section-note'>Open Overview to load the latest station snapshot.</div>",
+    sizing_mode="stretch_width",
+    margin=0,
+)
+browser_overview_instrument_pane = pn.pane.HTML("", sizing_mode="stretch_width", margin=(8, 0, 0, 0))
 browser_overview_container = pn.Column(
-    pn.pane.HTML(
-        "<div class='mobile-section-note'>Open Overview to load the latest station snapshot.</div>",
-        sizing_mode="stretch_width",
-        margin=0,
-    ),
+    browser_overview_summary_pane,
+    browser_overview_instrument_pane,
     sizing_mode="stretch_width",
 )
 browser_overview_refresh = pn.widgets.Button(name="Refresh station snapshot", button_type="primary", icon="refresh")
@@ -8860,10 +8893,8 @@ def _refresh_browser_overview(_event=None, *, force: bool = False) -> None:
     # both phases causes Bokeh to drop patches and can leave Overview blank.
     if _BROWSER_OVERVIEW_LOADED and _event is None and not force:
         return
-    browser_overview_container[:] = [
-        _mobile_overview(),
-        pn.pane.HTML(_browser_overview_instrument_markup(), sizing_mode="stretch_width", margin=(8, 0, 0, 0)),
-    ]
+    browser_overview_summary_pane.object = _mobile_overview_markup()
+    browser_overview_instrument_pane.object = _browser_overview_instrument_markup()
     _BROWSER_OVERVIEW_LOADED = True
 
 
@@ -9569,11 +9600,15 @@ ACTIVE_TAB_SLUG = "interactive"
 _browser_tab_syncing = False
 desktop_tabs = pn.Tabs(
     *((label, panel) for label, _slug, panel in DESKTOP_TAB_SPECS),
-    dynamic=True,
+    # Each expensive tab body already starts as a lightweight placeholder and
+    # is populated on demand. Keeping every stable tab host attached avoids
+    # Bokeh reference collisions when those placeholders are replaced.
+    dynamic=False,
     sizing_mode="stretch_width",
     css_classes=["desktop-tabs"],
 )
 _desktop_tab_syncing = False
+_ACTIVE_TAB_LOAD_GENERATION = 0
 
 
 def _normalize_tab_slug(slug: str | None) -> str:
@@ -9645,9 +9680,7 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         science_availability_container[:] = [science_availability]
         _LOADED_TABS.add("science")
     elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
-        housekeeping_quicklook_container[:] = [_housekeeping_quicklook_image]
-        hk_status_container[:] = [hk_status]
-        hk_availability_container[:] = [hk_availability]
+        _refresh_housekeeping_tab_content()
         _LOADED_TABS.add("housekeeping")
     elif active == "auroracam":
         _refresh_auroracam_latest_if_needed()
@@ -9661,12 +9694,43 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         _LOADED_TABS.add("operations")
 
 
+def _prepare_initial_stable_tab_content(slug: str | None) -> None:
+    """Populate stable direct-link panes before the initial document is built."""
+    active = _normalize_tab_slug(slug)
+    if active == "overview":
+        _refresh_browser_overview()
+    elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
+        _refresh_housekeeping_tab_content()
+        _LOADED_TABS.add("housekeeping")
+
+
+def _schedule_active_tab_load(slug: str | None = None) -> None:
+    """Load a tab only after its stable host is attached on the client."""
+    global _ACTIVE_TAB_LOAD_GENERATION
+    active = _normalize_tab_slug(slug or ACTIVE_TAB_SLUG)
+    _ACTIVE_TAB_LOAD_GENERATION += 1
+    generation = _ACTIVE_TAB_LOAD_GENERATION
+    if _APP_BOOTSTRAPPING:
+        return
+    doc = pn.state.curdoc
+    if doc is None:
+        return
+
+    def load_if_current() -> None:
+        if generation != _ACTIVE_TAB_LOAD_GENERATION:
+            return
+        if active != ACTIVE_TAB_SLUG or desktop_tabs.active != TAB_INDEX_BY_SLUG[active]:
+            return
+        _ensure_active_tab_loaded(active)
+
+    doc.add_next_tick_callback(load_if_current)
+
+
 def _set_active_tab(slug: str | None) -> None:
-    """Select and prepare one full-name desktop tab."""
+    """Select one full-name desktop tab, then load it after attachment."""
     global ACTIVE_TAB_SLUG, _desktop_tab_syncing
     active = _normalize_tab_slug(slug)
     ACTIVE_TAB_SLUG = active
-    _ensure_active_tab_loaded(active)
     tab_index = TAB_INDEX_BY_SLUG[active]
     if desktop_tabs.active != tab_index:
         _desktop_tab_syncing = True
@@ -9674,6 +9738,7 @@ def _set_active_tab(slug: str | None) -> None:
             desktop_tabs.active = tab_index
         finally:
             _desktop_tab_syncing = False
+    _schedule_active_tab_load(active)
     _refresh_share_and_download_state()
 
 
@@ -9683,7 +9748,7 @@ def _on_desktop_tab_change(event) -> None:
     if _desktop_tab_syncing:
         return
     ACTIVE_TAB_SLUG = TAB_SLUG_BY_INDEX.get(event.new, "interactive")
-    _ensure_active_tab_loaded(ACTIVE_TAB_SLUG)
+    _schedule_active_tab_load(ACTIVE_TAB_SLUG)
     _refresh_share_and_download_state()
 
 
@@ -9733,9 +9798,13 @@ else:
     if requested_tab == "interactive" and requested_args.get("instrument") == "power":
         requested_tab = "power"
     _set_active_tab(requested_tab if requested_tab in _QUERY_TAB_SLUGS else "interactive")
+    # Overview and housekeeping use stable HTML panes, so their final direct-
+    # link state can be serialized into the initial document without adding
+    # model references. The onload path then only enables the active timers.
+    _prepare_initial_stable_tab_content(ACTIVE_TAB_SLUG)
     _refresh_share_and_download_state()
 _APP_BOOTSTRAPPING = False
-pn.state.onload(lambda: _ensure_active_tab_loaded(ACTIVE_TAB_SLUG))
+pn.state.onload(lambda: _schedule_active_tab_load(ACTIVE_TAB_SLUG))
 
 site_env_banner = _site_env_banner_pane()
 browser_performance_probe = _browser_performance_probe()

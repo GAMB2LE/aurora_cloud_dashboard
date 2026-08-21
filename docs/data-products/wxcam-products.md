@@ -71,6 +71,13 @@ default visible instrument is `Aurora Power Supply`.
 - hourly thumbnails:
   `/data/aurora/products/wxcam/hourly_thumbnails/<image_type>/YYYYMMDD/`
 
+Hourly thumbnails are materialized after each UTC hour closes and a ten-minute
+source-settle grace has elapsed, using the HDR image nearest `:30`. The first
+settled source-stem URL is retained so a later product pass cannot invalidate a
+URL already returned to a client. Mobile readers defensively derive the hour
+from the filename and collapse any legacy duplicate candidates to that same
+nearest-to-`:30` representative.
+
 Daily videos are stitched from the 24 hourly MP4 clips for that UTC day.
 `latest.mp4` is stitched from the most recent 24 hourly clips across day
 boundaries.

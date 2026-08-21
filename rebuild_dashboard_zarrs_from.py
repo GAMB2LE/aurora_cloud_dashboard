@@ -53,7 +53,6 @@ PROCESSING_TIMERS = [
     "aurora-ops-monitor-append.timer",
     "aurora-ops-monitor-alerts.timer",
     "aurora-ops-monitor-quicklooks.timer",
-    "aurora-les-operational-run.timer",
     "aurora-wxcam-catalog.timer",
     "aurora-wxcam-daily-videos.timer",
     "aurora-wxcam-append.timer",

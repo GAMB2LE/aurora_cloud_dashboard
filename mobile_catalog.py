@@ -21,6 +21,7 @@ from instrument_registry import (
     PDU_INSTRUMENTS as PDU_INSTRUMENT_CONTRACTS,
     SCIENCE_DC_INSTRUMENTS as SCIENCE_DC_INSTRUMENT_CONTRACTS,
 )
+from wxcam_catalog import parse_timestamp as parse_wxcam_timestamp
 
 
 UTC = timezone.utc
@@ -52,6 +53,8 @@ PDU_STATE_FRESHNESS_MINUTES = 30.0
 AUTOMATIC_PHASE_FRESHNESS_MINUTES = 30.0
 UAS_TIER_FRESHNESS_MINUTES = float(os.environ.get("UAS_STALE_AFTER_MINUTES", "5"))
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
+POWER_FRESH_MINUTES = 30.0
+POWER_STALE_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
 OPERATIONS_TREND_CACHE_SECONDS = 60.0
 OPERATIONS_TREND_FRESHNESS = timedelta(minutes=30)
@@ -286,6 +289,13 @@ def display_artifacts() -> dict[str, Any]:
 
 
 def normalize_level(value: Any) -> str:
+    if isinstance(value, bool):
+        return "green" if value else "red"
+    if isinstance(value, int | float):
+        if value == 1:
+            return "green"
+        if value == 0:
+            return "red"
     text = str(value or "").strip().lower()
     if text in {"green", "ok", "healthy", "good", "1", "true"}:
         return "green"
@@ -516,6 +526,16 @@ def operations() -> dict[str, Any]:
     )
 
     stream_states = [_stream_state(snapshot, spec) for spec in OPERATIONS_STREAMS]
+    power_alert = _power_freshness_alert(snapshot)
+    if power_alert:
+        for stream in stream_states:
+            if stream["id"] == "power":
+                stream["level"] = _worst_level(
+                    stream["level"], power_alert["level"]
+                )
+                stream["sourceHealthy"] = power_alert["level"]
+                stream["detail"] = power_alert["detail"]
+                break
     if any(stream["level"] == "red" for stream in stream_states):
         overall = "red"
     elif overall == "unknown" and any(
@@ -535,6 +555,12 @@ def operations() -> dict[str, Any]:
         for alert in _active_alerts(alert_state)
         if alert.get("id") not in {"archive:health_red", "archive:verification"}
     ]
+    if power_alert:
+        active_alerts = [
+            alert for alert in active_alerts if alert.get("id") != "power:freshness"
+        ]
+        active_alerts = [power_alert, *active_alerts]
+        overall = _worst_level(overall, power_alert["level"])
     if normalize_level(archive_status["level"]) in {"amber", "red"}:
         if archive_health:
             active_alerts = [
@@ -562,11 +588,18 @@ def operations() -> dict[str, Any]:
             health_error,
             snapshot_error,
             archive_status,
+            power_alert,
         ),
         "checkCounts": check_counts,
         "streamStates": stream_states,
         "rootCauseGroups": _root_cause_groups(snapshot, stream_states),
         "archiveDelivery": _archive_delivery(archive_health, snapshot),
+        "archiveStatus": {
+            "delivery": archive_health.get("delivery", {}),
+            "durability": archive_health.get("durability", {}),
+            "verification": archive_health.get("verification", {}),
+            "retention": archive_health.get("retention", {}),
+        },
         "alerts": active_alerts,
         "trendCards": _trend_cards(snapshot),
         "sources": {
@@ -615,15 +648,20 @@ def _operations_summary(
     health_error: Any,
     snapshot_error: Any,
     archive_status: dict[str, str],
+    power_alert: dict[str, Any] | None = None,
 ) -> str:
     if health_error:
         return f"Health JSON error: {health_error}"
     if snapshot_error:
         return f"Snapshot JSON error: {snapshot_error}"
+    if power_alert and normalize_level(power_alert.get("level")) == "red":
+        return str(power_alert["title"])
     red_count = sum(1 for stream in streams if stream["level"] == "red")
     unknown_count = sum(1 for stream in streams if stream["level"] == "unknown")
     if red_count:
         return f"{red_count} stream group{'s' if red_count != 1 else ''} need attention"
+    if power_alert:
+        return str(power_alert["title"])
     if unknown_count == len(streams):
         return "No operations snapshot available"
     if archive_status.get("level") == "amber":
@@ -649,7 +687,13 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
     source_issues = [stream["title"] for stream in streams if normalize_level(stream.get("sourceHealthy")) == "red"]
     service_issues = [stream["title"] for stream in streams if stream["level"] == "red" and stream["title"] not in source_issues]
     storage_level = "red" if any(float(snapshot.get(key, 0) or 0) >= 80 for key in ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")) else "green" if snapshot else "unknown"
-    dashboard_level = level_from_booleans([snapshot.get("dashboard_http_healthy_state"), snapshot.get("primary_dashboard_http_healthy_state"), snapshot.get("standby_dashboard_http_healthy_state")])
+    dashboard_level = level_from_booleans(
+        [
+            snapshot.get("dashboard_http_ok_state"),
+            snapshot.get("failover_primary_dashboard_http_ok_state"),
+            snapshot.get("failover_standby_dashboard_http_ok_state"),
+        ]
+    )
     archive_level = normalize_level(snapshot.get("archive_health_level"))
     archive_failures = snapshot.get("archive_health_failures")
     if not isinstance(archive_failures, list):
@@ -706,6 +750,12 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
 def _archive_delivery(
     archive_health: dict[str, Any], snapshot: dict[str, Any]
 ) -> dict[str, Any]:
+    delivery = archive_health.get("delivery")
+    if not isinstance(delivery, dict):
+        delivery = {}
+    verification = archive_health.get("verification")
+    if not isinstance(verification, dict):
+        verification = {}
     evidence = archive_health.get("evidence")
     if not isinstance(evidence, dict):
         evidence = {}
@@ -713,28 +763,49 @@ def _archive_delivery(
     if not isinstance(progress, dict):
         progress = {}
     return {
-        "mode": "newest-first",
-        "pendingFiles": int(snapshot.get("archive_delivery_pending_count") or 0),
-        "pendingBytes": int(snapshot.get("archive_delivery_pending_bytes") or 0),
+        "level": normalize_level(delivery.get("level") or "unknown"),
+        "mode": str(delivery.get("mode") or "newest-first"),
+        "pendingFiles": int(
+            delivery.get("pending_files")
+            or snapshot.get("archive_delivery_pending_count")
+            or 0
+        ),
+        "pendingBytes": int(
+            delivery.get("pending_bytes")
+            or snapshot.get("archive_delivery_pending_bytes")
+            or 0
+        ),
         "gwsPendingFiles": int(
-            snapshot.get("archive_delivery_gws_pending_count") or 0
+            delivery.get("gws_pending_files")
+            or snapshot.get("archive_delivery_gws_pending_count")
+            or 0
         ),
         "objectStorePendingFiles": int(
-            snapshot.get("archive_delivery_object_store_pending_count") or 0
+            delivery.get("object_store_pending_files")
+            or snapshot.get("archive_delivery_object_store_pending_count")
+            or 0
         ),
         "oldestPendingAgeMinutes": float(
-            snapshot.get("archive_delivery_oldest_pending_age_minutes") or 0
+            delivery.get("oldest_pending_age_minutes")
+            or snapshot.get("archive_delivery_oldest_pending_age_minutes")
+            or 0
         ),
-        "lastSuccessAgeMinutes": snapshot.get(
-            "archive_delivery_last_success_age_minutes"
-        ),
+        "lastSuccessAgeMinutes": delivery.get("last_success_age_minutes")
+        if delivery.get("last_success_age_minutes") is not None
+        else snapshot.get("archive_delivery_last_success_age_minutes"),
         "strictAudit": {
-            "state": progress.get("state"),
-            "completedJobs": progress.get("completed_jobs", []),
-            "totalJobs": int(progress.get("total_jobs") or 0),
-            "currentJobs": progress.get("current_jobs")
+            "state": verification.get("state") or progress.get("state"),
+            "completedJobs": verification.get("completed_jobs")
+            or progress.get("completed_jobs", []),
+            "totalJobs": int(
+                verification.get("total_jobs") or progress.get("total_jobs") or 0
+            ),
+            "currentJobs": verification.get("current_jobs")
+            or progress.get("current_jobs")
             or ([progress.get("current_job")] if progress.get("current_job") else []),
-            "phase": progress.get("phase"),
+            "phase": verification.get("phase") or progress.get("phase"),
+            "lastCompleteAt": verification.get("last_complete_at"),
+            "lastCertifiedRawAt": verification.get("last_certified_raw_at"),
         },
     }
 
@@ -951,20 +1022,17 @@ def overview() -> dict[str, Any]:
     # with the battery metrics. Opening the wide display Zarr here added several
     # seconds to every Overview/API request. Keep the direct read only as a
     # compatibility fallback for older snapshots.
-    latest_power_time = next(
-        (
-            snapshot.get(key)
-            for key in (
-                "power_latest_time_utc",
-                "aps_battery_power_time_utc",
-                "aps_battery_soc_time_utc",
-                "aps_battery_voltage_time_utc",
-            )
-            if snapshot.get(key)
-        ),
-        None,
-    ) or _latest_power_time()
-    depletion_value, depletion_detail = _battery_depletion_text(snapshot)
+    latest_power_time = _snapshot_power_time(snapshot) or _latest_power_time()
+    power_level = _age_level(
+        latest_power_time,
+        POWER_FRESH_MINUTES,
+        POWER_STALE_MINUTES,
+    )
+    depletion_value, depletion_detail = _battery_depletion_text(
+        snapshot,
+        power_level=power_level,
+        power_time=latest_power_time,
+    )
     environmental_cards = _environmental_signal_cards()
     science_source_times = {
         "vaisalamet": next(
@@ -982,10 +1050,10 @@ def overview() -> dict[str, Any]:
     }
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
-        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
-        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), status.get("updatedAt"), _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
-        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _battery_depletion_level(snapshot), status.get("updatedAt"), depletion_detail),
-        _overview_card("power", "Power Data", _power_time_text(latest_power_time), _age_level(latest_power_time, 30, 120), latest_power_time, _power_age_text(latest_power_time)),
+        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _freshness_guarded_level(_trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
+        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
+        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), power_level), latest_power_time, depletion_detail),
+        _overview_card("power", "Power Data", _power_time_text(latest_power_time), power_level, latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
         *environmental_cards,
     ]
@@ -1308,7 +1376,17 @@ def _latest_power_time() -> str | None:
             dataset.close()
 
 
-def _battery_depletion_text(snapshot: dict[str, Any]) -> tuple[str, str]:
+def _battery_depletion_text(
+    snapshot: dict[str, Any],
+    *,
+    power_level: str = "green",
+    power_time: str | None = None,
+) -> tuple[str, str]:
+    if normalize_level(power_level) in {"red", "unknown"}:
+        return (
+            "Unavailable",
+            _stale_power_detail(power_time),
+        )
     soc = _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))
     power_w = _metric_value(snapshot, ("aps_battery_power_w", "BatteryWatts"))
     if soc is None or power_w is None:
@@ -1382,6 +1460,78 @@ def _age_level(value: str | None, green_minutes: float, amber_minutes: float) ->
         return "unknown"
     age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
     return "green" if age_minutes < green_minutes else "amber" if age_minutes < amber_minutes else "red"
+
+
+def _snapshot_power_time(snapshot: dict[str, Any]) -> str | None:
+    return next(
+        (
+            str(snapshot[key])
+            for key in (
+                "power_latest_time_utc",
+                "aps_battery_power_time_utc",
+                "aps_battery_soc_time_utc",
+                "aps_battery_voltage_time_utc",
+            )
+            if snapshot.get(key)
+        ),
+        None,
+    )
+
+
+def _worst_level(*levels: Any) -> str:
+    normalized = [normalize_level(level) for level in levels]
+    for candidate in ("red", "amber", "green"):
+        if candidate in normalized:
+            return candidate
+    return "unknown"
+
+
+def _freshness_guarded_level(value_level: Any, freshness_level: Any) -> str:
+    if normalize_level(value_level) == "unknown":
+        return "unknown"
+    return _worst_level(value_level, freshness_level)
+
+
+def _stale_power_detail(value: str | None) -> str:
+    moment = _parse_utc(value)
+    if moment is None:
+        return "Latest APS power measurement is unavailable; depletion cannot be estimated"
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return (
+        f"APS power telemetry is {_duration_text(age_minutes / 60)} old; "
+        "depletion cannot be estimated from stale data"
+    )
+
+
+def _power_freshness_alert(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    latest_power_time = _snapshot_power_time(snapshot)
+    if latest_power_time is None:
+        return None
+    level = _age_level(
+        latest_power_time,
+        POWER_FRESH_MINUTES,
+        POWER_STALE_MINUTES,
+    )
+    if level not in {"amber", "red"}:
+        return None
+    moment = _parse_utc(latest_power_time)
+    if moment is None:
+        return None
+    age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
+    return {
+        "id": "power:freshness",
+        "title": (
+            "APS power telemetry is stale"
+            if level == "red"
+            else "APS power telemetry is delayed"
+        ),
+        "level": level,
+        "detail": (
+            f"No APS power sample since {moment.strftime('%H:%M UTC')} "
+            f"({_duration_text(age_minutes / 60)} ago). Battery SOC, voltage "
+            "and depletion are last-known values."
+        ),
+    }
 
 
 def _age_text(value: str | None) -> str:
@@ -2035,13 +2185,28 @@ def wxcam_thumbnail_records(stream: str, day: str) -> list[dict[str, Any]]:
     directory = wxcam_hourly_thumbnail_root() / stream / token
     if not directory.exists():
         return []
+    selected: dict[int, tuple[tuple[int, int, str], Path]] = {}
+    for path in sorted(directory.glob("*.jpg")):
+        timestamp = parse_wxcam_timestamp(path)
+        if timestamp is None or timestamp.strftime("%Y%m%d") != token:
+            continue
+        seconds_after_hour = timestamp.minute * 60 + timestamp.second
+        score = (
+            abs(seconds_after_hour - 30 * 60),
+            seconds_after_hour,
+            path.name,
+        )
+        current = selected.get(timestamp.hour)
+        if current is None or score < current[0]:
+            selected[timestamp.hour] = (score, path)
+
     records = []
-    for index, path in enumerate(sorted(directory.glob("*.jpg"))[:24]):
+    for hour, (_score, path) in sorted(selected.items()):
         records.append(
             {
                 "id": path.stem,
                 "title": path.stem,
-                "hourUTC": index,
+                "hourUTC": hour,
                 "imageURL": media_url("wxcam", "thumb", stream, token, path.name),
                 **file_record(path),
             }

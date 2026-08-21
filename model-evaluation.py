@@ -42,6 +42,9 @@ ICELAND_CAMPAIGN_ROOT = Path(
 SHOW_OPERATIONAL_DETAILS = (
     os.environ.get("AURORA_MODEL_EVALUATION_SHOW_OPERATIONAL_DETAILS") == "1"
 )
+SHOW_UNACCEPTED_DAYS = (
+    os.environ.get("AURORA_MODEL_EVALUATION_SHOW_UNACCEPTED_DAYS") == "1"
+)
 LEEDS_REPLAY_DAYS = tuple(f"2026-05-{day:02d}" for day in range(21, 28))
 NEXT_DATA_REQUIRED_INPUTS = (
     "IFS pressure and surface fields",
@@ -3972,7 +3975,14 @@ def _campaign_days(limit: int = 7) -> list[str]:
                 for day in indexed_days
                 if isinstance(day, dict) and day.get("day")
             )
+    if not SHOW_UNACCEPTED_DAYS:
+        days = [day for day in days if _day_is_accepted(day)]
     return list(reversed(days))[:limit]
+
+
+def _day_is_accepted(day: str) -> bool:
+    acceptance = _read_json(_day_file(day, "provenance", "v1_acceptance.json"))
+    return bool(isinstance(acceptance, dict) and acceptance.get("accepted") is True)
 
 
 def _comparison_payload(

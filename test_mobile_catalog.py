@@ -14,6 +14,31 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_float_health_states_are_normalized_and_counted(self) -> None:
+        self.assertEqual(mobile_catalog.normalize_level(1.0), "green")
+        self.assertEqual(mobile_catalog.normalize_level(0.0), "red")
+
+        spec = mobile_catalog.OPERATIONS_STREAMS[0]
+        snapshot = {str(spec["source"]): 1.0}
+        snapshot.update({str(key): 1.0 for key in spec["services"]})
+        state = mobile_catalog._stream_state(snapshot, spec)
+
+        self.assertEqual(state["level"], "green")
+        self.assertEqual(state["serviceHealthyCount"], state["serviceCount"])
+
+    def test_public_dashboard_group_uses_published_probe_keys(self) -> None:
+        snapshot = {
+            "dashboard_http_ok_state": 1.0,
+            "failover_primary_dashboard_http_ok_state": 1.0,
+            "failover_standby_dashboard_http_ok_state": 1.0,
+            "archive_health_level": "green",
+        }
+
+        groups = mobile_catalog._root_cause_groups(snapshot, [])
+        dashboard = next(group for group in groups if group["id"] == "dashboard")
+
+        self.assertEqual(dashboard["level"], "green")
+
     def test_operations_prefers_and_merges_archive_health(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -216,6 +241,73 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(len(archive_alerts), 1)
         self.assertEqual(archive_alerts[0]["id"], "archive:verification")
         self.assertEqual(archive_alerts[0]["title"], "Archive verification is running")
+
+    def test_v2_clean_audit_activity_is_status_not_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot.json"
+            health = root / "health.json"
+            archive = root / "archive.json"
+            alerts = root / "alerts.json"
+            snapshot.write_text('{"time_utc":"2026-08-16T12:00:00Z"}')
+            health.write_text('{"overall_level":"green"}')
+            archive.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "health-v2",
+                        "generated_at": "2026-08-16T12:00:00Z",
+                        "overall_level": "green",
+                        "operator_status": {
+                            "level": "green",
+                            "title": "Archive copies are healthy",
+                            "detail": (
+                                "Newest files are being delivered; a routine strict "
+                                "audit is running in the background."
+                            ),
+                            "pruning_paused": True,
+                        },
+                        "delivery": {
+                            "level": "green",
+                            "mode": "newest-first",
+                            "pending_files": 12,
+                            "gws_pending_files": 12,
+                            "object_store_pending_files": 12,
+                            "oldest_pending_age_minutes": 14,
+                            "last_success_age_minutes": 2,
+                        },
+                        "verification": {
+                            "state": "running",
+                            "completed_jobs": ["raw"],
+                            "total_jobs": 5,
+                            "current_jobs": ["products"],
+                            "last_certified_raw_at": "2026-08-16T11:00:00Z",
+                        },
+                        "durability": {
+                            "raw_retention": {"clean": True},
+                            "products": {"clean": True},
+                        },
+                        "retention": {"ready": False, "paused": True},
+                    }
+                )
+            )
+            alerts.write_text("{}")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                },
+            ):
+                response = mobile_catalog.operations()
+
+        self.assertEqual(response["overallLevel"], "green")
+        self.assertFalse(
+            any(alert["id"].startswith("archive:") for alert in response["alerts"])
+        )
+        self.assertEqual(response["archiveDelivery"]["strictAudit"]["state"], "running")
+        self.assertEqual(response["archiveStatus"]["retention"]["paused"], True)
 
     def test_power_trace_sampling_is_bounded_and_preserves_extrema(self) -> None:
         import numpy as np
@@ -862,7 +954,14 @@ class MobileCatalogTests(unittest.TestCase):
                     {"id": "air-temperature"},
                     {"id": "kt15"},
                 ],
-            ):
+            ), patch.object(
+                mobile_catalog,
+                "datetime",
+                wraps=datetime,
+            ) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(
+                    2026, 7, 5, 7, 30, tzinfo=timezone.utc
+                )
                 response = mobile_catalog.overview()
 
         self.assertEqual(
@@ -875,6 +974,77 @@ class MobileCatalogTests(unittest.TestCase):
         depletion = response["cards"][3]
         self.assertEqual(depletion["value"], "10d 15h")
         self.assertIn("14.6 kWh remaining", depletion["detail"])
+
+    def test_overview_propagates_stale_power_into_health_and_alerts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "latest.json"
+            health = root / "latest_health.json"
+            archive = root / "archive.json"
+            alerts = root / "state.json"
+            snapshot_payload: dict[str, int | float | str] = {
+                "time_utc": "2026-08-17T20:36:55Z",
+                "aps_battery_soc_pct": 100.0,
+                "aps_battery_soc_age_min": 133.0,
+                "aps_battery_voltage_v": 55.9,
+                "aps_battery_voltage_age_min": 133.0,
+                "aps_battery_power_w": 16.0,
+                "power_latest_time_utc": "2026-08-17T18:29:31Z",
+            }
+            for spec in mobile_catalog.OPERATIONS_STREAMS:
+                snapshot_payload[str(spec["source"])] = 1
+                for service in spec["services"]:
+                    snapshot_payload[str(service)] = 1
+            snapshot.write_text(json.dumps(snapshot_payload), encoding="utf-8")
+            health.write_text('{"overall_level":"green"}', encoding="utf-8")
+            archive.write_text("{}", encoding="utf-8")
+            alerts.write_text('{"active":{}}', encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                    "AURORACAM_RAW_ROOT": str(root / "camera"),
+                },
+            ), patch.object(
+                mobile_catalog,
+                "_environmental_signal_cards",
+                return_value=[],
+            ), patch.object(
+                mobile_catalog,
+                "datetime",
+                wraps=datetime,
+            ) as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(
+                    2026, 8, 17, 20, 42, 31, tzinfo=timezone.utc
+                )
+                response = mobile_catalog.overview()
+
+        cards = {card["id"]: card for card in response["cards"]}
+        self.assertEqual(cards["operations"]["level"], "red")
+        self.assertEqual(cards["operations"]["detail"], "APS power telemetry is stale")
+        self.assertEqual(cards["battery-soc"]["level"], "red")
+        self.assertEqual(
+            cards["battery-soc"]["updatedAt"],
+            "2026-08-17T18:29:31Z",
+        )
+        self.assertEqual(cards["battery-voltage"]["level"], "red")
+        self.assertEqual(cards["battery-depletion"]["level"], "red")
+        self.assertEqual(cards["battery-depletion"]["value"], "Unavailable")
+        self.assertIn(
+            "depletion cannot be estimated from stale data",
+            cards["battery-depletion"]["detail"],
+        )
+        self.assertEqual(cards["power"]["level"], "red")
+        self.assertEqual(len(response["activeAlerts"]), 1)
+        self.assertEqual(response["activeAlerts"][0]["id"], "power:freshness")
+        self.assertEqual(
+            response["activeAlerts"][0]["title"],
+            "APS power telemetry is stale",
+        )
+        self.assertIn("18:29 UTC", response["activeAlerts"][0]["detail"])
 
     def test_environmental_signal_cards_derive_wind_and_preserve_source_times(self) -> None:
         with patch.object(
@@ -1054,7 +1224,8 @@ class MobileCatalogTests(unittest.TestCase):
             videos.mkdir(parents=True)
             thumbs.mkdir(parents=True)
             (videos / "20260705.mp4").write_bytes(b"video")
-            (thumbs / "sample.jpg").write_bytes(b"thumb")
+            thumbnail = thumbs / "HDR_20260705_123000.jpg"
+            thumbnail.write_bytes(b"thumb")
 
             with patch.dict(
                 os.environ,
@@ -1068,7 +1239,37 @@ class MobileCatalogTests(unittest.TestCase):
 
         self.assertTrue(response["video"]["exists"])
         self.assertEqual(response["availableDays"], ["2026-07-05"])
-        self.assertEqual(response["thumbnails"][0]["imageURL"], "/media/wxcam/thumb/fish_hdr/20260705/sample.jpg")
+        self.assertEqual(response["thumbnails"][0]["hourUTC"], 12)
+        self.assertEqual(
+            response["thumbnails"][0]["imageURL"],
+            "/media/wxcam/thumb/fish_hdr/20260705/HDR_20260705_123000.jpg",
+        )
+
+    def test_wxcam_thumbnails_deduplicate_candidates_and_use_filename_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            thumbs = root / "fish_hdr" / "20260818"
+            thumbs.mkdir(parents=True)
+            for hour in (0, 2):
+                for minute in range(0, 31, 5):
+                    (thumbs / f"HDR_20260818_{hour:02d}{minute:02d}39.jpg").write_bytes(b"thumb")
+            for minute in (0, 5, 10, 15):
+                (thumbs / f"HDR_20260818_14{minute:02d}39.jpg").write_bytes(b"thumb")
+            (thumbs / "sample.jpg").write_bytes(b"malformed")
+            (thumbs / "HDR_20260817_143000.jpg").write_bytes(b"wrong day")
+
+            with patch.dict(os.environ, {"WXCAM_HOURLY_THUMB_DIR": str(root)}):
+                records = mobile_catalog.wxcam_thumbnail_records("fish_hdr", "2026-08-18")
+
+        self.assertEqual([record["hourUTC"] for record in records], [0, 2, 14])
+        self.assertEqual(
+            [record["id"] for record in records],
+            [
+                "HDR_20260818_003039",
+                "HDR_20260818_023039",
+                "HDR_20260818_141539",
+            ],
+        )
 
     def test_wxcam_media_resolvers_reject_malformed_day_tokens(self) -> None:
         self.assertIsNone(mobile_catalog.resolve_wxcam_video_path("fish_hdr", ".."))

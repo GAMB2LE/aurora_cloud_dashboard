@@ -48,10 +48,12 @@ borrows a load trajectory from another operating state.
 
 For CL61, the high automatic phase represents its heater/blower. Operators
 control whether CL61 has PDU power, but the instrument controls this subphase.
-The dashboard therefore keeps the finite state as `DC + CL61`, learns the
+The dashboard therefore keeps the finite PDU state as `DC + CL61`, learns the
 low/high load distributions inside that state, and reports `On with
-Heater/Blower` while the fresh learned high phase is active. It never presents
-the heater/blower as a separately commandable scenario.
+Heater/Blower` while the fresh learned high phase is active. The scenario
+product exposes `CL61` and `CL61 (heater on)` as separate forecast states, but
+the heater remains an instrument-controlled phase rather than a separate PDU
+command.
 
 The load estimate follows a conservative priority order: fresh PDU component
 power plus a clean DC-only baseline, a clean DC-only observation when no kit is
@@ -70,8 +72,8 @@ historical-load trajectory. Detection does not wait for recurrence: a new
 sustained latest level immediately becomes the current steady forecast, while
 its repeatable phase uncertainty remains unlearned until the second occurrence.
 
-The scenario learner is `hybrid_state_space_phases_v10`. Its discrete part is an
-HMM-like finite-state classifier. Fresh PDU outlet watts provide direct
+The scenario learner is `hybrid_canonical_uas_cl61_states_v11`. Its discrete
+part is an HMM-like finite-state classifier. Fresh PDU outlet watts provide direct
 evidence for CL61, Radar, HATPRO, UAS, and their combinations; the APS AC
 output and learned total-load level provide secondary evidence. Stale PDU data
 cannot assert that a kit remains on. A transition prior prevents single noisy
@@ -103,10 +105,22 @@ all components add up to a fixed target; that earlier adjustment could create
 an impossible zero-watt DC baseline.
 
 The UAS MQTT log is aligned to the same 15-minute operating-state timeline.
-UAS load is learned by effective tier. A tier becomes a reliable learned input
-only after at least three independent episodes and six observed hours. Until
-then, the tier-3 scenario is marked provisional and uses the documented
-fallback distribution: P10 `55 W`, P50 `108 W`, P90 `302 W`.
+The canonical UAS states are Tier 1, Tier 1 + UAS Charging, Tier 2, Tier 2 +
+UAS Charging, Tier 3, Tier 3 + UAS Charging, Tier 4 (12 V only), and Tier 5
+(all off). Field Tier 11 is the only learning source for canonical Tier 1, and
+field Tier 12 is the only learning source for canonical Tier 2; the raw value
+is retained alongside the canonical value for audit. Proxy tiers become
+reliable after two independent episodes and six observed hours. Direct tiers
+require three episodes and six hours.
+
+Charging is never inferred from an unexplained increase in watts. Until an
+operator-annotated `UASCharge on`/`off` episode is available, Tiers 1-3 add an
+estimated `300 W` for exactly three hours and then return to the base tier.
+After at least one complete 2.5-hour annotated episode, the learner replaces
+both the increment distribution and median duration with observed charge data.
+Provisional base tiers continue to use the
+documented conservative fallback distribution: P10 `55 W`, P50 `108 W`, P90
+`302 W`.
 
 SOC integration uses a calibrated battery model fitted only to usable,
 non-saturated, stable telemetry. It estimates usable capacity, charge and

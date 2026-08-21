@@ -92,24 +92,29 @@ def _is_readonly_error(exc: sqlite3.OperationalError) -> bool:
 
 
 def _open_readonly_catalog(path: Path) -> sqlite3.Connection:
-    last_readonly_error: sqlite3.OperationalError | None = None
+    last_error: sqlite3.OperationalError | None = None
     for uri in (
         f"file:{path}?mode=ro",
         f"file:{path}?mode=ro&immutable=1",
     ):
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
+        conn: sqlite3.Connection | None = None
         try:
+            conn = sqlite3.connect(uri, uri=True)
+            conn.row_factory = sqlite3.Row
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
         except sqlite3.OperationalError as exc:
-            conn.close()
-            if _is_readonly_error(exc):
-                last_readonly_error = exc
-                continue
-            raise
+            if conn is not None:
+                conn.close()
+            # A WAL-mode catalogue on a read-only mirror can fail with
+            # ``unable to open database file`` when rsync has removed the
+            # transient -wal/-shm sidecars. Immutable mode is the safe reader
+            # for that published snapshot, so retry every open/query failure
+            # instead of keying the fallback to one SQLite error spelling.
+            last_error = exc
+            continue
         return conn
-    assert last_readonly_error is not None
-    raise last_readonly_error
+    assert last_error is not None
+    raise last_error
 
 
 def open_catalog(path: Path, *, readonly: bool = False) -> sqlite3.Connection:

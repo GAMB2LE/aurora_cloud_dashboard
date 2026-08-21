@@ -14,6 +14,25 @@ def _load_model_evaluation_module():
     return module
 
 
+def test_campaign_days_hide_unaccepted_replays_by_default(tmp_path) -> None:
+    module = _load_model_evaluation_module()
+    rejected = tmp_path / "2026" / "08" / "01"
+    accepted = tmp_path / "2026" / "08" / "02"
+    for root, is_accepted in ((rejected, False), (accepted, True)):
+        (root / "provenance").mkdir(parents=True)
+        (root / "status.json").write_text("{}", encoding="utf-8")
+        (root / "provenance" / "v1_acceptance.json").write_text(
+            json.dumps({"accepted": is_accepted}),
+            encoding="utf-8",
+        )
+
+    module.OPERATIONAL_CAMPAIGN_ROOT = tmp_path
+
+    assert module._campaign_days() == ["2026-08-02"]
+    module.SHOW_UNACCEPTED_DAYS = True
+    assert module._campaign_days() == ["2026-08-02", "2026-08-01"]
+
+
 def test_partial_evidence_panel_uses_day_review_index(tmp_path) -> None:
     module = _load_model_evaluation_module()
     day_root = tmp_path / "2026" / "07" / "06"
