@@ -14,6 +14,7 @@ from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
 from display_artifact_manifest import load_manifest
+from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import load_uas_mqtt_log
 from instrument_registry import (
     INSTRUMENTS,
@@ -1961,6 +1962,7 @@ def uas(window: str = "24h") -> dict[str, Any]:
     # A corrupted or unexpectedly high-rate log must not make the mobile API
     # response unbounded. The newest records preserve the current state.
     records = records[-2_000:]
+    flight_data = summarize_menapia_flight(read_json_file(archive_health_path()))
     return {
         "serverTime": utc_now_iso(),
         "window": window,
@@ -1973,6 +1975,7 @@ def uas(window: str = "24h") -> dict[str, Any]:
         },
         "source": {**file_record(result.path), "path": str(result.path)},
         "malformedLineCount": len(result.malformed_lines),
+        "flightData": flight_data,
         "records": [
             {
                 "timeUTC": record.timestamp.isoformat().replace("+00:00", "Z"),

@@ -105,6 +105,7 @@ from wxcam_catalog import (
     latest_record,
     representative_hourly_records,
 )
+from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 import mobile_catalog
 from browser_icons import instrument_icon_svg
@@ -7539,6 +7540,25 @@ def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord
     parse_level = "warn" if result.missing or result.error or result.malformed_lines else "ok"
     parse_label = "Missing log" if result.missing else "Read error" if result.error else "Parse warnings" if result.malformed_lines else "OK"
     current_level = _uas_level_for_age(age)
+    try:
+        archive_health = json.loads(ARCHIVE_HEALTH_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        archive_health = {}
+    flight_data = summarize_menapia_flight(archive_health, now=now)
+    flight_level = {
+        "green": "ok",
+        "amber": "warn",
+        "red": "warn",
+    }.get(flight_data["level"], "info")
+    latest_flight = " / ".join(
+        value
+        for value in (
+            flight_data.get("latestSourceDate"),
+            flight_data.get("latestSourceFlight"),
+        )
+        if value
+    ) or "--"
+    credential_days = flight_data.get("credentialDaysRemaining")
 
     cards = [
         ("Current effective tier", str(latest.effective_tier) if latest else "--", current_level),
@@ -7547,6 +7567,20 @@ def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord
         ("Log age", _format_duration(age), current_level),
         ("Records in window", str(len(records)), "info"),
         ("Parse status", parse_label, parse_level),
+        ("Flight-data ingest", str(flight_data["title"]), flight_level),
+        ("Latest source flight", latest_flight, flight_level),
+        ("Source objects", f"{flight_data['objectsExamined']:,}", "info"),
+        ("GWS pending", f"{flight_data['gwsPendingFiles']:,}", flight_level),
+        (
+            "Object-store pending",
+            f"{flight_data['objectStorePendingFiles']:,}",
+            flight_level,
+        ),
+        (
+            "Credential",
+            "--" if credential_days is None else f"{credential_days} d remaining",
+            flight_level,
+        ),
     ]
     card_markup = "".join(
         (
@@ -7564,6 +7598,7 @@ def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord
         ("Source", str(result.path), "info"),
         ("Window", uas_window.value, "info"),
         ("Malformed lines", str(len(result.malformed_lines)), "warn" if result.malformed_lines else "ok"),
+        ("Flight data", str(flight_data["detail"]), flight_level),
     ]
     if detail:
         diagnostic_items.append(("Detail", detail[:160], "warn"))
