@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
+
+
+UTC = timezone.utc
 
 
 def _mapping(value: object) -> dict[str, Any]:

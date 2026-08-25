@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -9,7 +9,7 @@ import mobile_catalog
 from menapia_flight_status import summarize_menapia_flight
 
 
-NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
 
 
 def health(**overrides):
