@@ -131,7 +131,10 @@ but the full-resolution JPEGs remain in the raw mirror under
 
 This tab shows the mirrored Menapia MQTT tier log, including the current
 reported/effective tier, freshness, tier-change history, and recent parsed log
-records. It starts its periodic refresh only after the tab is opened.
+records. It also shows the independent Menapia S3 flight-data ingest state,
+latest source flight, GWS/object-store delivery backlog, campaign-classification
+count, and credential-rotation warning. No credential value reaches the
+dashboard. The tab starts its periodic refresh only after it is opened.
 
 The Overview instrument list combines this effective tier with the assigned
 UAS PDU outlet. A freshly powered UAS is shown as `On (Tier N)` when the tier
