@@ -1420,6 +1420,118 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual((radiation["state"], radiation["level"]), ("Collecting", "green"))
         self.assertIn("Source sample", meteorology["detail"])
 
+    def test_powered_instruments_with_fresh_data_are_collecting(self) -> None:
+        import numpy as np
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            product_times = {
+                "CEILOMETER_ZARR_PATH": now - timedelta(minutes=4),
+                "CLOUD_RADAR_ZARR_PATH": now - timedelta(minutes=11),
+                "HATPRO_ZARR_PATH": now - timedelta(minutes=181),
+            }
+            environment = {}
+            for environment_name, sample_time in product_times.items():
+                path = root / f"{environment_name.lower()}.zarr"
+                xr.Dataset(
+                    {"sample": (("time",), np.array([1.0]))},
+                    coords={"time": [sample_time]},
+                ).to_zarr(path, mode="w")
+                environment[environment_name] = str(path)
+
+            with patch.dict(os.environ, environment), patch.object(
+                mobile_catalog,
+                "_pdu_power_snapshot",
+                return_value=({4: True, 5: True, 6: True, 8: True}, "PDU sample 2m old"),
+            ), patch.object(
+                mobile_catalog,
+                "_powered_instrument_labels",
+                return_value={"uas": "On (Tier 3)", "ceilometer": "On with Heater/Blower"},
+            ):
+                rows = mobile_catalog._instrument_power_states({})
+
+        by_id = {row["id"]: row for row in rows}
+        self.assertEqual(by_id["ceilometer"]["state"], "Collecting")
+        self.assertEqual(by_id["ceilometer"]["detail"], "Source sample 4m old")
+        self.assertEqual(by_id["cloud-radar"]["state"], "Collecting")
+        self.assertEqual(by_id["cloud-radar"]["detail"], "Source sample 11m old")
+        self.assertEqual(by_id["hatpro"]["state"], "On")
+        self.assertEqual(by_id["hatpro"]["detail"], "PDU sample 2m old")
+        self.assertEqual(by_id["uas"]["state"], "On (Tier 3)")
+
+    def test_collection_freshness_uses_instrument_cadence(self) -> None:
+        import numpy as np
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=120)
+            environment = {}
+            for environment_name in ("CLOUD_RADAR_ZARR_PATH", "HATPRO_ZARR_PATH"):
+                path = root / f"{environment_name.lower()}.zarr"
+                xr.Dataset(
+                    {"sample": (("time",), np.array([1.0]))},
+                    coords={"time": [sample_time]},
+                ).to_zarr(path, mode="w")
+                environment[environment_name] = str(path)
+
+            with patch.dict(os.environ, environment):
+                radar = mobile_catalog._powered_collection_detail("cloud-radar")
+                hatpro = mobile_catalog._powered_collection_detail("hatpro")
+
+        self.assertIsNone(radar)
+        self.assertEqual(hatpro, "Source sample 2h 0m old")
+
+    def test_malformed_collection_time_fails_closed(self) -> None:
+        import numpy as np
+        import zarr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ceilometer.zarr"
+            group = zarr.open_group(str(path), mode="w")
+            times = group.create_dataset("time", shape=(1,), dtype="f8")
+            times[:] = np.array([np.nan])
+            times.attrs["units"] = "seconds since 1970-01-01"
+            with patch.dict(os.environ, {"CEILOMETER_ZARR_PATH": str(path)}):
+                detail = mobile_catalog._powered_collection_detail("ceilometer")
+
+        self.assertIsNone(detail)
+
+    def test_recent_data_never_overrides_powered_off(self) -> None:
+        row = mobile_catalog._pdu_instrument_status(
+            "ceilometer",
+            {5: False},
+            "PDU sample 2m old",
+            {"ceilometer": "On with Heater/Blower"},
+            collection_detail="Source sample 1m old",
+        )
+
+        self.assertEqual(row["state"], "Off")
+        self.assertEqual(row["detail"], "PDU sample 2m old")
+
+    def test_powered_off_instruments_do_not_open_collection_products(self) -> None:
+        with patch.object(
+            mobile_catalog,
+            "_pdu_power_snapshot",
+            return_value=({4: False, 5: False, 6: False, 8: False}, "PDU sample 2m old"),
+        ), patch.object(
+            mobile_catalog,
+            "_powered_instrument_labels",
+            return_value={},
+        ), patch.object(
+            mobile_catalog,
+            "_powered_collection_detail",
+            side_effect=AssertionError("collection product opened"),
+        ):
+            rows = mobile_catalog._instrument_power_states({})
+
+        self.assertEqual(
+            [row["state"] for row in rows if row["id"] in mobile_catalog.PDU_INSTRUMENT_BY_ID],
+            ["Off", "Off", "Off", "Off"],
+        )
+
     def test_cl61_overview_names_the_learned_heater_blower_phase(self) -> None:
         fake_group = SimpleNamespace(
             attrs={
