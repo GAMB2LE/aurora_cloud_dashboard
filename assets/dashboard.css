@@ -78,6 +78,7 @@ html, body, .bk {
 .quicklook-image img,
 .quicklook-image__img {
     display: block;
+    visibility: visible !important;
     width: 100%;
     height: auto;
     max-width: 100%;
