@@ -277,6 +277,7 @@ class DashboardShellTests(TestCase):
     def test_uas_latest_defaults_newest_but_preserves_manual_and_historical_selection(self) -> None:
         latest_listing = {
             "generatedAt": "2026-08-28T12:31:00Z",
+            "lastRunAt": "2026-08-28T14:00:00Z",
             "latestFlightID": "flight-new",
             "availableDays": ["2026-08-28", "2026-08-27"],
             "selectedDay": "2026-08-28",
@@ -314,6 +315,11 @@ class DashboardShellTests(TestCase):
                 }
             ],
         }
+        status_markup = app._uas_flight_status_markup(latest_listing)
+        self.assertIn("Last product build", status_markup)
+        self.assertIn("2026-08-28 14:00 UTC", status_markup)
+        self.assertIn("Product content", status_markup)
+        self.assertIn("2026-08-28 12:31 UTC", status_markup)
         original_day_options = app.uas_flight_day.options
         original_day = app.uas_flight_day.value
         original_flight_options = app.uas_flight_select.options

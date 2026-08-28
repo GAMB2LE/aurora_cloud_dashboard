@@ -563,6 +563,107 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(missing["status"]["state"], "error")
         self.assertEqual(partial["status"]["state"], "partial")
 
+    def test_uas_freshness_prefers_optional_builder_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status_path = root / "internal/menapia-products/status.json"
+            status_path.parent.mkdir(parents=True)
+            old_catalog_time = (
+                datetime.now(timezone.utc) - timedelta(hours=3)
+            ).isoformat().replace("+00:00", "Z")
+            completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            (root / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "generatedAt": old_catalog_time,
+                        "lastRunState": "success",
+                        "latestFlightID": "flight-1",
+                        "availableDays": ["2026-08-28"],
+                        "flights": [
+                            {
+                                "id": "flight-1",
+                                "dayUTC": "2026-08-28",
+                                "title": "Flight 1",
+                                "startTimeUTC": "2026-08-28T10:00:00Z",
+                                "quality": {"level": "green", "warnings": []},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "state": "success",
+                        "completedAt": completed_at,
+                        "catalogGeneratedAt": old_catalog_time,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = {
+                "MENAPIA_PRODUCT_ROOT": str(root),
+                "MENAPIA_PRODUCT_STATUS_PATH": str(status_path),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                fresh = mobile_catalog.uas_flights()
+                status_path.write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "state": "failed",
+                            "completedAt": completed_at,
+                            "error": "/private/source/path must not be exposed",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                failed = mobile_catalog.uas_flights()
+
+            self.assertEqual(fresh["generatedAt"], old_catalog_time)
+            self.assertEqual(fresh["lastRunAt"], completed_at)
+            self.assertEqual(fresh["lastRunState"], "success")
+            self.assertEqual(fresh["status"]["state"], "fresh")
+            self.assertEqual(failed["lastRunState"], "failed")
+            self.assertEqual(failed["status"]["state"], "error")
+            self.assertNotIn("/private/source/path", json.dumps(failed))
+            self.assertEqual([item["id"] for item in failed["flights"]], ["flight-1"])
+
+    def test_uas_malformed_heartbeat_falls_back_to_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status_path = root / "status.json"
+            status_path.write_text("not-json", encoding="utf-8")
+            generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            (root / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "generatedAt": generated_at,
+                        "lastRunState": "success",
+                        "availableDays": [],
+                        "flights": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "MENAPIA_PRODUCT_ROOT": str(root),
+                    "MENAPIA_PRODUCT_STATUS_PATH": str(status_path),
+                },
+                clear=False,
+            ):
+                response = mobile_catalog.uas_flights()
+
+        self.assertEqual(response["lastRunAt"], generated_at)
+        self.assertEqual(response["lastRunState"], "success")
+        self.assertEqual(response["status"]["state"], "empty")
+
     def test_uas_science_quicklooks_use_dedicated_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

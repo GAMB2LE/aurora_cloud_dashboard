@@ -7436,8 +7436,12 @@ def _current_science_status_markup() -> str:
     if _is_uas_instrument(inst):
         listing = _uas_science_listing()
         status = listing.get("status") or {}
-        generated = pd.to_datetime(listing.get("generatedAt"), errors="coerce", utc=True)
-        generated_dt = None if pd.isna(generated) else generated.to_pydatetime(warn=False)
+        last_run = pd.to_datetime(
+            listing.get("lastRunAt") or listing.get("generatedAt"),
+            errors="coerce",
+            utc=True,
+        )
+        last_run_dt = None if pd.isna(last_run) else last_run.to_pydatetime(warn=False)
         flights = listing.get("flights") or []
         latest_start = pd.to_datetime(
             flights[0].get("startTimeUTC") if flights else None,
@@ -7450,7 +7454,7 @@ def _current_science_status_markup() -> str:
             ("Product state", str(status.get("title") or "Unknown"), level),
             ("Flights in image", str(len(flights)), "ok" if flights else "warn"),
             ("Latest flight", _format_status_time(latest_dt), "info"),
-            ("Generated", _format_status_time(generated_dt), level),
+            ("Last product build", _format_status_time(last_run_dt), level),
         ]
         return _status_strip_markup(items)
     if _is_wxcam_instrument(inst):
@@ -7941,6 +7945,12 @@ def _uas_flight_status_markup(listing: dict, detail: dict | None = None, error: 
     )
     generated = pd.to_datetime(listing.get("generatedAt"), errors="coerce", utc=True)
     generated_label = "--" if pd.isna(generated) else generated.strftime("%Y-%m-%d %H:%M UTC")
+    last_run = pd.to_datetime(
+        listing.get("lastRunAt") or listing.get("generatedAt"),
+        errors="coerce",
+        utc=True,
+    )
+    last_run_label = "--" if pd.isna(last_run) else last_run.strftime("%Y-%m-%d %H:%M UTC")
     start = pd.to_datetime(flight.get("startTimeUTC"), errors="coerce", utc=True)
     start_label = "--" if pd.isna(start) else start.strftime("%Y-%m-%d %H:%M:%S UTC")
     try:
@@ -7959,7 +7969,8 @@ def _uas_flight_status_markup(listing: dict, detail: dict | None = None, error: 
         ("Flight start", start_label, "info"),
         ("Duration", duration_label, "info"),
         ("Data quality", quality_level.title(), quality_class),
-        ("Products generated", generated_label, level_class),
+        ("Last product build", last_run_label, level_class),
+        ("Product content", generated_label, "info"),
     ]
     card_markup = "".join(
         (
