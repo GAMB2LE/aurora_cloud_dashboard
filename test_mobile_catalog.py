@@ -388,6 +388,194 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(response["window"], "24h")
         self.assertEqual([record["effectiveTier"] for record in response["records"]], [3])
 
+    def test_uas_flight_catalog_filters_day_and_hides_product_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "flights").mkdir()
+            (root / "plots").mkdir()
+            (root / "plots" / "flight-new.png").write_bytes(b"flight")
+            quicklooks = root / "quicklooks"
+            quicklooks.mkdir()
+            (quicklooks / "uas__summary__20260828.png").write_bytes(b"daily")
+            catalog = {
+                "schemaVersion": 1,
+                "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "lastRunState": "success",
+                "latestFlightID": "flight-new",
+                "availableDays": ["2026-08-28", "2026-08-27"],
+                "flights": [
+                    {
+                        "id": "flight-new",
+                        "sourceFlightID": "source-new",
+                        "dayUTC": "2026-08-28",
+                        "flightNumber": 2,
+                        "title": "Flight 2",
+                        "startTimeUTC": "2026-08-28T12:00:00Z",
+                        "endTimeUTC": "2026-08-28T12:30:00Z",
+                        "durationSeconds": 1800,
+                        "samplePeriodSeconds": 1,
+                        "modifiedAt": "2026-08-28T12:31:00Z",
+                        "quality": {"level": "green", "warnings": []},
+                        "detailPath": "flights/flight-new.json",
+                        "plotPath": "plots/flight-new.png",
+                    },
+                    {
+                        "id": "flight-old",
+                        "dayUTC": "2026-08-27",
+                        "title": "Flight 1",
+                        "startTimeUTC": "2026-08-27T10:00:00Z",
+                        "quality": {"level": "amber", "warnings": ["short capture"]},
+                    },
+                ],
+            }
+            (root / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"MENAPIA_PRODUCT_ROOT": str(root), "UAS_QUICKLOOK_DIR": str(quicklooks)},
+                clear=False,
+            ):
+                response = mobile_catalog.uas_flights("latest")
+
+        self.assertEqual(response["selectedDay"], "2026-08-28")
+        self.assertEqual(response["status"]["state"], "fresh")
+        self.assertEqual([flight["id"] for flight in response["flights"]], ["flight-new"])
+        self.assertTrue(response["flights"][0]["plotURL"].startswith("/media/uas/flights/flight-new?v="))
+        self.assertNotIn("detailPath", response["flights"][0])
+        self.assertNotIn("plotPath", response["flights"][0])
+        self.assertEqual(response["dailyQuicklook"]["token"], "20260828")
+        self.assertTrue(response["allFlightsPlotURL"].startswith("/media/quicklook/science/uas/20260828?v="))
+
+    def test_uas_mutable_media_urls_change_with_file_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plots = root / "plots"
+            quicklooks = root / "quicklooks"
+            plots.mkdir()
+            quicklooks.mkdir()
+            plot = plots / "flight-1.png"
+            daily = quicklooks / "uas__summary__20260828.png"
+            plot.write_bytes(b"v1")
+            daily.write_bytes(b"daily-v1")
+            catalog = {
+                "schemaVersion": 1,
+                "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "lastRunState": "success",
+                "latestFlightID": "flight-1",
+                "availableDays": ["2026-08-28"],
+                "flights": [
+                    {
+                        "id": "flight-1",
+                        "dayUTC": "2026-08-28",
+                        "title": "Flight 1",
+                        "startTimeUTC": "2026-08-28T10:00:00Z",
+                        "quality": {"level": "green", "warnings": []},
+                    }
+                ],
+            }
+            (root / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+            env = {"MENAPIA_PRODUCT_ROOT": str(root), "UAS_QUICKLOOK_DIR": str(quicklooks)}
+            with patch.dict(os.environ, env, clear=False):
+                first = mobile_catalog.uas_flights()
+                plot.write_bytes(b"version-two")
+                daily.write_bytes(b"daily-version-two")
+                os.utime(plot, ns=(2_000_000_000, 2_000_000_000))
+                os.utime(daily, ns=(2_000_000_000, 2_000_000_000))
+                second = mobile_catalog.uas_flights()
+
+        self.assertNotEqual(first["flights"][0]["plotURL"], second["flights"][0]["plotURL"])
+        self.assertNotEqual(first["allFlightsPlotURL"], second["allFlightsPlotURL"])
+        self.assertEqual(second["dailyQuicklook"]["imageURL"], second["allFlightsPlotURL"])
+
+    def test_uas_flight_detail_validates_equal_bounded_series(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "flights").mkdir()
+            (root / "plots").mkdir()
+            metadata = {
+                "id": "flight-1",
+                "dayUTC": "2026-08-28",
+                "title": "Flight 1",
+                "startTimeUTC": "2026-08-28T10:00:00Z",
+                "quality": {"level": "green", "warnings": []},
+            }
+            (root / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "generatedAt": "2026-08-28T10:30:00Z",
+                        "lastRunState": "success",
+                        "latestFlightID": "flight-1",
+                        "availableDays": ["2026-08-28"],
+                        "flights": [metadata],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            series = {
+                "timeUTC": ["2026-08-28T10:00:00Z", "2026-08-28T10:00:01Z"],
+                "temperatureC": {"SN0122": [8.0, 8.1], "SN0123": [8.2, None]},
+                "pressureHpa": {"SN0122": [1005.0, 1005.1], "SN0123": [1006.0, 1006.1]},
+                "relativeHumidityPct": {"SN0122": [75.0, 76.0], "SN0123": [74.0, 75.0]},
+                "altitudeM": [-60.0, 48.0],
+            }
+            (root / "flights" / "flight-1.json").write_text(
+                json.dumps({"schemaVersion": 1, "flight": metadata, "series": series}),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"MENAPIA_PRODUCT_ROOT": str(root)}, clear=False):
+                response = mobile_catalog.uas_flight("flight-1")
+                with self.assertRaises(KeyError):
+                    mobile_catalog.uas_flight("../catalog")
+
+        self.assertEqual(response["series"]["altitudeM"], [-60.0, 48.0])
+        self.assertEqual(response["series"]["temperatureC"]["SN0123"], [8.2, None])
+        self.assertNotIn("detailPath", response["flight"])
+
+    def test_uas_flight_catalog_reports_missing_and_partial_states(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"MENAPIA_PRODUCT_ROOT": str(root)}, clear=False):
+                missing = mobile_catalog.uas_flights()
+            (root / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "lastRunState": "partial_failure",
+                        "latestFlightID": "flight-1",
+                        "availableDays": ["2026-08-28"],
+                        "flights": [
+                            {
+                                "id": "flight-1",
+                                "dayUTC": "2026-08-28",
+                                "title": "Flight 1",
+                                "startTimeUTC": "2026-08-28T10:00:00Z",
+                                "quality": {"level": "amber", "warnings": ["source incomplete"]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"MENAPIA_PRODUCT_ROOT": str(root)}, clear=False):
+                partial = mobile_catalog.uas_flights()
+
+        self.assertEqual(missing["status"]["state"], "error")
+        self.assertEqual(partial["status"]["state"], "partial")
+
+    def test_uas_science_quicklooks_use_dedicated_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "uas__summary__20260828.png").write_bytes(b"dated")
+            (root / "uas__summary__latest.png").write_bytes(b"latest")
+            with patch.dict(os.environ, {"UAS_QUICKLOOK_DIR": str(root)}, clear=False):
+                response = mobile_catalog.quicklooks("science", "uas")
+                resolved = mobile_catalog.resolve_quicklook_path("science", "uas", "latest")
+
+        self.assertEqual([entry["token"] for entry in response["entries"]], ["latest", "20260828"])
+        self.assertTrue(response["entries"][0]["imageURL"].startswith("/media/quicklook/science/uas/latest?v="))
+        self.assertEqual(resolved.name, "uas__summary__latest.png")
+
     def test_shared_pdu_contract_has_only_assigned_outlets(self) -> None:
         self.assertEqual(
             [(title, outlet) for _, title, _, outlet in mobile_catalog.PDU_INSTRUMENTS],

@@ -530,6 +530,14 @@ html, body, .bk {
 .uas-toolbar .bk-card-body {
     padding: 10px 12px;
 }
+.uas-flight-toolbar .bk-card-body {
+    overflow: visible;
+}
+.uas-flight-plot {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
 .uas-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -560,6 +568,7 @@ html, body, .bk {
     font-size: 20px;
     font-weight: 650;
     color: #22313f;
+    overflow-wrap: anywhere;
 }
 .uas-section-title {
     font-size: 13px;

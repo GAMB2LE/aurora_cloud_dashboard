@@ -176,6 +176,22 @@ def uas(window: str = Query("24h", pattern="^(24h|7d|all)$")) -> dict:
         raise _not_found(str(exc)) from exc
 
 
+@app.get("/uas/flights", dependencies=[Depends(require_read_access)])
+def uas_flights(day: str = Query("latest", pattern=r"^(latest|20\d{2}-\d{2}-\d{2})$")) -> dict:
+    try:
+        return catalog.uas_flights(day=day)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@app.get("/uas/flights/{flight_id}", dependencies=[Depends(require_read_access)])
+def uas_flight(flight_id: str) -> dict:
+    try:
+        return catalog.uas_flight(flight_id)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
 @app.get("/instruments/{instrument_id}/summary", dependencies=[Depends(require_read_access)])
 def instrument_summary(instrument_id: str, window: str = Query("24h", pattern="^(24h|7d)$")) -> dict:
     try:
@@ -208,6 +224,17 @@ def quicklook_media(request: Request, kind: str, instrument_id: str, token: str)
         raise _not_found(str(exc)) from exc
     if not path:
         raise _not_found("Quicklook image not found")
+    return _file_response(path, request)
+
+
+@app.get("/media/uas/flights/{flight_id}", dependencies=[Depends(require_read_access)])
+def uas_flight_plot(request: Request, flight_id: str) -> Response:
+    try:
+        path = catalog.resolve_uas_flight_plot_path(flight_id)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
+    if not path:
+        raise _not_found("UAS flight plot not found")
     return _file_response(path, request)
 
 

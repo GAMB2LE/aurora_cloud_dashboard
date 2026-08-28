@@ -184,6 +184,83 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(uas.status_code, 200)
         self.assertEqual(uas.json()["latest"]["effectiveTier"], 3)
 
+    def test_uas_flight_listing_detail_and_safe_plot_media(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "flights").mkdir()
+            (root / "plots").mkdir()
+            flight = {
+                "id": "flight-1",
+                "sourceFlightID": "source-1",
+                "dayUTC": "2026-08-28",
+                "flightNumber": 1,
+                "title": "Flight 1",
+                "startTimeUTC": "2026-08-28T10:00:00Z",
+                "endTimeUTC": "2026-08-28T10:00:01Z",
+                "durationSeconds": 1,
+                "samplePeriodSeconds": 1,
+                "modifiedAt": "2026-08-28T10:01:00Z",
+                "quality": {"level": "green", "warnings": []},
+                "detailPath": "flights/flight-1.json",
+                "plotPath": "plots/flight-1.png",
+            }
+            (root / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "lastRunState": "success",
+                        "latestFlightID": "flight-1",
+                        "availableDays": ["2026-08-28"],
+                        "flights": [flight],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "flights" / "flight-1.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "flight": flight,
+                        "series": {
+                            "timeUTC": ["2026-08-28T10:00:00Z", "2026-08-28T10:00:01Z"],
+                            "temperatureC": {"SN0122": [8.0, 8.1], "SN0123": [8.2, 8.3]},
+                            "pressureHpa": {"SN0122": [1005.0, 1005.1], "SN0123": [1006.0, 1006.1]},
+                            "relativeHumidityPct": {"SN0122": [75.0, 76.0], "SN0123": [74.0, 75.0]},
+                            "altitudeM": [-60.0, 48.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "plots" / "flight-1.png").write_bytes(b"flight-png")
+            env = {"AURORA_MOBILE_API_TOKEN": "secret", "MENAPIA_PRODUCT_ROOT": str(root)}
+            headers = {"Authorization": "Bearer secret"}
+            with patch.dict(os.environ, env, clear=False):
+                listing = self.client.get("/uas/flights?day=latest", headers=headers)
+                detail = self.client.get("/uas/flights/flight-1", headers=headers)
+                media = self.client.get("/media/uas/flights/flight-1", headers=headers)
+                traversal = self.client.get("/uas/flights/..%2Fcatalog", headers=headers)
+                unknown_media = self.client.get("/media/uas/flights/unknown", headers=headers)
+
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["selectedDay"], "2026-08-28")
+        self.assertTrue(listing.json()["flights"][0]["plotURL"].startswith("/media/uas/flights/flight-1?v="))
+        self.assertIsNone(listing.json()["allFlightsPlotURL"])
+        self.assertNotIn("detailPath", listing.json()["flights"][0])
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["series"]["altitudeM"], [-60.0, 48.0])
+        self.assertEqual(media.status_code, 200)
+        self.assertEqual(media.content, b"flight-png")
+        self.assertEqual(traversal.status_code, 404)
+        self.assertEqual(unknown_media.status_code, 404)
+
+    def test_uas_flight_routes_require_read_access(self) -> None:
+        with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False):
+            self.assertEqual(self.client.get("/uas/flights").status_code, 401)
+            self.assertEqual(self.client.get("/uas/flights/flight-1").status_code, 401)
+            self.assertEqual(self.client.get("/media/uas/flights/flight-1").status_code, 401)
+
     def test_power_accepts_all_group_without_generating_a_product(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "missing.zarr"

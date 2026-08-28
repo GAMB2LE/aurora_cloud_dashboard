@@ -134,7 +134,17 @@ reported/effective tier, freshness, tier-change history, and recent parsed log
 records. It also shows the independent Menapia S3 flight-data ingest state,
 latest source flight, GWS/object-store delivery backlog, campaign-classification
 count, and credential-rotation warning. No credential value reaches the
-dashboard. The tab starts its periodic refresh only after it is opened.
+dashboard. Above the tier telemetry, UTC day and flight selectors open the
+latest or archived Menapia profile. Four linked interactive panels show
+SN0122/SN0123 temperature, pressure and relative humidity, followed by fused
+altitude. Latest mode advances when a new product appears; a historical day
+and flight remain selected during refresh. Missing, partial, stale and invalid
+products have explicit states instead of an empty unlabelled plot. The tab
+starts its periodic refresh only after it is opened.
+
+UAS is also available in Science Quicklooks as one archived daily composite
+image containing all eligible flights. It is deliberately not added to the
+generic Zarr-backed Interactive Data Browser or House Keeping Quicklooks.
 
 The Overview instrument list combines this effective tier with the assigned
 UAS PDU outlet. A freshly powered UAS is shown as `On (Tier N)` when the tier

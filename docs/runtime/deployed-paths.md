@@ -41,6 +41,11 @@ The development dashboard may read mirrored products from
 - WXcam catalog: `/data/aurora/products/wxcam/wxcam_catalog.sqlite`
 - AURORACam raw mirror: `/project/aurora/raw/auroracam`
 - AURORACam Zarr: `/data/aurora/products/auroracam/auroracam.zarr`
+- Menapia flight catalog and profiles:
+  `/data/aurora/products/menapia/catalog.json` and
+  `/data/aurora/products/menapia/flights`
+- Menapia per-flight plots: `/data/aurora/products/menapia/plots`
+- UAS daily Science Quicklooks: `/data/aurora/products/quicklooks/uas`
 - Operations Zarr: `/data/aurora/products/ops_monitor/ops_monitor.zarr`
 - Operations health outputs:
   `/data/aurora/products/ops_monitor/health/latest_health.json` and
