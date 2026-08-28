@@ -441,6 +441,13 @@ class DashboardShellTests(TestCase):
             r"^/dashboard-assets/dashboard\.css\?v=[0-9a-f]{12}$",
         )
 
+    def test_quicklook_images_override_panel_hidden_wrapper(self) -> None:
+        stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
+        css = stylesheet.read_text(encoding="utf-8")
+        quicklook_rule = css.split(".quicklook-image__img {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("visibility: visible !important;", quicklook_rule)
+
     def test_desktop_controls_keep_compact_navigation_rows(self) -> None:
         controls_body = app.controls.objects[0]
         first_row_names = [widget.name for widget in controls_body.objects[0].objects]
