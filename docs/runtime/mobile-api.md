@@ -136,4 +136,9 @@ environment and Git checkout; they do not create or refresh a data product.
 
 Menapia consumers use `MENAPIA_PRODUCT_ROOT` (default
 `/data/aurora/products/menapia`), optional `MENAPIA_CATALOG_PATH`, and
-`UAS_QUICKLOOK_DIR` (default `/data/aurora/products/quicklooks/uas`).
+`UAS_QUICKLOOK_DIR` (default `/data/aurora/products/quicklooks/uas`). The
+optional `MENAPIA_PRODUCT_STATUS_PATH` heartbeat defaults to
+`/data/aurora/internal/menapia-products/status.json`; it records every builder
+attempt so an unchanged, archive-stable catalog is not incorrectly reported as
+stale. Missing or malformed heartbeat state falls back to `generatedAt` in the
+catalog for compatibility with older deployments.

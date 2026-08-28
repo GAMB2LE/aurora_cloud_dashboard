@@ -174,6 +174,13 @@ def menapia_catalog_path() -> Path:
     return env_path("MENAPIA_CATALOG_PATH", menapia_product_root() / "catalog.json")
 
 
+def menapia_product_status_path() -> Path:
+    return env_path(
+        "MENAPIA_PRODUCT_STATUS_PATH",
+        "/data/aurora/internal/menapia-products/status.json",
+    )
+
+
 def uas_quicklook_root() -> Path:
     return env_path("UAS_QUICKLOOK_DIR", quicklook_root() / "uas")
 
@@ -2106,6 +2113,28 @@ def _menapia_catalog() -> tuple[dict[str, Any], str | None]:
     return payload, None
 
 
+def _menapia_run_heartbeat() -> dict[str, Any]:
+    """Return a validated optional run heartbeat.
+
+    Older deployments have no heartbeat, so missing or malformed operational
+    state deliberately falls back to the immutable catalog contract.
+    """
+    try:
+        payload = _read_menapia_json(
+            menapia_product_status_path(),
+            maximum_bytes=100_000,
+        )
+    except KeyError:
+        return {}
+    state = str(payload.get("state") or "")
+    completed_at = payload.get("completedAt")
+    if state not in {"success", "partial_failure", "failed"}:
+        return {}
+    if _menapia_generated_age_seconds(completed_at) is None:
+        return {}
+    return {"state": state, "completedAt": str(completed_at)}
+
+
 def _menapia_generated_age_seconds(generated_at: Any) -> float | None:
     try:
         parsed = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
@@ -2127,6 +2156,14 @@ def _menapia_listing_state(
     stale_after = max(60.0, float(os.environ.get("MENAPIA_PRODUCT_STALE_AFTER_MINUTES", "90")) * 60.0)
     if error:
         return {"state": "error", "level": "red", "title": "Flight products unavailable", "detail": error, "ageSeconds": None}
+    if last_run_state == "failed":
+        return {
+            "state": "error",
+            "level": "red",
+            "title": "Flight product update failed",
+            "detail": "The most recent product build failed; the last published flights remain selectable.",
+            "ageSeconds": age_seconds,
+        }
     if last_run_state == "partial_failure":
         return {
             "state": "partial",
@@ -2156,14 +2193,14 @@ def _menapia_listing_state(
             "state": "stale",
             "level": "amber",
             "title": "Flight products are stale",
-            "detail": f"The catalog was generated {int(age_seconds // 60)} minutes ago.",
+            "detail": f"The most recent product build completed {int(age_seconds // 60)} minutes ago.",
             "ageSeconds": age_seconds,
         }
     return {
         "state": "fresh",
         "level": "green",
         "title": "Flight products are current",
-        "detail": "Derived flight products were generated within the expected refresh window.",
+        "detail": "The most recent derived-product build completed within the expected refresh window.",
         "ageSeconds": age_seconds,
     }
 
@@ -2186,15 +2223,19 @@ def uas_flights(day: str = "latest") -> dict[str, Any]:
         if record and record.get("dayUTC") == selected_day:
             records.append(record)
     records.sort(key=lambda item: str(item.get("startTimeUTC") or ""), reverse=True)
-    last_run_state = str(payload.get("lastRunState") or "") or None
+    heartbeat = _menapia_run_heartbeat()
+    last_run_state = str(
+        heartbeat.get("state") or payload.get("lastRunState") or ""
+    ) or None
     generated_at = payload.get("generatedAt")
+    last_run_at = heartbeat.get("completedAt") or generated_at
     latest_flight_id = payload.get("latestFlightID")
     if not isinstance(latest_flight_id, str) or not MENAPIA_FLIGHT_ID_RE.fullmatch(latest_flight_id):
         latest_flight_id = None
     state = _menapia_listing_state(
         error=error,
         last_run_state=last_run_state,
-        generated_at=generated_at,
+        generated_at=last_run_at,
         flight_count=len(records),
     )
     daily_quicklook = None
@@ -2219,6 +2260,7 @@ def uas_flights(day: str = "latest") -> dict[str, Any]:
         "schemaVersion": int(payload.get("schemaVersion") or 1),
         "serverTime": utc_now_iso(),
         "generatedAt": generated_at,
+        "lastRunAt": last_run_at,
         "lastRunState": last_run_state,
         "requestedDay": day,
         "selectedDay": selected_day,
