@@ -68,7 +68,10 @@ token-protected, unknown mode values fail closed, and the legacy
   the UAS PDU outlet is on and the mirrored Menapia record is fresh, its state
   includes the latest effective tier, for example `On (Tier 3)`. PDU `Off` and
   `Unknown` remain authoritative, and stale tier records are not displayed as
-  current state.
+  current state. A powered CL61, Cloud Radar, or HATPRO reports `Collecting`
+  only when its latest science-product sample is also fresh; power without
+  fresh acquisition evidence remains `On`. The established collection windows
+  are 90 minutes for CL61 and radar, and 180 minutes for hourly-batch HATPRO.
 - `GET /power?window=24h|96h&group=...` - bounded native-chart traces from the
   section-specific Power display product when available (at most 260 points
   per trace). `current` reads observed variables only; `forecast` reads

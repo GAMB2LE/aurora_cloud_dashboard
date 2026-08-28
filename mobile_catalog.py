@@ -56,6 +56,23 @@ PDU_STATE_FRESHNESS_MINUTES = 30.0
 AUTOMATIC_PHASE_FRESHNESS_MINUTES = 30.0
 UAS_TIER_FRESHNESS_MINUTES = float(os.environ.get("UAS_STALE_AFTER_MINUTES", "5"))
 SCIENCE_COLLECTION_FRESHNESS_MINUTES = 120.0
+POWERED_COLLECTION_PRODUCTS = {
+    "ceilometer": (
+        "CEILOMETER_ZARR_PATH",
+        "/data/aurora/products/cl61/gamb2le_depolarisation_lidar_ceilometer_aurora.zarr",
+        90.0,
+    ),
+    "cloud-radar": (
+        "CLOUD_RADAR_ZARR_PATH",
+        "/data/aurora/products/rpgfmcw94/cloud_radar.zarr",
+        90.0,
+    ),
+    "hatpro": (
+        "HATPRO_ZARR_PATH",
+        "/data/aurora/products/hatprog5/hatpro.zarr",
+        180.0,
+    ),
+}
 POWER_FRESH_MINUTES = 30.0
 POWER_STALE_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
@@ -1188,8 +1205,18 @@ def _instrument_power_states(
     science_source_times = science_source_times or {}
 
     pdu_rows = [
-        _pdu_instrument_status(instrument_id, states, detail, powered_labels)
-        for instrument_id, _title, _icon, _outlet in PDU_INSTRUMENTS
+        _pdu_instrument_status(
+            instrument_id,
+            states,
+            detail,
+            powered_labels,
+            collection_detail=(
+                _powered_collection_detail(instrument_id)
+                if states.get(outlet) is True
+                else None
+            ),
+        )
+        for instrument_id, _title, _icon, outlet in PDU_INSTRUMENTS
     ]
     science_rows = []
     for instrument_id, title, icon, prefix in SCIENCE_DC_INSTRUMENTS:
@@ -1226,16 +1253,49 @@ def _instrument_power_states(
     return [*science_rows, *pdu_rows]
 
 
+def _powered_collection_detail(instrument_id: str) -> str | None:
+    """Return fresh sample evidence for a confirmed powered instrument."""
+    product = POWERED_COLLECTION_PRODUCTS.get(instrument_id)
+    if product is None:
+        return None
+    environment_name, default_path, freshness_minutes = product
+    path = env_path(environment_name, default_path)
+    try:
+        import zarr
+
+        group = zarr.open_group(str(path), mode="r")
+        if "time" not in group or not group["time"].shape:
+            return None
+        sample_time = _decode_cf_time(
+            group["time"][-1],
+            str(group["time"].attrs.get("units", "")),
+        )
+        if sample_time is None:
+            return None
+        age_minutes = (datetime.now(UTC) - sample_time).total_seconds() / 60
+        if age_minutes < -5 or age_minutes > freshness_minutes:
+            return None
+        return f"Source sample {_duration_text(max(age_minutes, 0) / 60)} old"
+    except Exception:
+        return None
+
+
 def pdu_instrument_status(instrument_id: str) -> dict[str, Any] | None:
     """Return the current assigned PDU state for a powered instrument, if known."""
     if instrument_id not in PDU_INSTRUMENT_BY_ID:
         return None
     states, detail = _pdu_power_snapshot()
+    outlet = PDU_INSTRUMENT_BY_ID[instrument_id][2]
     return _pdu_instrument_status(
         instrument_id,
         states,
         detail,
         _powered_instrument_labels(states),
+        collection_detail=(
+            _powered_collection_detail(instrument_id)
+            if states.get(outlet) is True
+            else None
+        ),
     )
 
 
@@ -1341,12 +1401,18 @@ def _pdu_instrument_status(
     states: dict[int, bool],
     detail: str,
     automatic_labels: dict[str, str] | None = None,
+    *,
+    collection_detail: str | None = None,
 ) -> dict[str, Any]:
     title, icon, outlet = PDU_INSTRUMENT_BY_ID[instrument_id]
     powered = states.get(outlet)
     state = "On" if powered is True else "Off" if powered is False else "Unknown"
     if powered is True:
-        state = (automatic_labels or {}).get(instrument_id, state)
+        if collection_detail is not None:
+            state = "Collecting"
+            detail = collection_detail
+        else:
+            state = (automatic_labels or {}).get(instrument_id, state)
     return {
         "id": instrument_id,
         "title": title,
