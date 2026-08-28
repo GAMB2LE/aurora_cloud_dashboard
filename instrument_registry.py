@@ -112,7 +112,7 @@ INSTRUMENTS: tuple[InstrumentContract, ...] = (
         "airplane",
         "uas",
         "uas",
-        (),
+        ("uas__summary",),
         visible=False,
         summary_supported=False,
         pdu_outlet=4,
@@ -157,3 +157,15 @@ def browser_options(*, housekeeping: bool = False) -> dict[str, str]:
         INSTRUMENT_BY_ID[instrument_id].title: INSTRUMENT_BY_ID[instrument_id].browser_key
         for instrument_id in order
     }
+
+
+def science_options() -> dict[str, str]:
+    """Return Science Quicklook choices without widening the data browser.
+
+    UAS publishes daily image products but has no generic Zarr-backed browser
+    contract.  Keeping this list separate prevents it from leaking into either
+    the Interactive Data Browser or House Keeping Quicklooks.
+    """
+    options = browser_options()
+    options[INSTRUMENT_BY_ID["uas"].title] = INSTRUMENT_BY_ID["uas"].browser_key
+    return options

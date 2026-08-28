@@ -19,6 +19,7 @@ from uas_mqtt import load_uas_mqtt_log
 from instrument_registry import (
     INSTRUMENTS,
     INSTRUMENT_BY_ID,
+    InstrumentContract as Instrument,
     PDU_INSTRUMENTS as PDU_INSTRUMENT_CONTRACTS,
     SCIENCE_DC_INSTRUMENTS as SCIENCE_DC_INSTRUMENT_CONTRACTS,
 )
@@ -32,6 +33,7 @@ APP_DIR = Path(__file__).resolve().parent
 DATE_TOKEN_RE = re.compile(r"(20\d{6})")
 WXCAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 AURORACAM_DAY_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
+MENAPIA_FLIGHT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 MOBILE_POWER_MAX_POINTS = max(100, min(int(os.environ.get("AURORA_MOBILE_POWER_MAX_POINTS", "160")), 160))
 
 
@@ -155,6 +157,25 @@ def env_path(name: str, default: str | Path) -> Path:
 
 def quicklook_root() -> Path:
     return env_path("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks")
+
+
+def menapia_product_root() -> Path:
+    """Return the read-only derived-flight product root.
+
+    ``MENAPIA_FLIGHT_PRODUCT_ROOT`` is accepted as a compatibility alias for
+    early development deployments, while ``MENAPIA_PRODUCT_ROOT`` is the
+    public runtime contract.
+    """
+    configured = os.environ.get("MENAPIA_PRODUCT_ROOT") or os.environ.get("MENAPIA_FLIGHT_PRODUCT_ROOT")
+    return Path(configured or "/data/aurora/products/menapia").expanduser()
+
+
+def menapia_catalog_path() -> Path:
+    return env_path("MENAPIA_CATALOG_PATH", menapia_product_root() / "catalog.json")
+
+
+def uas_quicklook_root() -> Path:
+    return env_path("UAS_QUICKLOOK_DIR", quicklook_root() / "uas")
 
 
 def wxcam_daily_video_root() -> Path:
@@ -320,6 +341,16 @@ def media_url(*parts: str) -> str:
     return "/media/" + "/".join(part.strip("/") for part in parts)
 
 
+def versioned_media_url(path: Path, *parts: str) -> str:
+    """Return a stable media route that changes when the served bytes change."""
+    url = media_url(*parts)
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return url
+    return f"{url}?v={stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"
+
+
 def dashboard_revision() -> str | None:
     configured = os.environ.get("AURORA_DASHBOARD_REVISION", "").strip()
     if configured:
@@ -390,6 +421,7 @@ def manifest() -> dict[str, Any]:
                 "operations.live_status",
                 "quicklooks.science_housekeeping",
                 "camera.auroracam_wxcam",
+                "uas.flight_profiles",
             ],
             "browser": [
                 "explore.arbitrary_variables_ranges",
@@ -1988,6 +2020,294 @@ def uas(window: str = "24h") -> dict[str, Any]:
     }
 
 
+def _menapia_safe_flight_id(flight_id: str) -> str:
+    value = str(flight_id or "")
+    if not MENAPIA_FLIGHT_ID_RE.fullmatch(value):
+        raise KeyError("Unknown UAS flight")
+    return value
+
+
+def _read_menapia_json(path: Path, *, maximum_bytes: int) -> dict[str, Any]:
+    try:
+        stat_result = path.stat()
+    except FileNotFoundError as exc:
+        raise KeyError("UAS flight product is not available") from exc
+    except OSError as exc:
+        raise KeyError(f"Could not read UAS flight product: {exc}") from exc
+    if stat_result.st_size > maximum_bytes:
+        raise KeyError("UAS flight product exceeds the safe response limit")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise KeyError(f"Invalid UAS flight product: {exc}") from exc
+    if not isinstance(value, dict):
+        raise KeyError("Invalid UAS flight product")
+    return value
+
+
+def _menapia_quality(value: Any) -> dict[str, Any]:
+    quality = value if isinstance(value, dict) else {}
+    level = str(quality.get("level") or "unknown").lower()
+    if level not in {"green", "amber", "red"}:
+        level = "unknown"
+    warnings = quality.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    return {
+        "level": level,
+        "warnings": [str(item)[:500] for item in warnings if isinstance(item, str)][:50],
+    }
+
+
+def _menapia_flight_record(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        flight_id = _menapia_safe_flight_id(str(value.get("id") or ""))
+    except KeyError:
+        return None
+    def text_field(key: str, maximum: int = 500) -> str | None:
+        item = value.get(key)
+        return str(item)[:maximum] if isinstance(item, str) else None
+
+    def number_field(key: str) -> int | float | None:
+        item = value.get(key)
+        return item if isinstance(item, int | float) and not isinstance(item, bool) and math.isfinite(item) else None
+
+    record = {
+        "id": flight_id,
+        "sourceFlightID": text_field("sourceFlightID"),
+        "dayUTC": text_field("dayUTC", 10),
+        "flightNumber": int(value["flightNumber"]) if isinstance(value.get("flightNumber"), int) else None,
+        "title": text_field("title"),
+        "startTimeUTC": text_field("startTimeUTC", 64),
+        "endTimeUTC": text_field("endTimeUTC", 64),
+        "durationSeconds": number_field("durationSeconds"),
+        "samplePeriodSeconds": number_field("samplePeriodSeconds"),
+        "modifiedAt": text_field("modifiedAt", 64),
+    }
+    record["quality"] = _menapia_quality(value.get("quality"))
+    plot_path = menapia_product_root() / "plots" / f"{flight_id}.png"
+    record["plotURL"] = versioned_media_url(plot_path, "uas", "flights", flight_id)
+    return record
+
+
+def _menapia_catalog() -> tuple[dict[str, Any], str | None]:
+    """Load the bounded catalog and return ``(payload, error)``.
+
+    Listing clients receive an explicit state for missing or malformed catalog
+    products. Individual detail/media lookups still fail closed with 404.
+    """
+    path = menapia_catalog_path()
+    try:
+        payload = _read_menapia_json(path, maximum_bytes=5_000_000)
+    except KeyError as exc:
+        return {}, str(exc.args[0] if exc.args else exc)
+    return payload, None
+
+
+def _menapia_generated_age_seconds(generated_at: Any) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - parsed.astimezone(UTC)).total_seconds())
+
+
+def _menapia_listing_state(
+    *,
+    error: str | None,
+    last_run_state: str | None,
+    generated_at: Any,
+    flight_count: int,
+) -> dict[str, Any]:
+    age_seconds = _menapia_generated_age_seconds(generated_at)
+    stale_after = max(60.0, float(os.environ.get("MENAPIA_PRODUCT_STALE_AFTER_MINUTES", "90")) * 60.0)
+    if error:
+        return {"state": "error", "level": "red", "title": "Flight products unavailable", "detail": error, "ageSeconds": None}
+    if last_run_state == "partial_failure":
+        return {
+            "state": "partial",
+            "level": "amber",
+            "title": "Flight products partially updated",
+            "detail": "Some source bundles could not be processed; available flights remain selectable.",
+            "ageSeconds": age_seconds,
+        }
+    if not flight_count:
+        return {
+            "state": "empty",
+            "level": "amber",
+            "title": "No flights for this day",
+            "detail": "The catalog is available but contains no flights for the selected UTC day.",
+            "ageSeconds": age_seconds,
+        }
+    if age_seconds is None:
+        return {
+            "state": "unknown",
+            "level": "amber",
+            "title": "Flight product freshness unknown",
+            "detail": "The catalog has no valid generation timestamp.",
+            "ageSeconds": None,
+        }
+    if age_seconds > stale_after:
+        return {
+            "state": "stale",
+            "level": "amber",
+            "title": "Flight products are stale",
+            "detail": f"The catalog was generated {int(age_seconds // 60)} minutes ago.",
+            "ageSeconds": age_seconds,
+        }
+    return {
+        "state": "fresh",
+        "level": "green",
+        "title": "Flight products are current",
+        "detail": "Derived flight products were generated within the expected refresh window.",
+        "ageSeconds": age_seconds,
+    }
+
+
+def uas_flights(day: str = "latest") -> dict[str, Any]:
+    """Return a bounded, path-free flight catalog for one UTC day."""
+    if day != "latest" and not WXCAM_DAY_RE.fullmatch(day):
+        raise KeyError(f"Unknown UAS flight day: {day}")
+    payload, error = _menapia_catalog()
+    raw_days = payload.get("availableDays") if isinstance(payload.get("availableDays"), list) else []
+    available_days = [
+        value for value in dict.fromkeys(str(item) for item in raw_days)
+        if WXCAM_DAY_RE.fullmatch(value)
+    ]
+    selected_day = available_days[0] if day == "latest" and available_days else None if day == "latest" else day
+    records = []
+    raw_flights = payload.get("flights") if isinstance(payload.get("flights"), list) else []
+    for raw_flight in raw_flights:
+        record = _menapia_flight_record(raw_flight)
+        if record and record.get("dayUTC") == selected_day:
+            records.append(record)
+    records.sort(key=lambda item: str(item.get("startTimeUTC") or ""), reverse=True)
+    last_run_state = str(payload.get("lastRunState") or "") or None
+    generated_at = payload.get("generatedAt")
+    latest_flight_id = payload.get("latestFlightID")
+    if not isinstance(latest_flight_id, str) or not MENAPIA_FLIGHT_ID_RE.fullmatch(latest_flight_id):
+        latest_flight_id = None
+    state = _menapia_listing_state(
+        error=error,
+        last_run_state=last_run_state,
+        generated_at=generated_at,
+        flight_count=len(records),
+    )
+    daily_quicklook = None
+    all_flights_plot_url = None
+    if selected_day:
+        token = selected_day.replace("-", "")
+        path = resolve_quicklook_path("science", "uas", token)
+        if path:
+            all_flights_plot_url = versioned_media_url(
+                path,
+                "quicklook",
+                "science",
+                "uas",
+                token,
+            )
+            daily_quicklook = {
+                "token": token,
+                "imageURL": all_flights_plot_url,
+                **file_record(path),
+            }
+    return {
+        "schemaVersion": int(payload.get("schemaVersion") or 1),
+        "serverTime": utc_now_iso(),
+        "generatedAt": generated_at,
+        "lastRunState": last_run_state,
+        "requestedDay": day,
+        "selectedDay": selected_day,
+        "latestFlightID": latest_flight_id,
+        "availableDays": available_days,
+        "status": state,
+        "allFlightsPlotURL": all_flights_plot_url,
+        "dailyQuicklook": daily_quicklook,
+        "flights": records,
+    }
+
+
+def _menapia_catalog_flight(flight_id: str) -> dict[str, Any]:
+    safe_id = _menapia_safe_flight_id(flight_id)
+    payload, error = _menapia_catalog()
+    if error:
+        raise KeyError(error)
+    raw_flights = payload.get("flights") if isinstance(payload.get("flights"), list) else []
+    for raw_flight in raw_flights:
+        record = _menapia_flight_record(raw_flight)
+        if record and record["id"] == safe_id:
+            return record
+    raise KeyError("Unknown UAS flight")
+
+
+def _menapia_series(payload: dict[str, Any]) -> dict[str, Any]:
+    series = payload.get("series")
+    if not isinstance(series, dict):
+        raise KeyError("Invalid UAS flight series")
+    time_values = series.get("timeUTC")
+    if not isinstance(time_values, list):
+        raise KeyError("Invalid UAS flight time series")
+    maximum_points = max(1, min(int(os.environ.get("MENAPIA_MAX_PROFILE_POINTS", "20000")), 100_000))
+    if len(time_values) > maximum_points:
+        raise KeyError("UAS flight series exceeds the safe response limit")
+    if any(not isinstance(value, str) or len(value) > 64 for value in time_values):
+        raise KeyError("Invalid UAS flight timestamps")
+    normalized: dict[str, Any] = {"timeUTC": list(time_values)}
+
+    def numeric_values(values: Any, label: str) -> list[float | None]:
+        if not isinstance(values, list) or len(values) != len(time_values):
+            raise KeyError(f"Invalid UAS flight series length: {label}")
+        result: list[float | None] = []
+        for value in values:
+            if value is None:
+                result.append(None)
+            elif isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+                result.append(float(value))
+            else:
+                raise KeyError(f"Invalid UAS flight series value: {label}")
+        return result
+
+    for key in ("temperatureC", "pressureHpa", "relativeHumidityPct"):
+        group = series.get(key)
+        if not isinstance(group, dict):
+            raise KeyError(f"Invalid UAS flight series: {key}")
+        normalized_group = {}
+        for sensor in ("SN0122", "SN0123"):
+            normalized_group[sensor] = numeric_values(group.get(sensor), f"{key}.{sensor}")
+        normalized[key] = normalized_group
+    normalized["altitudeM"] = numeric_values(series.get("altitudeM"), "altitudeM")
+    return normalized
+
+
+def uas_flight(flight_id: str) -> dict[str, Any]:
+    """Return one validated profile without exposing product filesystem paths."""
+    record = _menapia_catalog_flight(flight_id)
+    safe_id = record["id"]
+    path = menapia_product_root() / "flights" / f"{safe_id}.json"
+    payload = _read_menapia_json(path, maximum_bytes=25_000_000)
+    embedded = payload.get("flight")
+    if isinstance(embedded, dict) and embedded.get("id") not in {None, safe_id}:
+        raise KeyError("UAS flight detail does not match the catalog")
+    return {
+        "schemaVersion": int(payload.get("schemaVersion") or 1),
+        "serverTime": utc_now_iso(),
+        "flight": record,
+        "plotURL": record["plotURL"],
+        "series": _menapia_series(payload),
+    }
+
+
+def resolve_uas_flight_plot_path(flight_id: str) -> Path | None:
+    """Resolve a catalog-listed per-flight plot using a fixed directory."""
+    record = _menapia_catalog_flight(flight_id)
+    path = menapia_product_root() / "plots" / f"{record['id']}.png"
+    return path if path.is_file() else None
+
+
 def instrument_summary(instrument_id: str, window: str = "24h") -> dict[str, Any]:
     instrument = _instrument_or_raise(instrument_id)
     latest = resolve_quicklook_path("science", instrument_id, "latest")
@@ -2046,8 +2366,12 @@ def quicklooks(kind: str, instrument_id: str) -> dict[str, Any]:
     }
 
 
+def _instrument_quicklook_root(instrument: Instrument) -> Path:
+    return uas_quicklook_root() if instrument.id == "uas" else quicklook_root() / instrument.quicklook_subdir
+
+
 def _quicklook_paths(instrument: Instrument, kind: str, prefixes: tuple[str, ...]) -> dict[str, Path]:
-    directory = quicklook_root() / instrument.quicklook_subdir
+    directory = _instrument_quicklook_root(instrument)
     if not prefixes or not directory.exists():
         return {}
     paths: dict[str, Path] = {}
@@ -2101,9 +2425,15 @@ def _quicklook_entries(instrument: Instrument, kind: str, prefixes: tuple[str, .
                 "title": (
                     f"Latest available ({_format_date_token(DATE_TOKEN_RE.search(path.name).group(1))})"
                     if dated_latest
-                    else "Latest" if token == "latest" else _format_date_token(token)
+                    else "Latest available" if token == "latest" and instrument.id == "uas"
+                    else "Latest" if token == "latest"
+                    else _format_date_token(token)
                 ),
-                "imageURL": media_url("quicklook", kind, instrument.id, token),
+                "imageURL": (
+                    versioned_media_url(path, "quicklook", kind, instrument.id, token)
+                    if instrument.id == "uas"
+                    else media_url("quicklook", kind, instrument.id, token)
+                ),
                 **file_record(path),
             }
         )
@@ -2122,7 +2452,7 @@ def resolve_quicklook_path(kind: str, instrument_id: str, token: str) -> Path | 
 
 def _find_quicklook_path_by_record(instrument: Instrument, kind: str, token: str) -> Path | None:
     prefixes = instrument.science_prefixes if kind == "science" else instrument.housekeeping_prefixes
-    directory = quicklook_root() / instrument.quicklook_subdir
+    directory = _instrument_quicklook_root(instrument)
     if not directory.exists():
         return None
     for path in sorted(directory.glob("*")):

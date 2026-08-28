@@ -103,6 +103,19 @@ token-protected, unknown mode values fail closed, and the legacy
   the selected server-side window. `24h` is the default. `all` means all
   available records up to the newest 2,000, protecting mobile clients from an
   unbounded response.
+- `GET /uas/flights?day=latest|YYYY-MM-DD` - path-free Menapia flight metadata
+  for one UTC day, newest day/flight defaults, product freshness and quality,
+  and archived-day choices. `allFlightsPlotURL` points to the daily composite
+  Science Quicklook, while each flight has a same-origin `plotURL`. Both carry
+  deterministic file-version queries so clients refresh when regenerated
+  bytes replace a stable dated URL.
+- `GET /uas/flights/{id}` - one catalog-listed flight and its equal-length,
+  bounded one-second profile arrays: UTC time, SN0122/SN0123 temperature,
+  pressure and relative humidity, plus fused altitude. Unknown or malformed
+  IDs fail closed and product filesystem paths are never returned.
+- `GET /media/uas/flights/{id}` - the ETag-backed static plot for one
+  catalog-listed flight. Under the public proxy this is
+  `/mobile/v1/media/uas/flights/{id}`.
 - `GET /instruments/{id}/summary?window=24h|7d` - mobile instrument summary and
   latest generated quicklook references.
 - `GET /quicklooks?kind=science|housekeeping&instrument={id}` - available
@@ -120,3 +133,7 @@ The API reads existing deployed products only. It does not restart services,
 write Zarr stores, mutate the WXcam catalog, or change Panel dashboard behavior.
 The deployment fields in the manifest are derived from the existing service
 environment and Git checkout; they do not create or refresh a data product.
+
+Menapia consumers use `MENAPIA_PRODUCT_ROOT` (default
+`/data/aurora/products/menapia`), optional `MENAPIA_CATALOG_PATH`, and
+`UAS_QUICKLOOK_DIR` (default `/data/aurora/products/quicklooks/uas`).

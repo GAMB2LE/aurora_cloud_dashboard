@@ -51,6 +51,15 @@ class InstrumentRegistryTests(unittest.TestCase):
             "ops-monitor",
         )
 
+    def test_uas_is_science_quicklook_only(self):
+        self.assertNotIn("UAS", instrument_registry.browser_options())
+        self.assertNotIn("UAS", instrument_registry.browser_options(housekeeping=True))
+        self.assertEqual(instrument_registry.science_options()["UAS"], "uas")
+        self.assertEqual(
+            instrument_registry.INSTRUMENT_BY_ID["uas"].science_prefixes,
+            ("uas__summary",),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

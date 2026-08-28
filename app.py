@@ -109,7 +109,7 @@ from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 import mobile_catalog
 from browser_icons import instrument_icon_svg
-from instrument_registry import browser_options
+from instrument_registry import browser_options, science_options
 from presentation_models import empty_data_state
 from request_context import (
     client_ip as _client_ip,
@@ -846,6 +846,7 @@ INSTRUMENTS = {
 }
 
 INSTRUMENT_OPTIONS = browser_options()
+SCIENCE_INSTRUMENT_OPTIONS = science_options()
 HK_INSTRUMENT_OPTIONS = browser_options(housekeeping=True)
 
 DEFAULT_WINDOW = timedelta(hours=24)
@@ -870,6 +871,7 @@ SUMMARY_INTERACTIVE_MAX_TIME_SAMPLES = {
 }
 SUMMARY_INTERACTIVE_COARSE_TIME_SAMPLES = int(os.environ.get("AURORA_SUMMARY_COARSE_TIME_SAMPLES", "700"))
 UAS_MQTT_LOG_PATH = Path(os.environ.get("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log"))
+UAS_QUICKLOOK_DIR = Path(os.environ.get("UAS_QUICKLOOK_DIR", QUICKLOOK_ROOT / "uas"))
 UAS_STALE_AFTER = timedelta(minutes=int(os.environ.get("UAS_STALE_AFTER_MINUTES", "5")))
 UAS_WINDOW_OPTIONS = {
     "Last 1 h": timedelta(hours=1),
@@ -3367,6 +3369,10 @@ def _is_wxcam_instrument(inst: str) -> bool:
     return inst == "wxcam"
 
 
+def _is_uas_instrument(inst: str) -> bool:
+    return inst == "uas"
+
+
 # Widgets / controls (Panel wires these into the view updater)
 default_end = _utcnow_naive()
 default_start = default_end - DEFAULT_WINDOW
@@ -3402,15 +3408,30 @@ power_view_select = pn.widgets.RadioButtonGroup(
     sizing_mode="stretch_width",
     css_classes=["power-view-select"],
 )
-science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=INSTRUMENT_OPTIONS)
+science_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=SCIENCE_INSTRUMENT_OPTIONS)
 science_image_type = pn.widgets.Select(name="Image type", options=[], visible=False)
 hk_instrument = pn.widgets.Select(name="Instrument", value=CURRENT_INSTRUMENT, options=HK_INSTRUMENT_OPTIONS)
 uas_window = pn.widgets.Select(name="Window", value="Last 24 h", options=list(UAS_WINDOW_OPTIONS.keys()))
+uas_flight_day = pn.widgets.Select(
+    name="Flight day (UTC)",
+    value="latest",
+    options={"Latest available": "latest"},
+)
+uas_flight_select = pn.widgets.Select(
+    name="Flight",
+    value=None,
+    options={"No flights available": None},
+)
 uas_refresh = pn.widgets.Button(name="Refresh", button_type="primary", width=110)
 
 _live_guard = False
 _instrument_guard = False
 _instrument_change_origin = "interactive"
+_uas_flight_widget_guard = False
+_uas_flight_manual_selection = False
+_uas_flight_listing: dict = {}
+_UAS_PENDING_DAY_QUERY: str | None = None
+_UAS_PENDING_FLIGHT_QUERY: str | None = None
 _live_cb = None  # handle for periodic callback (used for live refresh)
 _relayout_guard = False  # prevents loops when syncing zoom back to widgets
 _base_dataset_timer = _safe_periodic_callback(_refresh_time_bounds_cache, period=DATA_REFRESH_MS, start=False)
@@ -3492,6 +3513,25 @@ def _capture_current_instrument_state(inst: str | None = None) -> None:
         "wxcam_image_type": globals().get("wxcam_image_type").value if "wxcam_image_type" in globals() else None,
         "wxcam_date": globals().get("wxcam_date").value if "wxcam_date" in globals() else None,
     }
+
+
+def _update_science_image_type_control(inst: str, saved_state: dict | None = None) -> None:
+    """Show the WXcam image selector only while WXcam quicklooks are selected."""
+    science_image_type.name = "Image type"
+    is_wxcam = _is_wxcam_instrument(inst)
+    science_image_type.visible = is_wxcam
+    if not is_wxcam:
+        science_image_type.options = []
+        science_image_type.value = None
+        return
+
+    cfg = _cfg(inst)
+    vars_cfg = cfg["vars"]
+    saved_state = saved_state or {}
+    saved_wxcam_type = saved_state.get("wxcam_image_type") or saved_state.get("science_image_type")
+    selected = saved_wxcam_type if saved_wxcam_type in vars_cfg else cfg["default_top"]
+    science_image_type.options = list(vars_cfg.keys())
+    science_image_type.value = selected
 
 
 def _apply_instrument_defaults(inst: str, reset_time: bool = True, sync_quicklooks: bool = False):
@@ -3584,21 +3624,15 @@ def _apply_instrument_defaults(inst: str, reset_time: bool = True, sync_quickloo
         prev_btn.visible = not is_wxcam
         next_btn.visible = not is_wxcam
         reset_view_btn.visible = not is_wxcam
-        science_image_type.visible = is_wxcam
+        _update_science_image_type_control(inst, saved_state)
         if is_wxcam:
-            science_image_type.name = "Image type"
-            science_image_type.options = list(vars_cfg.keys())
             saved_wxcam_type = saved_state.get("wxcam_image_type") or saved_state.get("science_image_type")
-            science_image_type.value = saved_wxcam_type if saved_wxcam_type in vars_cfg else var1_name
             wxcam_image_type.options = list(vars_cfg.keys())
             wxcam_image_type.value = saved_wxcam_type if saved_wxcam_type in vars_cfg else var1_name
             _refresh_wxcam_ql_options(preserve_current=False)
             saved_wxcam_date = saved_state.get("wxcam_date")
             if saved_wxcam_date in list(wxcam_date.options):
                 wxcam_date.value = saved_wxcam_date
-        else:
-            science_image_type.name = "Image type"
-            science_image_type.options = []
         if saved_state and not is_wxcam:
             if saved_state.get("var1_select") in vars_cfg:
                 var1_select.value = saved_state["var1_select"]
@@ -3741,10 +3775,21 @@ def _on_science_instrument_change(event):
     """Sync science quicklook instrument dropdown back to the main instrument selector."""
     if _instrument_guard:
         return
+    _update_science_image_type_control(event.new)
+    if _is_uas_instrument(event.new):
+        # UAS has generated daily images, but no generic Zarr browser contract.
+        # Refresh the Science view without widening the Interactive selector.
+        _refresh_ql_options(preserve_current=False)
+        ql_date.param.trigger("value")
+        return
     global _instrument_change_origin
     _instrument_change_origin = "science"
     try:
+        changed = instrument_select.value != event.new
         instrument_select.value = event.new
+        if not changed:
+            _refresh_ql_options(preserve_current=False)
+            ql_date.param.trigger("value")
     finally:
         _instrument_change_origin = "interactive"
 
@@ -6666,8 +6711,20 @@ def _legacy_science_quicklook_token(inst: str, png: Path) -> str | None:
 def _quicklook_options(inst: str | None = None, wxcam_selection: str | None = None, mode: str = "science"):
     """Build a mapping of label -> quicklook asset token/path for a quicklook mode."""
     inst = inst or CURRENT_INSTRUMENT
-    cfg = _cfg(inst)
     opts = {}
+    if _is_uas_instrument(inst):
+        if mode == "housekeeping":
+            return _empty_quicklook_options(mode)
+        if UAS_QUICKLOOK_DIR.exists():
+            for path in sorted(UAS_QUICKLOOK_DIR.glob("uas__summary__*.png")):
+                token = path.stem.removeprefix("uas__summary__")
+                if len(token) == 8 and token.isdigit():
+                    opts[token] = str(path)
+            latest = UAS_QUICKLOOK_DIR / "uas__summary__latest.png"
+            if latest.exists():
+                opts["Latest available"] = str(latest)
+        return opts or _empty_quicklook_options(mode)
+    cfg = _cfg(inst)
     if _is_wxcam_instrument(inst):
         if mode == "housekeeping":
             return _empty_quicklook_options(mode)
@@ -6741,8 +6798,15 @@ def _refresh_ql_options(preserve_current: bool = True):
         return
     if preserve_current and current in opts:
         ql_date.value = current
-    elif _is_wxcam_instrument(science_instrument.value) or _is_stacked_timeseries_instrument(science_instrument.value):
-        ql_date.value = "Today (latest)" if "Today (latest)" in opts else opts[-1]
+    elif (
+        _is_wxcam_instrument(science_instrument.value)
+        or _is_stacked_timeseries_instrument(science_instrument.value)
+        or _is_uas_instrument(science_instrument.value)
+    ):
+        if "Latest available" in opts:
+            ql_date.value = "Latest available"
+        else:
+            ql_date.value = "Today (latest)" if "Today (latest)" in opts else opts[-1]
     else:
         ql_date.value = opts[-1]
 
@@ -6812,7 +6876,7 @@ def _refresh_latest_if_needed():
     """If viewing the latest science quicklook, reload the mapping and redraw."""
     if _is_wxcam_instrument(science_instrument.value):
         return
-    if ql_date.value == "Today (latest)":
+    if ql_date.value in {"Today (latest)", "Latest available"}:
         global _ql_options
         _ql_options = _quicklook_options(science_instrument.value, science_image_type.value, mode="science")
         ql_date.param.trigger("value")
@@ -7354,8 +7418,41 @@ def _current_interactive_availability_markup() -> str:
     )
 
 
+def _uas_science_day_query() -> str:
+    if ql_date.value == "Latest available":
+        return "latest"
+    token = str(ql_date.value or "")
+    if len(token) == 8 and token.isdigit():
+        return f"{token[:4]}-{token[4:6]}-{token[6:8]}"
+    return "latest"
+
+
+def _uas_science_listing() -> dict:
+    return mobile_catalog.uas_flights(day=_uas_science_day_query())
+
+
 def _current_science_status_markup() -> str:
     inst = science_instrument.value
+    if _is_uas_instrument(inst):
+        listing = _uas_science_listing()
+        status = listing.get("status") or {}
+        generated = pd.to_datetime(listing.get("generatedAt"), errors="coerce", utc=True)
+        generated_dt = None if pd.isna(generated) else generated.to_pydatetime(warn=False)
+        flights = listing.get("flights") or []
+        latest_start = pd.to_datetime(
+            flights[0].get("startTimeUTC") if flights else None,
+            errors="coerce",
+            utc=True,
+        )
+        latest_dt = None if pd.isna(latest_start) else latest_start.to_pydatetime(warn=False)
+        level = "ok" if status.get("level") == "green" else "warn"
+        items = [
+            ("Product state", str(status.get("title") or "Unknown"), level),
+            ("Flights in image", str(len(flights)), "ok" if flights else "warn"),
+            ("Latest flight", _format_status_time(latest_dt), "info"),
+            ("Generated", _format_status_time(generated_dt), level),
+        ]
+        return _status_strip_markup(items)
     if _is_wxcam_instrument(inst):
         selection = science_image_type.value or _cfg("wxcam")["default_top"]
         day_token = _wxcam_calendar_day_token(ql_date.value)
@@ -7392,6 +7489,28 @@ def _current_science_status_markup() -> str:
 
 def _current_science_availability_markup() -> str:
     inst = science_instrument.value
+    if _is_uas_instrument(inst):
+        listing = _uas_science_listing()
+        flights = listing.get("flights") or []
+        counts = [0] * 24
+        for flight in flights:
+            value = pd.to_datetime(flight.get("startTimeUTC"), errors="coerce", utc=True)
+            if not pd.isna(value):
+                counts[int(value.hour)] += 1
+        selected_day = listing.get("selectedDay") or "--"
+        return _availability_bar_markup(
+            [count > 0 for count in counts],
+            "00:00 UTC",
+            "23:00 UTC",
+            f"UAS flight starts on {selected_day}",
+            "Each block represents one UTC hour. Teal means at least one flight starts in that hour.",
+            full_label="Flight starts",
+            empty_label="No flight start",
+            segment_titles=[
+                f"{hour:02d}:00 UTC - {counts[hour]} flight{'s' if counts[hour] != 1 else ''}"
+                for hour in range(24)
+            ],
+        )
     if _is_wxcam_instrument(inst):
         selection = science_image_type.value or _cfg("wxcam")["default_top"]
         day_token = _wxcam_calendar_day_token(ql_date.value)
@@ -7686,9 +7805,290 @@ def _uas_log_table_markup(result: UASMqttParseResult) -> str:
     )
 
 
+def _uas_flight_day_options(available_days: list[str]) -> dict[str, str]:
+    options = {"Latest available": "latest"}
+    for day in available_days:
+        parsed = pd.to_datetime(day, errors="coerce")
+        label = parsed.strftime("%d %B %Y") if not pd.isna(parsed) else day
+        options[f"{label} (UTC)"] = day
+    return options
+
+
+def _uas_flight_label(flight: dict) -> str:
+    start = pd.to_datetime(flight.get("startTimeUTC"), errors="coerce", utc=True)
+    start_label = start.strftime("%H:%M UTC") if not pd.isna(start) else "Time unknown"
+    duration = flight.get("durationSeconds")
+    try:
+        duration_label = f"{float(duration) / 60:.1f} min"
+    except (TypeError, ValueError):
+        duration_label = "duration unknown"
+    title = str(flight.get("title") or f"Flight {flight.get('flightNumber') or ''}").strip()
+    return f"{start_label} - {title} ({duration_label})"
+
+
+def _uas_empty_flight_figure(message: str, *, title: str = "UAS Flight Profiles") -> go.Figure:
+    figure = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.035)
+    figure.add_annotation(
+        text=escape(message),
+        x=0.5,
+        y=0.5,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font=dict(color=THEME_MUTED, size=15),
+    )
+    figure.update_layout(
+        title=dict(text=title, x=0.01, xanchor="left", font=dict(size=18, color=THEME_TEXT)),
+        height=760,
+        margin=dict(l=85, r=30, t=75, b=70),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=THEME_TEXT, size=12),
+    )
+    for row in range(1, 5):
+        figure.update_xaxes(showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE, row=row, col=1)
+        figure.update_yaxes(showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE, row=row, col=1)
+    return figure
+
+
+def _uas_flight_figure(detail: dict) -> go.Figure:
+    flight = detail.get("flight") or {}
+    series = detail.get("series") or {}
+    times = pd.to_datetime(series.get("timeUTC") or [], errors="coerce", utc=True)
+    if not len(times):
+        return _uas_empty_flight_figure("The selected flight contains no profile samples.")
+    figure = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.035)
+    sensor_styles = {
+        "SN0122": dict(color="#2b6cb0", width=2.2),
+        "SN0123": dict(color="#ed7d0b", width=2.2, dash="dash"),
+    }
+    groups = (
+        ("temperatureC", "Temperature (°C)"),
+        ("pressureHpa", "Pressure (hPa)"),
+        ("relativeHumidityPct", "Relative humidity (%)"),
+    )
+    for row, (group_key, axis_title) in enumerate(groups, start=1):
+        group = series.get(group_key) or {}
+        for sensor, style in sensor_styles.items():
+            figure.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=group.get(sensor) or [],
+                    mode="lines+markers" if group_key == "pressureHpa" else "lines",
+                    name=sensor,
+                    legendgroup=sensor,
+                    showlegend=row == 1,
+                    line=style,
+                    marker=dict(size=4, color=style["color"]),
+                    connectgaps=False,
+                    hovertemplate=f"%{{x|%Y-%m-%d %H:%M:%S}} UTC<br>{axis_title}: %{{y:.2f}}<extra>{sensor}</extra>",
+                ),
+                row=row,
+                col=1,
+            )
+        figure.update_yaxes(title_text=axis_title, row=row, col=1)
+    figure.add_trace(
+        go.Scatter(
+            x=times,
+            y=series.get("altitudeM") or [],
+            mode="lines",
+            name="Fused altitude",
+            line=dict(color="#37474f", width=2.3),
+            connectgaps=False,
+            hovertemplate="%{x|%Y-%m-%d %H:%M:%S} UTC<br>Fused altitude: %{y:.2f} m<extra></extra>",
+        ),
+        row=4,
+        col=1,
+    )
+    figure.update_yaxes(title_text="Fused altitude (m)", row=4, col=1)
+    for row in range(1, 5):
+        figure.update_xaxes(showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE, row=row, col=1)
+        figure.update_yaxes(showgrid=True, gridcolor=THEME_GRID, linecolor=THEME_LINE, row=row, col=1)
+    figure.update_xaxes(title_text="Time (UTC)", row=4, col=1)
+    start = pd.to_datetime(flight.get("startTimeUTC"), errors="coerce", utc=True)
+    start_label = start.strftime("%d %B %Y, %H:%M:%S UTC") if not pd.isna(start) else "Start time unknown"
+    duration = flight.get("durationSeconds")
+    try:
+        duration_label = f"{float(duration) / 60:.1f} min"
+    except (TypeError, ValueError):
+        duration_label = "duration unknown"
+    title = str(flight.get("title") or "Menapia flight")
+    figure.update_layout(
+        title=dict(
+            text=f"{escape(title)}<br><sup>{escape(start_label)} | {escape(duration_label)} | one-second medians</sup>",
+            x=0.01,
+            xanchor="left",
+            font=dict(size=18, color=THEME_TEXT),
+        ),
+        height=920,
+        margin=dict(l=95, r=30, t=90, b=70),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=THEME_TEXT, size=12),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1.0),
+        uirevision=f"uas-flight-{flight.get('id') or 'none'}",
+    )
+    return figure
+
+
+def _uas_flight_status_markup(listing: dict, detail: dict | None = None, error: str | None = None) -> str:
+    status = listing.get("status") or {}
+    flights = listing.get("flights") or []
+    flight = (detail or {}).get("flight") or next(
+        (item for item in flights if item.get("id") == uas_flight_select.value),
+        {},
+    )
+    generated = pd.to_datetime(listing.get("generatedAt"), errors="coerce", utc=True)
+    generated_label = "--" if pd.isna(generated) else generated.strftime("%Y-%m-%d %H:%M UTC")
+    start = pd.to_datetime(flight.get("startTimeUTC"), errors="coerce", utc=True)
+    start_label = "--" if pd.isna(start) else start.strftime("%Y-%m-%d %H:%M:%S UTC")
+    try:
+        duration_label = f"{float(flight.get('durationSeconds')) / 60:.1f} min"
+    except (TypeError, ValueError):
+        duration_label = "--"
+    quality = flight.get("quality") if isinstance(flight.get("quality"), dict) else {}
+    quality_level = str(quality.get("level") or "unknown")
+    level_class = "ok" if status.get("level") == "green" else "warn"
+    quality_class = "ok" if quality_level == "green" else "warn" if quality_level in {"amber", "red"} else "info"
+    cards = [
+        ("Product state", str(status.get("title") or "Unknown"), level_class),
+        ("Selected UTC day", str(listing.get("selectedDay") or "--"), "info"),
+        ("Flights on day", str(len(flights)), "ok" if flights else "warn"),
+        ("Selected flight", str(flight.get("title") or "--"), quality_class),
+        ("Flight start", start_label, "info"),
+        ("Duration", duration_label, "info"),
+        ("Data quality", quality_level.title(), quality_class),
+        ("Products generated", generated_label, level_class),
+    ]
+    card_markup = "".join(
+        (
+            f"<div class='uas-card uas-card--{level}'>"
+            f"<div class='uas-card__label'>{escape(label)}</div>"
+            f"<div class='uas-card__value'>{escape(value)}</div>"
+            "</div>"
+        )
+        for label, value, level in cards
+    )
+    diagnostics = [
+        ("Refresh state", str(status.get("state") or "unknown"), level_class),
+        ("Aggregation", "One-second medians; no interpolation", "info"),
+    ]
+    detail_text = error or str(status.get("detail") or "")
+    if detail_text:
+        diagnostics.append(("Detail", detail_text[:300], "warn" if error or level_class == "warn" else "info"))
+    warnings = quality.get("warnings") if isinstance(quality.get("warnings"), list) else []
+    if warnings:
+        diagnostics.append(("Quality note", "; ".join(str(item) for item in warnings)[:300], "warn"))
+    return (
+        "<div class='uas-section-title'>Menapia Flight Profiles</div>"
+        f"<div class='uas-grid'>{card_markup}</div>"
+        f"{_status_strip_markup(diagnostics)}"
+    )
+
+
 uas_status_pane = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
 uas_plot_pane = pn.pane.Plotly(config={"responsive": True}, sizing_mode="stretch_width", margin=0)
 uas_table_pane = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
+uas_flight_status_pane = pn.pane.HTML("", sizing_mode="stretch_width", margin=0)
+uas_flight_plot_pane = pn.pane.Plotly(
+    config={"responsive": True, "scrollZoom": True, "displaylogo": False},
+    sizing_mode="stretch_width",
+    margin=0,
+    css_classes=["uas-flight-plot"],
+)
+
+
+def _refresh_uas_selected_flight(listing: dict | None = None) -> None:
+    listing = listing or _uas_flight_listing
+    selected = uas_flight_select.value
+    if not selected:
+        status = listing.get("status") or {}
+        message = str(status.get("detail") or "No flights are available for the selected UTC day.")
+        uas_flight_status_pane.object = _uas_flight_status_markup(listing)
+        uas_flight_plot_pane.object = _uas_empty_flight_figure(message)
+        return
+    try:
+        detail = mobile_catalog.uas_flight(selected)
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        message = str(exc.args[0] if isinstance(exc, KeyError) and exc.args else exc)
+        uas_flight_status_pane.object = _uas_flight_status_markup(listing, error=message)
+        uas_flight_plot_pane.object = _uas_empty_flight_figure(message)
+        return
+    uas_flight_status_pane.object = _uas_flight_status_markup(listing, detail=detail)
+    uas_flight_plot_pane.object = _uas_flight_figure(detail)
+
+
+def _refresh_uas_flight_products(*, preserve_selection: bool = True) -> None:
+    global _uas_flight_widget_guard, _uas_flight_listing, _uas_flight_manual_selection
+    global _UAS_PENDING_DAY_QUERY, _UAS_PENDING_FLIGHT_QUERY
+    if _uas_flight_widget_guard:
+        return
+    _uas_flight_widget_guard = True
+    try:
+        requested_day = uas_flight_day.value or "latest"
+        listing = mobile_catalog.uas_flights(day=requested_day)
+        day_options = _uas_flight_day_options(listing.get("availableDays") or [])
+        allowed_days = set(day_options.values())
+        pending_day = _UAS_PENDING_DAY_QUERY
+        if pending_day in allowed_days and pending_day != requested_day:
+            requested_day = pending_day
+            listing = mobile_catalog.uas_flights(day=requested_day)
+        elif requested_day not in allowed_days:
+            requested_day = "latest"
+            listing = mobile_catalog.uas_flights(day=requested_day)
+        uas_flight_day.options = day_options
+        uas_flight_day.value = requested_day
+        _UAS_PENDING_DAY_QUERY = None
+
+        flights = listing.get("flights") or []
+        flight_options = {
+            _uas_flight_label(flight): flight["id"]
+            for flight in flights
+            if flight.get("id")
+        }
+        if not flight_options:
+            flight_options = {"No flights available": None}
+        available_ids = set(flight_options.values())
+        current = uas_flight_select.value
+        pending_flight = _UAS_PENDING_FLIGHT_QUERY
+        if pending_flight in available_ids:
+            selected = pending_flight
+            _uas_flight_manual_selection = True
+        elif preserve_selection and _uas_flight_manual_selection and current in available_ids:
+            selected = current
+        elif requested_day == "latest" and listing.get("latestFlightID") in available_ids:
+            selected = listing.get("latestFlightID")
+            _uas_flight_manual_selection = False
+        elif preserve_selection and current in available_ids:
+            selected = current
+        else:
+            selected = next((value for value in flight_options.values() if value is not None), None)
+            _uas_flight_manual_selection = False
+        uas_flight_select.options = flight_options
+        uas_flight_select.value = selected
+        uas_flight_select.disabled = selected is None
+        _UAS_PENDING_FLIGHT_QUERY = None
+        _uas_flight_listing = listing
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        message = str(exc.args[0] if isinstance(exc, KeyError) and exc.args else exc)
+        _uas_flight_listing = {
+            "selectedDay": uas_flight_day.value,
+            "flights": [],
+            "status": {
+                "state": "error",
+                "level": "red",
+                "title": "Flight products unavailable",
+                "detail": message,
+            },
+        }
+        uas_flight_select.options = {"Flight products unavailable": None}
+        uas_flight_select.value = None
+        uas_flight_select.disabled = True
+        _uas_flight_manual_selection = False
+    finally:
+        _uas_flight_widget_guard = False
+    _refresh_uas_selected_flight(_uas_flight_listing)
 
 
 def _refresh_uas_dashboard(_event=None) -> None:
@@ -7697,10 +8097,37 @@ def _refresh_uas_dashboard(_event=None) -> None:
     uas_status_pane.object = _uas_summary_markup(result, records)
     uas_plot_pane.object = _uas_history_figure(records, result)
     uas_table_pane.object = _uas_log_table_markup(result)
+    _refresh_uas_flight_products(preserve_selection=True)
 
 
 uas_refresh.on_click(_refresh_uas_dashboard)
 uas_window.param.watch(lambda _event: _refresh_uas_dashboard(), "value")
+
+
+def _on_uas_flight_day_change(_event) -> None:
+    global _uas_flight_manual_selection
+    if _uas_flight_widget_guard:
+        return
+    _uas_flight_manual_selection = False
+    _refresh_uas_flight_products(preserve_selection=False)
+
+
+def _on_uas_flight_selection_change(_event) -> None:
+    global _uas_flight_manual_selection
+    if _uas_flight_widget_guard:
+        return
+    _uas_flight_manual_selection = True
+    _refresh_uas_selected_flight()
+
+
+uas_flight_day.param.watch(
+    _on_uas_flight_day_change,
+    "value",
+)
+uas_flight_select.param.watch(
+    _on_uas_flight_selection_change,
+    "value",
+)
 
 
 interactive_status = pn.bind(
@@ -7862,6 +8289,8 @@ def _view_query_params(tab_slug: str) -> dict[str, str]:
         params["auroracam_time"] = auroracam_time.value or ""
     elif tab_slug == "uas":
         params["uas_window"] = uas_window.value or ""
+        params["uas_day"] = _UAS_PENDING_DAY_QUERY or uas_flight_day.value or "latest"
+        params["uas_flight"] = _UAS_PENDING_FLIGHT_QUERY or uas_flight_select.value or ""
     return {k: v for k, v in params.items() if v not in ("", None)}
 
 
@@ -7932,10 +8361,13 @@ def _query_interactive_time_state(args: dict[str, str], instrument: str):
 
 
 def _apply_query_state() -> None:
+    global _AURORACAM_PENDING_TIME_QUERY
+    global _UAS_PENDING_DAY_QUERY, _UAS_PENDING_FLIGHT_QUERY
     args = _request_query_args()
     if not args:
         return
     visible_instruments = set(INSTRUMENT_OPTIONS.values())
+    science_visible_instruments = set(SCIENCE_INSTRUMENT_OPTIONS.values())
     hk_visible_instruments = set(HK_INSTRUMENT_OPTIONS.values())
     # A direct Power URL owns the shared interactive component. Apply this
     # before its generic instrument parameter so tab switches cannot fall back
@@ -7967,7 +8399,7 @@ def _apply_query_state() -> None:
         wxcam_image_type.value = args["wxcam_image_type"]
     if args.get("wxcam_date") in list(wxcam_date.options):
         wxcam_date.value = args["wxcam_date"]
-    if args.get("science_instrument") in visible_instruments:
+    if args.get("science_instrument") in science_visible_instruments:
         science_instrument.value = args["science_instrument"]
     if args.get("science_image_type") in list(science_image_type.options):
         science_image_type.value = args["science_image_type"]
@@ -7989,10 +8421,25 @@ def _apply_query_state() -> None:
     elif requested_auroracam_time:
         # Historic times are loaded only when the camera tab is activated.
         # Hold this value so direct/share URLs still select their frame then.
-        global _AURORACAM_PENDING_TIME_QUERY
         _AURORACAM_PENDING_TIME_QUERY = requested_auroracam_time
     if args.get("uas_window") in list(uas_window.options):
         uas_window.value = args["uas_window"]
+    requested_uas_day = args.get("uas_day")
+    if requested_uas_day == "latest" or (
+        isinstance(requested_uas_day, str)
+        and len(requested_uas_day) == 10
+        and requested_uas_day[4:5] == "-"
+        and requested_uas_day[7:8] == "-"
+        and requested_uas_day.replace("-", "").isdigit()
+    ):
+        _UAS_PENDING_DAY_QUERY = requested_uas_day
+    requested_uas_flight = args.get("uas_flight")
+    if (
+        isinstance(requested_uas_flight, str)
+        and 1 <= len(requested_uas_flight) <= 128
+        and all(character.isalnum() or character in "_-" for character in requested_uas_flight)
+    ):
+        _UAS_PENDING_FLIGHT_QUERY = requested_uas_flight
     if args.get("power_view") in {"current", "forecast"}:
         power_view_select.value = args["power_view"]
 
@@ -8018,6 +8465,8 @@ for widget, parameter in (
     (auroracam_date, "value"),
     (auroracam_time, "value"),
     (uas_window, "value"),
+    (uas_flight_day, "value"),
+    (uas_flight_select, "value"),
 ):
     widget.param.watch(_refresh_share_and_download_state, parameter)
 
@@ -8685,8 +9134,21 @@ auroracam_tab = pn.Column(
 )
 uas_tab = pn.Column(
     pn.Card(
-        pn.Row(uas_window, uas_refresh, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
-        title="",
+        pn.Row(
+            uas_flight_day,
+            uas_flight_select,
+            uas_refresh,
+            sizing_mode="stretch_width",
+            css_classes=["mobile-stack"],
+        ),
+        title="Flight profiles",
+        collapsible=False,
+        sizing_mode="stretch_width",
+        css_classes=["small-card", "uas-toolbar", "uas-flight-toolbar"],
+    ),
+    pn.Card(
+        pn.Row(uas_window, sizing_mode="stretch_width", css_classes=["mobile-stack"]),
+        title="UAS tier telemetry",
         collapsible=False,
         sizing_mode="stretch_width",
         css_classes=["small-card", "uas-toolbar"],
@@ -9720,7 +10182,17 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
     elif active == "auroracam":
         _refresh_auroracam_latest_if_needed()
     elif active == "uas" and "uas" not in _LOADED_TABS:
-        uas_container[:] = [pn.Column(uas_status_pane, uas_plot_pane, uas_table_pane, sizing_mode="stretch_width", css_classes=["uas-shell"])]
+        uas_container[:] = [
+            pn.Column(
+                uas_flight_status_pane,
+                uas_flight_plot_pane,
+                uas_status_pane,
+                uas_plot_pane,
+                uas_table_pane,
+                sizing_mode="stretch_width",
+                css_classes=["uas-shell"],
+            )
+        ]
         _refresh_uas_dashboard()
         _LOADED_TABS.add("uas")
     elif active == "operations" and "operations" not in _LOADED_TABS:

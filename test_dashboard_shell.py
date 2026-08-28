@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -225,6 +226,192 @@ class DashboardShellTests(TestCase):
         # does not drop model patches while a tab is activated.
         self.assertFalse(app.desktop_tabs.dynamic)
         self.assertIn("Overview", labels)
+
+    def test_uas_science_quicklook_is_not_a_generic_browser_choice(self) -> None:
+        self.assertEqual(app.science_instrument.options["UAS"], "uas")
+        self.assertNotIn("UAS", app.instrument_select.options)
+        self.assertNotIn("UAS", app.hk_instrument.options)
+        with TemporaryDirectory() as tmpdir, patch.object(app, "UAS_QUICKLOOK_DIR", Path(tmpdir)):
+            (Path(tmpdir) / "uas__summary__20260827.png").write_bytes(b"dated")
+            (Path(tmpdir) / "uas__summary__latest.png").write_bytes(b"latest")
+            options = app._quicklook_options("uas", mode="science")
+
+        self.assertEqual(list(options), ["20260827", "Latest available"])
+
+    def test_uas_profile_figure_has_four_linked_panels_and_sensor_traces(self) -> None:
+        detail = {
+            "flight": {
+                "id": "flight-1",
+                "title": "Menapia Flight 1",
+                "startTimeUTC": "2026-08-28T10:00:00Z",
+                "durationSeconds": 2,
+            },
+            "series": {
+                "timeUTC": [
+                    "2026-08-28T10:00:00Z",
+                    "2026-08-28T10:00:01Z",
+                    "2026-08-28T10:00:02Z",
+                ],
+                "temperatureC": {"SN0122": [8.0, 8.1, 8.2], "SN0123": [8.2, 8.3, 8.4]},
+                "pressureHpa": {"SN0122": [1005.0, 1005.1, 1005.2], "SN0123": [1006.0, 1006.1, 1006.2]},
+                "relativeHumidityPct": {"SN0122": [75.0, 76.0, 77.0], "SN0123": [74.0, 75.0, 76.0]},
+                "altitudeM": [-60.0, 48.0, -60.0],
+            },
+        }
+
+        figure = app._uas_flight_figure(detail)
+
+        self.assertEqual(len(figure.data), 7)
+        self.assertEqual([trace.name for trace in figure.data[:2]], ["SN0122", "SN0123"])
+        self.assertEqual(figure.data[1].line.dash, "dash")
+        self.assertEqual(figure.data[2].mode, "lines+markers")
+        self.assertFalse(figure.data[2].connectgaps)
+        self.assertEqual(figure.data[2].marker.size, 4)
+        self.assertEqual(figure.layout.yaxis.title.text, "Temperature (°C)")
+        self.assertEqual(figure.layout.yaxis2.title.text, "Pressure (hPa)")
+        self.assertEqual(figure.layout.yaxis3.title.text, "Relative humidity (%)")
+        self.assertEqual(figure.layout.yaxis4.title.text, "Fused altitude (m)")
+        self.assertEqual(figure.layout.xaxis4.title.text, "Time (UTC)")
+        self.assertEqual(figure.layout.hovermode, "x unified")
+
+    def test_uas_latest_defaults_newest_but_preserves_manual_and_historical_selection(self) -> None:
+        latest_listing = {
+            "generatedAt": "2026-08-28T12:31:00Z",
+            "latestFlightID": "flight-new",
+            "availableDays": ["2026-08-28", "2026-08-27"],
+            "selectedDay": "2026-08-28",
+            "status": {"state": "fresh", "level": "green", "title": "Current", "detail": "Current"},
+            "flights": [
+                {
+                    "id": "flight-new",
+                    "dayUTC": "2026-08-28",
+                    "title": "Flight new",
+                    "startTimeUTC": "2026-08-28T12:00:00Z",
+                    "durationSeconds": 60,
+                    "quality": {"level": "green", "warnings": []},
+                },
+                {
+                    "id": "flight-before",
+                    "dayUTC": "2026-08-28",
+                    "title": "Flight before",
+                    "startTimeUTC": "2026-08-28T11:00:00Z",
+                    "durationSeconds": 60,
+                    "quality": {"level": "green", "warnings": []},
+                },
+            ],
+        }
+        historical_listing = {
+            **latest_listing,
+            "selectedDay": "2026-08-27",
+            "flights": [
+                {
+                    "id": "flight-old",
+                    "dayUTC": "2026-08-27",
+                    "title": "Flight old",
+                    "startTimeUTC": "2026-08-27T10:00:00Z",
+                    "durationSeconds": 60,
+                    "quality": {"level": "green", "warnings": []},
+                }
+            ],
+        }
+        original_day_options = app.uas_flight_day.options
+        original_day = app.uas_flight_day.value
+        original_flight_options = app.uas_flight_select.options
+        original_flight = app.uas_flight_select.value
+        original_manual_selection = app._uas_flight_manual_selection
+        try:
+            app._uas_flight_widget_guard = True
+            app.uas_flight_day.options = {"Latest available": "latest", "27 August": "2026-08-27"}
+            app.uas_flight_day.value = "latest"
+            app.uas_flight_select.options = {"Before": "flight-before"}
+            app.uas_flight_select.value = "flight-before"
+            app._uas_flight_manual_selection = False
+            app._uas_flight_widget_guard = False
+            with (
+                patch.object(
+                    app.mobile_catalog,
+                    "uas_flights",
+                    side_effect=lambda day="latest": latest_listing if day == "latest" else historical_listing,
+                ),
+                patch.object(app, "_refresh_uas_selected_flight"),
+            ):
+                app._refresh_uas_flight_products(preserve_selection=True)
+                self.assertEqual(app.uas_flight_select.value, "flight-new")
+
+                app._uas_flight_widget_guard = True
+                app.uas_flight_select.value = "flight-before"
+                app._uas_flight_widget_guard = False
+                app._on_uas_flight_selection_change(SimpleNamespace(old="flight-new", new="flight-before"))
+                self.assertTrue(app._uas_flight_manual_selection)
+                app._refresh_uas_flight_products(preserve_selection=True)
+                self.assertEqual(app.uas_flight_select.value, "flight-before")
+
+                app._uas_flight_widget_guard = True
+                app.uas_flight_day.value = "2026-08-27"
+                app.uas_flight_select.options = {"Old": "flight-old"}
+                app.uas_flight_select.value = "flight-old"
+                app._uas_flight_widget_guard = False
+                app._refresh_uas_flight_products(preserve_selection=True)
+                self.assertEqual(app.uas_flight_select.value, "flight-old")
+        finally:
+            app._uas_flight_widget_guard = True
+            app.uas_flight_day.options = original_day_options
+            app.uas_flight_day.value = original_day
+            app.uas_flight_select.options = original_flight_options
+            app.uas_flight_select.value = original_flight
+            app._uas_flight_manual_selection = original_manual_selection
+            app._uas_flight_widget_guard = False
+
+    def test_science_wxcam_to_uas_hides_and_resets_image_type_control(self) -> None:
+        original_guard = app._instrument_guard
+        original_visible = app.science_image_type.visible
+        original_options = app.science_image_type.options
+        original_value = app.science_image_type.value
+        try:
+            app._instrument_guard = True
+            app.science_image_type.options = ["FISH HDR"]
+            app.science_image_type.value = "FISH HDR"
+            app.science_image_type.visible = True
+            app._instrument_guard = False
+            with (
+                patch.object(app, "_refresh_ql_options"),
+                patch.object(app.ql_date.param, "trigger"),
+            ):
+                app._on_science_instrument_change(SimpleNamespace(old="wxcam", new="uas"))
+
+            self.assertFalse(app.science_image_type.visible)
+            self.assertEqual(list(app.science_image_type.options), [])
+            self.assertIsNone(app.science_image_type.value)
+        finally:
+            app._instrument_guard = True
+            app.science_image_type.options = original_options
+            app.science_image_type.value = original_value
+            app.science_image_type.visible = original_visible
+            app._instrument_guard = original_guard
+
+    def test_uas_share_state_includes_and_restores_day_and_flight(self) -> None:
+        original_day = app._UAS_PENDING_DAY_QUERY
+        original_flight = app._UAS_PENDING_FLIGHT_QUERY
+        try:
+            app._UAS_PENDING_DAY_QUERY = None
+            app._UAS_PENDING_FLIGHT_QUERY = None
+            with patch.object(
+                app,
+                "_request_query_args",
+                return_value={
+                    "tab": "uas",
+                    "uas_day": "2026-08-27",
+                    "uas_flight": "flight-old",
+                },
+            ):
+                app._apply_query_state()
+            params = app._view_query_params("uas")
+        finally:
+            app._UAS_PENDING_DAY_QUERY = original_day
+            app._UAS_PENDING_FLIGHT_QUERY = original_flight
+
+        self.assertEqual(params["uas_day"], "2026-08-27")
+        self.assertEqual(params["uas_flight"], "flight-old")
 
     def test_desktop_interactive_and_power_tabs_use_distinct_hosts(self) -> None:
         self.assertIsNot(app.TAB_PANEL_BY_SLUG["interactive"], app.TAB_PANEL_BY_SLUG["power"])
