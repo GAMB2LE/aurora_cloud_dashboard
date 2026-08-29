@@ -1,4 +1,12 @@
-"""Parse Menapia UAS MQTT tier logs for the dashboard."""
+"""Parse Menapia UAS MQTT dock-tier logs for the dashboard.
+
+The producer writes two fields: the current tier of Dock 1 followed by the
+current tier of Dock 2.  Older dashboard code called these ``reported`` and
+``effective`` tier, which turned a two-dock state into one fictitious tier and
+made mixed-dock power impossible to learn safely.  The compatibility aliases
+below keep existing clients readable while all forecasting code uses the two
+explicit dock fields.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +19,8 @@ import re
 UAS_LOG_LINE_RE = re.compile(
     r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}):\s+"
     r"(?:(?P<event>Tier change)\s+)?"
-    r"(?P<reported_tier>-?\d+)\s+"
-    r"(?P<effective_tier>-?\d+)\s*$"
+    r"(?P<dock1_tier>-?\d+)\s+"
+    r"(?P<dock2_tier>-?\d+)\s*$"
 )
 
 
@@ -20,10 +28,30 @@ UAS_LOG_LINE_RE = re.compile(
 class UASMqttRecord:
     timestamp: datetime
     event_type: str
-    reported_tier: int
-    effective_tier: int
+    dock1_tier: int
+    dock2_tier: int
     raw: str
     line_number: int
+
+    @property
+    def reported_tier(self) -> int:
+        """Deprecated alias retained for old mobile clients: Dock 1 tier."""
+        return self.dock1_tier
+
+    @property
+    def effective_tier(self) -> int:
+        """Deprecated alias retained for old mobile clients: Dock 2 tier."""
+        return self.dock2_tier
+
+    @property
+    def shared_tier(self) -> int | None:
+        """Return a trainable single tier only when both docks agree exactly."""
+        return self.dock1_tier if self.dock1_tier == self.dock2_tier else None
+
+    @property
+    def dock_pair_state(self) -> str:
+        """Stable raw pair identity used for diagnostics and mixed-state exclusion."""
+        return f"dock1_{self.dock1_tier}__dock2_{self.dock2_tier}"
 
 
 @dataclass(frozen=True)
@@ -46,8 +74,8 @@ def parse_uas_mqtt_line(line: str, line_number: int = 0) -> UASMqttRecord | None
     return UASMqttRecord(
         timestamp=timestamp,
         event_type="tier_change" if match.group("event") else "sample",
-        reported_tier=int(match.group("reported_tier")),
-        effective_tier=int(match.group("effective_tier")),
+        dock1_tier=int(match.group("dock1_tier")),
+        dock2_tier=int(match.group("dock2_tier")),
         raw=raw,
         line_number=line_number,
     )

@@ -14,6 +14,79 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_power_candidate_evaluation_is_explicitly_development_only(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lane = "D_physical_solar_load_residual"
+            signature = "candidate-signature"
+            pair_id = "pair-id"
+            bundle = root / "lanes" / lane / "pairs" / pair_id / signature
+            bundle.mkdir(parents=True)
+            times = pd.date_range("2026-06-21T12:00:00", periods=2, freq="3h")
+            baseline = xr.Dataset(
+                {
+                    "BatterySOCForecast": (("time",), [70.0, 69.0]),
+                    "ForecastLoadWatts": (("time",), [100.0, 100.0]),
+                    "ForecastSolarWatts": (("time",), [0.0, 200.0]),
+                },
+                coords={"time": times},
+            )
+            candidate = baseline.copy(deep=True)
+            candidate["BatterySOCForecast"][:] = np.asarray([70.0, 69.5])
+            candidate.attrs.update(
+                {
+                    "forecast_system_version": "power-v12-hybrid-candidate",
+                    "forecast_model_contract_id": "contract-id",
+                    "feature_set_version": "features-v1",
+                    "feature_set_digest": "feature-digest",
+                    "source_manifest_digest": "manifest-digest",
+                    "source_cycle_set_id": "cycle-set",
+                    "degraded_mode_code": "candidate_only",
+                    "load_residual_model_status": "active",
+                }
+            )
+            baseline.to_zarr(bundle / "baseline_forecast.zarr", mode="w", consolidated=True)
+            candidate.to_zarr(bundle / "candidate_forecast.zarr", mode="w", consolidated=True)
+            (bundle / "pair_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "pair_status": "complete",
+                        "evaluation_pair_id": pair_id,
+                        "candidate_publication_signature": signature,
+                        "baseline_publication_signature": "baseline-signature",
+                    }
+                )
+            )
+            (root / "lanes" / lane / "evaluation_summary.json").write_text("{}")
+            (root / "status.json").write_text(
+                json.dumps(
+                    {
+                        "environment": "development",
+                        "authority": "candidate",
+                        "status": "complete",
+                        "promotion_status": "not_eligible_requires_campaign_evidence",
+                        "lanes": {lane: {"publication_signature": signature}},
+                    }
+                )
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "AURORA_POWER_CANDIDATE_API_ENABLED": "true",
+                    "AURORA_POWER_V12_CANDIDATE_ROOT": str(root),
+                },
+            ):
+                payload = mobile_catalog.power_solar_evaluation(lane)
+            self.assertEqual(payload["environment"], "development")
+            self.assertEqual(payload["authority"], "candidate")
+            self.assertEqual(payload["pairID"], pair_id)
+            self.assertEqual(payload["comparison"][1]["candidateSOC"], 69.5)
+            self.assertNotIn("path", json.dumps(payload).lower())
+
     def test_float_health_states_are_normalized_and_counted(self) -> None:
         self.assertEqual(mobile_catalog.normalize_level(1.0), "green")
         self.assertEqual(mobile_catalog.normalize_level(0.0), "red")
@@ -387,6 +460,9 @@ class MobileCatalogTests(unittest.TestCase):
 
         self.assertEqual(response["window"], "24h")
         self.assertEqual([record["effectiveTier"] for record in response["records"]], [3])
+        self.assertEqual([record["dock1Tier"] for record in response["records"]], [2])
+        self.assertEqual([record["dock2Tier"] for record in response["records"]], [3])
+        self.assertEqual(response["records"][0]["sharedTier"], None)
 
     def test_uas_flight_catalog_filters_day_and_hides_product_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1582,14 +1658,14 @@ class MobileCatalogTests(unittest.TestCase):
             with patch.dict(os.environ, {"UAS_MQTT_LOG_PATH": str(log)}):
                 labels = mobile_catalog._powered_instrument_labels({4: True})
 
-        self.assertEqual(labels.get("uas"), "On (Tier 3)")
+        self.assertEqual(labels.get("uas"), "On (Dock 1 Tier 4; Dock 2 Tier 3)")
         row = mobile_catalog._pdu_instrument_status(
             "uas",
             {4: True},
             "PDU sample 2m old",
             labels,
         )
-        self.assertEqual(row["state"], "On (Tier 3)")
+        self.assertEqual(row["state"], "On (Dock 1 Tier 4; Dock 2 Tier 3)")
         self.assertEqual(row["level"], "green")
 
     def test_uas_tier_never_overrides_powered_off(self) -> None:

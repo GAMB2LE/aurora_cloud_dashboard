@@ -9,6 +9,11 @@ def test_parse_tier_change_line():
     assert record is not None
     assert record.timestamp == datetime(2026, 7, 8, 13, 40, 22, tzinfo=timezone.utc)
     assert record.event_type == "tier_change"
+    assert record.dock1_tier == 4
+    assert record.dock2_tier == 3
+    assert record.shared_tier is None
+    assert record.dock_pair_state == "dock1_4__dock2_3"
+    # Deprecated aliases retain API compatibility while callers migrate.
     assert record.reported_tier == 4
     assert record.effective_tier == 3
     assert record.line_number == 7
@@ -19,8 +24,9 @@ def test_parse_sample_line():
 
     assert record is not None
     assert record.event_type == "sample"
-    assert record.reported_tier == 4
-    assert record.effective_tier == 4
+    assert record.dock1_tier == 4
+    assert record.dock2_tier == 4
+    assert record.shared_tier == 4
 
 
 def test_parse_malformed_line_returns_none():

@@ -41,8 +41,19 @@ from power_state_catalog import (
     POWER_STATE_SCENARIOS,
     POWER_STATE_SCENARIO_IDS,
     UAS_CHARGE_DURATION_HOURS,
+    UAS_CHARGE_EMPIRICAL_DURATION_P10_HOURS,
+    UAS_CHARGE_EMPIRICAL_DURATION_P50_HOURS,
+    UAS_CHARGE_EMPIRICAL_DURATION_P90_HOURS,
+    UAS_CHARGE_EMPIRICAL_ENERGY_P10_WH,
+    UAS_CHARGE_EMPIRICAL_ENERGY_P50_WH,
+    UAS_CHARGE_EMPIRICAL_ENERGY_P90_WH,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W,
     UAS_CHARGE_ESTIMATE_W,
     UAS_CHARGE_EVENT_KIT,
+    UAS_CHARGE_PLANNING_ENERGY_WH,
+    UAS_CHARGE_PRIOR_SOURCE,
     UAS_CHARGE_TIERS,
     UAS_TIER_LEARNING_SOURCES,
     canonical_uas_tier,
@@ -82,8 +93,9 @@ P50_CONTINUATION_MINIMUM_SOC_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 UAS_TIER_RELIABLE_EPISODES = 3
 UAS_TIER_RELIABLE_HOURS = 6.0
 UAS_PROXY_TIER_RELIABLE_EPISODES = 2
-UAS_CHARGE_RELIABLE_EPISODES = 1
-UAS_CHARGE_RELIABLE_HOURS = 2.5
+UAS_CHARGE_RELIABLE_EPISODES = 20
+UAS_CHARGE_RELIABLE_HOURS = 5.0
+UAS_CHARGE_RELIABLE_DAYS = 5
 UAS_TIER3_FALLBACK_P10_W = 55.0
 UAS_TIER3_FALLBACK_P50_W = 108.0
 UAS_TIER3_FALLBACK_P90_W = 302.0
@@ -438,6 +450,25 @@ def _pdu_frame(
     return frame.loc[~frame.index.duplicated(keep="last")]
 
 
+def _aligned_uas_tier(series: pd.Series | None, index: pd.DatetimeIndex) -> pd.Series:
+    """Return a recent raw dock-tier series aligned to operating observations."""
+    if series is None or series.empty:
+        return pd.Series(np.nan, index=index, dtype=np.float64)
+    tier = pd.Series(
+        pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64),
+        index=pd.DatetimeIndex(series.index),
+        dtype=np.float64,
+    ).sort_index()
+    if tier.index.tz is not None:
+        tier.index = tier.index.tz_convert("UTC").tz_localize(None)
+    tier = tier.loc[~tier.index.duplicated(keep="last")]
+    return tier.reindex(
+        index,
+        method="ffill",
+        tolerance=pd.Timedelta(minutes=30),
+    )
+
+
 def build_observation_frame(
     power: xr.Dataset,
     pdu: xr.Dataset | None,
@@ -447,6 +478,8 @@ def build_observation_frame(
     frequency: str = OBSERVATION_FREQUENCY,
     events: Sequence[OperatingEvent] = (),
     uas_tier: pd.Series | None = None,
+    uas_dock1_tier: pd.Series | None = None,
+    uas_dock2_tier: pd.Series | None = None,
 ) -> pd.DataFrame:
     if "time" not in power or power.sizes.get("time", 0) == 0:
         return pd.DataFrame()
@@ -468,33 +501,56 @@ def build_observation_frame(
         pdu_samples = pdu_frame.resample(frequency).median()
         for name in pdu_samples:
             observed[name] = pdu_samples[name].reindex(observed.index, method="nearest", tolerance=pd.Timedelta(frequency))
-    if uas_tier is not None and not uas_tier.empty:
-        tier = pd.Series(
-            pd.to_numeric(uas_tier, errors="coerce").to_numpy(dtype=np.float64),
-            index=pd.DatetimeIndex(uas_tier.index),
-        ).sort_index()
-        if tier.index.tz is not None:
-            tier.index = tier.index.tz_convert("UTC").tz_localize(None)
-        tier = tier.loc[~tier.index.duplicated(keep="last")]
-        observed["uas_effective_tier"] = tier.reindex(
-            observed.index,
-            method="ffill",
-            tolerance=pd.Timedelta(minutes=30),
-        )
-        observed["uas_canonical_tier"] = observed["uas_effective_tier"].map(
-            canonical_uas_tier
-        )
-        observed["uas_tier_learning_eligible"] = [
-            bool(
-                pd.notna(canonical)
-                and tier_is_learning_source(raw, int(canonical))
-            )
-            for raw, canonical in zip(
-                observed["uas_effective_tier"],
-                observed["uas_canonical_tier"],
-                strict=True,
-            )
+    # The Menapia producer emits (dock1_tier, dock2_tier).  A combined PDU
+    # branch cannot identify the component draw of a mixed pair, so only an
+    # exact matching pair is allowed to train a canonical single-tier profile.
+    if uas_dock1_tier is not None or uas_dock2_tier is not None:
+        dock1 = _aligned_uas_tier(uas_dock1_tier, observed.index)
+        dock2 = _aligned_uas_tier(uas_dock2_tier, observed.index)
+        observed["uas_dock1_tier"] = dock1
+        observed["uas_dock2_tier"] = dock2
+        pair_complete = np.isfinite(dock1) & np.isfinite(dock2)
+        pair_consistent = pair_complete & np.isclose(dock1, dock2)
+        observed["uas_pair_consistent"] = pair_consistent
+        observed["uas_pair_state"] = [
+            f"dock1_{int(left)}__dock2_{int(right)}" if complete else ""
+            for left, right, complete in zip(dock1, dock2, pair_complete, strict=True)
         ]
+        observed["uas_effective_tier"] = dock1.where(pair_consistent)
+        observed["uas_canonical_tier"] = observed["uas_effective_tier"].map(canonical_uas_tier)
+        observed["uas_tier_source"] = np.where(
+            pair_consistent,
+            "matching_dock_pair",
+            np.where(pair_complete, "mixed_dock_pair", "incomplete_dock_pair"),
+        )
+    elif uas_tier is not None and not uas_tier.empty:
+        # Retain the legacy single-field adapter only for historical replay.
+        # It is never presented as two-dock evidence in new products.
+        effective = _aligned_uas_tier(uas_tier, observed.index)
+        observed["uas_effective_tier"] = effective
+        observed["uas_canonical_tier"] = effective.map(canonical_uas_tier)
+        observed["uas_pair_consistent"] = False
+        observed["uas_pair_state"] = "legacy_single_tier"
+        observed["uas_tier_source"] = "legacy_single_tier"
+    else:
+        observed["uas_effective_tier"] = np.nan
+        observed["uas_canonical_tier"] = np.nan
+        observed["uas_pair_consistent"] = False
+        observed["uas_pair_state"] = ""
+        observed["uas_tier_source"] = "unavailable"
+    observed["uas_tier_learning_eligible"] = [
+        bool(
+            source == "matching_dock_pair"
+            and pd.notna(canonical)
+            and tier_is_learning_source(raw, int(canonical))
+        )
+        for raw, canonical, source in zip(
+            observed["uas_effective_tier"],
+            observed["uas_canonical_tier"],
+            observed["uas_tier_source"],
+            strict=True,
+        )
+    ]
 
     # Charging is an explicitly annotated state, not a wattage guess.  The
     # current field estimate is used until UASCharge on/off events provide a
@@ -789,8 +845,17 @@ def _uas_tier_profiles(observations: pd.DataFrame) -> dict[str, dict[str, Any]]:
         observations.get("uas_charging", pd.Series(np.nan, index=observations.index)),
         errors="coerce",
     )
+    learning_eligible = observations.get(
+        "uas_tier_learning_eligible",
+        pd.Series(False, index=observations.index),
+    ).fillna(False).astype(bool)
     for tier_value, source_tiers in UAS_TIER_LEARNING_SOURCES.items():
-        selected_mask = raw_tiers.isin(source_tiers) & np.isfinite(watts) & ~(charging >= 0.5)
+        selected_mask = (
+            raw_tiers.isin(source_tiers)
+            & learning_eligible
+            & np.isfinite(watts)
+            & ~(charging >= 0.5)
+        )
         selected = observations.loc[selected_mask, ["uas_effective_tier", "UAS_watts"]]
         if selected.empty:
             continue
@@ -841,34 +906,62 @@ def _uas_charge_profiles(
         observations.get("uas_charging", pd.Series(np.nan, index=observations.index)),
         errors="coerce",
     )
+    learning_eligible = observations.get(
+        "uas_tier_learning_eligible",
+        pd.Series(False, index=observations.index),
+    ).fillna(False).astype(bool)
     for tier_value in UAS_CHARGE_TIERS:
         state_id = uas_state_id(tier_value, charging=True)
         source_tiers = UAS_TIER_LEARNING_SOURCES[tier_value]
-        selected_mask = raw_tiers.isin(source_tiers) & (charging >= 0.5) & np.isfinite(watts)
+        selected_mask = (
+            raw_tiers.isin(source_tiers)
+            & learning_eligible
+            & (charging >= 0.5)
+            & np.isfinite(watts)
+        )
         selected = watts.loc[selected_mask]
         base_profile = tier_profiles.get(str(tier_value), {})
         base_p50 = float(base_profile.get("p50_w", 0.0))
         if selected.empty:
-            p10 = p50 = p90 = UAS_CHARGE_ESTIMATE_W
+            p10 = UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W
+            p50 = UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W
+            p90 = UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W
             episodes = 0
             hours = 0.0
-            duration_p10 = duration_p50 = duration_p90 = UAS_CHARGE_DURATION_HOURS
+            active_days = 0
+            duration_p10 = UAS_CHARGE_EMPIRICAL_DURATION_P10_HOURS
+            duration_p50 = UAS_CHARGE_EMPIRICAL_DURATION_P50_HOURS
+            duration_p90 = UAS_CHARGE_EMPIRICAL_DURATION_P90_HOURS
+            energy_p10 = UAS_CHARGE_EMPIRICAL_ENERGY_P10_WH
+            energy_p50 = UAS_CHARGE_EMPIRICAL_ENERGY_P50_WH
+            energy_p90 = UAS_CHARGE_EMPIRICAL_ENERGY_P90_WH
             maturity = "estimated"
         else:
             increments = np.clip(selected.to_numpy(dtype=np.float64) - base_p50, 0.0, None)
             p10, p50, p90 = np.nanquantile(increments, (0.10, 0.50, 0.90))
             episodes = _episode_count(selected_mask, pd.DatetimeIndex(observations.index))
             hours = float(len(selected) * pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1))
+            active_days = int(
+                len(pd.DatetimeIndex(observations.index[selected_mask]).normalize().unique())
+            )
             durations = _episode_durations_hours(
                 selected_mask, pd.DatetimeIndex(observations.index)
             )
             duration_p10, duration_p50, duration_p90 = np.nanquantile(
                 durations, (0.10, 0.50, 0.90)
             )
+            sample_hours = float(
+                pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1)
+            )
+            energy_p10, energy_p50, energy_p90 = np.nanquantile(
+                increments * sample_hours,
+                (0.10, 0.50, 0.90),
+            )
             maturity = (
                 "reliable"
                 if episodes >= UAS_CHARGE_RELIABLE_EPISODES
                 and hours >= UAS_CHARGE_RELIABLE_HOURS
+                and active_days >= UAS_CHARGE_RELIABLE_DAYS
                 and bool(base_profile)
                 else "provisional"
             )
@@ -884,6 +977,7 @@ def _uas_charge_profiles(
             "sample_count": float(len(selected)),
             "episode_count": float(episodes),
             "observed_hours": hours,
+            "observed_days": float(active_days),
             "duration_p10_hours": float(duration_p10),
             "duration_p50_hours": float(duration_p50),
             "duration_p90_hours": float(duration_p90),
@@ -892,6 +986,11 @@ def _uas_charge_profiles(
                 if maturity == "reliable"
                 else UAS_CHARGE_DURATION_HOURS
             ),
+            "energy_p10_wh": float(max(energy_p10, 0.0)),
+            "energy_p50_wh": float(max(energy_p50, 0.0)),
+            "energy_p90_wh": float(max(energy_p90, energy_p50, 0.0)),
+            "planning_energy_wh": float(UAS_CHARGE_PLANNING_ENERGY_WH),
+            "prior_source": UAS_CHARGE_PRIOR_SOURCE,
             "maturity": maturity,
             "fallback_increment_w": float(UAS_CHARGE_ESTIMATE_W),
         }
@@ -987,17 +1086,18 @@ def _charge_increment_members(
     seed: int,
 ) -> np.ndarray:
     if profile is None or str(profile.get("maturity", "estimated")) != "reliable":
-        return np.full(max(int(count), 1), UAS_CHARGE_ESTIMATE_W, dtype=np.float64)
-    ordered = np.maximum.accumulate(
-        np.asarray(
-            [
-                max(float(profile.get("increment_p10_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
-                max(float(profile.get("increment_p50_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
-                max(float(profile.get("increment_p90_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
-            ],
-            dtype=np.float64,
+        values = (
+            UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W,
+            UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W,
+            UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W,
         )
-    )
+    else:
+        values = (
+            float(profile.get("increment_p10_w", UAS_CHARGE_ESTIMATE_W)),
+            float(profile.get("increment_p50_w", UAS_CHARGE_ESTIMATE_W)),
+            float(profile.get("increment_p90_w", UAS_CHARGE_ESTIMATE_W)),
+        )
+    ordered = np.maximum.accumulate(np.clip(np.asarray(values, dtype=np.float64), 0.0, None))
     rng = np.random.default_rng(seed)
     quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
     rng.shuffle(quantiles)
@@ -1041,6 +1141,8 @@ def fit_operating_model(
     lookback_days: float = 7.0,
     events: Sequence[OperatingEvent] = (),
     uas_tier: pd.Series | None = None,
+    uas_dock1_tier: pd.Series | None = None,
+    uas_dock2_tier: pd.Series | None = None,
 ) -> OperatingModelResult:
     observations = build_observation_frame(
         power,
@@ -1049,6 +1151,8 @@ def fit_operating_model(
         lookback_days=lookback_days,
         events=events,
         uas_tier=uas_tier,
+        uas_dock1_tier=uas_dock1_tier,
+        uas_dock2_tier=uas_dock2_tier,
     )
     if observations.empty:
         raise ValueError("No APS/PDU observations are available for operating-state learning")
@@ -1299,6 +1403,8 @@ def fit_operating_model(
         if current_uas_tier is not None
         else None
     )
+    current_uas_pair_state = str(latest_row.get("uas_pair_state", "") or "")
+    current_uas_pair_consistent = bool(latest_row.get("uas_pair_consistent", False))
     current_cl61_state = (
         str(latest_row.get("cl61_state", "cl61"))
         if "CL61" in mode_kits(current_mode)
@@ -1414,6 +1520,34 @@ def fit_operating_model(
                     pd.Series(np.nan, index=observations.index),
                 ).to_numpy(dtype=np.float32),
             ),
+            "UASDock1Tier": (
+                ("time",),
+                observations.get(
+                    "uas_dock1_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
+            "UASDock2Tier": (
+                ("time",),
+                observations.get(
+                    "uas_dock2_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
+            "UASPairConsistent": (
+                ("time",),
+                observations.get(
+                    "uas_pair_consistent",
+                    pd.Series(False, index=observations.index),
+                ).to_numpy(dtype=np.uint8),
+            ),
+            "UASPairState": (
+                ("time",),
+                observations.get(
+                    "uas_pair_state",
+                    pd.Series("", index=observations.index),
+                ).astype(str).to_numpy(dtype=str),
+            ),
             "UASCanonicalTier": (
                 ("time",),
                 observations.get(
@@ -1487,6 +1621,8 @@ def fit_operating_model(
             ),
             "current_uas_charging": str(current_uas_charging).lower(),
             "current_uas_state": current_uas_state or "",
+            "current_uas_pair_state": current_uas_pair_state,
+            "current_uas_pair_consistent": str(current_uas_pair_consistent).lower(),
             "current_cl61_state": current_cl61_state,
             "learned_power_state_catalog": json.dumps(catalog, sort_keys=True),
             "learned_modes": json.dumps(list(learned_modes)),
@@ -1526,8 +1662,23 @@ def fit_operating_model(
         }
     )
     state_ds["UASEffectiveTier"].attrs["description"] = (
-        "raw effective tier reported by Menapia; Tier 11 and 12 remain visible here"
+        "raw shared tier retained only when Dock 1 and Dock 2 exactly agree; "
+        "Tier 11 and 12 remain visible here"
     )
+    for name, dock in (("UASDock1Tier", 1), ("UASDock2Tier", 2)):
+        state_ds[name].attrs.update(
+            {
+                "description": f"raw Menapia Dock {dock} tier",
+                "units": "tier",
+            }
+        )
+    state_ds["UASPairConsistent"].attrs.update(
+        {
+            "description": "Dock 1 and Dock 2 raw tier match exactly; only then single-tier learning is eligible",
+            "flag_values": "0, 1",
+        }
+    )
+    state_ds["UASPairState"].attrs["description"] = "raw dock-pair state used to exclude mixed pairs from single-tier learning"
     state_ds["UASCanonicalTier"].attrs.update(
         {
             "description": "canonical UAS operating tier after mapping 11 to 1 and 12 to 2",
@@ -1572,6 +1723,8 @@ def fit_operating_model(
         "current_uas_canonical_tier": current_uas_tier,
         "current_uas_charging": current_uas_charging,
         "current_uas_state": current_uas_state,
+        "current_uas_pair_state": current_uas_pair_state,
+        "current_uas_pair_consistent": current_uas_pair_consistent,
         "current_cl61_state": current_cl61_state,
         "learned_power_state_catalog": catalog,
         "last_observation_time_utc": latest_observation_time.isoformat(),
@@ -3928,6 +4081,10 @@ def build_operating_scenarios(
             "uas_charge_event_kit": UAS_CHARGE_EVENT_KIT,
             "uas_charge_estimated_increment_w": f"{UAS_CHARGE_ESTIMATE_W:g}",
             "uas_charge_estimated_duration_hours": f"{UAS_CHARGE_DURATION_HOURS:g}",
+            "uas_charge_planning_energy_wh": f"{UAS_CHARGE_PLANNING_ENERGY_WH:g}",
+            "uas_charge_prior_source": UAS_CHARGE_PRIOR_SOURCE,
+            "uas_charge_promotion_minimum_complete_episodes": str(UAS_CHARGE_RELIABLE_EPISODES),
+            "uas_charge_promotion_minimum_days": str(UAS_CHARGE_RELIABLE_DAYS),
             "scenario_base_mode": base_mode,
             "load_baseline_source": "finite_state_component_model_for_all_operational_scenarios",
             "load_state_contract": CONTROLLED_LOAD_CONTRACT,

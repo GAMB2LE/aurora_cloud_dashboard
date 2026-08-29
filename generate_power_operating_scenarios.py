@@ -597,11 +597,20 @@ def generate(
     try:
         events = load_operating_events(events_path)
         uas_result = load_uas_mqtt_log(uas_log, max_lines=0) if uas_log is not None else None
-        uas_tier = None
+        uas_dock1_tier = None
+        uas_dock2_tier = None
         if uas_result is not None and uas_result.records:
-            uas_tier = pd.Series(
-                [record.effective_tier for record in uas_result.records],
-                index=pd.DatetimeIndex([record.timestamp for record in uas_result.records]).tz_convert("UTC").tz_localize(None),
+            uas_times = pd.DatetimeIndex(
+                [record.timestamp for record in uas_result.records]
+            ).tz_convert("UTC").tz_localize(None)
+            uas_dock1_tier = pd.Series(
+                [record.dock1_tier for record in uas_result.records],
+                index=uas_times,
+                dtype=np.float64,
+            )
+            uas_dock2_tier = pd.Series(
+                [record.dock2_tier for record in uas_result.records],
+                index=uas_times,
                 dtype=np.float64,
             )
         model = fit_operating_model(
@@ -610,7 +619,8 @@ def generate(
             raw_state=state,
             lookback_days=lookback_days,
             events=events,
-            uas_tier=uas_tier,
+            uas_dock1_tier=uas_dock1_tier,
+            uas_dock2_tier=uas_dock2_tier,
         )
         scenarios = build_operating_scenarios(
             power,
@@ -632,6 +642,7 @@ def generate(
                 "uas_tier_log_path": str(uas_log or ""),
                 "uas_tier_record_count": str(len(uas_result.records) if uas_result is not None else 0),
                 "uas_tier_malformed_line_count": str(len(uas_result.malformed_lines) if uas_result is not None else 0),
+                "uas_tier_semantics": "dock1_tier,dock2_tier; mixed pairs excluded from single-tier learning",
                 **_planning_forecast_provenance(forecast),
             }
         )

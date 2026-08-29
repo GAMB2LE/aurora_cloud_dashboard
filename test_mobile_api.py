@@ -241,6 +241,42 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(uas.status_code, 200)
         self.assertEqual(uas.json()["latest"]["effectiveTier"], 3)
 
+    def test_power_candidate_endpoint_is_separate_and_explicitly_labelled(self) -> None:
+        expected = {
+            "environment": "development",
+            "authority": "candidate",
+            "status": "candidate",
+            "lane": "D_physical_solar_load_residual",
+            "comparison": [],
+        }
+        with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False), patch.object(
+            mobile_api.catalog,
+            "power_solar_evaluation",
+            return_value=expected,
+        ) as evaluation:
+            response = self.client.get(
+                "/power/solar-evaluation",
+                headers={"Authorization": "Bearer secret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["authority"], "candidate")
+        evaluation.assert_called_once_with(lane="D_physical_solar_load_residual")
+
+    def test_disabled_power_candidate_endpoint_is_not_found(self) -> None:
+        with patch.dict(os.environ, {"AURORA_MOBILE_API_TOKEN": "secret"}, clear=False), patch.object(
+            mobile_api.catalog,
+            "power_solar_evaluation",
+            side_effect=KeyError("Power candidate evaluation is disabled on this host"),
+        ):
+            response = self.client.get(
+                "/power/solar-evaluation",
+                headers={"Authorization": "Bearer secret"},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("/data/aurora", response.text)
+
     def test_uas_flight_listing_detail_and_safe_plot_media(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

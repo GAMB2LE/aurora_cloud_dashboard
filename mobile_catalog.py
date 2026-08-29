@@ -243,6 +243,18 @@ def power_prewarm_path(section: str) -> Path | None:
     return root / f"power_{section}_latest_interactive.json"
 
 
+def power_candidate_evaluation_root() -> Path:
+    """Return the isolated v12 root; callers must still pass the enable gate."""
+    return env_path(
+        "AURORA_POWER_V12_CANDIDATE_ROOT",
+        "/data/aurora/dev-products/power/candidates/v12",
+    )
+
+
+def power_candidate_evaluation_enabled() -> bool:
+    return os.environ.get("AURORA_POWER_CANDIDATE_API_ENABLED", "false").strip().lower() == "true"
+
+
 def _representative_power_indices(values, maximum: int = MOBILE_POWER_MAX_POINTS):
     """Keep endpoints and local extrema without overloading native Charts."""
     import numpy as np
@@ -1385,15 +1397,19 @@ def _powered_instrument_labels(states: dict[int, bool]) -> dict[str, str]:
 
 
 def _fresh_uas_tier_label() -> str | None:
-    """Return the latest effective UAS tier when its mirrored record is fresh."""
+    """Return a dock-aware UAS tier label when its mirrored record is fresh."""
     result = load_uas_mqtt_log(uas_mqtt_log_path(), max_lines=200)
     if not result.records:
         return None
     latest = result.records[-1]
     age_minutes = max((datetime.now(UTC) - latest.timestamp).total_seconds() / 60, 0)
-    if age_minutes > UAS_TIER_FRESHNESS_MINUTES or latest.effective_tier < 1:
+    if age_minutes > UAS_TIER_FRESHNESS_MINUTES:
         return None
-    return f"On (Tier {latest.effective_tier})"
+    if latest.shared_tier is not None and latest.shared_tier >= 1:
+        return f"On (both docks Tier {latest.shared_tier})"
+    if latest.dock1_tier < 1 and latest.dock2_tier < 1:
+        return None
+    return f"On (Dock 1 Tier {latest.dock1_tier}; Dock 2 Tier {latest.dock2_tier})"
 
 
 def _pdu_instrument_status(
@@ -1916,6 +1932,106 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     return payload
 
 
+def power_solar_evaluation(lane: str = "D_physical_solar_load_residual") -> dict[str, Any]:
+    """Return a clearly-labelled development-only v12 comparison payload.
+
+    This endpoint is intentionally separate from ``/power``: a mobile client
+    can never mistake a candidate trace for an operational power forecast,
+    including when it falls back from the production host to data-ocean.
+    """
+    allowed = {"B_physical_solar", "C_load_residual", "D_physical_solar_load_residual"}
+    if not power_candidate_evaluation_enabled():
+        raise KeyError("Power candidate evaluation is disabled on this host")
+    if lane not in allowed:
+        raise KeyError("Unsupported Power candidate lane")
+    root = power_candidate_evaluation_root()
+    status = read_json_file(root / "status.json")
+    if (
+        status.get("environment") != "development"
+        or status.get("authority") != "candidate"
+        or status.get("status") != "complete"
+    ):
+        raise KeyError("Power candidate evaluation is not available")
+    lane_status = status.get("lanes", {}).get(lane) if isinstance(status.get("lanes"), dict) else None
+    if not isinstance(lane_status, dict):
+        raise KeyError("Power candidate lane is not available")
+    signature = str(lane_status.get("publication_signature", ""))
+    lane_root = root / "lanes" / lane
+    summary = read_json_file(lane_root / "evaluation_summary.json")
+    pair_manifest: dict[str, Any] | None = None
+    pair_root = lane_root / "pairs"
+    if pair_root.exists():
+        for family in sorted(pair_root.iterdir(), reverse=True):
+            if not family.is_dir() or family.name.startswith("."):
+                continue
+            bundle = family / signature
+            candidate = read_json_file(bundle / "pair_manifest.json")
+            if candidate.get("pair_status") == "complete" and candidate.get("candidate_publication_signature") == signature:
+                pair_manifest = candidate
+                break
+    if pair_manifest is None:
+        raise KeyError("Power candidate pair is incomplete")
+    try:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        bundle = lane_root / "pairs" / str(pair_manifest["evaluation_pair_id"]) / signature
+        with xr.open_zarr(bundle / "baseline_forecast.zarr", chunks={}) as opened:
+            baseline = opened.load()
+        with xr.open_zarr(bundle / "candidate_forecast.zarr", chunks={}) as opened:
+            candidate = opened.load()
+        times = pd.DatetimeIndex(candidate["time"].values)
+
+        def values(product, name: str) -> np.ndarray:
+            if name not in product:
+                return np.full(len(times), np.nan)
+            return np.asarray(product[name].values, dtype=np.float64)
+
+        points = []
+        for index, moment in enumerate(times):
+            numeric_point = {
+                "baselineSOC": values(baseline, "BatterySOCForecast")[index],
+                "candidateSOC": values(candidate, "BatterySOCForecast")[index],
+                "baselineLoadWatts": values(baseline, "ForecastLoadWatts")[index],
+                "candidateLoadWatts": values(candidate, "ForecastLoadWatts")[index],
+                "baselineSolarWatts": values(baseline, "ForecastSolarWatts")[index],
+                "candidateSolarWatts": values(candidate, "ForecastSolarWatts")[index],
+            }
+            points.append({
+                "time": pd.Timestamp(moment).isoformat() + "Z",
+                **{
+                    name: (round(float(value), 5) if np.isfinite(value) else None)
+                    for name, value in numeric_point.items()
+                },
+            })
+        candidate_attrs = candidate.attrs
+    except Exception as exc:
+        # Do not disclose candidate filesystem layout through an API error.
+        raise KeyError("Power candidate comparison data is unavailable") from exc
+    return {
+        "environment": "development",
+        "authority": "candidate",
+        "status": "candidate",
+        "lane": lane,
+        "generatedAt": utc_now_iso(),
+        "baselineSignature": str(pair_manifest.get("baseline_publication_signature", "")),
+        "candidateSignature": signature,
+        "pairID": str(pair_manifest.get("evaluation_pair_id", "")),
+        "forecastSystemVersion": str(candidate_attrs.get("forecast_system_version", "")),
+        "forecastModelContractID": str(candidate_attrs.get("forecast_model_contract_id", "")),
+        "featureSetVersion": str(candidate_attrs.get("feature_set_version", "")),
+        "featureSetDigest": str(candidate_attrs.get("feature_set_digest", "")),
+        "sourceManifestDigest": str(candidate_attrs.get("source_manifest_digest", "")),
+        "sourceCycleSetID": str(candidate_attrs.get("source_cycle_set_id", "")),
+        "degradedModeCode": str(candidate_attrs.get("degraded_mode_code", "")),
+        "loadResidualStatus": str(candidate_attrs.get("load_residual_model_status", "")),
+        "promotionStatus": str(status.get("promotion_status", "")),
+        "evaluation": summary,
+        "comparison": points,
+    }
+
+
 def _forecast_panel_start(dataset, times, panel):
     """Return the first valid operational forecast time for a forecast-only panel."""
     import numpy as np
@@ -2074,6 +2190,10 @@ def uas(window: str = "24h") -> dict[str, Any]:
         "level": level,
         "latest": None if latest is None else {
             "timeUTC": latest.timestamp.isoformat().replace("+00:00", "Z"),
+            "dock1Tier": latest.dock1_tier,
+            "dock2Tier": latest.dock2_tier,
+            "sharedTier": latest.shared_tier,
+            "pairState": latest.dock_pair_state,
             "reportedTier": latest.reported_tier,
             "effectiveTier": latest.effective_tier,
             "eventType": latest.event_type,
@@ -2084,6 +2204,10 @@ def uas(window: str = "24h") -> dict[str, Any]:
         "records": [
             {
                 "timeUTC": record.timestamp.isoformat().replace("+00:00", "Z"),
+                "dock1Tier": record.dock1_tier,
+                "dock2Tier": record.dock2_tier,
+                "sharedTier": record.shared_tier,
+                "pairState": record.dock_pair_state,
                 "reportedTier": record.reported_tier,
                 "effectiveTier": record.effective_tier,
                 "eventType": record.event_type,

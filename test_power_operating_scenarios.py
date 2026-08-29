@@ -41,6 +41,9 @@ from power_state_catalog import (
     LEARNED_POWER_STATE_IDS,
     POWER_STATE_SCENARIO_IDS,
     UAS_CHARGE_DURATION_HOURS,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W,
     UAS_CHARGE_ESTIMATE_W,
     canonical_uas_tier,
     tier_is_learning_source,
@@ -148,7 +151,8 @@ class OperatingScenarioTests(unittest.TestCase):
         observations = build_observation_frame(
             power,
             pdu,
-            uas_tier=tiers,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
             lookback_days=2,
         )
 
@@ -156,6 +160,25 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertFalse(observations.loc[times[1], "uas_tier_learning_eligible"])
         self.assertFalse(observations.loc[times[2], "uas_tier_learning_eligible"])
         self.assertTrue(observations.loc[times[3], "uas_tier_learning_eligible"])
+
+    def test_mixed_uas_dock_pairs_are_never_single_tier_training_data(self) -> None:
+        power, pdu = _training_data()
+        times = pd.DatetimeIndex(power["time"].values)
+        dock1 = pd.Series(11.0, index=times)
+        dock2 = pd.Series(12.0, index=times)
+
+        observations = build_observation_frame(
+            power,
+            pdu,
+            uas_dock1_tier=dock1,
+            uas_dock2_tier=dock2,
+            lookback_days=2,
+        )
+
+        self.assertFalse(observations["uas_tier_learning_eligible"].any())
+        self.assertFalse(observations["uas_pair_consistent"].any())
+        self.assertTrue(observations["uas_effective_tier"].isna().all())
+        self.assertEqual(str(observations["uas_pair_state"].iloc[-1]), "dock1_11__dock2_12")
 
     def test_p50_continuation_holds_only_currently_on_controlled_instruments(self) -> None:
         times = pd.date_range("2026-08-09T00:00:00", periods=6, freq="1h")
@@ -845,7 +868,13 @@ class OperatingScenarioTests(unittest.TestCase):
         pdu["PDUOutlet8Watts"] = (("time",), np.full(power.sizes["time"], 230.0))
         pdu["PDUOutlet8State"] = (("time",), np.ones(power.sizes["time"]))
         tier = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
-        model = fit_operating_model(power, pdu, uas_tier=tier, lookback_days=2)
+        model = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tier,
+            uas_dock2_tier=tier,
+            lookback_days=2,
+        )
         issue = pd.Timestamp(power["time"].values[-1])
         deterministic, ensemble = _forecast_inputs(issue)
 
@@ -885,7 +914,13 @@ class OperatingScenarioTests(unittest.TestCase):
         pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
         tiers = pd.Series(raw_tiers, index=pd.DatetimeIndex(power["time"].values))
 
-        result = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        result = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
+            lookback_days=2,
+        )
 
         self.assertEqual(set(result.uas_tier_profiles), {"1", "2"})
         self.assertEqual(result.uas_tier_profiles["1"]["source_effective_tiers"], [11])
@@ -901,13 +936,19 @@ class OperatingScenarioTests(unittest.TestCase):
             np.where(raw_tiers == 11.0, 1.0, 2.0),
         )
 
-    def test_uas_charge_is_estimated_for_three_hours_then_returns_to_base_tier(self) -> None:
+    def test_uas_charge_uses_the_empirical_energy_prior_then_returns_to_base_tier(self) -> None:
         power, pdu = _training_data()
         sample_count = power.sizes["time"]
         pdu["PDUOutlet4Watts"] = (("time",), np.full(sample_count, 108.0))
         pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
         tiers = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
-        model = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        model = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
+            lookback_days=2,
+        )
         issue = pd.Timestamp(power["time"].values[-1])
         deterministic, ensemble = _forecast_inputs(issue)
 
@@ -924,17 +965,25 @@ class OperatingScenarioTests(unittest.TestCase):
             charging["ScenarioLoadP50Watts"].values
             - base["ScenarioLoadP50Watts"].values
         )
+        difference_p10 = (
+            charging["ScenarioLoadP10Watts"].values
+            - base["ScenarioLoadP10Watts"].values
+        )
+        difference_p90 = (
+            charging["ScenarioLoadP90Watts"].values
+            - base["ScenarioLoadP90Watts"].values
+        )
 
-        np.testing.assert_allclose(difference[:4], UAS_CHARGE_ESTIMATE_W)
-        np.testing.assert_allclose(difference[4:], 0.0)
-        np.testing.assert_array_equal(
-            charging["ScenarioUASCharging"].values[:5],
-            [1, 1, 1, 1, 0],
-        )
-        self.assertEqual(
-            pd.Timestamp(charging.time.values[3]) - pd.Timestamp(charging.time.values[0]),
-            pd.Timedelta(hours=UAS_CHARGE_DURATION_HOURS),
-        )
+        active = np.asarray(charging["ScenarioUASCharging"].values, dtype=bool)
+        self.assertTrue(active[0])
+        self.assertFalse(active[1:].any())
+        # The scenario stores finite-member quantiles, so discrete ranks are
+        # close to rather than identically equal to the empirical prior.
+        self.assertAlmostEqual(float(difference_p10[0]), UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W, delta=8.0)
+        self.assertAlmostEqual(float(difference[0]), UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W, delta=8.0)
+        self.assertAlmostEqual(float(difference_p90[0]), UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W, delta=8.0)
+        np.testing.assert_allclose(difference[~active], 0.0)
+        self.assertLess(UAS_CHARGE_DURATION_HOURS, 1.0)
         self.assertEqual(str(charging["scenario_mode_maturity"].item()), "estimated")
         self.assertEqual(
             str(charging["ScenarioPowerState"].isel(time=0).item()),
@@ -945,7 +994,7 @@ class OperatingScenarioTests(unittest.TestCase):
             "dc_uas__uas_tier_3",
         )
 
-    def test_explicit_charge_episode_replaces_the_estimate_after_learning(self) -> None:
+    def test_single_explicit_charge_episode_remains_provisional(self) -> None:
         power, pdu = _training_data()
         sample_count = power.sizes["time"]
         uas_watts = np.full(sample_count, 105.0)
@@ -962,18 +1011,20 @@ class OperatingScenarioTests(unittest.TestCase):
         result = fit_operating_model(
             power,
             pdu,
-            uas_tier=tiers,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
             events=events,
             lookback_days=2,
         )
         charge = result.uas_charge_profiles["3"]
 
-        self.assertEqual(charge["maturity"], "reliable")
+        self.assertEqual(charge["maturity"], "provisional")
         self.assertEqual(charge["episode_count"], 1.0)
         self.assertEqual(charge["observed_hours"], 3.0)
+        self.assertEqual(charge["observed_days"], 1.0)
         self.assertAlmostEqual(charge["increment_p50_w"], 300.0)
         self.assertAlmostEqual(charge["duration_p50_hours"], 3.0)
-        self.assertAlmostEqual(charge["duration_hours"], 3.0)
+        self.assertAlmostEqual(charge["duration_hours"], UAS_CHARGE_DURATION_HOURS)
 
     def test_provisional_uas_tier_profile_uses_conservative_fallback(self) -> None:
         members = _tier_profile_members(
@@ -1001,7 +1052,13 @@ class OperatingScenarioTests(unittest.TestCase):
         tier_values[18:20] = 2.0
         tiers = pd.Series(tier_values, index=pd.DatetimeIndex(power["time"].values))
 
-        result = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        result = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
+            lookback_days=2,
+        )
         tier3 = result.uas_tier_profiles["3"]
 
         self.assertEqual(tier3["episode_count"], 3.0)
