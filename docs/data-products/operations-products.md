@@ -122,7 +122,8 @@ alerts to `gamb2le@ncas.ac.uk` when operational thresholds are crossed.
 
 Alert rules:
 
-- any monitored storage filesystem reaches `80 %` used
+- any monitored storage filesystem reaches `80 %` used (`Attention` from
+  `80 %` to below `90 %`, escalating to `Action` at `90 %`)
 - mirror-verification telemetry is more than `30 minutes` old; stream source
   ages are withheld while that telemetry is stale
 - Aurora Power Supply battery state of charge is at or below the `40 %` operational minimum
@@ -136,8 +137,9 @@ Alert state and logs:
 - state: `/data/aurora/products/ops_monitor/alerts/state.json`
 - event log: `/data/aurora/products/ops_monitor/alerts/alerts.jsonl`
 
-The state file records active alerts, first-seen time, last-seen time, and last
-sent time so the system does not send an email every five minutes. Alerts send
+The state file records active alerts, their detail and severity, first-seen
+time, last-seen time, and last sent time so the system does not send an email
+every five minutes. Alerts send
 when they first become active after any hold period, repeat every `12 h` while
 still active, and send a recovery email after a previously emailed alert clears.
 

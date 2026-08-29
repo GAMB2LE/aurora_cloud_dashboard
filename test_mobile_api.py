@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+import send_ops_alerts
+
 try:
     from fastapi.testclient import TestClient
     import mobile_api
@@ -165,6 +167,61 @@ class MobileAPITests(unittest.TestCase):
         self.assertEqual(body["alerts"][0]["title"], "Storage high")
         ceilometer = next(stream for stream in body["streamStates"] if stream["id"] == "ceilometer")
         self.assertEqual(ceilometer["level"], "red")
+
+    def test_operations_endpoint_preserves_storage_alert_detail_and_severity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "latest.json"
+            health = root / "latest_health.json"
+            archive = root / "archive_health.json"
+            alerts = root / "state.json"
+            alert_log = root / "alerts.jsonl"
+            snapshot_data = {
+                "time_utc": "2026-08-29T08:00:00Z",
+                "aurora_root_used_pct": 80.0,
+                "aurora_root_free_gb": 19.5,
+                "aurora_root_resolved_path": "/",
+            }
+            snapshot.write_text(json.dumps(snapshot_data), encoding="utf-8")
+            health.write_text(json.dumps({"overall_level": "green"}), encoding="utf-8")
+            archive.write_text("{}", encoding="utf-8")
+
+            with patch.object(send_ops_alerts, "_recent_pdu_outlet_states", return_value=None), patch.object(
+                send_ops_alerts, "_transport_configured", return_value=False
+            ):
+                send_ops_alerts.process_alerts(
+                    snapshot_data,
+                    state_path=alerts,
+                    log_path=alert_log,
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "AURORA_MOBILE_API_TOKEN": "secret",
+                    "OPS_MONITOR_LATEST_SNAPSHOT": str(snapshot),
+                    "OPS_MONITOR_LATEST_HEALTH": str(health),
+                    "ARCHIVE_HEALTH_PATH": str(archive),
+                    "OPS_MONITOR_ALERT_STATE": str(alerts),
+                },
+                clear=False,
+            ):
+                response = self.client.get(
+                    "/operations", headers={"Authorization": "Bearer secret"}
+                )
+
+        self.assertEqual(response.status_code, 200)
+        storage_alert = next(
+            alert
+            for alert in response.json()["alerts"]
+            if alert["id"] == "storage:aurora_root"
+        )
+        self.assertEqual(storage_alert["level"], "amber")
+        self.assertEqual(storage_alert["title"], "AURORA Cloud root disk storage at 80.0%")
+        self.assertEqual(
+            storage_alert["detail"],
+            "AURORA Cloud root disk is using 80.0% of capacity, free=19.5 GB. Path: /.",
+        )
 
     def test_overview_and_uas_endpoints_require_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
