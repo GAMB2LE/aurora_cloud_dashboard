@@ -1,4 +1,8 @@
-from send_ops_alerts import evaluate_alerts
+import json
+from datetime import timedelta
+from unittest.mock import patch
+
+from send_ops_alerts import evaluate_alerts, process_alerts
 
 
 def _ids(snapshot):
@@ -149,3 +153,63 @@ def test_storage_alerts_deduplicate_shared_remote_filesystem():
 
     assert [alert.id for alert in storage] == ["storage:host_ass_data"]
     assert storage[0].title == "ASS shared data disk storage at 86.0%"
+
+
+def test_storage_alert_severity_escalates_at_90_percent():
+    below_threshold = evaluate_alerts({"aurora_root_used_pct": 79.9})
+    attention = evaluate_alerts({"aurora_root_used_pct": 80.0})
+    still_attention = evaluate_alerts({"aurora_root_used_pct": 89.9})
+    action = evaluate_alerts({"aurora_root_used_pct": 90.0})
+
+    assert not [alert for alert in below_threshold if alert.id == "storage:aurora_root"]
+    assert next(alert for alert in attention if alert.id == "storage:aurora_root").level == "amber"
+    assert next(alert for alert in still_attention if alert.id == "storage:aurora_root").level == "amber"
+    assert next(alert for alert in action if alert.id == "storage:aurora_root").level == "red"
+
+
+def test_storage_alert_context_and_severity_survive_state_round_trip(tmp_path):
+    state_path = tmp_path / "state.json"
+    log_path = tmp_path / "alerts.jsonl"
+    first_snapshot = {
+        "time_utc": "2026-08-29T08:00:00Z",
+        "aurora_root_used_pct": 80.0,
+        "aurora_root_free_gb": 19.5,
+        "aurora_root_resolved_path": "/",
+    }
+    escalated_snapshot = {
+        **first_snapshot,
+        "time_utc": "2026-08-29T08:05:00Z",
+        "aurora_root_used_pct": 92.0,
+        "aurora_root_free_gb": 7.5,
+    }
+
+    with patch("send_ops_alerts._recent_pdu_outlet_states", return_value=None), patch(
+        "send_ops_alerts._transport_configured", return_value=False
+    ):
+        process_alerts(first_snapshot, state_path=state_path, log_path=log_path)
+        first_state = json.loads(state_path.read_text(encoding="utf-8"))
+        process_alerts(
+            escalated_snapshot,
+            state_path=state_path,
+            log_path=log_path,
+            repeat_after=timedelta(hours=12),
+        )
+
+    first_entry = first_state["alerts"]["storage:aurora_root"]
+    assert first_entry["level"] == "amber"
+    assert first_entry["message"] == (
+        "AURORA Cloud root disk is using 80.0% of capacity, free=19.5 GB. Path: /."
+    )
+    assert first_entry["threshold"] == ">= 80%"
+
+    persisted_entry = json.loads(state_path.read_text(encoding="utf-8"))["alerts"][
+        "storage:aurora_root"
+    ]
+    assert persisted_entry["active"] is True
+    assert persisted_entry["first_seen_utc"] == "2026-08-29T08:00:00Z"
+    assert persisted_entry["last_seen_utc"] == "2026-08-29T08:05:00Z"
+    assert persisted_entry["last_value"] == 92.0
+    assert persisted_entry["level"] == "red"
+    assert persisted_entry["message"] == (
+        "AURORA Cloud root disk is using 92.0% of capacity, free=7.50 GB. Path: /."
+    )

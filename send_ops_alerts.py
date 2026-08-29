@@ -29,6 +29,7 @@ FROM_DEFAULT = f"aurora-ops@{socket.gethostname() or 'localhost'}"
 DASHBOARD_URL_DEFAULT = "https://data.gamb2le.co.uk/app?tab=operations"
 
 STORAGE_THRESHOLD_PCT = 80.0
+STORAGE_ACTION_THRESHOLD_PCT = 90.0
 MIRROR_SUMMARY_THRESHOLD_MINUTES = 30.0
 BATTERY_SOC_THRESHOLD_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 INTERNAL_TEMP_THRESHOLD_C = 45.0
@@ -102,6 +103,7 @@ class AlertRule:
     message: str
     value: float | str
     threshold: str
+    level: str = "red"
     hold_minutes: float = 0.0
 
 
@@ -218,6 +220,7 @@ def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bo
             message=f"{label} is using {_fmt_value(value, '%')} of capacity{free_detail}. Path: {path or 'unknown'}.",
             value=value,
             threshold=f">= {STORAGE_THRESHOLD_PCT:.0f}%",
+            level="red" if value >= STORAGE_ACTION_THRESHOLD_PCT else "amber",
         )
         current = storage_alerts.get(storage_key)
         if current is None or prefix == "host_ass_data":
@@ -563,6 +566,8 @@ def process_alerts(
             {
                 "active": True,
                 "title": rule.title,
+                "message": rule.message,
+                "level": rule.level,
                 "threshold": rule.threshold,
                 "last_seen_utc": _iso(now),
                 "last_value": rule.value,
