@@ -20,7 +20,10 @@ provisional until a surveyed bill of materials and uncurtailed MPPT evidence are
 available.
 
 The load lane fits a regularised residual only from forecast issues and observed
-load available before the candidate issue time.  It needs at least 48 valid
+load available before the candidate issue time.  Candidate execution reads only
+the issue-time-safe 21-day APS/PDU history needed by the seven/fourteen-day
+calibration and verification windows; it never materialises the whole mirrored
+power store.  It needs at least 48 valid
 samples, three independent cycles and three UTC days; otherwise it emits a zero
 correction with an `insufficient_issue_time_evidence` status.  Corrections are
 shrunk and clipped to 500 W, so it cannot silently replace the finite-state

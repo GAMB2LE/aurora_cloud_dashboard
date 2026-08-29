@@ -49,6 +49,7 @@ from power_v12_hybrid import (
     stable_json_digest,
     utc_now_iso,
     v12_forecast_identity,
+    V12_POWER_HISTORY_DAYS,
 )
 
 
@@ -75,6 +76,15 @@ LANE_PHYSICAL_SOLAR = "B_physical_solar"
 LANE_LOAD_RESIDUAL = "C_load_residual"
 LANE_HYBRID = "D_physical_solar_load_residual"
 LANES = (LANE_PHYSICAL_SOLAR, LANE_LOAD_RESIDUAL, LANE_HYBRID)
+POWER_HISTORY_FIELDS = (
+    "BatterySOC",
+    "SolarWatts_East",
+    "SolarWatts_South",
+    "SolarWatts_West",
+    "BatteryWatts",
+    "ACOutputWatts",
+    "DCInverterWatts",
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -178,6 +188,7 @@ def _source_manifest(
     issue_time: pd.Timestamp,
     physical_config_digest: str,
     physical_contract_id: str,
+    power_history_days: float,
 ) -> tuple[dict[str, object], str, str]:
     cycle = str(baseline_attrs.get("ecmwf_cycle_time", ""))
     provider = str(
@@ -202,6 +213,7 @@ def _source_manifest(
         "site_longitude": str(baseline_attrs.get("site_longitude", "")),
         "forecast_horizon_hours": str(baseline_attrs.get("forecast_horizon_hours", "")),
         "observation_cutoff": issue_time.isoformat(),
+        "input_power_history_days": float(power_history_days),
     }
     return manifest, stable_json_digest(manifest), source_cycle_set
 
@@ -413,6 +425,7 @@ def run_candidate(
         issue_time=issue_time,
         physical_config_digest=config_digest,
         physical_contract_id=physical_contract,
+        power_history_days=V12_POWER_HISTORY_DAYS,
     )
     _write_immutable_manifest(candidate_root, source_manifest, source_manifest_digest)
     try:
@@ -420,8 +433,14 @@ def run_candidate(
     except ValueError:
         provider = "legacy"
     reference_archive = _baseline_archive_before(baseline_archive_zarr, issue_time)
+    history_start = issue_time - pd.Timedelta(days=V12_POWER_HISTORY_DAYS)
     with xr.open_zarr(power_zarr, chunks={}) as opened:
-        power_for_fit = opened.sel(time=slice(None, issue_time.to_datetime64())).load()
+        fields = [name for name in POWER_HISTORY_FIELDS if name in opened]
+        if "BatterySOC" not in fields:
+            raise ValueError("Power input is missing BatterySOC for candidate load/evidence features")
+        power_for_fit = opened[fields].sel(
+            time=slice(history_start.to_datetime64(), issue_time.to_datetime64())
+        ).load()
     residual = fit_bounded_load_residual(
         reference_archive,
         power_for_fit,
@@ -456,6 +475,7 @@ def run_candidate(
             physical_config_digest=config_digest,
             load_residual=residual if load_profile is not None else None,
             code_revision=_code_revision(),
+            power_history_days=V12_POWER_HISTORY_DAYS,
         )
         output = generate(
             power_zarr=power_zarr,
@@ -476,6 +496,7 @@ def run_candidate(
             solar_model=solar_model,
             physical_solar_config_path=physical_config,
             power_cutoff_time=issue_time,
+            power_history_days=V12_POWER_HISTORY_DAYS,
             evaluation_pair_id=pair_id,
             input_snapshot_id=f"sha256:{input_digest}",
             expected_input_sha256=input_digest,
@@ -536,6 +557,7 @@ def run_candidate(
         "source_cycle_set_id": source_cycle_set_id,
         "input_snapshot_id": f"sha256:{input_digest}",
         "training_cutoff_utc": issue_time.isoformat(),
+        "input_power_history_days": V12_POWER_HISTORY_DAYS,
         "load_residual": {
             "status": residual.status,
             "contract_id": residual.contract_id,

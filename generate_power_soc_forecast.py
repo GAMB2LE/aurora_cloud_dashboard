@@ -3357,6 +3357,7 @@ def generate(
     solar_model: str = DEFAULT_SOLAR_MODEL,
     physical_solar_config_path: Path = DEFAULT_PHYSICAL_SOLAR_CONFIG_PATH,
     power_cutoff_time: pd.Timestamp | str | None = None,
+    power_history_days: float | None = None,
     evaluation_pair_id: str | None = None,
     input_snapshot_id: str | None = None,
     expected_input_sha256: str | None = None,
@@ -3432,11 +3433,29 @@ def generate(
             )
     power = xr.open_zarr(power_zarr, chunks={})
     selected_power_cutoff: pd.Timestamp | None = None
+    selected_power_history_days: float | None = None
+    selected_power_start: pd.Timestamp | None = None
     if power_cutoff_time is not None:
         selected_power_cutoff = pd.Timestamp(power_cutoff_time)
         if selected_power_cutoff.tz is not None:
             selected_power_cutoff = selected_power_cutoff.tz_convert("UTC").tz_localize(None)
-        power = power.sel(time=slice(None, selected_power_cutoff.to_datetime64()))
+    if power_history_days is not None:
+        try:
+            selected_power_history_days = float(power_history_days)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("power_history_days must be a positive finite number") from exc
+        if not np.isfinite(selected_power_history_days) or selected_power_history_days <= 0.0:
+            raise ValueError("power_history_days must be a positive finite number")
+        if selected_power_cutoff is None:
+            raise ValueError("power_history_days requires an explicit power_cutoff_time")
+        selected_power_start = selected_power_cutoff - pd.Timedelta(days=selected_power_history_days)
+    if selected_power_cutoff is not None:
+        power = power.sel(
+            time=slice(
+                selected_power_start.to_datetime64() if selected_power_start is not None else None,
+                selected_power_cutoff.to_datetime64(),
+            )
+        )
         if power.sizes.get("time", 0) == 0:
             raise ValueError(f"No APS power data exist at or before paired cutoff {selected_power_cutoff}")
     latest_power_time, _ = validate_power_input_freshness(
@@ -3448,7 +3467,14 @@ def generate(
         try:
             pdu = xr.open_zarr(pdu_zarr, chunks={})
             if selected_power_cutoff is not None and "time" in pdu.coords:
-                pdu = pdu.sel(time=slice(None, selected_power_cutoff.to_datetime64()))
+                pdu = pdu.sel(
+                    time=slice(
+                        selected_power_start.to_datetime64()
+                        if selected_power_start is not None
+                        else None,
+                        selected_power_cutoff.to_datetime64(),
+                    )
+                )
         except Exception:
             pdu = None
     provider_result = open_provider_solar_forecast(
@@ -3508,6 +3534,11 @@ def generate(
     forecast.attrs["refresh_from_cache"] = str(bool(refresh_from_cache)).lower()
     forecast.attrs["power_input_cutoff_time"] = (
         selected_power_cutoff.isoformat() if selected_power_cutoff is not None else "latest_available"
+    )
+    forecast.attrs["power_input_history_days"] = (
+        f"{selected_power_history_days:.6g}"
+        if selected_power_history_days is not None
+        else "full_available_history"
     )
     forecast.attrs["evaluation_pair_id"] = str(evaluation_pair_id or "")
     forecast.attrs["input_snapshot_id"] = str(input_snapshot_id or "")

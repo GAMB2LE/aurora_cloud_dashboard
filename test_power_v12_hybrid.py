@@ -208,6 +208,7 @@ class HybridCandidateTests(unittest.TestCase):
             self.assertEqual(review["status"], "pending_campaign_review")
             with xr.open_zarr(results["D_physical_solar_load_residual"], chunks={}) as candidate:
                 self.assertEqual(candidate.attrs["forecast_system_version"], "power-v12-hybrid-candidate")
+                self.assertEqual(candidate.attrs["power_input_history_days"], "21")
                 pair_id = candidate.attrs["evaluation_pair_id"]
                 signature = candidate.attrs["publication_signature"]
             manifest_path = (

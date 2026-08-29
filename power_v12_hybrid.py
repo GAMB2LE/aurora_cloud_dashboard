@@ -22,7 +22,8 @@ import xarray as xr
 
 
 V12_FORECAST_SYSTEM_VERSION = "power-v12-hybrid-candidate"
-V12_FEATURE_SET_VERSION = "issue_safe_physical_pv_bounded_load_residual_v1"
+V12_FEATURE_SET_VERSION = "issue_safe_physical_pv_bounded_load_residual_v2"
+V12_POWER_HISTORY_DAYS = 21.0
 LOAD_RESIDUAL_MODEL_NAME = "bounded_ridge_load_residual_v1"
 LOAD_RESIDUAL_MIN_SAMPLES = 48
 LOAD_RESIDUAL_MIN_CYCLES = 3
@@ -309,6 +310,7 @@ def v12_feature_digest(
     *,
     physical_config_digest: str,
     load_residual_contract_id: str,
+    power_history_days: float = V12_POWER_HISTORY_DAYS,
 ) -> str:
     return stable_json_digest(
         {
@@ -316,6 +318,7 @@ def v12_feature_digest(
             "feature_set_version": V12_FEATURE_SET_VERSION,
             "physical_config_digest": str(physical_config_digest),
             "load_residual_contract_id": str(load_residual_contract_id),
+            "power_history_days": float(power_history_days),
         }
     )
 
@@ -329,6 +332,7 @@ def v12_forecast_identity(
     physical_config_digest: str,
     load_residual: LoadResidualFit | None,
     code_revision: str,
+    power_history_days: float = V12_POWER_HISTORY_DAYS,
 ) -> dict[str, str]:
     residual = load_residual or LoadResidualFit(
         "not_requested",
@@ -354,6 +358,7 @@ def v12_forecast_identity(
         "feature_set_digest": v12_feature_digest(
             physical_config_digest=physical_config_digest,
             load_residual_contract_id=residual.contract_id,
+            power_history_days=power_history_days,
         ),
         "training_cutoff_utc": _as_utc_naive(issue_time).isoformat(),
         "forecast_code_revision": str(code_revision),
