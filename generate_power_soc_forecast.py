@@ -2757,20 +2757,28 @@ def _apply_candidate_load_residual(
     profile: ControlledLoadProfile,
     times: pd.DatetimeIndex,
     residual: Mapping[str, object] | None,
+    *,
+    physical_floor_w: float = 0.0,
+    physical_floor_source: str = "unavailable",
 ) -> tuple[ControlledLoadProfile, dict[str, object]]:
     """Apply bounded residual quantiles without changing state/phase semantics."""
+    floor = float(physical_floor_w)
+    if not np.isfinite(floor) or floor < 0.0:
+        floor = 0.0
     if residual is None:
         return profile, {
             "load_residual_model_status": "not_requested",
             "load_residual_model_contract_id": "",
             "load_residual_training_samples": 0,
+            "load_residual_physical_floor_w": floor,
+            "load_residual_physical_floor_source": str(physical_floor_source),
         }
     p10_correction = _candidate_residual_series(residual, "p10_correction_w", times)
     p50_correction = _candidate_residual_series(residual, "p50_correction_w", times)
     p90_correction = _candidate_residual_series(residual, "p90_correction_w", times)
-    p10 = np.maximum(np.asarray(profile.p10_w, dtype=np.float64) + p10_correction, 0.0)
-    p50 = np.maximum(np.asarray(profile.p50_w, dtype=np.float64) + p50_correction, 0.0)
-    p90 = np.maximum(np.asarray(profile.p90_w, dtype=np.float64) + p90_correction, 0.0)
+    p10 = np.maximum(np.asarray(profile.p10_w, dtype=np.float64) + p10_correction, floor)
+    p50 = np.maximum(np.asarray(profile.p50_w, dtype=np.float64) + p50_correction, floor)
+    p90 = np.maximum(np.asarray(profile.p90_w, dtype=np.float64) + p90_correction, floor)
     p10 = np.minimum(p10, p50)
     p90 = np.maximum(p90, p50)
     diagnostics = {
@@ -2781,6 +2789,8 @@ def _apply_candidate_load_residual(
         "load_residual_training_days": int(residual.get("training_days", 0) or 0),
         "load_residual_bound_w": float(residual.get("bound_w", np.nan)),
         "load_residual_selection": _normalise_identity_text(residual.get("selection", "")),
+        "load_residual_physical_floor_w": floor,
+        "load_residual_physical_floor_source": str(physical_floor_source),
     }
     return (
         ControlledLoadProfile(
@@ -3019,10 +3029,27 @@ def build_forecast_dataset(
         pd.DatetimeIndex(raw_load_profile.index),
         controlled_load,
     )
+    residual_floor_w = 0.0
+    residual_floor_source = "unavailable"
+    if clean_dc_only_level_w is not None and np.isfinite(clean_dc_only_level_w) and clean_dc_only_level_w > 0.0:
+        residual_floor_w = float(clean_dc_only_level_w)
+        residual_floor_source = "fresh_clean_dark_measurement"
+    else:
+        dc_only_entry = load_mode_registry.get("DC-Only", {})
+        try:
+            registry_floor_w = float(dc_only_entry.get("learned_level_w", np.nan))
+        except (TypeError, ValueError):
+            registry_floor_w = np.nan
+        registry_count = int(dc_only_entry.get("observation_count", 0) or 0)
+        if np.isfinite(registry_floor_w) and registry_floor_w > 0.0 and registry_count >= DEFAULT_MODE_MIN_OBSERVATIONS:
+            residual_floor_w = registry_floor_w
+            residual_floor_source = "dc_only_state_registry"
     controlled_profile, load_residual_diagnostics = _apply_candidate_load_residual(
         unadjusted_controlled_profile,
         pd.DatetimeIndex(raw_load_profile.index),
         load_residual_profile,
+        physical_floor_w=residual_floor_w,
+        physical_floor_source=residual_floor_source,
     )
     load_w = float(controlled_profile.p50_w[0])
     load_anchor_disagreement_w = float(load_w - raw_load_w)
@@ -3262,6 +3289,10 @@ def build_forecast_dataset(
             "load_residual_training_days": str(int(load_diagnostics.get("load_residual_training_days", 0))),
             "load_residual_bound_w": f"{float(load_diagnostics.get('load_residual_bound_w', np.nan)):.6g}",
             "load_residual_selection": str(load_diagnostics.get("load_residual_selection", "")),
+            "load_residual_physical_floor_w": f"{float(load_diagnostics.get('load_residual_physical_floor_w', 0.0)):.6g}",
+            "load_residual_physical_floor_source": str(
+                load_diagnostics.get("load_residual_physical_floor_source", "unavailable")
+            ),
             "load_component_estimate_w": f"{float(load_diagnostics.get('load_component_estimate_w', np.nan)):.6g}",
             "load_anchor_disagreement_w": f"{float(load_diagnostics.get('load_anchor_disagreement_w', np.nan)):.6g}",
             "load_learned_reference_w": f"{float(load_diagnostics.get('load_learned_reference_w', np.nan)):.6g}",

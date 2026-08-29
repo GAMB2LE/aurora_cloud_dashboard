@@ -22,7 +22,7 @@ import xarray as xr
 
 
 V12_FORECAST_SYSTEM_VERSION = "power-v12-hybrid-candidate"
-V12_FEATURE_SET_VERSION = "issue_safe_physical_pv_bounded_load_residual_v2"
+V12_FEATURE_SET_VERSION = "issue_safe_physical_pv_bounded_load_residual_v3"
 V12_POWER_HISTORY_DAYS = 21.0
 LOAD_RESIDUAL_MODEL_NAME = "bounded_ridge_load_residual_v1"
 LOAD_RESIDUAL_MIN_SAMPLES = 48

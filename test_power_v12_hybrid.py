@@ -13,12 +13,14 @@ import xarray as xr
 
 from ecmwf_forecast_provider import ForecastProviderResult
 from generate_power_soc_forecast import (
+    _apply_candidate_load_residual,
     _archive_row_from_forecast,
     _filter_active_forecast_contract,
     apply_forecast_identity,
     generate,
 )
 from generate_power_soc_v12_candidate import run_candidate
+from power_load_dynamics import ControlledLoadProfile
 from power_v12_hybrid import fit_bounded_load_residual
 
 
@@ -55,6 +57,40 @@ def _archive_with_load_history() -> xr.Dataset:
 
 
 class HybridCandidateTests(unittest.TestCase):
+    def test_load_residual_cannot_erase_observed_dc_core_floor(self) -> None:
+        times = pd.date_range("2026-06-01", periods=3, freq="1h")
+        profile = ControlledLoadProfile(
+            np.asarray([280.0, 300.0, 320.0]),
+            np.asarray([300.0, 320.0, 340.0]),
+            np.asarray([340.0, 360.0, 380.0]),
+            np.zeros(3, dtype=np.int8),
+            "test",
+        )
+        residual = {
+            "status": "active",
+            "contract_id": "test-contract",
+            "p10_correction_w": pd.Series([-500.0] * 3, index=times),
+            "p50_correction_w": pd.Series([-500.0] * 3, index=times),
+            "p90_correction_w": pd.Series([-500.0] * 3, index=times),
+            "training_samples": 48,
+            "training_cycles": 3,
+            "training_days": 3,
+            "bound_w": 500.0,
+            "selection": "test",
+        }
+        adjusted, diagnostics = _apply_candidate_load_residual(
+            profile,
+            times,
+            residual,
+            physical_floor_w=244.0,
+            physical_floor_source="dc_only_state_registry",
+        )
+        np.testing.assert_array_equal(adjusted.p10_w, np.full(3, 244.0))
+        np.testing.assert_array_equal(adjusted.p50_w, np.full(3, 244.0))
+        np.testing.assert_array_equal(adjusted.p90_w, np.full(3, 244.0))
+        self.assertEqual(diagnostics["load_residual_physical_floor_w"], 244.0)
+        self.assertEqual(diagnostics["load_residual_physical_floor_source"], "dc_only_state_registry")
+
     def test_load_residual_excludes_future_issue_and_observation_rows(self) -> None:
         archive = _archive_with_load_history()
         times = pd.date_range("2026-06-01", periods=5 * 24, freq="1h")

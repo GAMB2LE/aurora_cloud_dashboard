@@ -26,7 +26,9 @@ calibration and verification windows; it never materialises the whole mirrored
 power store.  It needs at least 48 valid
 samples, three independent cycles and three UTC days; otherwise it emits a zero
 correction with an `insufficient_issue_time_evidence` status.  Corrections are
-shrunk and clipped to 500 W, so it cannot silently replace the finite-state
+shrunk and clipped to 500 W, and cannot reduce the forecast below a measured
+or state-registry DC-only core-load floor.  This keeps a residual from erasing
+the station's always-on electrical demand while preserving the finite-state
 load model.
 
 ## Isolation and provenance
@@ -73,7 +75,8 @@ their absence prevents acceptance rather than being hidden in an aggregate.
 ## Development and iOS exposure
 
 `aurora-power-v12-candidate.timer` is development-only, installed disabled, and
-resource-limited to 25% CPU and 1 GiB.  It defers when the wider AURORA
+resource-limited to 25% CPU, 1 GiB soft memory and 1.5 GiB hard memory.  It
+defers when the wider AURORA
 model-evaluation service is active.  The mobile API exposes an additive,
 read-only `/power/solar-evaluation` endpoint only when the development
 candidate feature is enabled.  The iOS Development scheme is pinned to
