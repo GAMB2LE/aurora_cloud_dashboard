@@ -13,9 +13,7 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -450,6 +448,10 @@ def run_candidate(
     )
     seed_state = _baseline_seed_state(attrs)
     fixed_bias = _fixed_bias_from_baseline(attrs)
+    baseline_legacy_solar_w = pd.Series(
+        np.asarray(baseline["ForecastSolarWatts"].values, dtype=np.float64),
+        index=pd.DatetimeIndex(baseline["time"].values),
+    )
     results: dict[str, Path] = {}
     lane_signatures: dict[str, str] = {}
     lane_summaries: dict[str, dict[str, object]] = {}
@@ -507,6 +509,11 @@ def run_candidate(
             load_residual_profile=load_profile,
             reference_forecast_archive=reference_archive,
             fixed_soc_bias_corrections_override=fixed_bias,
+            fixed_legacy_solar_w=(
+                baseline_legacy_solar_w
+                if solar_model == LEGACY_SOLAR_MODEL_NAME
+                else None
+            ),
         )
         with xr.open_zarr(output, chunks={}) as opened:
             candidate = opened.load()

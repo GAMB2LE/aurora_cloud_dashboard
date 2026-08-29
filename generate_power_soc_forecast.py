@@ -2426,6 +2426,7 @@ def integrate_soc_forecast(
     irradiance: pd.Series,
     solar_factor: float | pd.Series,
     load_w: float | pd.Series,
+    fixed_solar_w: pd.Series | None = None,
     capacity_kwh: float = DEFAULT_BATTERY_CAPACITY_KWH,
     battery_model: BatteryModel | None = None,
 ) -> pd.DataFrame:
@@ -2434,12 +2435,34 @@ def integrate_soc_forecast(
         return pd.DataFrame()
     forecast_times = pd.DatetimeIndex(irradiance.index)
     forecast_irradiance = irradiance.to_numpy(dtype=np.float64)
-    if isinstance(solar_factor, pd.Series):
-        factors = solar_factor.reindex(forecast_times, method="nearest", tolerance=pd.Timedelta(hours=2))
-        factors = factors.ffill().bfill().fillna(DEFAULT_SOLAR_CALIBRATION_FACTOR).to_numpy(dtype=np.float64)
+    if fixed_solar_w is not None:
+        fixed = pd.Series(fixed_solar_w, copy=True)
+        fixed.index = pd.DatetimeIndex(fixed.index)
+        if fixed.index.tz is not None:
+            fixed.index = fixed.index.tz_convert("UTC").tz_localize(None)
+        fixed = fixed[~fixed.index.duplicated(keep="last")].sort_index()
+        matched = fixed.reindex(forecast_times)
+        # A leading initial-SOC anchor has no interval solar forcing by
+        # convention. Every actual forecast endpoint must be supplied exactly;
+        # nearest-neighbour matching would silently break a paired ablation.
+        missing = matched.isna()
+        if missing.any():
+            allowed_anchor = (
+                initial_time is not None
+                and len(matched) > 0
+                and bool(missing.iloc[0])
+                and pd.Timestamp(forecast_times[0]) == pd.Timestamp(initial_time)
+            )
+            if not allowed_anchor or int(missing.sum()) != 1:
+                raise ValueError("fixed_solar_w must cover every forecast interval endpoint")
+        forecast_solar_w = np.clip(matched.to_numpy(dtype=np.float64), 0.0, None)
     else:
-        factors = np.full(len(forecast_times), float(solar_factor), dtype=np.float64)
-    forecast_solar_w = np.clip(forecast_irradiance * factors, 0.0, None)
+        if isinstance(solar_factor, pd.Series):
+            factors = solar_factor.reindex(forecast_times, method="nearest", tolerance=pd.Timedelta(hours=2))
+            factors = factors.ffill().bfill().fillna(DEFAULT_SOLAR_CALIBRATION_FACTOR).to_numpy(dtype=np.float64)
+        else:
+            factors = np.full(len(forecast_times), float(solar_factor), dtype=np.float64)
+        forecast_solar_w = np.clip(forecast_irradiance * factors, 0.0, None)
     if initial_time is not None:
         initial_time = pd.Timestamp(initial_time)
         if initial_time.tz is not None:
@@ -2789,8 +2812,11 @@ def build_forecast_dataset(
     longitude: float = DEFAULT_LONGITUDE,
     fixed_soc_bias_corrections: dict[str, float] | None = None,
     load_residual_profile: Mapping[str, object] | None = None,
+    fixed_legacy_solar_w: pd.Series | None = None,
 ) -> xr.Dataset:
     selected_solar_model = validate_solar_model(solar_model)
+    if fixed_legacy_solar_w is not None and selected_solar_model != LEGACY_SOLAR_MODEL_NAME:
+        raise ValueError("fixed_legacy_solar_w is valid only with the legacy solar model")
     frame = _power_frame(power)
     if frame.empty or "BatterySOC" not in frame:
         raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
@@ -3038,6 +3064,7 @@ def build_forecast_dataset(
             irradiance=irradiance,
             solar_factor=solar_factor_profile,
             load_w=load_profile,
+            fixed_solar_w=fixed_legacy_solar_w,
             capacity_kwh=battery_model.usable_capacity_kwh,
             battery_model=battery_model,
         )
@@ -3075,6 +3102,7 @@ def build_forecast_dataset(
                 irradiance=irradiance,
                 solar_factor=solar_factor_profile,
                 load_w=float(scenario_load_w),
+                fixed_solar_w=fixed_legacy_solar_w,
                 capacity_kwh=battery_model.usable_capacity_kwh,
                 battery_model=battery_model,
             )
@@ -3173,7 +3201,16 @@ def build_forecast_dataset(
             "solar_calibration": (
                 "fixed provisional physical configuration; residual calibration disabled until uncurtailed MPPT samples exist"
                 if physical_candidate
+                else "replayed baseline legacy solar trace for paired load ablation"
+                if fixed_legacy_solar_w is not None
                 else "physical panel factor plus independent-cycle lead-specific MOS"
+            ),
+            "solar_forcing_mode": (
+                "baseline_legacy_trace_replayed"
+                if fixed_legacy_solar_w is not None
+                else "physical_available_pv"
+                if physical_candidate
+                else "calibrated_ssrd_scalar"
             ),
             "solar_calibration_contract_id": solar_contract_id,
             "solar_observation_censoring_status": (
@@ -3368,6 +3405,7 @@ def generate(
     load_residual_profile: Mapping[str, object] | None = None,
     reference_forecast_archive: xr.Dataset | None = None,
     fixed_soc_bias_corrections_override: dict[str, float] | None = None,
+    fixed_legacy_solar_w: pd.Series | None = None,
 ) -> Path:
     provider = validate_provider(provider)
     selected_solar_model = validate_solar_model(solar_model)
@@ -3527,6 +3565,7 @@ def generate(
         longitude=longitude,
         fixed_soc_bias_corrections=fixed_soc_bias_corrections,
         load_residual_profile=load_residual_profile,
+        fixed_legacy_solar_w=fixed_legacy_solar_w,
     )
     forecast.attrs["ecmwf_input_file"] = str(input_forecast)
     forecast.attrs["site_latitude"] = str(float(latitude))

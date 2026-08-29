@@ -177,6 +177,7 @@ class HybridCandidateTests(unittest.TestCase):
                     provider="legacy",
                     max_power_age_minutes=None,
                     archive_forecast=True,
+                    state_override={"solar_calibration_factor_w_per_wm2": 8.0},
                 )
                 baseline_digest = _tree_digest(baseline_path)
                 archive_digest = _tree_digest(archive_path)
@@ -206,6 +207,15 @@ class HybridCandidateTests(unittest.TestCase):
             review = json.loads((root / "candidate" / "review_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(acceptance["status"], "not_accepted")
             self.assertEqual(review["status"], "pending_campaign_review")
+            with xr.open_zarr(results["C_load_residual"], chunks={}) as candidate:
+                np.testing.assert_allclose(
+                    candidate["ForecastSolarWatts"].values,
+                    xr.open_zarr(baseline_path, chunks={})["ForecastSolarWatts"].values,
+                    rtol=0.0,
+                    atol=0.0,
+                    equal_nan=True,
+                )
+                self.assertEqual(candidate.attrs["solar_forcing_mode"], "baseline_legacy_trace_replayed")
             with xr.open_zarr(results["D_physical_solar_load_residual"], chunks={}) as candidate:
                 self.assertEqual(candidate.attrs["forecast_system_version"], "power-v12-hybrid-candidate")
                 self.assertEqual(candidate.attrs["power_input_history_days"], "21")
