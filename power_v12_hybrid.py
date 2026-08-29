@@ -22,7 +22,7 @@ import xarray as xr
 
 
 V12_FORECAST_SYSTEM_VERSION = "power-v12-hybrid-candidate"
-V12_FEATURE_SET_VERSION = "issue_safe_physical_pv_bounded_load_residual_v3"
+V12_FEATURE_SET_VERSION = "issue_safe_physical_pv_bounded_load_residual_v4"
 V12_POWER_HISTORY_DAYS = 21.0
 LOAD_RESIDUAL_MODEL_NAME = "bounded_ridge_load_residual_v1"
 LOAD_RESIDUAL_MIN_SAMPLES = 48
@@ -34,6 +34,17 @@ LEAD_BUCKETS: tuple[tuple[str, float, float], ...] = (
     ("6_24h", 6.0, 24.0),
     ("24_48h", 24.0, 48.0),
     ("48_96h", 48.0, 96.0),
+)
+EVALUATION_CONTRACT_ATTRS = (
+    "forecast_model_contract_id",
+    "forecast_system_version",
+    "feature_set_version",
+    "feature_set_digest",
+    "forecast_code_revision",
+    "candidate_lane",
+    "baseline_control_contract_id",
+    "baseline_control_system_version",
+    "local_feature_contract_id",
 )
 
 
@@ -90,12 +101,23 @@ def _repeat_issue_field(
     return np.repeat(values, steps)
 
 
+def _normalise_identity_values(values: np.ndarray, *, fallback: str) -> np.ndarray:
+    """Normalise archive text fields without treating NaN as an identity."""
+    normalised: list[str] = []
+    for value in np.asarray(values).reshape(-1):
+        text = str(value if value is not None else "").strip()
+        normalised.append(fallback if text.lower() in {"", "nan", "none"} else text)
+    return np.asarray(normalised, dtype=object)
+
+
 def _load_training_rows(
     archive: xr.Dataset | None,
     power: xr.Dataset,
     *,
     cutoff: pd.Timestamp,
     load_mode: str,
+    control_forecast_model_contract_id: str | None,
+    control_forecast_system_version: str | None,
 ) -> pd.DataFrame:
     """Return one independent, pre-cutoff load residual row per cycle/valid time."""
     if archive is None or not {"ForecastLoadWatts", "ForecastValidTime", "ForecastLeadHours"}.issubset(archive):
@@ -116,7 +138,21 @@ def _load_training_rows(
     modes = _repeat_issue_field(archive, "LoadMode", len(values), default="unknown").astype(str)
     model_contracts = _repeat_issue_field(
         archive, "ForecastModelContractID", len(values), default="legacy"
-    ).astype(str)
+    )
+    system_versions = _repeat_issue_field(
+        archive,
+        "ForecastSystemVersion",
+        len(values),
+        default="unversioned_control",
+    )
+    model_contracts = _normalise_identity_values(model_contracts, fallback="unqualified_control")
+    system_versions = _normalise_identity_values(system_versions, fallback="unversioned_control")
+    required_contract = str(control_forecast_model_contract_id or "").strip()
+    required_system = str(control_forecast_system_version or "").strip() or "unversioned_control"
+    # A residual is adaptive learning.  Rows with an opaque or changed
+    # baseline identity are not comparable training evidence.
+    if not required_contract:
+        return pd.DataFrame()
     observed = _observed_load_w(power)
     if observed.empty:
         return pd.DataFrame()
@@ -128,6 +164,8 @@ def _load_training_rows(
         & (issue_times < cutoff)
         & (valid_times <= cutoff)
         & (modes == str(load_mode))
+        & (model_contracts == required_contract)
+        & (system_versions == required_system)
     )
     if not np.any(mask):
         return pd.DataFrame()
@@ -149,6 +187,7 @@ def _load_training_rows(
             "forecast_load_w": values[mask][paired],
             "observed_load_w": observed_values[paired],
             "forecast_model_contract_id": model_contracts[mask][paired],
+            "forecast_system_version": system_versions[mask][paired],
         }
     )
     rows["residual_w"] = rows["observed_load_w"] - rows["forecast_load_w"]
@@ -220,6 +259,8 @@ def fit_bounded_load_residual(
     issue_time: pd.Timestamp | str,
     forecast_times: Iterable[object],
     load_mode: str,
+    control_forecast_model_contract_id: str | None = None,
+    control_forecast_system_version: str | None = None,
     bound_w: float = LOAD_RESIDUAL_BOUND_W,
 ) -> LoadResidualFit:
     """Fit a small ridge residual model using only data available at issue time.
@@ -230,7 +271,14 @@ def fit_bounded_load_residual(
     """
     cutoff = _as_utc_naive(issue_time)
     times = pd.DatetimeIndex(forecast_times)
-    rows = _load_training_rows(archive, power, cutoff=cutoff, load_mode=load_mode)
+    rows = _load_training_rows(
+        archive,
+        power,
+        cutoff=cutoff,
+        load_mode=load_mode,
+        control_forecast_model_contract_id=control_forecast_model_contract_id,
+        control_forecast_system_version=control_forecast_system_version,
+    )
     samples = int(len(rows))
     cycles = int(rows["cycle_time"].nunique()) if not rows.empty else 0
     days = int(rows["valid_time"].dt.floor("D").nunique()) if not rows.empty else 0
@@ -247,6 +295,10 @@ def fit_bounded_load_residual(
         "feature_columns": ["intercept", "lead", "lead_squared", "utc_hour_sin", "utc_hour_cos"],
         "load_mode": str(load_mode),
         "source_contracts": contracts,
+        "control_forecast_model_contract_id": str(control_forecast_model_contract_id or ""),
+        "control_forecast_system_version": str(
+            control_forecast_system_version or "unversioned_control"
+        ),
     }
     contract_id = "load-residual-v1-" + stable_json_digest(payload)[:16]
     if (
@@ -310,6 +362,7 @@ def v12_feature_digest(
     *,
     physical_config_digest: str,
     load_residual_contract_id: str,
+    issue_feature_contract_id: str = "",
     power_history_days: float = V12_POWER_HISTORY_DAYS,
 ) -> str:
     return stable_json_digest(
@@ -318,6 +371,7 @@ def v12_feature_digest(
             "feature_set_version": V12_FEATURE_SET_VERSION,
             "physical_config_digest": str(physical_config_digest),
             "load_residual_contract_id": str(load_residual_contract_id),
+            "issue_feature_contract_id": str(issue_feature_contract_id),
             "power_history_days": float(power_history_days),
         }
     )
@@ -333,6 +387,11 @@ def v12_forecast_identity(
     load_residual: LoadResidualFit | None,
     code_revision: str,
     power_history_days: float = V12_POWER_HISTORY_DAYS,
+    issue_feature_contract_id: str = "",
+    baseline_control_contract_id: str = "",
+    baseline_control_system_version: str = "unversioned_control",
+    source_availability_code: str = "",
+    feature_degradation_codes: Iterable[str] = (),
 ) -> dict[str, str]:
     residual = load_residual or LoadResidualFit(
         "not_requested",
@@ -349,6 +408,7 @@ def v12_forecast_identity(
     degraded = ["hardware_geometry_unverified", "solar_residual_disabled_until_mpp_active_history"]
     if residual.status != "active":
         degraded.append("load_residual_" + residual.status.split(":", 1)[0])
+    degraded.extend(str(value) for value in feature_degradation_codes if str(value))
     return {
         "forecast_model_name": "aps_soc_energy_balance_v12_hybrid_candidate",
         "forecast_model_version": "12",
@@ -358,6 +418,7 @@ def v12_forecast_identity(
         "feature_set_digest": v12_feature_digest(
             physical_config_digest=physical_config_digest,
             load_residual_contract_id=residual.contract_id,
+            issue_feature_contract_id=issue_feature_contract_id,
             power_history_days=power_history_days,
         ),
         "training_cutoff_utc": _as_utc_naive(issue_time).isoformat(),
@@ -366,6 +427,10 @@ def v12_forecast_identity(
         "source_manifest_digest": str(source_manifest_digest),
         "degraded_mode_code": "+".join(degraded),
         "candidate_lane": str(lane),
+        "local_feature_contract_id": str(issue_feature_contract_id),
+        "baseline_control_contract_id": str(baseline_control_contract_id),
+        "baseline_control_system_version": str(baseline_control_system_version),
+        "source_availability_code": str(source_availability_code),
     }
 
 
@@ -409,6 +474,30 @@ def _pair_text(dataset: xr.Dataset, name: str, fallback: str = "") -> str:
     return str(dataset.attrs.get(name, fallback) or fallback)
 
 
+def evaluation_contract_from_forecast(forecast: xr.Dataset) -> dict[str, str]:
+    """Return the semantic contract that defines one comparable campaign.
+
+    Source-cycle, observation-cutoff and input-snapshot values intentionally
+    remain issue identities, not campaign partitions.  Any algorithm, feature,
+    code, baseline-control or local-feature-contract change creates a new
+    campaign cohort.
+    """
+    return {name: _pair_text(forecast, name) for name in EVALUATION_CONTRACT_ATTRS}
+
+
+def _matches_evaluation_contract(
+    forecast: xr.Dataset,
+    contract: Mapping[str, object] | None,
+) -> bool:
+    if contract is None:
+        return True
+    for name in EVALUATION_CONTRACT_ATTRS:
+        expected = str(contract.get(name, "") or "")
+        if _pair_text(forecast, name) != expected:
+            return False
+    return True
+
+
 def _irradiance_regime(value: float) -> str:
     if not np.isfinite(value) or value <= 1.0:
         return "dark"
@@ -424,6 +513,7 @@ def build_campaign_evidence(
     power: xr.Dataset,
     *,
     lane: str,
+    evaluation_contract: Mapping[str, object] | None = None,
 ) -> xr.Dataset:
     """Materialise paired evidence rows from immutable bundles and observations.
 
@@ -434,6 +524,7 @@ def build_campaign_evidence(
     observed_soc = _power_series(power, "BatterySOC")
     observed_load = _observed_load_w(power)
     records: list[dict[str, object]] = []
+    incompatible_pair_count = 0
     for manifest, bundle in completed_pair_bundles(pairs_root):
         try:
             with xr.open_zarr(bundle / "baseline_forecast.zarr", chunks={}) as opened:
@@ -441,6 +532,9 @@ def build_campaign_evidence(
             with xr.open_zarr(bundle / "candidate_forecast.zarr", chunks={}) as opened:
                 candidate = opened.load()
         except Exception:
+            continue
+        if not _matches_evaluation_contract(candidate, evaluation_contract):
+            incompatible_pair_count += 1
             continue
         if "time" not in baseline or "time" not in candidate:
             continue
@@ -476,11 +570,18 @@ def build_campaign_evidence(
                     "ForecastIdentityID": _pair_text(candidate, "forecast_identity_id"),
                     "ForecastSystemVersion": _pair_text(candidate, "forecast_system_version"),
                     "ForecastModelContractID": _pair_text(candidate, "forecast_model_contract_id"),
+                    "BaselineControlContractID": _pair_text(candidate, "baseline_control_contract_id"),
+                    "BaselineControlSystemVersion": _pair_text(candidate, "baseline_control_system_version"),
+                    "LocalFeatureContractID": _pair_text(candidate, "local_feature_contract_id"),
                     "SourceCycleSetID": _pair_text(candidate, "source_cycle_set_id"),
                     "LoadMode": _pair_text(candidate, "load_mode", "unknown"),
                     "CloudRegime": _irradiance_regime(float(ghi[index])),
                     "CloudRegimeMethod": "ecmwf_ghi_proxy_not_delayed_cloud_product",
-                    "SourceAvailability": _pair_text(candidate, "ecmwf_provider_effective", "unknown"),
+                    "SourceAvailability": _pair_text(
+                        candidate,
+                        "source_availability_code",
+                        _pair_text(candidate, "ecmwf_provider_effective", "unknown"),
+                    ),
                     "DegradedModeCode": _pair_text(candidate, "degraded_mode_code", "none"),
                     "CandidateSOC": float(candidate_soc[index]),
                     "BaselineSOC": float(baseline_soc[index]),
@@ -502,6 +603,8 @@ def build_campaign_evidence(
                 "candidate_lane": str(lane),
                 "generated_at_utc": utc_now_iso(),
                 "evidence_status": "no_complete_pair_bundles",
+                "evaluation_contract": json.dumps(dict(evaluation_contract or {}), sort_keys=True),
+                "incompatible_pair_count": int(incompatible_pair_count),
             },
         )
     columns = {name: [record[name] for record in records] for name in records[0]}
@@ -524,6 +627,8 @@ def build_campaign_evidence(
             "candidate_lane": str(lane),
             "generated_at_utc": utc_now_iso(),
             "evidence_status": "complete_pair_bundles_materialised",
+            "evaluation_contract": json.dumps(dict(evaluation_contract or {}), sort_keys=True),
+            "incompatible_pair_count": int(incompatible_pair_count),
             "solar_metric_status": "excluded_until_mpp_active_observed_power_is_available",
             "ensemble_metric_status": "not_generated_in_bounded_initial_candidate",
             "reserve_event_status": "insufficient_events",
@@ -560,6 +665,11 @@ def _metric_summary(rows: pd.DataFrame) -> dict[str, float | int | str]:
 
 def campaign_score_surfaces(evidence: xr.Dataset) -> dict[str, object]:
     """Return cumulative campaign and last-24h diagnostic score surfaces."""
+    try:
+        evaluation_contract = json.loads(str(evidence.attrs.get("evaluation_contract", "{}")))
+    except json.JSONDecodeError:
+        evaluation_contract = {}
+    incompatible_pair_count = int(evidence.attrs.get("incompatible_pair_count", 0) or 0)
     if evidence.sizes.get("record", 0) == 0 or "EvaluationAvailable" not in evidence:
         empty = {bucket: _metric_summary(pd.DataFrame()) for bucket, _, _ in LEAD_BUCKETS}
         return {
@@ -569,6 +679,8 @@ def campaign_score_surfaces(evidence: xr.Dataset) -> dict[str, object]:
             "solar": "excluded_until_mpp_active_observed_power_is_available",
             "ensemble": "not_generated_in_bounded_initial_candidate",
             "reserve_events": "insufficient_events",
+            "evaluation_contract": evaluation_contract,
+            "incompatible_pair_count": incompatible_pair_count,
         }
     frame = evidence.to_dataframe().reset_index(drop=True)
     frame["ValidTime"] = pd.to_datetime(frame["ValidTime"])
@@ -607,4 +719,184 @@ def campaign_score_surfaces(evidence: xr.Dataset) -> dict[str, object]:
         "solar": "excluded_until_mpp_active_observed_power_is_available",
         "ensemble": "not_generated_in_bounded_initial_candidate",
         "reserve_events": "insufficient_events",
+        "evaluation_contract": evaluation_contract,
+        "incompatible_pair_count": incompatible_pair_count,
     }
+
+
+def _error_metrics(
+    frame: pd.DataFrame,
+    *,
+    candidate: str,
+    baseline: str,
+    observed: str,
+) -> dict[str, float] | None:
+    required = (candidate, baseline, observed)
+    if any(name not in frame for name in required):
+        return None
+    values = frame.loc[:, list(required)].apply(pd.to_numeric, errors="coerce").dropna()
+    if values.empty:
+        return None
+    candidate_error = values[candidate].to_numpy(dtype=np.float64) - values[observed].to_numpy(dtype=np.float64)
+    baseline_error = values[baseline].to_numpy(dtype=np.float64) - values[observed].to_numpy(dtype=np.float64)
+    candidate_mae = float(np.mean(np.abs(candidate_error)))
+    baseline_mae = float(np.mean(np.abs(baseline_error)))
+    return {
+        "samples": float(len(values)),
+        "candidate_mae": candidate_mae,
+        "baseline_mae": baseline_mae,
+        "candidate_bias": float(np.mean(candidate_error)),
+        "baseline_bias": float(np.mean(baseline_error)),
+        "mae_improvement_fraction": (
+            float(1.0 - candidate_mae / baseline_mae) if baseline_mae > 0.0 else 0.0
+        ),
+    }
+
+
+def promotion_gate_review(evidence: xr.Dataset) -> dict[str, object]:
+    """Materialise the specified manual-promotion gates without auto-promoting.
+
+    A missing eligible solar/ensemble/release-test input is intentionally a
+    blocking *unavailable* gate, not a score of zero or a silently omitted
+    metric.  This lets the development UI describe exactly why a candidate is
+    retained without confusing a rolling diagnostic with campaign evidence.
+    """
+    base: dict[str, object] = {
+        "status": "not_eligible",
+        "decision": "manual_review_required",
+        "minimum_evidence": {
+            "independent_cycles_per_lead_bucket": 30,
+            "utc_days_per_lead_bucket": 10,
+        },
+        "solar": "blocked_mpp_active_available_power_evidence_unavailable",
+        "ensemble": "blocked_memberwise_candidate_not_generated",
+        "reserve_events": "insufficient_events",
+        "release_tests": "external_reproducibility_resource_and_api_checks_required",
+    }
+    if evidence.sizes.get("record", 0) == 0 or "EvaluationAvailable" not in evidence:
+        base["evidence"] = "insufficient_evidence"
+        return base
+    frame = evidence.to_dataframe().reset_index(drop=True)
+    if frame.empty or "EvaluationAvailable" not in frame:
+        base["evidence"] = "insufficient_evidence"
+        return base
+    frame = frame.loc[frame["EvaluationAvailable"].astype(bool)].copy()
+    if frame.empty:
+        base["evidence"] = "no_matured_observations"
+        return base
+    frame["IssueTime"] = pd.to_datetime(frame["IssueTime"])
+    lead_gates: dict[str, object] = {}
+    evidence_ready = True
+    for label, start, end in LEAD_BUCKETS:
+        rows = frame.loc[(frame["LeadHours"] >= start) & (frame["LeadHours"] < end)]
+        cycles = int(rows["IssueTime"].nunique())
+        days = int(rows["IssueTime"].dt.floor("D").nunique())
+        eligible = cycles >= 30 and days >= 10
+        lead_gates[label] = {
+            "cycles": cycles,
+            "utc_days": days,
+            "status": "eligible" if eligible else "insufficient_evidence",
+        }
+        evidence_ready &= eligible
+    base["independent_evidence"] = lead_gates
+    if not evidence_ready:
+        base["evidence"] = "insufficient_evidence"
+        return base
+
+    soc_0_6 = _error_metrics(
+        frame.loc[(frame["LeadHours"] >= 0.0) & (frame["LeadHours"] < 6.0)],
+        candidate="CandidateSOC",
+        baseline="BaselineSOC",
+        observed="ObservedSOC",
+    )
+    soc_6_24 = _error_metrics(
+        frame.loc[(frame["LeadHours"] >= 6.0) & (frame["LeadHours"] < 24.0)],
+        candidate="CandidateSOC",
+        baseline="BaselineSOC",
+        observed="ObservedSOC",
+    )
+    soc_0_24 = _error_metrics(
+        frame.loc[(frame["LeadHours"] >= 0.0) & (frame["LeadHours"] < 24.0)],
+        candidate="CandidateSOC",
+        baseline="BaselineSOC",
+        observed="ObservedSOC",
+    )
+    if None in (soc_0_6, soc_6_24, soc_0_24):
+        base["evidence"] = "insufficient_soc_observations"
+        return base
+    assert soc_0_6 is not None and soc_6_24 is not None and soc_0_24 is not None
+    def persistence_skill(rows: pd.DataFrame) -> float | None:
+        errors = _error_metrics(rows, candidate="CandidateSOC", baseline="BaselineSOC", observed="ObservedSOC")
+        values = rows.loc[:, ["SOCAuthoringAnchor", "ObservedSOC"]].apply(pd.to_numeric, errors="coerce").dropna()
+        if errors is None or values.empty:
+            return None
+        persistence_mae = float(
+            np.mean(np.abs(values["SOCAuthoringAnchor"].to_numpy() - values["ObservedSOC"].to_numpy()))
+        )
+        return float(1.0 - errors["candidate_mae"] / persistence_mae) if persistence_mae > 0.0 else None
+
+    skill_0_6 = persistence_skill(frame.loc[(frame["LeadHours"] >= 0.0) & (frame["LeadHours"] < 6.0)])
+    skill_6_24 = persistence_skill(frame.loc[(frame["LeadHours"] >= 6.0) & (frame["LeadHours"] < 24.0)])
+    base["soc"] = {
+        "combined_0_24_improvement_fraction": soc_0_24["mae_improvement_fraction"],
+        "required_combined_0_24_improvement_fraction": 0.10,
+        "zero_to_six_mae_change": soc_0_6["candidate_mae"] - soc_0_6["baseline_mae"],
+        "six_to_twentyfour_mae_change": soc_6_24["candidate_mae"] - soc_6_24["baseline_mae"],
+        "zero_to_six_persistence_skill": skill_0_6,
+        "six_to_twentyfour_persistence_skill": skill_6_24,
+        "status": (
+            "pass"
+            if (
+                soc_0_24["mae_improvement_fraction"] >= 0.10
+                and soc_0_6["candidate_mae"] <= soc_0_6["baseline_mae"] + 2.0
+                and soc_6_24["candidate_mae"] <= soc_6_24["baseline_mae"] + 2.0
+                and skill_0_6 is not None
+                and skill_0_6 > 0.0
+                and skill_6_24 is not None
+                and skill_6_24 > 0.0
+            )
+            else "fail"
+        ),
+    }
+    long_gate: dict[str, object] = {}
+    for label, start, end in LEAD_BUCKETS[2:]:
+        metrics = _error_metrics(
+            frame.loc[(frame["LeadHours"] >= start) & (frame["LeadHours"] < end)],
+            candidate="CandidateSOC",
+            baseline="BaselineSOC",
+            observed="ObservedSOC",
+        )
+        if metrics is None:
+            long_gate[label] = {"status": "insufficient_evidence"}
+            continue
+        skill = persistence_skill(frame.loc[(frame["LeadHours"] >= start) & (frame["LeadHours"] < end)])
+        low_mae = metrics["mae_improvement_fraction"] >= 0.25
+        no_worse_bias = abs(metrics["candidate_bias"]) <= abs(metrics["baseline_bias"])
+        long_gate[label] = {
+            **metrics,
+            "persistence_skill": skill,
+            "status": "pass" if (skill is not None and skill >= 0.0) or (low_mae and no_worse_bias) else "fail",
+        }
+    base["long_lead_soc"] = long_gate
+    load_metrics = _error_metrics(
+        frame,
+        candidate="CandidateLoadWatts",
+        baseline="BaselineLoadWatts",
+        observed="ObservedLoadWatts",
+    )
+    if load_metrics is None:
+        base["load"] = {"status": "insufficient_evidence"}
+    else:
+        baseline_abs_bias = abs(load_metrics["baseline_bias"])
+        candidate_abs_bias = abs(load_metrics["candidate_bias"])
+        load_metrics["status"] = (
+            "pass"
+            if load_metrics["mae_improvement_fraction"] >= 0.10
+            and candidate_abs_bias <= (0.90 * baseline_abs_bias if baseline_abs_bias > 0.0 else 0.0)
+            else "fail"
+        )
+        base["load"] = load_metrics
+    base["evidence"] = "eligible_for_manual_gate_review"
+    # The physical solar and memberwise ensemble gates remain explicit blocks,
+    # so this function can never accidentally accept a candidate by itself.
+    return base

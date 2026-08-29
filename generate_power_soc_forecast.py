@@ -236,6 +236,10 @@ FORECAST_IDENTITY_ATTRS = (
     "source_manifest_digest",
     "degraded_mode_code",
     "candidate_lane",
+    "local_feature_contract_id",
+    "baseline_control_contract_id",
+    "baseline_control_system_version",
+    "source_availability_code",
 )
 SCENARIO_LOADS_W = (100, 200, 300, 400, 500, 600)
 HINDCAST_LEAD_HOURS = (6, 24, 48, 72)
@@ -291,6 +295,18 @@ def forecast_identity_id(attrs: Mapping[str, object]) -> str:
         ),
         "degraded_mode_code": _normalise_identity_text(attrs.get("degraded_mode_code")),
         "candidate_lane": _normalise_identity_text(attrs.get("candidate_lane")),
+        "local_feature_contract_id": _normalise_identity_text(
+            attrs.get("local_feature_contract_id")
+        ),
+        "baseline_control_contract_id": _normalise_identity_text(
+            attrs.get("baseline_control_contract_id")
+        ),
+        "baseline_control_system_version": _normalise_identity_text(
+            attrs.get("baseline_control_system_version")
+        ),
+        "source_availability_code": _normalise_identity_text(
+            attrs.get("source_availability_code")
+        ),
         "initial_soc_time": _normalise_identity_text(attrs.get("initial_soc_time")),
         "input_snapshot_id": _normalise_identity_text(attrs.get("input_snapshot_id")),
     }
@@ -321,6 +337,10 @@ def apply_forecast_identity(
         "source_manifest_digest": "",
         "degraded_mode_code": "none",
         "candidate_lane": "",
+        "local_feature_contract_id": "",
+        "baseline_control_contract_id": "",
+        "baseline_control_system_version": "",
+        "source_availability_code": "",
     }
     for name, default in defaults.items():
         attrs[name] = _normalise_identity_text(identity.get(name, default))
@@ -339,6 +359,9 @@ def apply_forecast_identity(
         "feature_set_digest": attrs["feature_set_digest"],
         "forecast_code_revision": attrs["forecast_code_revision"],
         "candidate_lane": attrs["candidate_lane"],
+        "local_feature_contract_id": attrs["local_feature_contract_id"],
+        "baseline_control_contract_id": attrs["baseline_control_contract_id"],
+        "baseline_control_system_version": attrs["baseline_control_system_version"],
     }
     attrs["base_forecast_model_contract_id"] = base_contract
     attrs["forecast_model_contract_id"] = "forecast-model-v2-" + hashlib.sha256(
@@ -395,6 +418,12 @@ def forecast_publication_signature(forecast: xr.Dataset) -> str:
         "source_manifest_digest": str(attrs.get("source_manifest_digest", "")),
         "degraded_mode_code": str(attrs.get("degraded_mode_code", "")),
         "candidate_lane": str(attrs.get("candidate_lane", "")),
+        "local_feature_contract_id": str(attrs.get("local_feature_contract_id", "")),
+        "baseline_control_contract_id": str(attrs.get("baseline_control_contract_id", "")),
+        "baseline_control_system_version": str(
+            attrs.get("baseline_control_system_version", "")
+        ),
+        "source_availability_code": str(attrs.get("source_availability_code", "")),
         "forecast_identity_id": str(attrs.get("forecast_identity_id", "")),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
@@ -2109,6 +2138,10 @@ def _archive_row_from_forecast(forecast: xr.Dataset) -> xr.Dataset:
         "SourceManifestDigest": "source_manifest_digest",
         "DegradedModeCode": "degraded_mode_code",
         "CandidateLane": "candidate_lane",
+        "LocalFeatureContractID": "local_feature_contract_id",
+        "BaselineControlContractID": "baseline_control_contract_id",
+        "BaselineControlSystemVersion": "baseline_control_system_version",
+        "SourceAvailabilityCode": "source_availability_code",
         "SolarModelName": "solar_model_name",
         "SolarModelVersion": "solar_model_version",
         "SolarModelContractID": "solar_model_contract_id",

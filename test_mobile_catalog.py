@@ -45,6 +45,9 @@ class MobileCatalogTests(unittest.TestCase):
                     "feature_set_digest": "feature-digest",
                     "source_manifest_digest": "manifest-digest",
                     "source_cycle_set_id": "cycle-set",
+                    "source_availability_code": "ecmwf_control=available;gfs=not_enrolled",
+                    "local_feature_contract_id": "issue-features-v1-test",
+                    "baseline_control_contract_id": "baseline-control-test",
                     "degraded_mode_code": "candidate_only",
                     "load_residual_model_status": "active",
                 }
@@ -85,6 +88,8 @@ class MobileCatalogTests(unittest.TestCase):
             self.assertEqual(payload["authority"], "candidate")
             self.assertEqual(payload["pairID"], pair_id)
             self.assertEqual(payload["comparison"][1]["candidateSOC"], 69.5)
+            self.assertEqual(payload["localFeatureContractID"], "issue-features-v1-test")
+            self.assertIn("gfs=not_enrolled", payload["sourceAvailabilityCode"])
             self.assertNotIn("path", json.dumps(payload).lower())
 
     def test_float_health_states_are_normalized_and_counted(self) -> None:

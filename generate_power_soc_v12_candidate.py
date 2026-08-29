@@ -40,13 +40,20 @@ from power_solar_model import (
     physical_solar_config_digest,
     physical_solar_contract_id,
 )
+from power_issue_time_features import (
+    IssueTimeFeatureSnapshot,
+    build_issue_time_feature_snapshot,
+)
 from power_v12_hybrid import (
     build_campaign_evidence,
     campaign_score_surfaces,
+    evaluation_contract_from_forecast,
     fit_bounded_load_residual,
+    promotion_gate_review,
     stable_json_digest,
     utc_now_iso,
     v12_forecast_identity,
+    V12_FEATURE_SET_VERSION,
     V12_POWER_HISTORY_DAYS,
 )
 
@@ -67,6 +74,21 @@ CANDIDATE_ROOT = Path(
     os.environ.get(
         "AURORA_POWER_V12_CANDIDATE_ROOT",
         "/data/aurora/dev-products/power/candidates/v12",
+    )
+)
+ASFS_LOGGER_ZARR_PATH = Path(
+    os.environ.get(
+        "ASFS_LOGGER_ZARR_PATH",
+        "/data/aurora/products/asfs_logger/asfs_logger.zarr",
+    )
+)
+UAS_MQTT_LOG_PATH = Path(
+    os.environ.get("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log")
+)
+PUBLIC_SOURCE_MANIFEST_ROOT = Path(
+    os.environ.get(
+        "AURORA_POWER_PUBLIC_SOURCE_MANIFEST_ROOT",
+        "/data/aurora/dev-products/power/public_model_inputs",
     )
 )
 
@@ -187,6 +209,9 @@ def _source_manifest(
     physical_config_digest: str,
     physical_contract_id: str,
     power_history_days: float,
+    feature_snapshot: IssueTimeFeatureSnapshot,
+    baseline_control_contract_id: str,
+    baseline_control_system_version: str,
 ) -> tuple[dict[str, object], str, str]:
     cycle = str(baseline_attrs.get("ecmwf_cycle_time", ""))
     provider = str(
@@ -197,7 +222,7 @@ def _source_manifest(
     )
     source_cycle_set = f"ecmwf:{provider}:{cycle}:sha256:{input_digest[:20]}"
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "baseline_publication_signature": baseline_signature,
         "initial_soc_time": issue_time.isoformat(),
         "ecmwf_cycle_time": cycle,
@@ -212,8 +237,25 @@ def _source_manifest(
         "forecast_horizon_hours": str(baseline_attrs.get("forecast_horizon_hours", "")),
         "observation_cutoff": issue_time.isoformat(),
         "input_power_history_days": float(power_history_days),
+        "baseline_control_contract_id": str(baseline_control_contract_id),
+        "baseline_control_system_version": str(baseline_control_system_version),
+        "issue_time_feature_contract_id": feature_snapshot.contract_id,
+        "issue_time_feature_snapshot_digest": f"sha256:{feature_snapshot.snapshot_digest}",
+        "issue_time_features": feature_snapshot.manifest,
+        "public_model_ablations": feature_snapshot.manifest["public_model_ablations"],
     }
     return manifest, stable_json_digest(manifest), source_cycle_set
+
+
+def _baseline_control_identity(attrs: dict[str, object]) -> tuple[str, str]:
+    """Return the exact control identity allowed to train the load residual."""
+    contract = str(attrs.get("forecast_model_contract_id", "")).strip()
+    if not contract or contract.lower() in {"nan", "none"}:
+        raise ValueError("Baseline is missing its forecast model contract identity")
+    system = str(attrs.get("forecast_system_version", "")).strip()
+    if not system or system.lower() in {"nan", "none"}:
+        system = "unversioned_control"
+    return contract, system
 
 
 def _write_immutable_manifest(root: Path, manifest: dict[str, object], digest: str) -> Path:
@@ -306,14 +348,16 @@ def _pair_id(
     input_digest: str,
     issue_time: pd.Timestamp,
     physical_contract_id: str,
+    source_manifest_digest: str,
 ) -> str:
     payload = {
-        "schema": 1,
+        "schema": 2,
         "lane": lane,
         "baseline_publication_signature": baseline_signature,
         "input_sha256": input_digest,
         "issue_time": issue_time.isoformat(),
         "physical_solar_contract_id": physical_contract_id,
+        "source_manifest_digest": source_manifest_digest,
     }
     return "power-v12-pair-v1-" + stable_json_digest(payload)[:20]
 
@@ -359,14 +403,20 @@ def run_candidate(
     power_zarr: Path = POWER_ZARR_PATH,
     pdu_zarr: Path = POWER_PDU_ZARR_PATH,
     physical_config: Path = DEFAULT_PHYSICAL_SOLAR_CONFIG_PATH,
+    asfs_zarr: Path = ASFS_LOGGER_ZARR_PATH,
+    menapia_mqtt_log: Path = UAS_MQTT_LOG_PATH,
+    public_source_manifest_root: Path = PUBLIC_SOURCE_MANIFEST_ROOT,
 ) -> dict[str, Path]:
     """Generate lanes B/C/D for one verified v10/v11 ECMWF baseline issue."""
     baseline_forecast_zarr = Path(baseline_forecast_zarr)
     baseline_archive_zarr = Path(baseline_archive_zarr)
     candidate_root = Path(candidate_root)
+    asfs_zarr = Path(asfs_zarr)
+    menapia_mqtt_log = Path(menapia_mqtt_log)
+    public_source_manifest_root = Path(public_source_manifest_root)
     if any(path.suffix.lower() == ".zarr" for path in (candidate_root, *candidate_root.parents)):
         raise ValueError("v12 candidate root cannot be inside a Zarr store")
-    protected = (baseline_forecast_zarr, baseline_archive_zarr, power_zarr, pdu_zarr)
+    protected = (baseline_forecast_zarr, baseline_archive_zarr, power_zarr, pdu_zarr, asfs_zarr)
     if any(_paths_overlap(candidate_root, path) for path in protected):
         raise ValueError("v12 candidate root overlaps a protected baseline or input product")
     if not baseline_forecast_zarr.exists():
@@ -390,17 +440,6 @@ def run_candidate(
     baseline_signature = str(attrs.get("publication_signature", "")).strip()
     if not baseline_signature:
         raise ValueError("Baseline forecast does not have a publication signature")
-    existing_status = _read_json(candidate_root / "status.json")
-    if (
-        existing_status
-        and existing_status.get("status") == "complete"
-        and existing_status.get("baseline_publication_signature") == baseline_signature
-    ):
-        return {
-            lane: _lane_result_path(candidate_root, lane)
-            for lane in LANES
-            if _lane_result_path(candidate_root, lane).exists()
-        }
     input_forecast = Path(str(attrs.get("ecmwf_input_file", "")).strip())
     if not input_forecast.is_file():
         raise FileNotFoundError("Baseline ECMWF forcing is no longer available")
@@ -415,17 +454,24 @@ def run_candidate(
     config_digest = physical_solar_config_digest(configuration)
     physical_contract = physical_solar_contract_id(configuration, latitude=latitude, longitude=longitude)
     input_digest = _sha256_file(input_forecast)
-    source_manifest, source_manifest_digest, source_cycle_set_id = _source_manifest(
-        baseline_attrs=attrs,
-        baseline_signature=baseline_signature,
-        input_forecast=input_forecast,
-        input_digest=input_digest,
-        issue_time=issue_time,
-        physical_config_digest=config_digest,
-        physical_contract_id=physical_contract,
-        power_history_days=V12_POWER_HISTORY_DAYS,
-    )
-    _write_immutable_manifest(candidate_root, source_manifest, source_manifest_digest)
+    baseline_control_contract_id, baseline_control_system_version = _baseline_control_identity(attrs)
+    code_revision = _code_revision()
+    existing_status = _read_json(candidate_root / "status.json")
+    if (
+        existing_status
+        and existing_status.get("status") == "complete"
+        and existing_status.get("baseline_publication_signature") == baseline_signature
+        and existing_status.get("candidate_feature_set_version") == V12_FEATURE_SET_VERSION
+        and existing_status.get("candidate_code_revision") == code_revision
+        and existing_status.get("physical_solar_config_sha256") == config_digest
+        and existing_status.get("baseline_control_contract_id") == baseline_control_contract_id
+        and existing_status.get("baseline_control_system_version") == baseline_control_system_version
+    ):
+        return {
+            lane: _lane_result_path(candidate_root, lane)
+            for lane in LANES
+            if _lane_result_path(candidate_root, lane).exists()
+        }
     try:
         provider = validate_provider(str(attrs.get("ecmwf_provider_effective", "legacy")))
     except ValueError:
@@ -439,12 +485,36 @@ def run_candidate(
         power_for_fit = opened[fields].sel(
             time=slice(history_start.to_datetime64(), issue_time.to_datetime64())
         ).load()
+    feature_snapshot = build_issue_time_feature_snapshot(
+        issue_time=issue_time,
+        power_history=power_for_fit,
+        pdu_zarr=pdu_zarr,
+        asfs_zarr=asfs_zarr,
+        menapia_mqtt_log=menapia_mqtt_log,
+        public_source_manifest_root=public_source_manifest_root,
+    )
+    source_manifest, source_manifest_digest, source_cycle_set_id = _source_manifest(
+        baseline_attrs=attrs,
+        baseline_signature=baseline_signature,
+        input_forecast=input_forecast,
+        input_digest=input_digest,
+        issue_time=issue_time,
+        physical_config_digest=config_digest,
+        physical_contract_id=physical_contract,
+        power_history_days=V12_POWER_HISTORY_DAYS,
+        feature_snapshot=feature_snapshot,
+        baseline_control_contract_id=baseline_control_contract_id,
+        baseline_control_system_version=baseline_control_system_version,
+    )
+    _write_immutable_manifest(candidate_root, source_manifest, source_manifest_digest)
     residual = fit_bounded_load_residual(
         reference_archive,
         power_for_fit,
         issue_time=issue_time,
         forecast_times=pd.DatetimeIndex(baseline["time"].values),
         load_mode=str(attrs.get("load_mode", "unknown")),
+        control_forecast_model_contract_id=baseline_control_contract_id,
+        control_forecast_system_version=baseline_control_system_version,
     )
     seed_state = _baseline_seed_state(attrs)
     fixed_bias = _fixed_bias_from_baseline(attrs)
@@ -455,6 +525,7 @@ def run_candidate(
     results: dict[str, Path] = {}
     lane_signatures: dict[str, str] = {}
     lane_summaries: dict[str, dict[str, object]] = {}
+    lane_promotion_gates: dict[str, dict[str, object]] = {}
     lane_specs = (
         (LANE_PHYSICAL_SOLAR, PHYSICAL_SOLAR_MODEL_NAME, None, True, False),
         (LANE_LOAD_RESIDUAL, LEGACY_SOLAR_MODEL_NAME, residual.as_profile(), False, True),
@@ -468,6 +539,7 @@ def run_candidate(
             input_digest=input_digest,
             issue_time=issue_time,
             physical_contract_id=physical_contract,
+            source_manifest_digest=source_manifest_digest,
         )
         identity = v12_forecast_identity(
             lane=lane,
@@ -476,8 +548,13 @@ def run_candidate(
             source_manifest_digest=source_manifest_digest,
             physical_config_digest=config_digest,
             load_residual=residual if load_profile is not None else None,
-            code_revision=_code_revision(),
+            code_revision=code_revision,
             power_history_days=V12_POWER_HISTORY_DAYS,
+            issue_feature_contract_id=feature_snapshot.contract_id,
+            baseline_control_contract_id=baseline_control_contract_id,
+            baseline_control_system_version=baseline_control_system_version,
+            source_availability_code=feature_snapshot.source_availability_code,
+            feature_degradation_codes=feature_snapshot.degradation_codes,
         )
         output = generate(
             power_zarr=power_zarr,
@@ -524,12 +601,17 @@ def run_candidate(
         if _sha256_file(input_forecast) != input_digest:
             raise RuntimeError("ECMWF forcing changed during candidate generation")
         pair_manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "evaluation_pair_id": pair_id,
             "candidate_lane": lane,
             "baseline_publication_signature": baseline_signature,
             "input_snapshot_id": f"sha256:{input_digest}",
             "source_manifest_digest": source_manifest_digest,
+            "issue_time_feature_snapshot_digest": f"sha256:{feature_snapshot.snapshot_digest}",
+            "local_feature_contract_id": feature_snapshot.contract_id,
+            "baseline_control_contract_id": baseline_control_contract_id,
+            "baseline_control_system_version": baseline_control_system_version,
+            "source_availability_code": feature_snapshot.source_availability_code,
             "initial_soc_time": issue_time.isoformat(),
             "source_cycle_set_id": source_cycle_set_id,
             "forecast_model_contract_id": str(candidate.attrs.get("forecast_model_contract_id", "")),
@@ -546,13 +628,22 @@ def run_candidate(
             candidate=candidate,
             manifest=pair_manifest,
         )
-        evidence = build_campaign_evidence(lane_root / "pairs", power_for_fit, lane=lane)
+        evaluation_contract = evaluation_contract_from_forecast(candidate)
+        evidence = build_campaign_evidence(
+            lane_root / "pairs",
+            power_for_fit,
+            lane=lane,
+            evaluation_contract=evaluation_contract,
+        )
         _atomic_write_zarr(evidence, lane_root / "campaign_evidence.zarr")
         summary = campaign_score_surfaces(evidence)
+        gates = promotion_gate_review(evidence)
+        summary["promotion_gates"] = gates
         _atomic_json(lane_root / "evaluation_summary.json", summary)
         results[lane] = output
         lane_signatures[lane] = str(candidate.attrs.get("publication_signature", ""))
         lane_summaries[lane] = summary
+        lane_promotion_gates[lane] = gates
     status = {
         "schema_version": 1,
         "environment": "development",
@@ -565,6 +656,15 @@ def run_candidate(
         "input_snapshot_id": f"sha256:{input_digest}",
         "training_cutoff_utc": issue_time.isoformat(),
         "input_power_history_days": V12_POWER_HISTORY_DAYS,
+        "candidate_feature_set_version": V12_FEATURE_SET_VERSION,
+        "candidate_code_revision": code_revision,
+        "physical_solar_config_sha256": config_digest,
+        "baseline_control_contract_id": baseline_control_contract_id,
+        "baseline_control_system_version": baseline_control_system_version,
+        "issue_time_feature_contract_id": feature_snapshot.contract_id,
+        "issue_time_feature_snapshot_digest": f"sha256:{feature_snapshot.snapshot_digest}",
+        "source_availability_code": feature_snapshot.source_availability_code,
+        "public_model_ablations": feature_snapshot.manifest["public_model_ablations"],
         "load_residual": {
             "status": residual.status,
             "contract_id": residual.contract_id,
@@ -580,6 +680,7 @@ def run_candidate(
             for lane, path in results.items()
         },
         "promotion_status": "not_eligible_requires_campaign_evidence",
+        "promotion_gates": lane_promotion_gates.get(LANE_HYBRID, {}),
     }
     _atomic_json(candidate_root / "status.json", status)
     _atomic_json(
@@ -594,6 +695,9 @@ def run_candidate(
             "baseline_publication_signature": baseline_signature,
             "source_manifest_digest": source_manifest_digest,
             "source_cycle_set_id": source_cycle_set_id,
+            "issue_time_feature_contract_id": feature_snapshot.contract_id,
+            "issue_time_feature_snapshot_digest": f"sha256:{feature_snapshot.snapshot_digest}",
+            "promotion_gates": lane_promotion_gates.get(LANE_HYBRID, {}),
             "reason": (
                 "Promotion is manual and requires cumulative paired campaign evidence; "
                 "this runner never changes an operational forecast product."
@@ -619,8 +723,15 @@ def run_candidate(
             "baseline_publication_signature": baseline_signature,
             "source_manifest_digest": source_manifest_digest,
             "source_cycle_set_id": source_cycle_set_id,
+            "issue_time_features": {
+                "contract_id": feature_snapshot.contract_id,
+                "snapshot_digest": f"sha256:{feature_snapshot.snapshot_digest}",
+                "source_availability_code": feature_snapshot.source_availability_code,
+                "public_model_ablations": feature_snapshot.manifest["public_model_ablations"],
+            },
             "load_residual": status["load_residual"],
             "lanes": lane_summaries,
+            "promotion_gates": lane_promotion_gates.get(LANE_HYBRID, {}),
             "next_action": "Accumulate paired independent ECMWF-cycle evidence; do not promote from rolling diagnostics.",
         },
     )
@@ -646,6 +757,13 @@ def main() -> None:
     parser.add_argument("--power-zarr", type=Path, default=POWER_ZARR_PATH)
     parser.add_argument("--pdu-zarr", type=Path, default=POWER_PDU_ZARR_PATH)
     parser.add_argument("--physical-config", type=Path, default=DEFAULT_PHYSICAL_SOLAR_CONFIG_PATH)
+    parser.add_argument("--asfs-zarr", type=Path, default=ASFS_LOGGER_ZARR_PATH)
+    parser.add_argument("--menapia-mqtt-log", type=Path, default=UAS_MQTT_LOG_PATH)
+    parser.add_argument(
+        "--public-source-manifest-root",
+        type=Path,
+        default=PUBLIC_SOURCE_MANIFEST_ROOT,
+    )
     args = parser.parse_args()
     results = run_candidate(
         baseline_forecast_zarr=args.baseline_forecast_zarr,
@@ -654,6 +772,9 @@ def main() -> None:
         power_zarr=args.power_zarr,
         pdu_zarr=args.pdu_zarr,
         physical_config=args.physical_config,
+        asfs_zarr=args.asfs_zarr,
+        menapia_mqtt_log=args.menapia_mqtt_log,
+        public_source_manifest_root=args.public_source_manifest_root,
     )
     if results:
         print("Verified isolated v12 candidate lanes: " + ", ".join(sorted(results)))

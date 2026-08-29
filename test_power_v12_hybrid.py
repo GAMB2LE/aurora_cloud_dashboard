@@ -21,7 +21,7 @@ from generate_power_soc_forecast import (
 )
 from generate_power_soc_v12_candidate import run_candidate
 from power_load_dynamics import ControlledLoadProfile
-from power_v12_hybrid import fit_bounded_load_residual
+from power_v12_hybrid import build_campaign_evidence, evaluation_contract_from_forecast, fit_bounded_load_residual
 
 
 CONFIG_PATH = Path(__file__).with_name("config") / "power_solar_physical_candidate_v1.json"
@@ -51,6 +51,7 @@ def _archive_with_load_history() -> xr.Dataset:
             "ECMWFCycleTime": (("issue_time",), issues.to_numpy(dtype="datetime64[ns]")),
             "LoadMode": (("issue_time",), np.asarray(["DC-Only"] * 4, dtype="U32")),
             "ForecastModelContractID": (("issue_time",), np.asarray(["v10"] * 4, dtype="U32")),
+            "ForecastSystemVersion": (("issue_time",), np.asarray(["v10-control"] * 4, dtype="U32")),
         },
         coords={"issue_time": issues.to_numpy(dtype="datetime64[ns]"), "forecast_step": steps},
     )
@@ -111,10 +112,34 @@ class HybridCandidateTests(unittest.TestCase):
             issue_time="2026-06-04T00:00:00",
             forecast_times=pd.date_range("2026-06-04", periods=3, freq="3h"),
             load_mode="DC-Only",
+            control_forecast_model_contract_id="v10",
+            control_forecast_system_version="v10-control",
         )
         self.assertEqual(fit.status, "active")
         self.assertEqual(fit.training_samples, 48)
         self.assertAlmostEqual(float(fit.p50_correction_w.iloc[0]), 50.0, delta=1.0)
+
+    def test_load_residual_fails_closed_for_another_control_contract(self) -> None:
+        archive = _archive_with_load_history()
+        times = pd.date_range("2026-06-01", periods=5 * 24, freq="1h")
+        power = xr.Dataset(
+            {
+                "ACOutputWatts": (("time",), np.full(len(times), 200.0)),
+                "DCInverterWatts": (("time",), np.zeros(len(times))),
+            },
+            coords={"time": times},
+        )
+        fit = fit_bounded_load_residual(
+            archive,
+            power,
+            issue_time="2026-06-04T00:00:00",
+            forecast_times=pd.date_range("2026-06-04", periods=3, freq="3h"),
+            load_mode="DC-Only",
+            control_forecast_model_contract_id="different-control",
+            control_forecast_system_version="v10-control",
+        )
+        self.assertTrue(fit.status.startswith("insufficient_issue_time_evidence"))
+        self.assertTrue(np.allclose(fit.p50_correction_w.values, 0.0))
 
     def test_v12_identity_round_trips_to_archive_rows(self) -> None:
         issue = pd.Timestamp("2026-06-21T12:00:00")
@@ -141,12 +166,18 @@ class HybridCandidateTests(unittest.TestCase):
                 "source_manifest_digest": "manifest-test",
                 "degraded_mode_code": "none",
                 "candidate_lane": "D_hybrid",
+                "local_feature_contract_id": "issue-features-test",
+                "baseline_control_contract_id": "baseline-control",
+                "baseline_control_system_version": "v10-control",
+                "source_availability_code": "ecmwf_control=available",
             },
         )
         archived = _archive_row_from_forecast(forecast)
         self.assertTrue(str(archived["ForecastIdentityID"].values[0]).startswith("forecast-identity-v1-"))
         self.assertEqual(str(archived["ForecastSystemVersion"].values[0]), "power-v12-hybrid-candidate")
         self.assertEqual(str(archived["CandidateLane"].values[0]), "D_hybrid")
+        self.assertEqual(str(archived["LocalFeatureContractID"].values[0]), "issue-features-test")
+        self.assertEqual(str(archived["BaselineControlContractID"].values[0]), "baseline-control")
 
     def test_active_evaluation_filter_keeps_the_complete_system_version(self) -> None:
         archive = xr.Dataset(
@@ -243,6 +274,7 @@ class HybridCandidateTests(unittest.TestCase):
             review = json.loads((root / "candidate" / "review_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(acceptance["status"], "not_accepted")
             self.assertEqual(review["status"], "pending_campaign_review")
+            self.assertEqual(status["promotion_gates"]["status"], "not_eligible")
             with xr.open_zarr(results["C_load_residual"], chunks={}) as candidate:
                 np.testing.assert_allclose(
                     candidate["ForecastSolarWatts"].values,
@@ -269,3 +301,66 @@ class HybridCandidateTests(unittest.TestCase):
             )
             self.assertTrue(manifest_path.exists())
             self.assertEqual(json.loads(manifest_path.read_text(encoding="utf-8"))["pair_status"], "complete")
+            source_manifest = next((root / "candidate" / "source_manifests").glob("*.json"))
+            manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+            self.assertIn("issue_time_features", manifest)
+            self.assertIn("public_model_ablations", manifest)
+
+    def test_campaign_evidence_excludes_incompatible_candidate_contracts(self) -> None:
+        issue = pd.Timestamp("2026-06-01T00:00:00")
+        times = pd.date_range(issue, periods=2, freq="3h")
+
+        def forecast(contract: str, *, identity: str) -> xr.Dataset:
+            return xr.Dataset(
+                {
+                    "BatterySOCForecast": (("time",), [80.0, 79.0]),
+                    "ForecastLoadWatts": (("time",), [100.0, 100.0]),
+                    "ForecastSolarWatts": (("time",), [0.0, 0.0]),
+                    "ECMWFSolarIrradiance": (("time",), [0.0, 0.0]),
+                },
+                coords={"time": times},
+                attrs={
+                    "initial_soc_time": issue.isoformat(),
+                    "forecast_model_contract_id": contract,
+                    "forecast_system_version": "power-v12-hybrid-candidate",
+                    "feature_set_version": "features-v4",
+                    "feature_set_digest": "digest-v4",
+                    "forecast_code_revision": "revision-v4",
+                    "candidate_lane": "D_physical_solar_load_residual",
+                    "baseline_control_contract_id": "baseline-control",
+                    "baseline_control_system_version": "v10-control",
+                    "local_feature_contract_id": "issue-features-v1",
+                    "forecast_identity_id": identity,
+                    "source_cycle_set_id": "cycle",
+                    "source_availability_code": "ecmwf_control=available",
+                },
+            )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "pairs"
+            active = forecast("active-contract", identity="active")
+            incompatible = forecast("old-contract", identity="old")
+            for pair, candidate in (("pair-active", active), ("pair-old", incompatible)):
+                bundle = root / pair / "signature"
+                bundle.mkdir(parents=True)
+                active.to_zarr(bundle / "baseline_forecast.zarr", mode="w", consolidated=True)
+                candidate.to_zarr(bundle / "candidate_forecast.zarr", mode="w", consolidated=True)
+                (bundle / "pair_manifest.json").write_text(
+                    json.dumps({"pair_status": "complete", "evaluation_pair_id": pair}),
+                    encoding="utf-8",
+                )
+            power = xr.Dataset(
+                {
+                    "BatterySOC": (("time",), [80.0, 79.0]),
+                    "ACOutputWatts": (("time",), [100.0, 100.0]),
+                },
+                coords={"time": times},
+            )
+            evidence = build_campaign_evidence(
+                root,
+                power,
+                lane="D_physical_solar_load_residual",
+                evaluation_contract=evaluation_contract_from_forecast(active),
+            )
+        self.assertEqual(evidence.sizes["record"], 2)
+        self.assertEqual(evidence.attrs["incompatible_pair_count"], 1)
