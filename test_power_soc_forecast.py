@@ -2310,9 +2310,9 @@ class PowerSocForecastTests(unittest.TestCase):
         times = pd.date_range("2026-07-29T16:00:00", periods=4, freq="1h")
         ds = xr.Dataset(
             {
-                "BatterySOCForecast": (("time",), [100.0, 98.0, 97.0, 99.0]),
-                "BatterySOCForecastP10": (("time",), [100.0, 94.0, 91.0, 93.0]),
-                "BatterySOCForecastP90": (("time",), [100.0, 99.0, 99.0, 100.0]),
+                "SystemAsIsDecisionSOCP50": (("time",), [100.0, 98.0, 97.0, 99.0]),
+                "SystemAsIsDecisionSOCP10": (("time",), [100.0, 94.0, 91.0, 93.0]),
+                "SystemAsIsDecisionSOCP90": (("time",), [100.0, 99.0, 99.0, 100.0]),
                 "OperatingCurrentSOCP50": (("time",), [100.0, 96.0, 92.0, 90.0]),
             },
             coords={"time": times},

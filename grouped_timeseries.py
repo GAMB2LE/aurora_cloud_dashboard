@@ -392,8 +392,8 @@ class PanelSpec:
 
 
 SOC_FORECAST_ANCHOR_TRACE_BY_PANEL = {
-    "soc_24h_forecast": "BatterySOCForecast",
-    "soc_ecmwf_forecast": "BatterySOCForecast",
+    "soc_24h_forecast": "SystemAsIsDecisionSOCP50",
+    "soc_ecmwf_forecast": "SystemAsIsDecisionSOCP50",
     "operating_plan_scenarios": "OperatingCurrentSOCP50",
     "uas_tier_scenarios": "OperatingUASTier1SOCP50",
 }
