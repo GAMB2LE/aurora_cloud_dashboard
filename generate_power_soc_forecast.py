@@ -1752,7 +1752,7 @@ def evaluate_previous_forecast(previous: xr.Dataset | None, frame: pd.DataFrame)
             metrics["soc_bias_pct_points"] = float(np.mean(errors))
             metrics["soc_sample_count"] = int(np.count_nonzero(valid))
 
-    if "ForecastSolarWatts" in previous and not _solar_product_is_available_power(previous):
+    if "ForecastSolarWatts" in previous:
         forecast_solar = pd.Series(np.asarray(previous["ForecastSolarWatts"].values, dtype=np.float64), index=forecast_times)
         forecast_solar = forecast_solar.loc[valid_forecast]
         observed_solar = _observed_solar_w(frame).reindex(forecast_solar.index, method="nearest", tolerance=pd.Timedelta(minutes=10))
@@ -2099,14 +2099,12 @@ def evaluate_forecast_archive(archive: xr.Dataset | None, frame: pd.DataFrame) -
         return {}
     metrics: dict[str, float | int | str] = {}
     tolerance = pd.Timedelta(minutes=10)
-    active_contract = _active_forecast_contract_id(archive)
     if "BatterySOC" in frame:
         soc_table = _archive_verification_frame(
             archive,
             frame["BatterySOC"],
             forecast_var="BatterySOCForecast",
             tolerance=tolerance,
-            forecast_model_contract_id=active_contract,
         )
         soc_table = _filter_active_forecast_contract(soc_table, archive)
         if not soc_table.empty:
