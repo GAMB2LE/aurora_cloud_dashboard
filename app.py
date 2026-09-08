@@ -43,7 +43,7 @@ from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
     SOC_REFERENCE_PANEL_KEYS,
 )
-from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS, UAS_TIER_SCENARIOS
 try:
     from PIL import Image
 except Exception:  # pragma: no cover - dashboard can still serve source images.
@@ -77,6 +77,8 @@ from grouped_timeseries import (
     POWER_DISPLAY_SUMMARY_FIELDS,
     POWER_SOC_FORECAST_FIELDS,
     POWER_FUTURE_DISPLAY_FIELDS,
+    SOC_FORECAST_ANCHOR_LABEL,
+    SOC_FORECAST_ANCHOR_TRACE_BY_PANEL,
     prepare_summary_dataset,
     widget_group_options,
 )
@@ -916,10 +918,13 @@ _POWER_DISPLAY_ENERGY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_ENERGY_REFRESHED_AT: datetime | None = None
 _POWER_DISPLAY_SUMMARY_DS: xr.Dataset | None = None
 _POWER_DISPLAY_SUMMARY_REFRESHED_AT: datetime | None = None
+_POWER_DISPLAY_SUMMARY_SOURCE_PATH: Path | None = None
 _POWER_DISPLAY_SECTION_DS: dict[str, xr.Dataset] = {}
 _POWER_DISPLAY_SECTION_REFRESHED_AT: dict[str, datetime] = {}
+_POWER_DISPLAY_SECTION_SOURCE_PATH: dict[str, Path] = {}
 _POWER_OPERATING_SCENARIOS_DS: xr.Dataset | None = None
 _POWER_OPERATING_SCENARIOS_REFRESHED_AT: datetime | None = None
+_POWER_OPERATING_SCENARIOS_SOURCE_PATH: Path | None = None
 _OPS_TREND_CACHE: dict[str, object] = {"updated_at": None, "markup": ""}
 _SESSION_PERIODIC_CALLBACKS: list[object] = []
 
@@ -961,23 +966,20 @@ def _power_display_energy_path() -> Path:
 
 
 def _power_display_summary_path() -> Path:
-    return Path(os.environ.get("POWER_DISPLAY_SUMMARY_ZARR_PATH", "/data/aurora/products/power/power_display_summary.zarr"))
+    return mobile_catalog.power_display_summary_path()
 
 
 def _power_display_section_path(section: str) -> Path:
     """Return the compact display store for one Power browser section."""
-    if section == "current":
-        configured = os.environ.get("POWER_CURRENT_DISPLAY_ZARR_PATH", "").strip()
-        default = "/data/aurora/products/power/power_current_display.zarr"
-    elif section == "forecast":
-        configured = os.environ.get("POWER_FORECAST_DISPLAY_ZARR_PATH", "").strip()
-        default = "/data/aurora/products/power/power_forecast_display.zarr"
-    else:
+    if section not in {"current", "forecast"}:
         raise ValueError(f"Unsupported Power display section: {section}")
-    return Path(configured or default)
+    return mobile_catalog.power_display_section_path(section)
 
 
 def _power_display_summary_metadata_path() -> Path:
+    active = mobile_catalog.power_forecast_active_product_path("displayManifest")
+    if active is not None:
+        return active
     configured = os.environ.get("POWER_DISPLAY_SUMMARY_METADATA_PATH", "").strip()
     if configured:
         return Path(configured)
@@ -997,19 +999,12 @@ def _power_display_summary_time_bounds_metadata() -> tuple[datetime | None, date
 
 
 def _power_operating_scenarios_path() -> Path:
-    return Path(
-        os.environ.get(
-            "POWER_OPERATING_SCENARIOS_ZARR_PATH",
-            "/data/aurora/products/power/power_operating_scenarios.zarr",
-        )
-    )
+    return mobile_catalog.power_operating_scenario_paths()[0]
 
 
 def _power_operating_scenario_paths() -> tuple[Path, ...]:
     """Return the configured scenario store followed by the mirrored live store."""
-    configured = _power_operating_scenarios_path()
-    mirrored = Path("/data/aurora/products/power/power_operating_scenarios.zarr")
-    return tuple(dict.fromkeys((configured, mirrored)))
+    return mobile_catalog.power_operating_scenario_paths()
 
 
 def _power_operating_recommendations_path() -> Path:
@@ -1026,6 +1021,16 @@ def _prewarmed_interactive_dir() -> Path:
 def _prewarmed_interactive_path(inst: str) -> Path:
     if inst == "power":
         section = power_view_select.value if "power_view_select" in globals() else "current"
+        active_forecast = (
+            mobile_catalog.power_forecast_active_display_path()
+            if section == "forecast"
+            else None
+        )
+        if active_forecast is not None:
+            # The legacy prewarm is not part of the immutable generation. Once
+            # activated, render from the validated bundle instead of mixing it
+            # with an older Plotly cache.
+            return active_forecast.parent / ".forecast-prewarm-not-published.json"
         return _prewarmed_interactive_dir() / f"power_{section}_latest_interactive.json"
     safe = inst.replace(" ", "_").replace("-", "_").lower()
     return _prewarmed_interactive_dir() / f"{safe}_latest_interactive.json"
@@ -1177,9 +1182,26 @@ def _get_power_display_energy_dataset() -> xr.Dataset | None:
 def _get_power_display_summary_dataset() -> xr.Dataset | None:
     """Open the legacy combined Power display store as a compatibility fallback."""
     global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
-    if _POWER_DISPLAY_SUMMARY_DS is not None:
-        return _POWER_DISPLAY_SUMMARY_DS
+    global _POWER_DISPLAY_SUMMARY_SOURCE_PATH
+    publication = mobile_catalog.power_forecast_bundle_status(
+        _power_display_section_path("forecast")
+    )
+    if publication.get("enabled") and publication.get("status") == "unavailable":
+        return None
     path = _power_display_summary_path()
+    if (
+        _POWER_DISPLAY_SUMMARY_DS is not None
+        and _POWER_DISPLAY_SUMMARY_SOURCE_PATH == path
+    ):
+        return _POWER_DISPLAY_SUMMARY_DS
+    if _POWER_DISPLAY_SUMMARY_DS is not None:
+        try:
+            _POWER_DISPLAY_SUMMARY_DS.close()
+        except Exception:
+            pass
+        _POWER_DISPLAY_SUMMARY_DS = None
+        _POWER_DISPLAY_SUMMARY_REFRESHED_AT = None
+        _POWER_DISPLAY_SUMMARY_SOURCE_PATH = None
     if not path.exists():
         return None
     with _timed_perf("power_display_summary_open", instrument="power", zarr_path=str(path)) as perf:
@@ -1195,6 +1217,7 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
         perf["var_count"] = len(ds.data_vars)
     _POWER_DISPLAY_SUMMARY_DS = ds
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = datetime.now(timezone.utc)
+    _POWER_DISPLAY_SUMMARY_SOURCE_PATH = path
     return ds
 
 
@@ -1204,10 +1227,24 @@ def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
     The combined store is retained for existing scripts and old deployments, but
     normal browser renders must not open all observed and forecast fields.
     """
-    cached = _POWER_DISPLAY_SECTION_DS.get(section)
-    if cached is not None:
-        return cached
     path = _power_display_section_path(section)
+    if section in {"current", "forecast"}:
+        publication = mobile_catalog.power_forecast_bundle_status(
+            _power_display_section_path("forecast")
+        )
+        if publication.get("enabled") and publication.get("status") == "unavailable":
+            return None
+    cached = _POWER_DISPLAY_SECTION_DS.get(section)
+    if cached is not None and _POWER_DISPLAY_SECTION_SOURCE_PATH.get(section) == path:
+        return cached
+    if cached is not None:
+        try:
+            cached.close()
+        except Exception:
+            pass
+        _POWER_DISPLAY_SECTION_DS.pop(section, None)
+        _POWER_DISPLAY_SECTION_REFRESHED_AT.pop(section, None)
+        _POWER_DISPLAY_SECTION_SOURCE_PATH.pop(section, None)
     if not path.exists():
         return None
     with _timed_perf("power_display_section_open", instrument="power", section=section, zarr_path=str(path)) as perf:
@@ -1222,16 +1259,19 @@ def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
         perf["var_count"] = len(ds.data_vars)
     _POWER_DISPLAY_SECTION_DS[section] = ds
     _POWER_DISPLAY_SECTION_REFRESHED_AT[section] = datetime.now(timezone.utc)
+    _POWER_DISPLAY_SECTION_SOURCE_PATH[section] = path
     return ds
 
 
 def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
     """Open the compact learned operating-plan product when available."""
     global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
+    global _POWER_OPERATING_SCENARIOS_SOURCE_PATH
     required = {"component", "SolarEnsembleWatts", "ComponentLoadWatts"}
+    paths = _power_operating_scenario_paths()
     if _POWER_OPERATING_SCENARIOS_DS is not None and required.issubset(
         set(_POWER_OPERATING_SCENARIOS_DS.variables)
-    ):
+    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH in paths:
         return _POWER_OPERATING_SCENARIOS_DS
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
@@ -1240,7 +1280,8 @@ def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
             pass
         _POWER_OPERATING_SCENARIOS_DS = None
         _POWER_OPERATING_SCENARIOS_REFRESHED_AT = None
-    for path in _power_operating_scenario_paths():
+        _POWER_OPERATING_SCENARIOS_SOURCE_PATH = None
+    for path in paths:
         if not path.exists():
             continue
         with _timed_perf("power_operating_scenarios_open", instrument="power", zarr_path=str(path)) as perf:
@@ -1263,6 +1304,7 @@ def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
             perf["dims"] = dict(ds.sizes)
         _POWER_OPERATING_SCENARIOS_DS = ds
         _POWER_OPERATING_SCENARIOS_REFRESHED_AT = datetime.now(timezone.utc)
+        _POWER_OPERATING_SCENARIOS_SOURCE_PATH = path
         return ds
     return None
 
@@ -1271,7 +1313,9 @@ def _refresh_power_display_energy_dataset() -> None:
     """Drop compact Power display-product handles so latest products reopen."""
     global _POWER_DISPLAY_ENERGY_DS, _POWER_DISPLAY_ENERGY_REFRESHED_AT
     global _POWER_DISPLAY_SUMMARY_DS, _POWER_DISPLAY_SUMMARY_REFRESHED_AT
+    global _POWER_DISPLAY_SUMMARY_SOURCE_PATH
     global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
+    global _POWER_OPERATING_SCENARIOS_SOURCE_PATH
     if _POWER_DISPLAY_ENERGY_DS is not None:
         try:
             _POWER_DISPLAY_ENERGY_DS.close()
@@ -1286,6 +1330,7 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_DISPLAY_SUMMARY_DS = None
     _POWER_DISPLAY_SUMMARY_REFRESHED_AT = None
+    _POWER_DISPLAY_SUMMARY_SOURCE_PATH = None
     for ds in _POWER_DISPLAY_SECTION_DS.values():
         try:
             ds.close()
@@ -1293,6 +1338,7 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_DISPLAY_SECTION_DS.clear()
     _POWER_DISPLAY_SECTION_REFRESHED_AT.clear()
+    _POWER_DISPLAY_SECTION_SOURCE_PATH.clear()
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
             _POWER_OPERATING_SCENARIOS_DS.close()
@@ -1300,6 +1346,7 @@ def _refresh_power_display_energy_dataset() -> None:
             pass
     _POWER_OPERATING_SCENARIOS_DS = None
     _POWER_OPERATING_SCENARIOS_REFRESHED_AT = None
+    _POWER_OPERATING_SCENARIOS_SOURCE_PATH = None
 
 
 def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
@@ -9553,6 +9600,7 @@ def _mobile_forecast_panel_start(ds: xr.Dataset, panel) -> pd.Timestamp | None:
         ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
+        "uas_tier_scenarios": ("OperatingUASTier1SOCP50",),
         "operating_plan_schedule": (
             "OperatingCL61OptimizedActiveCount",
             "OperatingCL61OptimizedCL61On",
@@ -9667,6 +9715,7 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
         "operating_plan_schedule",
         "ecmwf_solar_forecast",
     }
@@ -9675,6 +9724,7 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
     fig = go.Figure()
     has_right_axis = panel.right_axis_label is not None
     legend_items: list[str] = []
+    soc_anchor: tuple[pd.Timestamp, float] | None = None
     for trace in panel.traces:
         if trace.projection_lookback_minutes is not None:
             continue
@@ -9722,6 +9772,37 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
                 hovertemplate=f"Time=%{{x}}<br>{trace_label}=%{{y:.4g}}<extra></extra>",
                 connectgaps=False,
             )
+        )
+        if trace.var == SOC_FORECAST_ANCHOR_TRACE_BY_PANEL.get(panel.key) and soc_anchor is None:
+            finite = np.flatnonzero(np.isfinite(values))
+            if finite.size:
+                anchor_index = int(finite[0])
+                soc_anchor = (pd.Timestamp(times[anchor_index]), float(values[anchor_index]))
+    if soc_anchor is not None:
+        anchor_time, anchor_value = soc_anchor
+        fig.add_trace(
+            go.Scatter(
+                x=[anchor_time],
+                y=[anchor_value],
+                mode="markers",
+                name=SOC_FORECAST_ANCHOR_LABEL,
+                marker=dict(color=THEME_ACCENT, size=9, line=dict(color="white", width=2)),
+                hovertemplate=f"{SOC_FORECAST_ANCHOR_LABEL}=%{{y:.1f}}%<br>Time=%{{x}}<extra></extra>",
+                showlegend=False,
+            )
+        )
+        fig.add_annotation(
+            x=anchor_time,
+            y=anchor_value,
+            text=f"Measured SOC {anchor_value:.0f}%",
+            showarrow=True,
+            arrowhead=0,
+            ax=52,
+            ay=22,
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor=THEME_ACCENT,
+            borderwidth=1,
+            font=dict(color=THEME_TEXT, size=9),
         )
     if panel.key in {"operating_plan_scenarios", "ecmwf_solar_forecast"} and "OperatingCL61OptimizedModeCode" in ds:
         schedule_times = pd.DatetimeIndex(ds["time"].values)
@@ -9899,12 +9980,14 @@ def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
     current_mode = str(ds.attrs.get("operating_current_mode_label", "Current system state")).strip()
     horizon = str(ds.attrs.get("operating_optimization_horizon_hours", "96")).strip()
     scenario_labels = ", ".join(definition.label for definition in SUGGESTED_OPERATING_SCENARIOS)
+    uas_tier_labels = ", ".join(definition.label for definition in UAS_TIER_SCENARIOS)
     return (
         "<div class='power-browser-briefing'>"
         "<div class='power-browser-briefing__title'>Forecast scenarios</div>"
         "<div class='power-browser-briefing__grid'>"
         "<div><strong>System as-is</strong><br>ECMWF ensemble forecast anchored to the latest confirmed finite instrument state and its detected sustained load phase. P10/P90 include weather, bounded battery parameters, and only recurrent startup or fan uncertainty within that same state.</div>"
         f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and uses the learned load distribution for exactly its named state; states are never blended. UAS tier 3 remains provisional until repeated operating evidence is available.</div>"
+        f"<div><strong>UAS tier scenarios</strong><br>{escape(uas_tier_labels)}. The current non-UAS station configuration is held fixed so only the tier load changes. Provisional tiers use documented fallback quantiles until field evidence is mature.</div>"
         "<div><strong>Safety rule</strong><br>The recommended schedule is advisory only and aims to keep P10 SOC at or above the 40% operational minimum.</div>"
         "</div></div>"
     )

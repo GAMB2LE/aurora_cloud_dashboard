@@ -113,11 +113,14 @@ is retained alongside the canonical value for audit. Proxy tiers become
 reliable after two independent episodes and six observed hours. Direct tiers
 require three episodes and six hours.
 
-Charging is never inferred from an unexplained increase in watts. Until an
-operator-annotated `UASCharge on`/`off` episode is available, Tiers 1-3 add an
-estimated `300 W` for exactly three hours and then return to the base tier.
-After at least one complete 2.5-hour annotated episode, the learner replaces
-both the increment distribution and median duration with observed charge data.
+Charging uses explicit `UASCharge on`/`off` events. The empirical prior from six
+complete recoveries on 26-27 August 2026 has P10/P50/P90 increments of
+`181.80/270.75/340.65 W` and energies of `160.65/163.80/179.85 Wh`. The planning
+allowance is `200 Wh`, with a provisional duration of `0.75 h`. A tier-specific
+charging profile becomes reliable after at least 20 episodes, five observed
+hours across five days, and an available base-tier profile. Until then, the
+forecast retains the empirical increment prior and provisional duration;
+reliable charging data supply the learned increments and median duration.
 Provisional base tiers continue to use the
 documented conservative fallback distribution: P10 `55 W`, P50 `108 W`, P90
 `302 W`.
@@ -150,6 +153,10 @@ model has learned. The fixed comparison set also includes CL61, CL61 + Radar,
 CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, HATPRO, and **all
 instruments + UAS tier 3**. The old `100-600 W` plot is retained only as a
 backwards-compatible data contract and is no longer the operating interface.
+The dedicated UAS comparison additionally evaluates standard tiers 1-5 while
+holding the current non-UAS kit combination fixed, so tier curves differ only
+in UAS load. Diagnostic tiers 11 and 12 are excluded because they mimic tiers
+1 and 2.
 The dashboard derives canonical `SystemAsIsDecision*` traces from the freshly
 re-anchored current-mode scenario. The SOC 96 h panel and the current line in
 the scenario panel therefore share one SOC anchor, issue, weather basis, load
@@ -221,19 +228,18 @@ planning product's solar cycle, not an older planning-cycle load trace. Thus,
 when CL61 is the only powered instrument, the current trace and the fixed CL61
 trace start from the same detected heater/blower phase.
 
-The advisory scheduler considers CL61, Radar, and HATPRO on/off states over the
-first 96 hours. It first maximizes safe CL61 hours, freezes that result, then
-maximizes Radar and finally HATPRO. This makes the priority explicit rather than
-trading a CL61 hour for a lower-priority instrument. The DC baseline and current
-UAS state remain fixed. Each controlled instrument has a minimum 12-hour run
-and at most one planned start per UTC day. All three are off through the rest of
-the 240-hour planning forecast, and every candidate must keep P10 SOC at or
-above 40% across that full horizon. Learned startup, fan, and heater/blower
-phases are checked again before publication. If the fixed DC/UAS reserve case
-still crosses 40%, no feasible schedule exists; zero traces are retained only
-as an unsafe diagnostic fallback. The scheduler is advisory only and never
-issues PDU commands. The existing custom CL61 start/duration editor remains an
-independent what-if calculation.
+The advisory scheduler reserves a feasible CL61 timetable first, then adds
+Radar and HATPRO only from residual reserve. This makes the priority explicit
+rather than trading a CL61 hour for a lower-priority instrument. The DC baseline
+and current UAS state remain fixed; an already-on CL61, Radar, or HATPRO is also
+held at its observed PDU state so the plan cannot assume that another outlet
+has changed. Each newly proposed interval has a minimum 12-hour run and at most
+one planned start per UTC day. Every candidate must keep P10 SOC at or above
+40% across the full 240-hour horizon. Learned startup, fan, and heater/blower
+phases are checked again before publication. The scheduler is advisory only and
+never issues PDU commands; the optional development automation product is a
+non-executable shadow receipt. The existing custom CL61 start/duration editor
+remains an independent what-if calculation.
 
 Archived deterministic forecasts carry `LoadModelVersion`. Load MAE, bias, and
 skill only use rows from a matching model version, preventing retired model

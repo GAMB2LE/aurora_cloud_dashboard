@@ -35,14 +35,27 @@ from power_load_dynamics import (
 from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
+    UAS_TIER_SCENARIOS,
+    UAS_TIER_SCENARIO_IDS,
 )
 from power_state_catalog import (
     LEARNED_POWER_STATE_IDS,
     POWER_STATE_SCENARIOS,
     POWER_STATE_SCENARIO_IDS,
     UAS_CHARGE_DURATION_HOURS,
+    UAS_CHARGE_EMPIRICAL_DURATION_P10_HOURS,
+    UAS_CHARGE_EMPIRICAL_DURATION_P50_HOURS,
+    UAS_CHARGE_EMPIRICAL_DURATION_P90_HOURS,
+    UAS_CHARGE_EMPIRICAL_ENERGY_P10_WH,
+    UAS_CHARGE_EMPIRICAL_ENERGY_P50_WH,
+    UAS_CHARGE_EMPIRICAL_ENERGY_P90_WH,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W,
     UAS_CHARGE_ESTIMATE_W,
     UAS_CHARGE_EVENT_KIT,
+    UAS_CHARGE_PLANNING_ENERGY_WH,
+    UAS_CHARGE_PRIOR_SOURCE,
     UAS_CHARGE_TIERS,
     UAS_TIER_LEARNING_SOURCES,
     canonical_uas_tier,
@@ -63,6 +76,9 @@ KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
 KIT_OUTLETS = {"UAS": 4, "CL61": 5, "Radar": 6, "HATPRO": 8}
 OPERATING_PRIORITY = ("CL61", "Radar", "HATPRO")
+SCHEDULE_POLICY_CL61_PRIMARY = "cl61_primary_v1"
+SCHEDULE_POLICY_ENERGY_MAXIMISING = "energy_maximising_v1"
+DEFAULT_SCHEDULE_POLICY = SCHEDULE_POLICY_CL61_PRIMARY
 COMPONENTS = ("DC",) + KIT_ORDER + ("UnknownAC",)
 COMPONENT_INDEX = {name: index for index, name in enumerate(COMPONENTS)}
 
@@ -82,11 +98,21 @@ P50_CONTINUATION_MINIMUM_SOC_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 UAS_TIER_RELIABLE_EPISODES = 3
 UAS_TIER_RELIABLE_HOURS = 6.0
 UAS_PROXY_TIER_RELIABLE_EPISODES = 2
-UAS_CHARGE_RELIABLE_EPISODES = 1
-UAS_CHARGE_RELIABLE_HOURS = 2.5
+UAS_CHARGE_RELIABLE_EPISODES = 20
+UAS_CHARGE_RELIABLE_HOURS = 5.0
+UAS_CHARGE_RELIABLE_DAYS = 5
 UAS_TIER3_FALLBACK_P10_W = 55.0
 UAS_TIER3_FALLBACK_P50_W = 108.0
 UAS_TIER3_FALLBACK_P90_W = 302.0
+
+UAS_TIER_FALLBACKS = {
+    definition.tier: (
+        definition.fallback_p10_w,
+        definition.fallback_p50_w,
+        definition.fallback_p90_w,
+    )
+    for definition in UAS_TIER_SCENARIOS
+}
 
 SCENARIO_CURRENT = "current_mode"
 SCENARIO_DC_ONLY = "dc_only"
@@ -271,6 +297,9 @@ def describe_priority_schedule(
     priorities: Sequence[str] = OPERATING_PRIORITY,
     minimum_soc: float = MINIMUM_OPERATIONAL_SOC_PCT,
     controlled_energy_kwh: float | None = None,
+    policy: str = SCHEDULE_POLICY_ENERGY_MAXIMISING,
+    continuation_required: bool = False,
+    held_instruments: Sequence[str] = (),
 ) -> CL61ScheduleDiagnostic:
     """Explain the additive advisory plan without implying automatic PDU control."""
     controlled = tuple(str(value) for value in priorities)
@@ -286,6 +315,22 @@ def describe_priority_schedule(
     )
     priority_text = " > ".join(controlled)
     if not safe:
+        if policy == SCHEDULE_POLICY_CL61_PRIMARY and continuation_required:
+            reason = (
+                f"The existing CL61 is deliberately retained in this diagnostic, but its "
+                f"CL61-first continuation cannot keep P10 SOC at or above {float(minimum_soc):g}% "
+                "through the planning horizon. This is not an instruction to switch CL61 off; "
+                "automatic control remains unavailable and operator review is required."
+            )
+            return CL61ScheduleDiagnostic(
+                status="no_safe_schedule",
+                reason_code="existing_cl61_continuation_below_reserve",
+                reason=reason,
+                base_mode=base_mode,
+                base_mode_label=base_label,
+                blocking_instruments=fixed_kits,
+                operator_action_required=True,
+            )
         fixed_detail = (
             f"The non-controlled {_human_list(fixed_kits)} load remains on. "
             if fixed_kits
@@ -308,8 +353,14 @@ def describe_priority_schedule(
             operator_action_required=True,
         )
 
+    held = {str(name) for name in held_instruments}
     selected = tuple(
-        f"{name} {float(instrument_hours.get(name, 0.0)):.0f} h"
+        (
+            f"{name} {float(instrument_hours.get(name, 0.0)):.0f} h "
+            "(held observed state)"
+        )
+        if name in held
+        else f"{name} {float(instrument_hours.get(name, 0.0)):.0f} h"
         for name in controlled
         if float(instrument_hours.get(name, 0.0)) > 0.0
     )
@@ -331,20 +382,31 @@ def describe_priority_schedule(
 
     total_hours = float(sum(max(float(instrument_hours.get(name, 0.0)), 0.0) for name in controlled))
     energy_text = (
-        f" and {float(controlled_energy_kwh):.2f} kWh of additive controlled energy"
+        f" and {float(controlled_energy_kwh):.2f} kWh of additive instrument energy"
         if controlled_energy_kwh is not None and np.isfinite(float(controlled_energy_kwh))
         else ""
     )
+    if policy == SCHEDULE_POLICY_CL61_PRIMARY:
+        objective = (
+            "The CL61-first advisory scheduler reserves the feasible CL61 timetable first, "
+            "then adds Radar and HATPRO only from residual reserve. Existing non-CL61 "
+            "instruments are held at their observed state rather than implicitly switched."
+        )
+        reason_code = "safe_cl61_primary_schedule"
+    else:
+        objective = (
+            "The additive advisory scheduler maximises controlled energy first, then total "
+            f"instrument-hours; {priority_text} breaks otherwise-equal plans."
+        )
+        reason_code = "safe_priority_schedule"
     reason = (
-        "The additive advisory scheduler maximises controlled energy first, then total "
-        f"instrument-hours; {priority_text} breaks otherwise-equal plans. This plan provides "
-        f"{_human_list(selected)}, totalling {total_hours:.0f} instrument-hours{energy_text}, while "
-        f"keeping full-horizon P10 SOC at or above {float(minimum_soc):g}%. It never operates "
-        "PDU outlets automatically."
+        f"{objective} This plan provides {_human_list(selected)}, totalling "
+        f"{total_hours:.0f} instrument-hours{energy_text}, while keeping full-horizon P10 SOC "
+        f"at or above {float(minimum_soc):g}%. It never operates PDU outlets automatically."
     )
     return CL61ScheduleDiagnostic(
         status="safe_schedule",
-        reason_code="safe_priority_schedule",
+        reason_code=reason_code,
         reason=reason,
         base_mode=base_mode,
         base_mode_label=base_label,
@@ -438,6 +500,25 @@ def _pdu_frame(
     return frame.loc[~frame.index.duplicated(keep="last")]
 
 
+def _aligned_uas_tier(series: pd.Series | None, index: pd.DatetimeIndex) -> pd.Series:
+    """Return a recent raw dock-tier series aligned to operating observations."""
+    if series is None or series.empty:
+        return pd.Series(np.nan, index=index, dtype=np.float64)
+    tier = pd.Series(
+        pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64),
+        index=pd.DatetimeIndex(series.index),
+        dtype=np.float64,
+    ).sort_index()
+    if tier.index.tz is not None:
+        tier.index = tier.index.tz_convert("UTC").tz_localize(None)
+    tier = tier.loc[~tier.index.duplicated(keep="last")]
+    return tier.reindex(
+        index,
+        method="ffill",
+        tolerance=pd.Timedelta(minutes=30),
+    )
+
+
 def build_observation_frame(
     power: xr.Dataset,
     pdu: xr.Dataset | None,
@@ -447,6 +528,8 @@ def build_observation_frame(
     frequency: str = OBSERVATION_FREQUENCY,
     events: Sequence[OperatingEvent] = (),
     uas_tier: pd.Series | None = None,
+    uas_dock1_tier: pd.Series | None = None,
+    uas_dock2_tier: pd.Series | None = None,
 ) -> pd.DataFrame:
     if "time" not in power or power.sizes.get("time", 0) == 0:
         return pd.DataFrame()
@@ -468,33 +551,56 @@ def build_observation_frame(
         pdu_samples = pdu_frame.resample(frequency).median()
         for name in pdu_samples:
             observed[name] = pdu_samples[name].reindex(observed.index, method="nearest", tolerance=pd.Timedelta(frequency))
-    if uas_tier is not None and not uas_tier.empty:
-        tier = pd.Series(
-            pd.to_numeric(uas_tier, errors="coerce").to_numpy(dtype=np.float64),
-            index=pd.DatetimeIndex(uas_tier.index),
-        ).sort_index()
-        if tier.index.tz is not None:
-            tier.index = tier.index.tz_convert("UTC").tz_localize(None)
-        tier = tier.loc[~tier.index.duplicated(keep="last")]
-        observed["uas_effective_tier"] = tier.reindex(
-            observed.index,
-            method="ffill",
-            tolerance=pd.Timedelta(minutes=30),
-        )
-        observed["uas_canonical_tier"] = observed["uas_effective_tier"].map(
-            canonical_uas_tier
-        )
-        observed["uas_tier_learning_eligible"] = [
-            bool(
-                pd.notna(canonical)
-                and tier_is_learning_source(raw, int(canonical))
-            )
-            for raw, canonical in zip(
-                observed["uas_effective_tier"],
-                observed["uas_canonical_tier"],
-                strict=True,
-            )
+    # The Menapia producer emits (dock1_tier, dock2_tier).  A combined PDU
+    # branch cannot identify the component draw of a mixed pair, so only an
+    # exact matching pair is allowed to train a canonical single-tier profile.
+    if uas_dock1_tier is not None or uas_dock2_tier is not None:
+        dock1 = _aligned_uas_tier(uas_dock1_tier, observed.index)
+        dock2 = _aligned_uas_tier(uas_dock2_tier, observed.index)
+        observed["uas_dock1_tier"] = dock1
+        observed["uas_dock2_tier"] = dock2
+        pair_complete = np.isfinite(dock1) & np.isfinite(dock2)
+        pair_consistent = pair_complete & np.isclose(dock1, dock2)
+        observed["uas_pair_consistent"] = pair_consistent
+        observed["uas_pair_state"] = [
+            f"dock1_{int(left)}__dock2_{int(right)}" if complete else ""
+            for left, right, complete in zip(dock1, dock2, pair_complete, strict=True)
         ]
+        observed["uas_effective_tier"] = dock1.where(pair_consistent)
+        observed["uas_canonical_tier"] = observed["uas_effective_tier"].map(canonical_uas_tier)
+        observed["uas_tier_source"] = np.where(
+            pair_consistent,
+            "matching_dock_pair",
+            np.where(pair_complete, "mixed_dock_pair", "incomplete_dock_pair"),
+        )
+    elif uas_tier is not None and not uas_tier.empty:
+        # Retain the legacy single-field adapter only for historical replay.
+        # It is never presented as two-dock evidence in new products.
+        effective = _aligned_uas_tier(uas_tier, observed.index)
+        observed["uas_effective_tier"] = effective
+        observed["uas_canonical_tier"] = effective.map(canonical_uas_tier)
+        observed["uas_pair_consistent"] = False
+        observed["uas_pair_state"] = "legacy_single_tier"
+        observed["uas_tier_source"] = "legacy_single_tier"
+    else:
+        observed["uas_effective_tier"] = np.nan
+        observed["uas_canonical_tier"] = np.nan
+        observed["uas_pair_consistent"] = False
+        observed["uas_pair_state"] = ""
+        observed["uas_tier_source"] = "unavailable"
+    observed["uas_tier_learning_eligible"] = [
+        bool(
+            source == "matching_dock_pair"
+            and pd.notna(canonical)
+            and tier_is_learning_source(raw, int(canonical))
+        )
+        for raw, canonical, source in zip(
+            observed["uas_effective_tier"],
+            observed["uas_canonical_tier"],
+            observed["uas_tier_source"],
+            strict=True,
+        )
+    ]
 
     # Charging is an explicitly annotated state, not a wattage guess.  The
     # current field estimate is used until UASCharge on/off events provide a
@@ -789,8 +895,17 @@ def _uas_tier_profiles(observations: pd.DataFrame) -> dict[str, dict[str, Any]]:
         observations.get("uas_charging", pd.Series(np.nan, index=observations.index)),
         errors="coerce",
     )
+    learning_eligible = observations.get(
+        "uas_tier_learning_eligible",
+        pd.Series(False, index=observations.index),
+    ).fillna(False).astype(bool)
     for tier_value, source_tiers in UAS_TIER_LEARNING_SOURCES.items():
-        selected_mask = raw_tiers.isin(source_tiers) & np.isfinite(watts) & ~(charging >= 0.5)
+        selected_mask = (
+            raw_tiers.isin(source_tiers)
+            & learning_eligible
+            & np.isfinite(watts)
+            & ~(charging >= 0.5)
+        )
         selected = observations.loc[selected_mask, ["uas_effective_tier", "UAS_watts"]]
         if selected.empty:
             continue
@@ -841,34 +956,62 @@ def _uas_charge_profiles(
         observations.get("uas_charging", pd.Series(np.nan, index=observations.index)),
         errors="coerce",
     )
+    learning_eligible = observations.get(
+        "uas_tier_learning_eligible",
+        pd.Series(False, index=observations.index),
+    ).fillna(False).astype(bool)
     for tier_value in UAS_CHARGE_TIERS:
         state_id = uas_state_id(tier_value, charging=True)
         source_tiers = UAS_TIER_LEARNING_SOURCES[tier_value]
-        selected_mask = raw_tiers.isin(source_tiers) & (charging >= 0.5) & np.isfinite(watts)
+        selected_mask = (
+            raw_tiers.isin(source_tiers)
+            & learning_eligible
+            & (charging >= 0.5)
+            & np.isfinite(watts)
+        )
         selected = watts.loc[selected_mask]
         base_profile = tier_profiles.get(str(tier_value), {})
         base_p50 = float(base_profile.get("p50_w", 0.0))
         if selected.empty:
-            p10 = p50 = p90 = UAS_CHARGE_ESTIMATE_W
+            p10 = UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W
+            p50 = UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W
+            p90 = UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W
             episodes = 0
             hours = 0.0
-            duration_p10 = duration_p50 = duration_p90 = UAS_CHARGE_DURATION_HOURS
+            active_days = 0
+            duration_p10 = UAS_CHARGE_EMPIRICAL_DURATION_P10_HOURS
+            duration_p50 = UAS_CHARGE_EMPIRICAL_DURATION_P50_HOURS
+            duration_p90 = UAS_CHARGE_EMPIRICAL_DURATION_P90_HOURS
+            energy_p10 = UAS_CHARGE_EMPIRICAL_ENERGY_P10_WH
+            energy_p50 = UAS_CHARGE_EMPIRICAL_ENERGY_P50_WH
+            energy_p90 = UAS_CHARGE_EMPIRICAL_ENERGY_P90_WH
             maturity = "estimated"
         else:
             increments = np.clip(selected.to_numpy(dtype=np.float64) - base_p50, 0.0, None)
             p10, p50, p90 = np.nanquantile(increments, (0.10, 0.50, 0.90))
             episodes = _episode_count(selected_mask, pd.DatetimeIndex(observations.index))
             hours = float(len(selected) * pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1))
+            active_days = int(
+                len(pd.DatetimeIndex(observations.index[selected_mask]).normalize().unique())
+            )
             durations = _episode_durations_hours(
                 selected_mask, pd.DatetimeIndex(observations.index)
             )
             duration_p10, duration_p50, duration_p90 = np.nanquantile(
                 durations, (0.10, 0.50, 0.90)
             )
+            sample_hours = float(
+                pd.Timedelta(OBSERVATION_FREQUENCY) / pd.Timedelta(hours=1)
+            )
+            energy_p10, energy_p50, energy_p90 = np.nanquantile(
+                increments * sample_hours,
+                (0.10, 0.50, 0.90),
+            )
             maturity = (
                 "reliable"
                 if episodes >= UAS_CHARGE_RELIABLE_EPISODES
                 and hours >= UAS_CHARGE_RELIABLE_HOURS
+                and active_days >= UAS_CHARGE_RELIABLE_DAYS
                 and bool(base_profile)
                 else "provisional"
             )
@@ -884,6 +1027,7 @@ def _uas_charge_profiles(
             "sample_count": float(len(selected)),
             "episode_count": float(episodes),
             "observed_hours": hours,
+            "observed_days": float(active_days),
             "duration_p10_hours": float(duration_p10),
             "duration_p50_hours": float(duration_p50),
             "duration_p90_hours": float(duration_p90),
@@ -892,6 +1036,11 @@ def _uas_charge_profiles(
                 if maturity == "reliable"
                 else UAS_CHARGE_DURATION_HOURS
             ),
+            "energy_p10_wh": float(max(energy_p10, 0.0)),
+            "energy_p50_wh": float(max(energy_p50, 0.0)),
+            "energy_p90_wh": float(max(energy_p90, energy_p50, 0.0)),
+            "planning_energy_wh": float(UAS_CHARGE_PLANNING_ENERGY_WH),
+            "prior_source": UAS_CHARGE_PRIOR_SOURCE,
             "maturity": maturity,
             "fallback_increment_w": float(UAS_CHARGE_ESTIMATE_W),
         }
@@ -963,16 +1112,18 @@ def _tier_profile_members(
     count: int,
     *,
     seed: int,
+    tier: int = 3,
 ) -> np.ndarray:
+    fallback = UAS_TIER_FALLBACKS.get(int(tier), UAS_TIER_FALLBACKS[3])
     if profile is None or str(profile.get("maturity", "provisional")) not in {
         "reliable",
         "reliable_proxy",
     }:
-        p10, p50, p90 = UAS_TIER3_FALLBACK_P10_W, UAS_TIER3_FALLBACK_P50_W, UAS_TIER3_FALLBACK_P90_W
+        p10, p50, p90 = fallback
     else:
-        p10 = float(profile.get("p10_w", UAS_TIER3_FALLBACK_P10_W))
-        p50 = float(profile.get("p50_w", UAS_TIER3_FALLBACK_P50_W))
-        p90 = float(profile.get("p90_w", UAS_TIER3_FALLBACK_P90_W))
+        p10 = float(profile.get("p10_w", fallback[0]))
+        p50 = float(profile.get("p50_w", fallback[1]))
+        p90 = float(profile.get("p90_w", fallback[2]))
     ordered = np.maximum.accumulate(np.asarray([max(p10, 0.0), max(p50, 0.0), max(p90, 0.0)]))
     rng = np.random.default_rng(seed)
     quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
@@ -987,17 +1138,18 @@ def _charge_increment_members(
     seed: int,
 ) -> np.ndarray:
     if profile is None or str(profile.get("maturity", "estimated")) != "reliable":
-        return np.full(max(int(count), 1), UAS_CHARGE_ESTIMATE_W, dtype=np.float64)
-    ordered = np.maximum.accumulate(
-        np.asarray(
-            [
-                max(float(profile.get("increment_p10_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
-                max(float(profile.get("increment_p50_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
-                max(float(profile.get("increment_p90_w", UAS_CHARGE_ESTIMATE_W)), 0.0),
-            ],
-            dtype=np.float64,
+        values = (
+            UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W,
+            UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W,
+            UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W,
         )
-    )
+    else:
+        values = (
+            float(profile.get("increment_p10_w", UAS_CHARGE_ESTIMATE_W)),
+            float(profile.get("increment_p50_w", UAS_CHARGE_ESTIMATE_W)),
+            float(profile.get("increment_p90_w", UAS_CHARGE_ESTIMATE_W)),
+        )
+    ordered = np.maximum.accumulate(np.clip(np.asarray(values, dtype=np.float64), 0.0, None))
     rng = np.random.default_rng(seed)
     quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
     rng.shuffle(quantiles)
@@ -1041,6 +1193,8 @@ def fit_operating_model(
     lookback_days: float = 7.0,
     events: Sequence[OperatingEvent] = (),
     uas_tier: pd.Series | None = None,
+    uas_dock1_tier: pd.Series | None = None,
+    uas_dock2_tier: pd.Series | None = None,
 ) -> OperatingModelResult:
     observations = build_observation_frame(
         power,
@@ -1049,6 +1203,8 @@ def fit_operating_model(
         lookback_days=lookback_days,
         events=events,
         uas_tier=uas_tier,
+        uas_dock1_tier=uas_dock1_tier,
+        uas_dock2_tier=uas_dock2_tier,
     )
     if observations.empty:
         raise ValueError("No APS/PDU observations are available for operating-state learning")
@@ -1299,6 +1455,8 @@ def fit_operating_model(
         if current_uas_tier is not None
         else None
     )
+    current_uas_pair_state = str(latest_row.get("uas_pair_state", "") or "")
+    current_uas_pair_consistent = bool(latest_row.get("uas_pair_consistent", False))
     current_cl61_state = (
         str(latest_row.get("cl61_state", "cl61"))
         if "CL61" in mode_kits(current_mode)
@@ -1414,6 +1572,34 @@ def fit_operating_model(
                     pd.Series(np.nan, index=observations.index),
                 ).to_numpy(dtype=np.float32),
             ),
+            "UASDock1Tier": (
+                ("time",),
+                observations.get(
+                    "uas_dock1_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
+            "UASDock2Tier": (
+                ("time",),
+                observations.get(
+                    "uas_dock2_tier",
+                    pd.Series(np.nan, index=observations.index),
+                ).to_numpy(dtype=np.float32),
+            ),
+            "UASPairConsistent": (
+                ("time",),
+                observations.get(
+                    "uas_pair_consistent",
+                    pd.Series(False, index=observations.index),
+                ).to_numpy(dtype=np.uint8),
+            ),
+            "UASPairState": (
+                ("time",),
+                observations.get(
+                    "uas_pair_state",
+                    pd.Series("", index=observations.index),
+                ).astype(str).to_numpy(dtype=str),
+            ),
             "UASCanonicalTier": (
                 ("time",),
                 observations.get(
@@ -1487,6 +1673,8 @@ def fit_operating_model(
             ),
             "current_uas_charging": str(current_uas_charging).lower(),
             "current_uas_state": current_uas_state or "",
+            "current_uas_pair_state": current_uas_pair_state,
+            "current_uas_pair_consistent": str(current_uas_pair_consistent).lower(),
             "current_cl61_state": current_cl61_state,
             "learned_power_state_catalog": json.dumps(catalog, sort_keys=True),
             "learned_modes": json.dumps(list(learned_modes)),
@@ -1526,8 +1714,23 @@ def fit_operating_model(
         }
     )
     state_ds["UASEffectiveTier"].attrs["description"] = (
-        "raw effective tier reported by Menapia; Tier 11 and 12 remain visible here"
+        "raw shared tier retained only when Dock 1 and Dock 2 exactly agree; "
+        "Tier 11 and 12 remain visible here"
     )
+    for name, dock in (("UASDock1Tier", 1), ("UASDock2Tier", 2)):
+        state_ds[name].attrs.update(
+            {
+                "description": f"raw Menapia Dock {dock} tier",
+                "units": "tier",
+            }
+        )
+    state_ds["UASPairConsistent"].attrs.update(
+        {
+            "description": "Dock 1 and Dock 2 raw tier match exactly; only then single-tier learning is eligible",
+            "flag_values": "0, 1",
+        }
+    )
+    state_ds["UASPairState"].attrs["description"] = "raw dock-pair state used to exclude mixed pairs from single-tier learning"
     state_ds["UASCanonicalTier"].attrs.update(
         {
             "description": "canonical UAS operating tier after mapping 11 to 1 and 12 to 2",
@@ -1572,6 +1775,8 @@ def fit_operating_model(
         "current_uas_canonical_tier": current_uas_tier,
         "current_uas_charging": current_uas_charging,
         "current_uas_state": current_uas_state,
+        "current_uas_pair_state": current_uas_pair_state,
+        "current_uas_pair_consistent": current_uas_pair_consistent,
         "current_cl61_state": current_cl61_state,
         "learned_power_state_catalog": catalog,
         "last_observation_time_utc": latest_observation_time.isoformat(),
@@ -2753,6 +2958,7 @@ def optimize_priority_schedule(
     beam_width: int = 600,
     mode_load_profiles: Mapping[str, StateLoadDynamics] | None = None,
     current_mode: str | None = None,
+    required_active: Mapping[str, Sequence[bool]] | None = None,
     seed: int = 0,
 ) -> ScheduleResult:
     """Jointly maximise safe additive controlled energy across all instruments.
@@ -2761,7 +2967,9 @@ def optimize_priority_schedule(
     instrument-hours. ``priorities`` is a deterministic tie-break, not a set of
     sequential budgets. Learned exact-state startup/fan phases are included in
     the search itself, so a lower-priority addition can be rejected without
-    erasing a safe higher-value subset.
+    erasing a safe higher-value subset. ``required_active`` pins named
+    instruments to a supplied timeline. It is used by the CL61-first policy to
+    reserve the CL61 timetable before Radar and HATPRO are considered.
     """
     controlled = tuple(str(value) for value in priorities)
     if not controlled or len(set(controlled)) != len(controlled):
@@ -2784,6 +2992,17 @@ def optimize_priority_schedule(
     member_count = full_solar.shape[0]
     if components.shape != (member_count, len(COMPONENTS)):
         raise ValueError("Component members must match the solar members and component schema")
+
+    required_by_kit: dict[str, np.ndarray] = {}
+    for kit, values in (required_active or {}).items():
+        if kit not in controlled:
+            raise ValueError(f"Required instrument {kit!r} is not in the controlled schedule")
+        required = np.asarray(values, dtype=bool).reshape(-1)
+        if required.shape != (len(full_times),):
+            raise ValueError(
+                f"Required {kit} activity must match the complete forecast time axis"
+            )
+        required_by_kit[kit] = required
 
     energy_model = battery_model or BatteryModel(
         usable_capacity_kwh=capacity_kwh,
@@ -2817,8 +3036,15 @@ def optimize_priority_schedule(
     discharge_efficiencies = np.clip(discharge_efficiencies, 0.65, 1.0)
 
     fixed_kits = set(mode_kits(base_mode)) - set(controlled)
-    reserve_mode = mode_id(fixed_kits)
-    initial_active = tuple(kit in mode_kits(base_mode) for kit in controlled)
+    initial_active = tuple(
+        bool(required_by_kit[kit][0])
+        if kit in required_by_kit
+        else kit in mode_kits(base_mode)
+        for kit in controlled
+    )
+    initial_mode = mode_id(
+        fixed_kits | {kit for position, kit in enumerate(controlled) if initial_active[position]}
+    )
     component_power_w = {
         kit: max(float(np.nanmedian(components[:, COMPONENT_INDEX[kit]])), 0.0)
         for kit in controlled
@@ -2861,7 +3087,7 @@ def optimize_priority_schedule(
     initial_members = np.full(member_count, float(initial_soc), dtype=np.float64)
     candidates = [
         _AdditiveCandidate(
-            modes=(str(base_mode),),
+            modes=(initial_mode,),
             soc=initial_members,
             active=initial_active,
             # Existing loads were not started by this advisory plan and may be
@@ -2891,6 +3117,12 @@ def optimize_priority_schedule(
         for candidate in candidates:
             for mask in range(1 << len(controlled)):
                 active = tuple(bool(mask & (1 << position)) for position in range(len(controlled)))
+                if any(
+                    bool(required_by_kit[kit][index]) != active[position]
+                    for position, kit in enumerate(controlled)
+                    if kit in required_by_kit
+                ):
+                    continue
                 if any(
                     candidate.active[position]
                     and candidate.run_hours[position] < float(minimum_run_hours) - 1e-9
@@ -3062,14 +3294,22 @@ def optimize_priority_schedule(
         previous_mode = modes[-1]
         segment_start = candidate.segment_start_index
         for index in range(decision_count, len(full_times)):
-            if previous_mode != reserve_mode:
-                previous_mode = reserve_mode
+            required_mode = mode_id(
+                fixed_kits
+                | {
+                    kit
+                    for position, kit in enumerate(controlled)
+                    if kit in required_by_kit and bool(required_by_kit[kit][index])
+                }
+            )
+            if previous_mode != required_mode:
+                previous_mode = required_mode
                 segment_start = index
             step_hours = max(
                 float((full_times[index] - full_times[index - 1]) / pd.Timedelta(hours=1)),
                 0.0,
             )
-            load = segment_load(reserve_mode, segment_start, index)
+            load = segment_load(required_mode, segment_start, index)
             soc = np.clip(
                 soc
                 + _member_soc_delta_percent(
@@ -3084,7 +3324,7 @@ def optimize_priority_schedule(
                 100.0,
             )
             minimum_p10 = min(minimum_p10, float(np.nanquantile(soc, 0.10)))
-            modes.append(reserve_mode)
+            modes.append(required_mode)
         return candidate, tuple(modes), minimum_p10, float(np.nanquantile(soc, 0.10))
 
     evaluated = [extend_candidate(candidate) for candidate in valid]
@@ -3099,10 +3339,20 @@ def optimize_priority_schedule(
             ),
         )
     else:
-        # Preserve the issue-time state at t0, then shed every controlled load.
-        # This is safe only when the fixed baseline itself clears the reserve.
+        # Preserve the issue-time state at t0 and any explicitly required
+        # future activity. A failed schedule must never turn a required CL61
+        # continuation into a deceptively safe all-off trace.
         fallback_modes = tuple(
-            str(base_mode) if index == 0 else reserve_mode
+            initial_mode
+            if index == 0
+            else mode_id(
+                fixed_kits
+                | {
+                    kit
+                    for position, kit in enumerate(controlled)
+                    if kit in required_by_kit and bool(required_by_kit[kit][index])
+                }
+            )
             for index in range(len(full_times))
         )
         fallback_loads = np.empty((member_count, len(full_times)), dtype=np.float64)
@@ -3129,15 +3379,27 @@ def optimize_priority_schedule(
         minimum_p10 = float(np.nanmin(fallback_p10))
         final_p10 = float(fallback_p10[-1])
         modes = fallback_modes
+        fallback_instrument_hours = tuple(
+            _instrument_hours(full_times, fallback_modes, kit, limit=decision_count)
+            for kit in controlled
+        )
+        fallback_starts = tuple(
+            _instrument_starts(fallback_modes, kit, limit=decision_count)
+            for kit in controlled
+        )
+        fallback_energy_wh = sum(
+            fallback_instrument_hours[position] * component_power_w[kit]
+            for position, kit in enumerate(controlled)
+        )
         best = _AdditiveCandidate(
             modes=fallback_modes[:decision_count],
             soc=fallback_soc[:, decision_count - 1],
-            active=tuple(False for _ in controlled),
+            active=tuple(kit in mode_kits(fallback_modes[decision_count - 1]) for kit in controlled),
             run_hours=tuple(0.0 for _ in controlled),
             last_start_days=tuple(None for _ in controlled),
-            starts=tuple(0 for _ in controlled),
-            instrument_hours=tuple(0.0 for _ in controlled),
-            controlled_energy_wh=0.0,
+            starts=fallback_starts,
+            instrument_hours=fallback_instrument_hours,
+            controlled_energy_wh=fallback_energy_wh,
             minimum_p10=minimum_p10,
             first_active_index=None,
             segment_start_index=1 if len(full_times) > 1 else 0,
@@ -3167,6 +3429,109 @@ def optimize_priority_schedule(
         total_instrument_hours=float(sum(instrument_hours.values())),
         controlled_energy_kwh=float(best.controlled_energy_wh / 1000.0),
     )
+
+
+def optimize_cl61_primary_schedule(
+    *,
+    times: pd.DatetimeIndex,
+    solar_members_w: np.ndarray,
+    component_members: np.ndarray,
+    initial_soc: float,
+    capacity_kwh: float,
+    base_mode: str,
+    battery_model: BatteryModel | None = None,
+    member_capacity_kwh: np.ndarray | None = None,
+    member_charge_efficiency: np.ndarray | None = None,
+    member_discharge_efficiency: np.ndarray | None = None,
+    horizon_hours: int = 96,
+    minimum_soc: float = MINIMUM_OPERATIONAL_SOC_PCT,
+    minimum_run_hours: int = MIN_RUN_HOURS,
+    max_starts_per_day: int = MAX_STARTS_PER_UTC_DAY,
+    beam_width: int = 600,
+    mode_load_profiles: Mapping[str, StateLoadDynamics] | None = None,
+    seed: int = 0,
+) -> tuple[ScheduleResult, ScheduleResult]:
+    """Return a CL61-first plan and its reserved CL61 timetable.
+
+    The first pass searches only CL61 against the non-controlled station
+    baseline.  When CL61 is already on, its activity is pinned through the
+    planning horizon instead of silently shedding it at the first decision
+    boundary.  Existing Radar/HATPRO states are also held: the initial
+    controller is CL61-only, so the model must not assume that another live
+    PDU outlet has changed.  The second pass fixes those timelines, then
+    maximises additive Radar/HATPRO use only from residual reserve.  It
+    therefore cannot trade CL61 science for a higher-power combination or
+    claim energy from switching a non-automated live instrument off.
+    """
+    full_times = pd.DatetimeIndex(times)
+    if len(full_times) == 0:
+        raise ValueError("CL61-first optimization requires at least one forecast time")
+    current_kits = set(mode_kits(base_mode))
+    fixed_kits = current_kits - set(OPERATING_PRIORITY)
+    existing_non_cl61 = (current_kits & set(OPERATING_PRIORITY)) - {"CL61"}
+    primary_base_mode = mode_id(fixed_kits | existing_non_cl61)
+    initially_on = "CL61" in current_kits
+    primary_current_mode = mode_id(fixed_kits | existing_non_cl61 | ({"CL61"} if initially_on else set()))
+    required_primary = (
+        {"CL61": np.ones(len(full_times), dtype=bool)} if initially_on else None
+    )
+    primary = optimize_priority_schedule(
+        times=full_times,
+        solar_members_w=solar_members_w,
+        component_members=component_members,
+        initial_soc=initial_soc,
+        capacity_kwh=capacity_kwh,
+        base_mode=primary_base_mode,
+        priorities=("CL61",),
+        battery_model=battery_model,
+        member_capacity_kwh=member_capacity_kwh,
+        member_charge_efficiency=member_charge_efficiency,
+        member_discharge_efficiency=member_discharge_efficiency,
+        horizon_hours=horizon_hours,
+        minimum_soc=minimum_soc,
+        minimum_run_hours=minimum_run_hours,
+        max_starts_per_day=max_starts_per_day,
+        beam_width=max(1, int(beam_width) // 2),
+        mode_load_profiles=mode_load_profiles,
+        current_mode=primary_current_mode,
+        required_active=required_primary,
+        seed=seed,
+    )
+    cl61_timeline = np.asarray(
+        ["CL61" in mode_kits(value) for value in primary.modes], dtype=bool
+    )
+    primary_start_mode = mode_id(fixed_kits | ({"CL61"} if bool(cl61_timeline[0]) else set()))
+    required_combined = {"CL61": cl61_timeline}
+    for kit in existing_non_cl61:
+        required_combined[kit] = np.ones(len(full_times), dtype=bool)
+    combined = optimize_priority_schedule(
+        times=full_times,
+        solar_members_w=solar_members_w,
+        component_members=component_members,
+        initial_soc=initial_soc,
+        capacity_kwh=capacity_kwh,
+        base_mode=primary_start_mode,
+        priorities=OPERATING_PRIORITY,
+        battery_model=battery_model,
+        member_capacity_kwh=member_capacity_kwh,
+        member_charge_efficiency=member_charge_efficiency,
+        member_discharge_efficiency=member_discharge_efficiency,
+        horizon_hours=horizon_hours,
+        minimum_soc=minimum_soc,
+        minimum_run_hours=minimum_run_hours,
+        max_starts_per_day=max_starts_per_day,
+        beam_width=beam_width,
+        mode_load_profiles=mode_load_profiles,
+        # The combined first step is exactly the observed station state: the
+        # reserved CL61 timeline and any other live PDU instruments reproduce
+        # ``base_mode`` at t0.  Preserve its learned phase rather than
+        # spuriously charging an already-running Radar/HATPRO/CL61 startup
+        # transient to the future plan.
+        current_mode=base_mode,
+        required_active=required_combined,
+        seed=seed,
+    )
+    return combined, primary
 
 
 def _schedule_modes(
@@ -3445,7 +3810,7 @@ def build_operating_scenarios(
         current_mode=base_mode,
         horizon_hours=min(optimization_hours, actual_horizon),
     )
-    optimized = optimize_priority_schedule(
+    optimized, cl61_primary = optimize_cl61_primary_schedule(
         times=times,
         solar_members_w=solar_members,
         component_members=planning_component_members,
@@ -3456,44 +3821,49 @@ def build_operating_scenarios(
         member_charge_efficiency=member_charge_efficiency,
         member_discharge_efficiency=member_discharge_efficiency,
         base_mode=base_mode,
-        priorities=OPERATING_PRIORITY,
         horizon_hours=min(optimization_hours, actual_horizon),
         mode_load_profiles=optimizer_profiles,
-        current_mode=base_mode,
         seed=seed,
     )
-    optimized_modes = list(optimized.modes)
-    if len(optimized_modes) < len(times):
-        tail_kits = set(mode_kits(base_mode)) - set(OPERATING_PRIORITY)
-        tail_mode = mode_id(tail_kits)
-        optimized_modes.extend([tail_mode] * (len(times) - len(optimized_modes)))
+    def completed_modes(result: ScheduleResult) -> list[str]:
+        modes = list(result.modes)
+        if len(modes) < len(times):
+            # Outside the explicit decision horizon, retain the actually
+            # observed station state rather than modelling an implicit PDU
+            # switch-off of CL61, Radar, or HATPRO.
+            modes.extend([mode_id(set(mode_kits(base_mode)))] * (len(times) - len(modes)))
+        return modes
 
-    # The joint beam search already uses exact-state startup/fan phases. Repeat
-    # the calculation through the publication path as a contract check; never
-    # erase a safe subset merely because a larger combination was unsafe.
-    phase_validation_fallback = False
-    _, optimized_phase_soc, _ = _scenario_members(
-        optimized_modes,
-        times=times,
-        solar_members=solar_members,
-        component_members=planning_component_members,
-        initial_soc=initial_soc,
-        capacity_kwh=capacity,
-        battery_model=battery_model,
-        member_capacity_kwh=member_capacity,
-        member_charge_efficiency=member_charge_efficiency,
-        member_discharge_efficiency=member_discharge_efficiency,
-        mode_load_profiles=optimizer_profiles,
-        current_mode=base_mode,
-        seed=seed,
-    )
-    optimized_phase_minimum_p10 = float(
-        np.nanmin(np.nanquantile(optimized_phase_soc, 0.10, axis=0))
-    )
-    if optimized.safe and optimized_phase_minimum_p10 < MINIMUM_OPERATIONAL_SOC_PCT - 1e-6:
-        raise ValueError(
-            "Phase-aware additive scheduler produced an inconsistent unsafe publication path"
+    def published_phase_minimum(modes: Sequence[str]) -> float:
+        _, phase_soc, _ = _scenario_members(
+            modes,
+            times=times,
+            solar_members=solar_members,
+            component_members=planning_component_members,
+            initial_soc=initial_soc,
+            capacity_kwh=capacity,
+            battery_model=battery_model,
+            member_capacity_kwh=member_capacity,
+            member_charge_efficiency=member_charge_efficiency,
+            member_discharge_efficiency=member_discharge_efficiency,
+            mode_load_profiles=optimizer_profiles,
+            current_mode=base_mode,
+            seed=seed,
         )
+        return float(np.nanmin(np.nanquantile(phase_soc, 0.10, axis=0)))
+
+    optimized_modes = completed_modes(optimized)
+    optimized_phase_minimum_p10 = published_phase_minimum(optimized_modes)
+    # The secondary search may contain combinations whose exact composed
+    # phase profile is more conservative than its component search estimate.
+    # In that case retain the already-validated CL61-first timetable instead
+    # of publishing an unsafe higher-power combination.
+    phase_validation_fallback = False
+    if optimized.safe and optimized_phase_minimum_p10 < MINIMUM_OPERATIONAL_SOC_PCT - 1e-6:
+        optimized = cl61_primary
+        optimized_modes = completed_modes(optimized)
+        optimized_phase_minimum_p10 = published_phase_minimum(optimized_modes)
+        phase_validation_fallback = True
     p50_continuation_modes = apply_p50_continuation_rule(
         optimized_modes,
         p50_continuation,
@@ -3530,6 +3900,19 @@ def build_operating_scenarios(
             scenario_cl61_phases[definition.scenario_id] = str(
                 definition.cl61_phase
             )
+    # Hold the currently detected non-UAS kits fixed so these five scenarios
+    # isolate only the consequence of changing the standard Menapia tier.
+    uas_comparison_kits = tuple(kit for kit in mode_kits(base_mode) if kit != "UAS")
+    for definition in UAS_TIER_SCENARIOS:
+        active_kits = (
+            uas_comparison_kits + ("UAS",)
+            if definition.station_powered
+            else uas_comparison_kits
+        )
+        scenario_modes[definition.scenario_id] = tuple(
+            mode_id(active_kits) for _ in times
+        )
+        scenario_uas_tiers[definition.scenario_id] = definition.tier
     for observed_mode in model.observed_modes:
         if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
@@ -3540,7 +3923,7 @@ def build_operating_scenarios(
         SCENARIO_CURRENT: f"Current: {mode_label(base_mode)}",
         SCENARIO_DC_ONLY: "DC-Only",
         SCENARIO_CL61: "DC + CL61 Continuously On",
-        SCENARIO_OPTIMIZED: "Priority Instrument Schedule",
+        SCENARIO_OPTIMIZED: "CL61-first Instrument Schedule",
         SCENARIO_P50_CONTINUATION: (
             f"P50 continuation: keep {_human_list(p50_continuation.held_instruments)} on"
             if p50_continuation.eligible
@@ -3556,6 +3939,7 @@ def build_operating_scenarios(
     power_state_definitions = {
         definition.scenario_id: definition for definition in POWER_STATE_SCENARIOS
     }
+    labels.update({definition.scenario_id: definition.label for definition in UAS_TIER_SCENARIOS})
     load_p10: list[np.ndarray] = []
     load_p50: list[np.ndarray] = []
     load_p90: list[np.ndarray] = []
@@ -3590,6 +3974,9 @@ def build_operating_scenarios(
                 model.uas_tier_profiles.get(str(tier)),
                 member_count,
                 seed=seed + tier * 1009,
+                # Conservative per-tier fallbacks belong to the comparison;
+                # keep the commissioned canonical-state fallback unchanged.
+                tier=tier if scenario_id in UAS_TIER_SCENARIO_IDS else 3,
             )
         charge_hours = scenario_uas_charge_hours.get(scenario_id, 0.0)
         if (
@@ -3780,7 +4167,7 @@ def build_operating_scenarios(
                     "maturity", "unobserved"
                 )
             )
-        if scenario_id in SUGGESTED_OPERATING_SCENARIO_IDS:
+        if scenario_id in SUGGESTED_OPERATING_SCENARIO_IDS + UAS_TIER_SCENARIO_IDS:
             if scenario_id in scenario_uas_tiers:
                 return str(
                     model.uas_tier_profiles.get(
@@ -3843,6 +4230,9 @@ def build_operating_scenarios(
         minimum_p10_soc=minimum_p10[optimized_index],
         priorities=OPERATING_PRIORITY,
         controlled_energy_kwh=optimized_controlled_energy_kwh,
+        policy=DEFAULT_SCHEDULE_POLICY,
+        continuation_required=("CL61" in mode_kits(base_mode)),
+        held_instruments=(set(mode_kits(base_mode)) & set(OPERATING_PRIORITY)) - {"CL61"},
     )
 
     output = xr.Dataset(
@@ -3935,6 +4325,10 @@ def build_operating_scenarios(
             "uas_charge_event_kit": UAS_CHARGE_EVENT_KIT,
             "uas_charge_estimated_increment_w": f"{UAS_CHARGE_ESTIMATE_W:g}",
             "uas_charge_estimated_duration_hours": f"{UAS_CHARGE_DURATION_HOURS:g}",
+            "uas_charge_planning_energy_wh": f"{UAS_CHARGE_PLANNING_ENERGY_WH:g}",
+            "uas_charge_prior_source": UAS_CHARGE_PRIOR_SOURCE,
+            "uas_charge_promotion_minimum_complete_episodes": str(UAS_CHARGE_RELIABLE_EPISODES),
+            "uas_charge_promotion_minimum_days": str(UAS_CHARGE_RELIABLE_DAYS),
             "scenario_base_mode": base_mode,
             "load_baseline_source": "finite_state_component_model_for_all_operational_scenarios",
             "load_state_contract": CONTROLLED_LOAD_CONTRACT,
@@ -3957,12 +4351,26 @@ def build_operating_scenarios(
             "operating_decision_horizon_hours": str(min(optimization_hours, actual_horizon)),
             "operating_safety_constraint": f"P10 SOC >= {MINIMUM_OPERATIONAL_SOC_PCT:g}% across the full planning horizon",
             "operating_optimization_objective": (
-                "maximize additive controlled energy, then total instrument-hours; use "
-                "CL61, Radar, HATPRO priority order to break otherwise-equivalent plans "
-                "within the 96-hour decision horizon"
+                "reserve the feasible CL61 timetable first, then maximize Radar and HATPRO "
+                "within the residual reserve; preserve an already-on CL61 through the planning horizon"
             ),
+            "operating_schedule_policy": DEFAULT_SCHEDULE_POLICY,
+            "operating_available_schedule_policies": json.dumps(
+                [SCHEDULE_POLICY_CL61_PRIMARY, SCHEDULE_POLICY_ENERGY_MAXIMISING]
+            ),
+            "optimized_schedule_policy": DEFAULT_SCHEDULE_POLICY,
             "optimized_priority_order": json.dumps(list(OPERATING_PRIORITY)),
             "optimized_controlled_instruments": json.dumps(list(OPERATING_PRIORITY)),
+            "optimized_held_existing_instruments": json.dumps(
+                sorted((set(mode_kits(base_mode)) & set(OPERATING_PRIORITY)) - {"CL61"})
+            ),
+            "cl61_primary_reserved_hours": f"{cl61_primary.collection_hours:.6g}",
+            "cl61_primary_minimum_p10_soc": f"{cl61_primary.minimum_p10_soc:.6g}",
+            "cl61_primary_safe": str(cl61_primary.safe).lower(),
+            "cl61_primary_starts": str(cl61_primary.starts),
+            "cl61_primary_continuation_required": str("CL61" in mode_kits(base_mode)).lower(),
+            "energy_maximising_comparison_policy": SCHEDULE_POLICY_ENERGY_MAXIMISING,
+            "energy_maximising_comparison_status": "available_on_request",
             "optimized_instrument_hours": json.dumps(optimized_instrument_hours, sort_keys=True),
             "optimized_instrument_starts": json.dumps(optimized_instrument_starts, sort_keys=True),
             "optimized_total_instrument_hours": f"{optimized_total_instrument_hours:.6g}",
@@ -4010,6 +4418,11 @@ def build_operating_scenarios(
             "optimized_base_mode_label": optimized_diagnostic.base_mode_label,
             "optimized_blocking_instruments": json.dumps(list(optimized_diagnostic.blocking_instruments)),
             "optimized_operator_action_required": str(optimized_diagnostic.operator_action_required).lower(),
+            "uas_tier_comparison_base_mode": mode_id(uas_comparison_kits),
+            "uas_tier_comparison_base_mode_label": mode_label(mode_id(uas_comparison_kits)),
+            "uas_tier_comparison_tiers": json.dumps(
+                [definition.tier for definition in UAS_TIER_SCENARIOS]
+            ),
             **solar_metadata,
             **battery_model.attrs(),
         },

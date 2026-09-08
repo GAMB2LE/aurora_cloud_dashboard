@@ -97,6 +97,11 @@ Override `AURORA_ZRAM_SIZE`, `AURORA_ZRAM_ALGORITHM`, or
 `AURORA_ZRAM_PRIORITY` in the service environment before starting it if the VM
 size changes.
 
+In the instrument lists below, every `*-source-sync.*` unit and the radar and
+AURORACam historical backfill lanes are installed by `aurora-cloud-infra`.
+They are listed here only to explain runtime ordering with dashboard-owned
+appenders, quicklooks, catalogues, and indexes.
+
 ## CL61
 
 - `aurora-cl61-source-sync.timer`
@@ -184,11 +189,16 @@ UTC deterministic cycle twice daily and writes a 240-hour forecast under
 `aurora-power-operating-scenarios.service` runs every five minutes. It learns
 new mode/component evidence and regenerates named and optimized plans from
 current SOC. It also aligns the mirrored UAS MQTT log so tier-specific loads
-can be learned and the all-instruments/UAS-tier-3 scenario can be evaluated.
+can be learned, the all-instruments/UAS-tier-3 scenario can be evaluated, and
+the standard UAS tier 1-5 comparison can hold all non-UAS loads fixed.
 The app merges that compact product into the display summary at read time; it
 does not rebuild the full Power summary every five minutes. Both environments
 run these advisory products: production writes under `/data/aurora/products`,
 while development writes independently under `/data/aurora/dev-products`.
+On development only, the same run may publish a compact CL61
+`observe_only` shadow status and append-only history. It has no PDU client and
+does not create an actuator service; the separately managed ASS-local
+controller remains disabled.
 
 The deterministic and scenario jobs use semantic publication signatures.
 When a timer run has the same physical SOC/load anchor, mode, ECMWF cycle,
@@ -230,7 +240,8 @@ under `/data/aurora/products/ops_monitor/health`; it does not restart services,
 delete files, rebuild data products, or change code.
 It reads `/data/aurora/internal/archive_status/health-v1.json` as a versioned
 contract. It does not SSH to JASMIN, inspect verifier manifests, or decide
-whether source data may be pruned.
+whether source data may be pruned. Source-sync and historical backfill unit
+states are copied from that contract rather than probed by dashboard code.
 
 `aurora-ops-monitor-alerts.timer` evaluates the latest operations snapshot
 after collection and sends threshold email alerts through `mailx` backed by an

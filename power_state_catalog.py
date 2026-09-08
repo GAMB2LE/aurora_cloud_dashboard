@@ -12,8 +12,25 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-UAS_CHARGE_ESTIMATE_W = 300.0
-UAS_CHARGE_DURATION_HOURS = 3.0
+# Six complete 26--27 August recovery episodes are a small but materially
+# better prior than the former 300 W for three hours (0.9 kWh).  The physical
+# evidence has a 163.8 Wh median and a conservative 0.20 kWh planning value.
+# Until a larger, dock-resolved sample exists, use the conservative energy
+# allowance with the observed median incremental power; it is an explicit
+# prior, not a learned charge profile.
+UAS_CHARGE_ESTIMATE_W = 270.75
+UAS_CHARGE_DURATION_HOURS = 0.75
+UAS_CHARGE_PLANNING_ENERGY_WH = 200.0
+UAS_CHARGE_EMPIRICAL_ENERGY_P10_WH = 160.65
+UAS_CHARGE_EMPIRICAL_ENERGY_P50_WH = 163.80
+UAS_CHARGE_EMPIRICAL_ENERGY_P90_WH = 179.85
+UAS_CHARGE_EMPIRICAL_DURATION_P10_HOURS = 28.53 / 60.0
+UAS_CHARGE_EMPIRICAL_DURATION_P50_HOURS = 38.77 / 60.0
+UAS_CHARGE_EMPIRICAL_DURATION_P90_HOURS = 55.52 / 60.0
+UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W = 181.80
+UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W = 270.75
+UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W = 340.65
+UAS_CHARGE_PRIOR_SOURCE = "menapia_complete_recoveries_2026-08-26_to_2026-08-27_n6"
 UAS_CHARGE_EVENT_KIT = "UASCharge"
 
 # Tier 11 is the safe field proxy for Tier 1.  Tier 12 cycles the heaters and
@@ -47,6 +64,7 @@ class LearnedPowerStateDefinition:
     base_state_id: str | None = None
     estimated_increment_w: float | None = None
     estimated_duration_hours: float | None = None
+    estimated_energy_wh: float | None = None
     cl61_phase: str | None = None
 
 
@@ -112,6 +130,7 @@ LEARNED_POWER_STATES = (
         base_state_id=uas_state_id(1),
         estimated_increment_w=UAS_CHARGE_ESTIMATE_W,
         estimated_duration_hours=UAS_CHARGE_DURATION_HOURS,
+        estimated_energy_wh=UAS_CHARGE_PLANNING_ENERGY_WH,
     ),
     LearnedPowerStateDefinition(
         uas_state_id(2),
@@ -126,6 +145,7 @@ LEARNED_POWER_STATES = (
         base_state_id=uas_state_id(2),
         estimated_increment_w=UAS_CHARGE_ESTIMATE_W,
         estimated_duration_hours=UAS_CHARGE_DURATION_HOURS,
+        estimated_energy_wh=UAS_CHARGE_PLANNING_ENERGY_WH,
     ),
     LearnedPowerStateDefinition(
         uas_state_id(3),
@@ -140,6 +160,7 @@ LEARNED_POWER_STATES = (
         base_state_id=uas_state_id(3),
         estimated_increment_w=UAS_CHARGE_ESTIMATE_W,
         estimated_duration_hours=UAS_CHARGE_DURATION_HOURS,
+        estimated_energy_wh=UAS_CHARGE_PLANNING_ENERGY_WH,
     ),
     LearnedPowerStateDefinition(
         uas_state_id(4),
@@ -222,6 +243,7 @@ def state_catalog_records() -> list[dict[str, object]]:
             "base_state_id": value.base_state_id,
             "estimated_increment_w": value.estimated_increment_w,
             "estimated_duration_hours": value.estimated_duration_hours,
+            "estimated_energy_wh": value.estimated_energy_wh,
             "cl61_phase": value.cl61_phase,
         }
         for value in LEARNED_POWER_STATES

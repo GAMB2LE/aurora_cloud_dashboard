@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import xarray as xr
 
 from quicklook_time_axis import apply_quicklook_time_axis
-from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS, UAS_TIER_SCENARIOS
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_LABEL,
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -92,6 +92,7 @@ POWER_PANEL_TIME_GROUPS = OrderedDict(
                 "ecmwf_solar_forecast",
                 "soc_ecmwf_forecast",
                 "operating_plan_scenarios",
+                "uas_tier_scenarios",
                 "operating_plan_schedule",
             ),
         ),
@@ -287,6 +288,10 @@ OPERATING_SUGGESTED_PREFIXES = OrderedDict(
     (definition.scenario_id, f"OperatingSuggested{index}")
     for index, definition in enumerate(SUGGESTED_OPERATING_SCENARIOS, start=1)
 )
+OPERATING_UAS_TIER_PREFIXES = OrderedDict(
+    (definition.scenario_id, f"OperatingUASTier{definition.tier}")
+    for definition in UAS_TIER_SCENARIOS
+)
 MAX_OPERATING_LEARNED_SCENARIOS = 6
 OPERATING_LEARNED_PREFIXES = tuple(
     f"OperatingLearned{index}" for index in range(1, MAX_OPERATING_LEARNED_SCENARIOS + 1)
@@ -307,6 +312,7 @@ OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     for prefix in (
         tuple(OPERATING_SCENARIO_PREFIXES.values())
         + tuple(OPERATING_SUGGESTED_PREFIXES.values())
+        + tuple(OPERATING_UAS_TIER_PREFIXES.values())
         + OPERATING_LEARNED_PREFIXES
     )
     for _source, suffix in OPERATING_SCENARIO_SOURCE_FIELDS
@@ -385,6 +391,15 @@ class PanelSpec:
     display_horizon_hours: float | None = None
 
 
+SOC_FORECAST_ANCHOR_TRACE_BY_PANEL = {
+    "soc_24h_forecast": "SystemAsIsDecisionSOCP50",
+    "soc_ecmwf_forecast": "SystemAsIsDecisionSOCP50",
+    "operating_plan_scenarios": "OperatingCurrentSOCP50",
+    "uas_tier_scenarios": "OperatingUASTier1SOCP50",
+}
+SOC_FORECAST_ANCHOR_LABEL = "Measured SOC at forecast start"
+
+
 @dataclass(frozen=True)
 class CL61SchedulePresentation:
     status: str
@@ -410,6 +425,8 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
     status = _schedule_attr(ds, "optimized_status")
     priority_order = _schedule_attr(ds, "optimized_priority_order")
     priority_plan = bool(priority_order)
+    cl61_primary = _schedule_attr(ds, "optimized_schedule_policy") == "cl61_primary_v1"
+    continuation_required = _schedule_attr(ds, "cl61_primary_continuation_required").lower() == "true"
     safe_text = _schedule_attr(ds, "optimized_safe").lower()
     collection_text = _schedule_attr(ds, "optimized_collection_hours")
     try:
@@ -428,20 +445,43 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
     base_label = _schedule_attr(ds, "optimized_base_mode_label") or "fixed station load"
     if status == "no_safe_schedule":
         explanation = reason or (
-            f"Even with CL61 off, the {base_label} baseline falls below the operational SOC reserve. "
-            "The zero trace is an unsafe fallback, not an instruction to switch CL61 off. Operator review is required."
+            (
+                "The existing CL61 state is held in this advisory forecast, but the operating SOC reserve is not met. "
+                "This is not an instruction to switch CL61 off; operator review is required."
+            )
+            if continuation_required
+            else (
+                f"Even with CL61 off, the {base_label} baseline falls below the operational SOC reserve. "
+                "The zero trace is an unsafe fallback, not an instruction to switch CL61 off. Operator review is required."
+            )
         )
         return CL61SchedulePresentation(
             status=status,
-            title=("No Feasible Instrument Schedule" if priority_plan else "No Feasible CL61 Schedule"),
-            trace_label="Unsafe fallback (CL61 off)",
+            title=(
+                "No Feasible CL61-first Schedule"
+                if cl61_primary
+                else "No Feasible Instrument Schedule"
+                if priority_plan
+                else "No Feasible CL61 Schedule"
+            ),
+            trace_label=(
+                "Unsafe held CL61 continuation"
+                if continuation_required
+                else "Unsafe fallback (CL61 off)"
+            ),
             annotation=(
-                "No safe instrument plan; operator review required"
+                "Existing CL61 held; operator review required"
+                if continuation_required
+                else "No safe instrument plan; operator review required"
                 if priority_plan
                 else "No safe CL61-only plan; operator review required"
             ),
             summary=(
-                "The priority scheduler could not satisfy the SOC reserve even with its controlled instruments off."
+                "The CL61-first scheduler preserves the existing CL61 state but cannot preserve the operating SOC reserve."
+                if continuation_required
+                else "The CL61-first scheduler cannot preserve the operating SOC reserve."
+                if cl61_primary
+                else "The priority scheduler could not satisfy the SOC reserve even with its controlled instruments off."
                 if priority_plan
                 else "The CL61-only optimiser could not satisfy the SOC reserve under the fixed current loads."
             ),
@@ -453,7 +493,13 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
         )
         return CL61SchedulePresentation(
             status=status,
-            title=("Additive Instrument Reserve-Only Plan" if priority_plan else "CL61 Reserve-Only Plan"),
+            title=(
+                "CL61-first Reserve-Only Plan"
+                if cl61_primary
+                else "Additive Instrument Reserve-Only Plan"
+                if priority_plan
+                else "CL61 Reserve-Only Plan"
+            ),
             trace_label="CL61 remains off",
             annotation=(
                 "No safe controlled-instrument window"
@@ -461,7 +507,9 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
                 else "No safe CL61 collection window"
             ),
             summary=(
-                "Keeping CL61, Radar, and HATPRO off is the reserve-preserving advisory plan."
+                "No safe CL61-first collection window is available, so the advisory plan holds the reserve."
+                if cl61_primary
+                else "Keeping CL61, Radar, and HATPRO off is the reserve-preserving advisory plan."
                 if priority_plan
                 else "Keeping CL61 off is the only reserve-preserving CL61 plan under the fixed current loads."
             ),
@@ -479,7 +527,9 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
         return CL61SchedulePresentation(
             status=status,
             title=(
-                "Recommended Additive Instrument Schedule"
+                "Recommended CL61-first Instrument Schedule"
+                if cl61_primary
+                else "Recommended Additive Instrument Schedule"
                 if priority_plan
                 else "Recommended CL61 Collection Schedule"
             ),
@@ -490,7 +540,9 @@ def cl61_schedule_presentation(ds: xr.Dataset | None) -> CL61SchedulePresentatio
                 else "No CL61 collection interval selected"
             ),
             summary=(
-                "The power-maximising additive on/off timetable; CL61, Radar, then HATPRO break ties."
+                "CL61 is reserved first; Radar and HATPRO use only the remaining safe reserve."
+                if cl61_primary
+                else "The power-maximising additive on/off timetable; CL61, Radar, then HATPRO break ties."
                 if priority_plan
                 else "The on/off timetable for the feasible advisory CL61 plan."
             ),
@@ -537,8 +589,16 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
     }:
         instrument = trace.var.removeprefix("OperatingCL61Optimized").removesuffix("On")
         presentation = cl61_schedule_presentation(ds)
+        try:
+            held_instruments = {
+                str(value) for value in json.loads(_schedule_attr(ds, "optimized_held_existing_instruments"))
+            }
+        except (TypeError, ValueError, json.JSONDecodeError):
+            held_instruments = set()
         if instrument == "CL61":
             return presentation.trace_label
+        if instrument in held_instruments:
+            return f"Observed {instrument} held (not scheduled)"
         if presentation.status == "no_safe_schedule":
             return f"Unsafe fallback ({instrument} off)"
         if presentation.status == "reserve_only":
@@ -546,8 +606,12 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
         return f"Recommended {instrument} schedule"
     if trace.var == "OperatingCL61OptimizedLoadP50Watts":
         priority_plan = bool(_schedule_attr(ds, "optimized_priority_order"))
-        status = cl61_schedule_presentation(ds).status
+        presentation = cl61_schedule_presentation(ds)
+        status = presentation.status
+        held_cl61 = _schedule_attr(ds, "cl61_primary_continuation_required").lower() == "true"
         if status == "no_safe_schedule":
+            if held_cl61:
+                return "Unsafe held-CL61 continuation load"
             return (
                 "Unsafe all-controlled-off fallback load"
                 if priority_plan
@@ -561,8 +625,12 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
             )
     if trace.var == "OperatingCL61OptimizedSOCP50":
         priority_plan = bool(_schedule_attr(ds, "optimized_priority_order"))
-        status = cl61_schedule_presentation(ds).status
+        presentation = cl61_schedule_presentation(ds)
+        status = presentation.status
+        held_cl61 = _schedule_attr(ds, "cl61_primary_continuation_required").lower() == "true"
         if status == "no_safe_schedule":
+            if held_cl61:
+                return "Unsafe held-CL61 continuation"
             return (
                 "Unsafe all-controlled-off fallback"
                 if priority_plan
@@ -574,6 +642,19 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
                 if priority_plan
                 else "Reserve-only CL61-off plan"
             )
+    for definition in UAS_TIER_SCENARIOS:
+        if trace.var != f"OperatingUASTier{definition.tier}SOCP50":
+            continue
+        label = str(
+            ds.attrs.get(
+                f"operating_uas_tier_{definition.tier}_label",
+                definition.label,
+            )
+        ).strip()
+        maturity = str(
+            ds.attrs.get(f"operating_uas_tier_{definition.tier}_maturity", "")
+        ).strip()
+        return f"{label} (provisional)" if maturity == "provisional" else label
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -824,6 +905,19 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
                 {"label": "UAS tier 3", "detail": "Tier-specific load estimate; provisional until the minimum independent evidence gate is met."},
             ],
         },
+        "uas_tier_scenarios": {
+            "title": "UAS tier SOC forecasts",
+            "summary": "The five standard Menapia tiers are compared while the current non-UAS station configuration is held fixed.",
+            "implementation": "Every tier starts from the same measured APS SOC and uses the same ECMWF solar ensemble, battery assumptions, and current non-UAS kit combination. Only the UAS tier load changes. A tier uses its learned load quantiles after two proxy episodes for tiers 1-2 or three direct episodes for tiers 3-5, plus six observed hours; before then it is marked provisional and uses the documented fallback distribution. Tier 5 represents no station-side UAS draw because the docks rely on their internal batteries; this does not imply indefinite dock endurance. Diagnostic tiers 11 and 12 are omitted because they mimic tiers 1 and 2. These curves are advisory and never issue Menapia or PDU commands.",
+            "metrics": [
+                {"label": "P50", "detail": "Median SOC path for each standard UAS tier."},
+                {"label": "Common basis", "detail": "The SOC anchor, weather, battery model, and non-UAS station loads are identical across all five traces."},
+                {"label": "Tiers 1-3", "detail": "Operational and standby modes whose fallback uncertainty includes their documented higher-power behaviour."},
+                {"label": "Tier 4", "detail": "Forced 12 V standby with the UAS station load still present."},
+                {"label": "Tier 5", "detail": "No station-side UAS load; the docks depend on finite internal battery energy."},
+                {"label": "Maturity", "detail": "Provisional labels identify tiers still using documented fallback quantiles rather than mature field evidence."},
+            ],
+        },
         "operating_plan_schedule": {
             "title": "Additive instrument operating schedule",
             "summary": "The advisory additive schedule and whether its SOC constraint is feasible.",
@@ -882,6 +976,21 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
     if panel_key == "operating_plan_schedule" and ds is not None:
         presentation = cl61_schedule_presentation(ds)
         metrics = list(info["metrics"])
+        cl61_primary = _schedule_attr(ds, "optimized_schedule_policy") == "cl61_primary_v1"
+        implementation = str(info["implementation"])
+        if cl61_primary:
+            implementation = (
+                "Each instrument trace is 1 when selected and 0 when off; the total trace is "
+                "their additive sum from 0 to 3. The scheduler first reserves the feasible CL61 "
+                "timetable, then adds Radar and HATPRO only from residual reserve. It includes "
+                "learned startup and fan phases, requires full-horizon P10 SOC at or above the "
+                "operational reserve, uses 12-hour minimum runs, and permits no more than one "
+                "scheduled start per instrument per UTC day. The plan is advisory and never operates "
+                "PDU outlets."
+            )
+            for metric in metrics:
+                if metric.get("label") == "Objective":
+                    metric["detail"] = "Reserve CL61 first; Radar and HATPRO may use only remaining safe reserve."
         total_hours = _schedule_attr(ds, "optimized_total_instrument_hours")
         energy_kwh = _schedule_attr(ds, "optimized_controlled_energy_kwh")
         try:
@@ -908,9 +1017,16 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             **info,
             "title": presentation.title,
             "summary": presentation.summary,
-            "implementation": f"{presentation.explanation} {info['implementation']}",
+            "implementation": f"{presentation.explanation} {implementation}",
             "metrics": metrics,
         }
+    elif panel_key == "uas_tier_scenarios" and ds is not None:
+        base_mode = str(ds.attrs.get("operating_uas_tier_comparison_base_mode_label", "")).strip()
+        if base_mode:
+            info = {
+                **info,
+                "summary": f"{info['summary']} Current non-UAS baseline: {base_mode}.",
+            }
     return {"id": panel_key, **info}
 
 
@@ -1779,6 +1895,55 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     valid_min=0.0,
                     valid_max=100.0,
                     line_width=2.6,
+                ),
+            ),
+            display_horizon_hours=POWER_FORECAST_DISPLAY_HOURS,
+        ),
+        PanelSpec(
+            "uas_tier_scenarios",
+            "UAS Tier SOC Forecasts",
+            "SOC [%]",
+            None,
+            (
+                TraceSpec(
+                    "OperatingUASTier1SOCP50",
+                    "Tier 1 - Unrestricted",
+                    COLOR["red"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.5,
+                ),
+                TraceSpec(
+                    "OperatingUASTier2SOCP50",
+                    "Tier 2 - Flight operations",
+                    COLOR["magenta"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.3,
+                ),
+                TraceSpec(
+                    "OperatingUASTier3SOCP50",
+                    "Tier 3 - Heating disabled",
+                    COLOR["purple"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.3,
+                ),
+                TraceSpec(
+                    "OperatingUASTier4SOCP50",
+                    "Tier 4 - 12 V standby",
+                    COLOR["blue"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.3,
+                ),
+                TraceSpec(
+                    "OperatingUASTier5SOCP50",
+                    "Tier 5 - Internal battery only",
+                    COLOR["green"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.5,
                 ),
             ),
             display_horizon_hours=POWER_FORECAST_DISPLAY_HOURS,
@@ -2705,6 +2870,17 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
                 ds[source_name].isel(scenario=index).values,
                 dtype=np.float64,
             )
+    for scenario_id, prefix in OPERATING_UAS_TIER_PREFIXES.items():
+        if scenario_id not in scenario_ids:
+            continue
+        index = scenario_ids.index(scenario_id)
+        for source_name, suffix in OPERATING_SCENARIO_SOURCE_FIELDS:
+            if source_name not in ds or ds[source_name].dims != ("scenario", "time"):
+                continue
+            values[f"{prefix}{suffix}"] = np.asarray(
+                ds[source_name].isel(scenario=index).values,
+                dtype=np.float64,
+            )
     current_mode = str(ds.attrs.get("current_mode", ""))
     learned_ids = [
         value
@@ -2854,7 +3030,13 @@ def power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
         if panel.key == "operating_plan_schedule"
         else panel.label
     )
-    if panel.key not in {"ecmwf_solar_forecast", "soc_ecmwf_forecast", "operating_plan_scenarios", "operating_plan_schedule"}:
+    if panel.key not in {
+        "ecmwf_solar_forecast",
+        "soc_ecmwf_forecast",
+        "operating_plan_scenarios",
+        "uas_tier_scenarios",
+        "operating_plan_schedule",
+    }:
         return label
     if str(ds.attrs.get("operating_planning_forecast_refresh_kind", "")).strip() == "cached_reanchor":
         return f"{label} [Cached forecast - reduced confidence]"
@@ -2911,8 +3093,10 @@ def _operating_scenario_attrs(
         ("optimized_base_mode_label", "operating_optimized_base_mode_label"),
         ("optimized_blocking_instruments", "operating_optimized_blocking_instruments"),
         ("optimized_operator_action_required", "operating_optimized_operator_action_required"),
+        ("optimized_schedule_policy", "operating_optimized_schedule_policy"),
         ("optimized_priority_order", "operating_optimized_priority_order"),
         ("optimized_controlled_instruments", "operating_optimized_controlled_instruments"),
+        ("optimized_held_existing_instruments", "operating_optimized_held_existing_instruments"),
         ("optimized_instrument_hours", "operating_optimized_instrument_hours"),
         ("optimized_instrument_starts", "operating_optimized_instrument_starts"),
         ("optimized_total_instrument_hours", "operating_optimized_total_instrument_hours"),
@@ -2937,6 +3121,12 @@ def _operating_scenario_attrs(
         ("p50_continuation_fallback", "operating_p50_continuation_fallback"),
         ("minimum_controlled_run_hours", "operating_minimum_controlled_run_hours"),
         ("max_controlled_starts_per_utc_day", "operating_max_controlled_starts_per_utc_day"),
+        ("uas_tier_comparison_base_mode", "operating_uas_tier_comparison_base_mode"),
+        (
+            "uas_tier_comparison_base_mode_label",
+            "operating_uas_tier_comparison_base_mode_label",
+        ),
+        ("uas_tier_comparison_tiers", "operating_uas_tier_comparison_tiers"),
     ):
         if source_name in ds.attrs:
             attrs[target_name] = str(ds.attrs[source_name])
@@ -2948,6 +3138,11 @@ def _operating_scenario_attrs(
         if value.startswith("learned_") and value != f"learned_{current_mode}"
     ][:MAX_OPERATING_LEARNED_SCENARIOS]
     labels = [str(value) for value in ds["scenario_label"].values] if "scenario_label" in ds else scenario_ids
+    maturities = (
+        [str(value) for value in ds["scenario_mode_maturity"].values]
+        if "scenario_mode_maturity" in ds
+        else [""] * len(scenario_ids)
+    )
     for slot, definition in enumerate(SUGGESTED_OPERATING_SCENARIOS, start=1):
         if definition.scenario_id in scenario_ids:
             attrs[f"operating_suggested_{slot}_label"] = labels[
@@ -2955,6 +3150,12 @@ def _operating_scenario_attrs(
             ]
     for slot, scenario_id in enumerate(learned_ids, start=1):
         attrs[f"operating_learned_{slot}_label"] = labels[scenario_ids.index(scenario_id)]
+    for definition in UAS_TIER_SCENARIOS:
+        if definition.scenario_id not in scenario_ids:
+            continue
+        index = scenario_ids.index(definition.scenario_id)
+        attrs[f"operating_uas_tier_{definition.tier}_label"] = labels[index]
+        attrs[f"operating_uas_tier_{definition.tier}_maturity"] = maturities[index]
     return attrs
 
 
@@ -3183,6 +3384,23 @@ def build_power_display_summary_dataset(
     }
     if forecast_ds is not None:
         for source_name, target_name in (
+            ("initial_soc_time", "forecast_initial_soc_time"),
+            ("generated_at_utc", "forecast_generated_at_utc"),
+            ("forecast_system_version", "forecast_system_version"),
+            ("forecast_model_contract_id", "forecast_model_contract_id"),
+            ("forecast_identity_id", "forecast_identity_id"),
+            ("feature_set_version", "forecast_feature_set_version"),
+            ("feature_set_digest", "forecast_feature_set_digest"),
+            ("training_cutoff_utc", "forecast_training_cutoff_utc"),
+            ("observation_cutoff_utc", "forecast_observation_cutoff_utc"),
+            ("forecast_code_revision", "forecast_code_revision"),
+            ("source_cycle_set_id", "forecast_source_cycle_set_id"),
+            ("source_manifest_digest", "forecast_source_manifest_digest"),
+            ("adaptive_calibration_state_id", "forecast_adaptive_calibration_state_id"),
+            ("degraded_mode_code", "forecast_degraded_mode_code"),
+            ("forecast_refresh_kind", "forecast_refresh_kind"),
+            ("forecast_verification_eligible", "forecast_verification_eligible"),
+            ("independent_cycle", "forecast_independent_cycle"),
             ("load_mode", "forecast_load_mode"),
             ("load_model", "forecast_load_model"),
             ("load_model_version", "forecast_load_model_version"),
@@ -3195,6 +3413,21 @@ def build_power_display_summary_dataset(
             ("load_mode_pdu_active_watts", "forecast_load_mode_pdu_active_watts"),
             ("load_measurement", "forecast_load_measurement"),
             ("load_balance_measurement", "forecast_load_balance_measurement"),
+            ("solar_model_name", "forecast_solar_model_name"),
+            ("solar_power_semantics", "forecast_solar_power_semantics"),
+            ("solar_forcing_mode", "forecast_solar_forcing_mode"),
+            ("solar_calibration_contract_id", "forecast_solar_calibration_contract_id"),
+            ("load_current_phase", "forecast_load_current_phase"),
+            ("load_residual_model_status", "forecast_load_residual_model_status"),
+            ("soc_bias_correction_method", "forecast_soc_bias_correction_method"),
+            ("soc_physical_consistency_status", "forecast_soc_physical_consistency_status"),
+            ("battery_usable_capacity_kwh", "forecast_battery_usable_capacity_kwh"),
+            ("battery_charge_efficiency", "forecast_battery_charge_efficiency"),
+            ("battery_discharge_efficiency", "forecast_battery_discharge_efficiency"),
+            ("battery_parasitic_load_w", "forecast_battery_parasitic_load_w"),
+            ("battery_max_charge_w", "forecast_battery_max_charge_w"),
+            ("battery_max_discharge_w", "forecast_battery_max_discharge_w"),
+            ("load_bias_correction_w", "forecast_load_bias_correction_w"),
             ("ecmwf_provider_requested", "forecast_ecmwf_provider_requested"),
             ("ecmwf_provider_effective", "forecast_ecmwf_provider_effective"),
             ("ecmwf_provider_fallback_reason", "forecast_ecmwf_provider_fallback_reason"),
@@ -4259,6 +4492,7 @@ def build_summary_plotly(
         right_axis_has_finite_data = False
         panel_time_start: pd.Timestamp | None = None
         panel_time_end: pd.Timestamp | None = None
+        soc_anchor: tuple[pd.Timestamp, float] | None = None
         panel_time_group = _power_panel_time_group(panel.key) if instrument == "power" else "observed"
         for trace, values in rows:
             secondary = trace.axis == "right" and panel.right_axis_label is not None
@@ -4294,6 +4528,15 @@ def build_summary_plotly(
                 left_axis_values.append(trace_values)
                 left_axis_has_finite_data = left_axis_has_finite_data or bool(np.isfinite(trace_values).any())
             trace_label = power_trace_label(ds, trace)
+            if (
+                instrument == "power"
+                and trace.var == SOC_FORECAST_ANCHOR_TRACE_BY_PANEL.get(panel.key)
+                and soc_anchor is None
+            ):
+                finite = np.flatnonzero(np.isfinite(trace_values))
+                if finite.size:
+                    anchor_index = int(finite[0])
+                    soc_anchor = (pd.Timestamp(trace_times[anchor_index]), float(trace_values[anchor_index]))
             # Power's standard current view contains many independent line
             # traces. WebGL avoids creating thousands of SVG nodes on phones
             # and browsers, while stepped state schedules stay SVG so their
@@ -4324,6 +4567,37 @@ def build_summary_plotly(
                 row=row_index,
                 col=1,
                 secondary_y=secondary,
+            )
+        if soc_anchor is not None:
+            anchor_time, anchor_value = soc_anchor
+            fig.add_trace(
+                go.Scatter(
+                    x=[anchor_time],
+                    y=[anchor_value],
+                    mode="markers",
+                    name=SOC_FORECAST_ANCHOR_LABEL,
+                    marker=dict(color=COLOR["green"], size=10, line=dict(color="white", width=2)),
+                    hovertemplate=f"{SOC_FORECAST_ANCHOR_LABEL}=%{{y:.1f}}%<br>Time=%{{x}}<extra></extra>",
+                    showlegend=False,
+                ),
+                row=row_index,
+                col=1,
+                secondary_y=False,
+            )
+            fig.add_annotation(
+                x=anchor_time,
+                y=anchor_value,
+                text=f"Measured SOC {anchor_value:.0f}%",
+                showarrow=True,
+                arrowhead=0,
+                ax=58,
+                ay=24,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor=COLOR["green"],
+                borderwidth=1,
+                font=dict(color=PLOT_TEXT, size=10),
+                row=row_index,
+                col=1,
             )
         if instrument == "power" and panel.key in OPERATING_SCHEDULE_SHADE_PANELS:
             _add_operating_schedule_bands(fig, ds, row=row_index)

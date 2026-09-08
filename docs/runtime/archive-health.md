@@ -13,8 +13,10 @@ compatibility path:
 
 `ARCHIVE_HEALTH_PATH` may override that path. The dashboard merges the stable
 `metrics` object into its operations snapshot and exposes the source path in
-the mobile catalog. It must not infer pruning safety from display artifacts
-or enable, stop, or repair archive writers.
+the mobile catalog. Source-sync timer and service states also come from this
+contract; the dashboard does not maintain or probe a parallel unit catalogue.
+It must not infer pruning safety from display artifacts or enable, stop, or
+repair archive writers.
 
 The mobile response exposes `operations.archiveDelivery` and
 `operations.archiveStatus`. These are

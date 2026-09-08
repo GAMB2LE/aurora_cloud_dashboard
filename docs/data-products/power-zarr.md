@@ -34,8 +34,8 @@ Important ingest rules:
 - raw column names are normalized by replacing `.` with `_`
 - columns containing `wind` are excluded
 - columns ending in `time` are excluded
-- `InternalHumidity` is the reserved optional APS internal relative-humidity
-  field in percent, used for operations dew-point monitoring when present
+- reserved optional schema expansions are `InternalHumidity` and the three
+  `SolarMPPMode_*` fields; they are backfilled with `NaN` when first introduced
 
 Examples include:
 
@@ -56,14 +56,17 @@ Examples include:
 - `TempSensor3`
 - `TempSensor4`
 - `MaxSolarWatts_East`
+- `SolarMPPMode_East`, `SolarMPPMode_South`, and `SolarMPPMode_West`, where
+  `0 = off`, `1 = voltage/current limited`, and `2 = MPPT active`
 
 ## Schema note
 
 - append runs keep the existing variable set fixed in the same way as
   `vaisalamet`
-- `InternalHumidity` is the one allowed optional schema expansion; if it first
-  appears in new raw APS CSV files, the appender adds it to the existing store
-  with `NaN` backfill for older samples instead of silently dropping it
+- `InternalHumidity` and `SolarMPPMode_East/South/West` are allowed optional
+  schema expansions; when they first appear in new raw APS CSV files, the
+  appender adds them to the existing store with `NaN` backfill for older
+  samples instead of silently dropping them
 - append writes materialize only the already-filtered new sample block before
   writing, matching the cross-instrument Zarr append policy
 
@@ -392,6 +395,7 @@ Development paths:
 - `/data/aurora/dev-products/power/power_soc_planning_forecast.zarr`
 - `/data/aurora/dev-products/power/power_operating_state.zarr`
 - `/data/aurora/dev-products/power/power_operating_scenarios.zarr`
+- `/data/aurora/dev-products/power/cl61_automation_status.json` (diagnostic only)
 
 The 240-hour planning forecast is refreshed from the ECMWF 00 and 12 UTC cycles.
 The first 96 actionable hours preserve the current ensemble and its calibration
@@ -451,11 +455,12 @@ The canonical learned-state catalogue is:
 - CL61
 - CL61 (heater on)
 
-Charging states use an explicit `UASCharge on`/`off` event contract. Before
-charge data are learned, Tiers 1-3 add `300 W` for the first three forecast
-hours and then return to their base tier. At least one complete 2.5-hour event
-is required before observed charging increments and median duration replace
-that estimate.
+Charging states use an explicit `UASCharge on`/`off` event contract. Their
+empirical prior uses P10/P50/P90 increments of `181.80/270.75/340.65 W`, a
+provisional duration of `0.75 h`, and a `200 Wh` planning allowance. A charging
+profile needs at least 20 episodes, five observed hours across five days, and
+an available base-tier profile before learned increments and median duration
+replace those forecast fallbacks.
 
 The scenario product carries P10, P50, and P90 SOC and load for these plans:
 
@@ -473,6 +478,7 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - HATPRO
 - all instruments + UAS tier 3
 - the ten canonical learned-state scenarios listed above
+- UAS tiers 1-5 with the current non-UAS kit combination held fixed
 - each additional learned kit combination
 
 The all-instruments scenario keeps CL61, Radar, HATPRO, and UAS active and sets
@@ -480,19 +486,41 @@ the UAS effective tier to 3 for the complete horizon. Until tier-3 evidence is
 mature it is labelled provisional and uses P10/P50/P90 fallback loads of
 `55/108/302 W`; mature observed tier-3 quantiles replace that fallback.
 
-The optimized plan jointly searches all eight on/off combinations of CL61,
-Radar, and HATPRO. It first maximizes additive controlled energy, then total
-instrument-hours; `CL61 > Radar > HATPRO` breaks otherwise-equal plans. The DC
-baseline and current UAS state remain fixed. Each controlled instrument has a
-minimum 12-hour run and at most one planned start per UTC day. The first 96
-hours are decision hours; all three instruments are off in hours 97-240 so P10
-SOC can be checked across the complete reserve tail. P10 SOC must remain at or
-above 40% throughout. Learned exact-state startup, fan, and heater/blower phases
-are evaluated inside the search. An unsafe combination is therefore excluded
-while safe subsets remain eligible; the scheduler no longer erases the entire
-plan after a combined-state phase check.
-Recommendations are advisory only; the forecast service does not issue PDU
-commands. The dashboard
+The separate UAS tier comparison holds the current CL61, Radar, and HATPRO
+states fixed and changes only the standard Menapia tier. Tiers 1-4 retain the
+UAS station load; tier 5 removes station-side UAS draw because the docks use
+their internal batteries. Diagnostic tiers 11 and 12 are not separate forecast
+curves because they mimic tiers 1 and 2. The comparison uses the same maturity
+gates as the canonical profiles: two proxy episodes and six hours for tiers
+1-2, or three direct episodes and six hours for tiers 3-5. Until then, its
+provisional P10/P50/P90 load fallback is:
+
+| Tier | P10 | P50 | P90 | Operational interpretation |
+|---:|---:|---:|---:|---|
+| 1 | 300 W | 375 W | 800 W | unrestricted, including a possible charging tail |
+| 2 | 120 W | 160 W | 590 W | flight operations, including a possible charging tail |
+| 3 | 55 W | 108 W | 302 W | dock heating disabled |
+| 4 | 24 W | 32 W | 40 W | forced 12 V standby |
+| 5 | 0 W | 0 W | 0 W | dock internal battery only; finite endurance |
+
+Reliable observed tier quantiles replace these fallbacks independently. These
+conservative comparison fallbacks are separate from the canonical base-tier
+fallback and do not change the current-state forecast or its charging model.
+
+The optimized plan is **CL61-first**. It reserves the feasible CL61 timetable
+against the current finite-state baseline, then allows Radar and HATPRO only in
+the remaining safe reserve. An existing CL61 is held through the planning
+horizon. Existing Radar or HATPRO loads are also held at their observed state:
+the plan must not assume a PDU change that the CL61-only controller cannot make.
+Each newly proposed instrument interval has a minimum 12-hour run and at most
+one planned start per UTC day. The first 96 hours are decision hours; the
+complete 240-hour tail still enforces P10 SOC at or above 40%. Learned
+exact-state startup, fan, and heater/blower phases are evaluated inside the
+search and checked again before publication.
+
+Recommendations remain advisory. The forecast service does not issue PDU
+commands; optional development shadow products are explicitly non-executable.
+The dashboard
 clamps both the SOC 96 h card and the scenario comparison to exactly 96 hours
 from the latest physical SOC anchor; the reserve tail is retained for safety
 analysis but is not labelled as part of the 96-hour decision display. The dashboard
@@ -509,17 +537,14 @@ falls back to the existing P10 priority plan. The product records eligibility,
 held instruments, recovery time, minimum pre-recovery P50 SOC, and an explicit
 `advisory_only` authority marker.
 
-The scenario contract distinguishes a feasible additive schedule, a safe
-reserve-only plan, and an infeasible result. If the fixed DC/UAS baseline
-breaches the reserve even with CL61, Radar, and HATPRO off, the stored zero
-schedule is an unsafe fallback for diagnosis, not an instruction to operate the
-PDU. The product records the fixed base mode, priority tie-break, per-instrument
-hours and starts, total instrument-hours, controlled energy, UTC-day operating
-totals (including on- and off-hours that add to each day's available hours),
-reason, and `operator_action_required=true`; browser and iOS clients
-present that result as **No Feasible Instrument Schedule**. The schedule plot
-retains the three binary traces and adds `ScenarioActiveInstrumentCount`, the
-hourly sum from zero to three.
+The scenario contract distinguishes a feasible CL61-first schedule, a safe
+reserve-only plan, and an infeasible result. An infeasible trace is an unsafe
+diagnostic fallback, not an instruction to operate the PDU. The product records
+the schedule policy, any held observed instruments, per-instrument hours and
+starts, UTC-day totals, reason, and `operator_action_required=true`; browser
+and iOS clients label that result **No Feasible CL61-first Schedule**. The
+schedule plot retains the three binary traces and adds
+`ScenarioActiveInstrumentCount`, the hourly sum from zero to three.
 
 Every hourly advisory cycle is also written to
 `power_operating_recommendations.json`. A decision record includes the first

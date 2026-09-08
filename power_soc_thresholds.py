@@ -17,5 +17,6 @@ SOC_REFERENCE_PANEL_KEYS = frozenset(
         "soc_ecmwf_forecast",
         "soc_hindcast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
     }
 )

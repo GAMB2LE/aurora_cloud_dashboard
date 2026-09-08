@@ -225,6 +225,24 @@ def test_operating_scenarios_start_with_current_state_reference() -> None:
     assert "states are never blended" in info["implementation"]
 
 
+def test_uas_tier_panel_contains_the_five_standard_modes() -> None:
+    panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "uas_tier_scenarios")
+
+    assert panel.label == "UAS Tier SOC Forecasts"
+    assert [trace.var for trace in panel.traces] == [
+        "OperatingUASTier1SOCP50",
+        "OperatingUASTier2SOCP50",
+        "OperatingUASTier3SOCP50",
+        "OperatingUASTier4SOCP50",
+        "OperatingUASTier5SOCP50",
+    ]
+    info = build_power_forecast_info(panel.key)
+    assert info is not None
+    assert "current non-UAS station configuration is held fixed" in info["summary"]
+    assert "Diagnostic tiers 11 and 12 are omitted" in info["implementation"]
+    assert "never issue Menapia or PDU commands" in info["implementation"]
+
+
 def test_unsafe_cl61_fallback_is_labelled_as_infeasible() -> None:
     panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "operating_plan_schedule")
     ds = xr.Dataset(
@@ -254,6 +272,35 @@ def test_unsafe_cl61_fallback_is_labelled_as_infeasible() -> None:
         if trace.var == "OperatingCL61OptimizedLoadP50Watts"
     )
     assert power_trace_label(ds, load_trace) == "Unsafe fallback load (CL61 off)"
+
+
+def test_unsafe_existing_cl61_is_labelled_as_held_not_switched_off() -> None:
+    panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "operating_plan_schedule")
+    ds = xr.Dataset(
+        attrs={
+            "operating_optimized_safe": "false",
+            "operating_optimized_status": "no_safe_schedule",
+            "operating_optimized_schedule_policy": "cl61_primary_v1",
+            "operating_cl61_primary_continuation_required": "true",
+            "operating_optimized_held_existing_instruments": '["Radar"]',
+        }
+    )
+
+    presentation = cl61_schedule_presentation(ds)
+    cl61_trace = next(trace for trace in panel.traces if trace.var == "OperatingCL61OptimizedCL61On")
+    radar_trace = next(trace for trace in panel.traces if trace.var == "OperatingCL61OptimizedRadarOn")
+    load_trace = next(
+        trace
+        for candidate in SUMMARY_LAYOUTS["power"]
+        if candidate.key == "ecmwf_solar_forecast"
+        for trace in candidate.traces
+        if trace.var == "OperatingCL61OptimizedLoadP50Watts"
+    )
+
+    assert presentation.trace_label == "Unsafe held CL61 continuation"
+    assert power_trace_label(ds, cl61_trace) == "Unsafe held CL61 continuation"
+    assert power_trace_label(ds, radar_trace) == "Observed Radar held (not scheduled)"
+    assert power_trace_label(ds, load_trace) == "Unsafe held-CL61 continuation load"
 
 
 def test_priority_schedule_uses_additive_sum_and_three_instrument_labels() -> None:
