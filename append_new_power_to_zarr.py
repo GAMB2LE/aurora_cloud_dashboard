@@ -211,7 +211,16 @@ def append_new(
             print("No readable power samples available to bootstrap.")
             return
         zarr_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.to_zarr(zarr_path, mode="w", consolidated=True)
+        # A single sample otherwise infers day units. Later sub-day appends
+        # can change the encoded scale while the existing store keeps its old
+        # units, shifting timestamps. Pin precise units only for new stores;
+        # appends continue to honor the encoding already on disk.
+        combined.to_zarr(
+            zarr_path,
+            mode="w",
+            consolidated=True,
+            encoding={"time": {"units": "nanoseconds since 1970-01-01", "dtype": "int64"}},
+        )
         print("Bootstrap complete.")
         return
 
