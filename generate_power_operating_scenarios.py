@@ -24,6 +24,7 @@ from power_operating_scenarios import (
     mode_from_code,
     mode_label,
 )
+from generate_cl61_automation_intent import configured_path, publish_diagnostic_intent
 from uas_mqtt import load_uas_mqtt_log
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
@@ -60,6 +61,29 @@ LEGACY_STATE_PATH = Path(
 )
 UAS_MQTT_LOG_PATH = Path(
     os.environ.get("UAS_MQTT_LOG_PATH", "/project/aurora/raw/menapia/menapia_mqtt.log")
+)
+CL61_AUTOMATION_ENVIRONMENT = os.environ.get("AURORA_CL61_AUTOMATION_ENVIRONMENT", "development")
+CL61_AUTOMATION_SIGNING_KEY_PATH = Path(
+    os.environ.get("AURORA_CL61_INTENT_SIGNING_KEY_FILE", "")
+) if os.environ.get("AURORA_CL61_INTENT_SIGNING_KEY_FILE", "").strip() else None
+CL61_AUTOMATION_SHADOW_ENABLED = os.environ.get("AURORA_CL61_AUTOMATION_SHADOW_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+# These fields identify the immutable forecast issue that supplied the solar
+# and load trajectory used by the scenario planner.  Keep them on the scenario
+# product so a downstream CL61 intent cannot become detached from its forecast
+# provenance.
+PLANNING_FORECAST_IDENTITY_ATTRS = (
+    "forecast_system_version",
+    "feature_set_version",
+    "feature_set_digest",
+    "forecast_code_revision",
+    "source_cycle_set_id",
+    "source_manifest_digest",
+    "forecast_identity_id",
 )
 
 
@@ -101,6 +125,33 @@ def _write_zarr_atomic(dataset: xr.Dataset, path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
     temporary.replace(path)
+
+
+def _automation_paths(
+    scenario_output: Path,
+    *,
+    intent_output: Path | None,
+    status_output: Path | None,
+    history_output: Path | None,
+) -> tuple[Path, Path, Path]:
+    """Keep shadow-control products beside the isolated scenario product by default."""
+    return (
+        intent_output
+        or configured_path(
+            "CL61_AUTOMATION_INTENT_PATH",
+            scenario_output.with_name("cl61_automation_intent.json"),
+        ),
+        status_output
+        or configured_path(
+            "CL61_AUTOMATION_STATUS_PATH",
+            scenario_output.with_name("cl61_automation_status.json"),
+        ),
+        history_output
+        or configured_path(
+            "CL61_AUTOMATION_HISTORY_PATH",
+            scenario_output.with_name("cl61_automation_history.jsonl"),
+        ),
+    )
 
 
 def _json_float(value: object) -> float | None:
@@ -263,9 +314,10 @@ def _archive_recommendation(
         "decision_horizon_hours": decision_horizon_hours,
         "safety_constraint": "P10 SOC must remain at or above 40%",
         "optimization_objective": (
-            "maximize safe additive controlled energy, then total instrument-hours; "
-            "use CL61, Radar, HATPRO as the tie-break order"
+            "reserve the feasible CL61 timetable first, then add Radar and HATPRO "
+            "only from residual safe reserve"
         ),
+        "schedule_policy": str(scenarios.attrs.get("optimized_schedule_policy", "")),
         "instrument_priority": _json_string_list(
             scenarios.attrs.get("optimized_priority_order", "[]")
         ),
@@ -479,7 +531,7 @@ def _validate_operating_inputs(
 def _planning_forecast_provenance(forecast: xr.Dataset) -> dict[str, str]:
     """Capture the exact planning-cycle identity used for a scenario product."""
     times = pd.DatetimeIndex(forecast["time"].values)
-    return {
+    provenance = {
         "planning_forecast_generated_at_utc": str(forecast.attrs.get("generated_at_utc", "")),
         "planning_forecast_initial_soc_time": str(forecast.attrs.get("initial_soc_time", "")),
         "planning_forecast_refresh_kind": str(forecast.attrs.get("forecast_refresh_kind", "")),
@@ -487,6 +539,13 @@ def _planning_forecast_provenance(forecast: xr.Dataset) -> dict[str, str]:
         "planning_forecast_time_coverage_start": times.min().isoformat() if len(times) else "",
         "planning_forecast_time_coverage_end": times.max().isoformat() if len(times) else "",
     }
+    provenance.update(
+        {
+            name: str(forecast.attrs.get(name, ""))
+            for name in PLANNING_FORECAST_IDENTITY_ATTRS
+        }
+    )
+    return provenance
 
 
 def scenario_publication_signature(scenarios: xr.Dataset) -> str:
@@ -503,7 +562,7 @@ def scenario_publication_signature(scenarios: xr.Dataset) -> str:
         return np.rint(finite / float(step)).astype(np.int32).ravel().tolist()
 
     payload = {
-        "schema": 2,
+        "schema": 3,
         "scenario_schema_version": str(attrs.get("schema_version", "")),
         "anchor_30min": anchor_bucket,
         "initial_soc_pct": round(float(attrs.get("initial_soc_pct", 0.0))),
@@ -515,6 +574,10 @@ def scenario_publication_signature(scenarios: xr.Dataset) -> str:
         "optimized_blocking_instruments": str(attrs.get("optimized_blocking_instruments", "[]")),
         "solar_contract": str(attrs.get("solar_calibration_contract_id", "")),
         "planning_cycle": str(attrs.get("planning_forecast_generated_at_utc", "")),
+        "planning_forecast_identity": {
+            name: str(attrs.get(name, ""))
+            for name in PLANNING_FORECAST_IDENTITY_ATTRS
+        },
         "scenario_ids": [str(value) for value in scenarios.get_index("scenario")],
         "scenario_maturity": [str(value) for value in scenarios["scenario_mode_maturity"].values],
         "uas_tier_profiles": str(attrs.get("uas_tier_profiles", "{}")),
@@ -580,6 +643,12 @@ def generate(
     events_path: Path | None = DEFAULT_EVENTS_PATH,
     max_power_age_minutes: float | None = None,
     uas_log: Path | None = UAS_MQTT_LOG_PATH,
+    automation_intent_output: Path | None = None,
+    automation_status_output: Path | None = None,
+    automation_history_output: Path | None = None,
+    automation_environment: str = CL61_AUTOMATION_ENVIRONMENT,
+    automation_signing_key_path: Path | None = CL61_AUTOMATION_SIGNING_KEY_PATH,
+    automation_shadow_enabled: bool = CL61_AUTOMATION_SHADOW_ENABLED,
 ) -> tuple[Path, Path]:
     state = _read_json(model_state)
     if not state and bootstrap_state is not None:
@@ -588,6 +657,12 @@ def generate(
     pdu = xr.open_zarr(pdu_zarr, chunks={}) if pdu_zarr.exists() else None
     forecast = xr.open_zarr(forecast_zarr, chunks={})
     ensemble = xr.open_zarr(ensemble_zarr, chunks={}) if ensemble_zarr is not None and ensemble_zarr.exists() else None
+    automation_intent_path, automation_status_path, automation_history_path = _automation_paths(
+        scenario_output,
+        intent_output=automation_intent_output,
+        status_output=automation_status_output,
+        history_output=automation_history_output,
+    )
     try:
         input_time, input_soc, input_age_minutes = _validate_operating_inputs(
             power,
@@ -601,6 +676,21 @@ def generate(
         # system forecast and physical SOC anchor. This remains a successful
         # advisory run so expected ECMWF outages do not create a failed timer.
         _write_unavailable_scenarios(scenario_output, reason=str(exc), power=power)
+        if automation_shadow_enabled:
+            publish_diagnostic_intent(
+                xr.Dataset(
+                    attrs={
+                        "planning_status": "unavailable",
+                        "planning_status_reason": str(exc),
+                        "input_power_time": str(power["time"].values[-1]) if "time" in power and power.sizes.get("time", 0) else "",
+                    }
+                ),
+                intent_path=automation_intent_path,
+                status_path=automation_status_path,
+                history_path=automation_history_path,
+                environment=automation_environment,
+                signing_key_path=automation_signing_key_path,
+            )
         print(f"Operating scenarios unavailable: {exc}")
         power.close()
         forecast.close()
@@ -613,11 +703,20 @@ def generate(
     try:
         events = load_operating_events(events_path)
         uas_result = load_uas_mqtt_log(uas_log, max_lines=0) if uas_log is not None else None
-        uas_tier = None
+        uas_dock1_tier = None
+        uas_dock2_tier = None
         if uas_result is not None and uas_result.records:
-            uas_tier = pd.Series(
-                [record.effective_tier for record in uas_result.records],
-                index=pd.DatetimeIndex([record.timestamp for record in uas_result.records]).tz_convert("UTC").tz_localize(None),
+            uas_times = pd.DatetimeIndex(
+                [record.timestamp for record in uas_result.records]
+            ).tz_convert("UTC").tz_localize(None)
+            uas_dock1_tier = pd.Series(
+                [record.dock1_tier for record in uas_result.records],
+                index=uas_times,
+                dtype=np.float64,
+            )
+            uas_dock2_tier = pd.Series(
+                [record.dock2_tier for record in uas_result.records],
+                index=uas_times,
                 dtype=np.float64,
             )
         model = fit_operating_model(
@@ -626,7 +725,8 @@ def generate(
             raw_state=state,
             lookback_days=lookback_days,
             events=events,
-            uas_tier=uas_tier,
+            uas_dock1_tier=uas_dock1_tier,
+            uas_dock2_tier=uas_dock2_tier,
         )
         scenarios = build_operating_scenarios(
             power,
@@ -648,6 +748,7 @@ def generate(
                 "uas_tier_log_path": str(uas_log or ""),
                 "uas_tier_record_count": str(len(uas_result.records) if uas_result is not None else 0),
                 "uas_tier_malformed_line_count": str(len(uas_result.malformed_lines) if uas_result is not None else 0),
+                "uas_tier_semantics": "dock1_tier,dock2_tier; mixed pairs excluded from single-tier learning",
                 **_planning_forecast_provenance(forecast),
             }
         )
@@ -659,6 +760,15 @@ def generate(
         _write_zarr_atomic(model.state_dataset, state_output)
         if not unchanged_scenarios:
             _write_zarr_atomic(scenarios, scenario_output)
+        if automation_shadow_enabled:
+            publish_diagnostic_intent(
+                scenarios,
+                intent_path=automation_intent_path,
+                status_path=automation_status_path,
+                history_path=automation_history_path,
+                environment=automation_environment,
+                signing_key_path=automation_signing_key_path,
+            )
         _write_json_atomic(model_state, model.state)
         if recommendation_archive is not None:
             _archive_recommendation(
@@ -698,6 +808,17 @@ def main() -> None:
     parser.add_argument("--lookback-days", type=float, default=30.0)
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
     parser.add_argument("--uas-log", type=Path, default=UAS_MQTT_LOG_PATH)
+    parser.add_argument("--automation-intent-output", type=Path)
+    parser.add_argument("--automation-status-output", type=Path)
+    parser.add_argument("--automation-history-output", type=Path)
+    parser.add_argument("--automation-environment", default=CL61_AUTOMATION_ENVIRONMENT)
+    parser.add_argument("--automation-signing-key", type=Path, default=CL61_AUTOMATION_SIGNING_KEY_PATH)
+    parser.add_argument(
+        "--enable-automation-shadow",
+        action="store_true",
+        default=CL61_AUTOMATION_SHADOW_ENABLED,
+        help="Publish a diagnostic-only CL61 intent and status; it cannot control the PDU",
+    )
     parser.add_argument(
         "--max-power-age-minutes",
         type=float,
@@ -721,6 +842,12 @@ def main() -> None:
         events_path=args.events,
         max_power_age_minutes=args.max_power_age_minutes,
         uas_log=args.uas_log,
+        automation_intent_output=args.automation_intent_output,
+        automation_status_output=args.automation_status_output,
+        automation_history_output=args.automation_history_output,
+        automation_environment=args.automation_environment,
+        automation_signing_key_path=args.automation_signing_key,
+        automation_shadow_enabled=args.enable_automation_shadow,
     )
 
 

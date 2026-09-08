@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "configuration_status": "provisional",
+  "source": "Cardinal bearings from East/South/West MPPT labels; tilt prior set to site latitude; electrical scale priors use observed channel peaks while MPPT-curtailment mode is unavailable; not a surveyed BOM",
+  "ground_albedo": 0.2,
+  "faiman_u0_w_m2_k": 25.0,
+  "faiman_u1_w_s_m3_k": 6.84,
+  "substep_minutes": 10.0,
+  "arrays": [
+    {
+      "name": "East",
+      "azimuth_deg": 90.0,
+      "tilt_deg": 64.83,
+      "nameplate_power_w": 1700.0,
+      "controller_limit_w": 1700.0,
+      "fixed_efficiency": 0.9,
+      "temperature_coefficient_per_c": -0.0037,
+      "incidence_angle_modifier_b0": 0.05
+    },
+    {
+      "name": "South",
+      "azimuth_deg": 180.0,
+      "tilt_deg": 64.83,
+      "nameplate_power_w": 3500.0,
+      "controller_limit_w": 3500.0,
+      "fixed_efficiency": 0.9,
+      "temperature_coefficient_per_c": -0.0037,
+      "incidence_angle_modifier_b0": 0.05
+    },
+    {
+      "name": "West",
+      "azimuth_deg": 270.0,
+      "tilt_deg": 64.83,
+      "nameplate_power_w": 2300.0,
+      "controller_limit_w": 2300.0,
+      "fixed_efficiency": 0.9,
+      "temperature_coefficient_per_c": -0.0037,
+      "incidence_angle_modifier_b0": 0.05
+    }
+  ]
+}

@@ -33,6 +33,7 @@ from power_operating_scenarios import (
     mode_kits,
     load_operating_events,
     optimize_cl61_schedule,
+    optimize_cl61_primary_schedule,
     optimize_priority_schedule,
     _tier_profile_members,
 )
@@ -41,7 +42,9 @@ from power_state_catalog import (
     LEARNED_POWER_STATE_IDS,
     POWER_STATE_SCENARIO_IDS,
     UAS_CHARGE_DURATION_HOURS,
-    UAS_CHARGE_ESTIMATE_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W,
+    UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W,
     canonical_uas_tier,
     tier_is_learning_source,
 )
@@ -98,7 +101,17 @@ def _forecast_inputs(issue: pd.Timestamp, horizon_hours: int = 96) -> tuple[xr.D
             "ForecastLoadWatts": (("time",), load),
         },
         coords={"time": times},
-        attrs={"battery_capacity_kwh": "26", "initial_soc_time": issue.isoformat()},
+        attrs={
+            "battery_capacity_kwh": "26",
+            "initial_soc_time": issue.isoformat(),
+            "forecast_system_version": "power-v12-test",
+            "feature_set_version": "physical-solar-load-test-v1",
+            "feature_set_digest": f"sha256:{'1' * 64}",
+            "forecast_code_revision": "0123456789abcdef",
+            "source_cycle_set_id": "ecmwf:2026-07-15T12:00:00Z",
+            "source_manifest_digest": f"sha256:{'2' * 64}",
+            "forecast_identity_id": "forecast-identity-v1-test",
+        },
     )
     members = np.vstack([solar * factor for factor in np.linspace(0.75, 1.25, 20)])
     ensemble = xr.Dataset(
@@ -148,7 +161,8 @@ class OperatingScenarioTests(unittest.TestCase):
         observations = build_observation_frame(
             power,
             pdu,
-            uas_tier=tiers,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
             lookback_days=2,
         )
 
@@ -156,6 +170,25 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertFalse(observations.loc[times[1], "uas_tier_learning_eligible"])
         self.assertFalse(observations.loc[times[2], "uas_tier_learning_eligible"])
         self.assertTrue(observations.loc[times[3], "uas_tier_learning_eligible"])
+
+    def test_mixed_uas_dock_pairs_are_never_single_tier_training_data(self) -> None:
+        power, pdu = _training_data()
+        times = pd.DatetimeIndex(power["time"].values)
+        dock1 = pd.Series(11.0, index=times)
+        dock2 = pd.Series(12.0, index=times)
+
+        observations = build_observation_frame(
+            power,
+            pdu,
+            uas_dock1_tier=dock1,
+            uas_dock2_tier=dock2,
+            lookback_days=2,
+        )
+
+        self.assertFalse(observations["uas_tier_learning_eligible"].any())
+        self.assertFalse(observations["uas_pair_consistent"].any())
+        self.assertTrue(observations["uas_effective_tier"].isna().all())
+        self.assertEqual(str(observations["uas_pair_state"].iloc[-1]), "dock1_11__dock2_12")
 
     def test_p50_continuation_holds_only_currently_on_controlled_instruments(self) -> None:
         times = pd.date_range("2026-08-09T00:00:00", periods=6, freq="1h")
@@ -270,6 +303,13 @@ class OperatingScenarioTests(unittest.TestCase):
                 "initial_soc_time": "2026-07-18T00:00:00",
                 "forecast_refresh_kind": "cached_reanchor",
                 "forecast_verification_eligible": "false",
+                "forecast_system_version": "power-v12-test",
+                "feature_set_version": "physical-solar-load-test-v1",
+                "feature_set_digest": f"sha256:{'1' * 64}",
+                "forecast_code_revision": "0123456789abcdef",
+                "source_cycle_set_id": "ecmwf:2026-07-18T00:00:00Z",
+                "source_manifest_digest": f"sha256:{'2' * 64}",
+                "forecast_identity_id": "forecast-identity-v1-test",
             },
         )
 
@@ -279,6 +319,13 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(provenance["planning_forecast_initial_soc_time"], "2026-07-18T00:00:00")
         self.assertEqual(provenance["planning_forecast_time_coverage_start"], "2026-07-18T00:00:00")
         self.assertEqual(provenance["planning_forecast_time_coverage_end"], "2026-07-18T02:00:00")
+        self.assertEqual(provenance["forecast_system_version"], "power-v12-test")
+        self.assertEqual(provenance["feature_set_version"], "physical-solar-load-test-v1")
+        self.assertEqual(provenance["feature_set_digest"], f"sha256:{'1' * 64}")
+        self.assertEqual(provenance["forecast_code_revision"], "0123456789abcdef")
+        self.assertEqual(provenance["source_cycle_set_id"], "ecmwf:2026-07-18T00:00:00Z")
+        self.assertEqual(provenance["source_manifest_digest"], f"sha256:{'2' * 64}")
+        self.assertEqual(provenance["forecast_identity_id"], "forecast-identity-v1-test")
 
     def test_mode_code_round_trip_supports_combinations(self) -> None:
         value = mode_id(("CL61", "Radar"))
@@ -554,7 +601,9 @@ class OperatingScenarioTests(unittest.TestCase):
         )
 
         optimized = scenarios.sel(scenario=SCENARIO_OPTIMIZED)
-        self.assertEqual(float(optimized["ScenarioCollectionHours"]), 0.0)
+        # A currently-on CL61 is preserved in the diagnostic trace instead of
+        # being silently shed at the first scheduler boundary.
+        self.assertEqual(float(optimized["ScenarioCollectionHours"]), 96.0)
         self.assertEqual(float(optimized["ScenarioSafe"]), 0.0)
         self.assertEqual(scenarios.attrs["optimized_status"], "no_safe_schedule")
         self.assertEqual(
@@ -565,7 +614,7 @@ class OperatingScenarioTests(unittest.TestCase):
             json.loads(scenarios.attrs["optimized_priority_order"]),
             ["CL61", "Radar", "HATPRO"],
         )
-        self.assertIn("all three controlled instruments off", scenarios.attrs["optimized_reason"])
+        self.assertIn("not an instruction to switch CL61 off", scenarios.attrs["optimized_reason"])
         self.assertEqual(scenarios.attrs["optimized_operator_action_required"], "true")
 
     def test_phase_aware_joint_search_retains_safe_single_instrument_subsets(self) -> None:
@@ -681,6 +730,39 @@ class OperatingScenarioTests(unittest.TestCase):
         first = scenario_publication_signature(scenarios)
         scenarios["ScenarioLoadP50Watts"].values[0, 0] += 50.0
         self.assertNotEqual(scenario_publication_signature(scenarios), first)
+
+    def test_scenario_publication_signature_binds_forecast_identity(self) -> None:
+        power, pdu = _training_data()
+        model = fit_operating_model(power, pdu, lookback_days=2)
+        issue = pd.Timestamp(power["time"].values[-1])
+        deterministic, ensemble = _forecast_inputs(issue)
+        scenarios = build_operating_scenarios(
+            power,
+            deterministic,
+            model,
+            ensemble=ensemble,
+            horizon_hours=96,
+        )
+        scenarios.attrs.update(_planning_forecast_provenance(deterministic))
+        first = scenario_publication_signature(scenarios)
+
+        for name in (
+            "forecast_system_version",
+            "feature_set_version",
+            "feature_set_digest",
+            "forecast_code_revision",
+            "source_cycle_set_id",
+            "source_manifest_digest",
+            "forecast_identity_id",
+        ):
+            original = scenarios.attrs[name]
+            scenarios.attrs[name] = f"{original}-changed"
+            self.assertNotEqual(
+                scenario_publication_signature(scenarios),
+                first,
+                msg=f"scenario signature did not bind {name}",
+            )
+            scenarios.attrs[name] = original
 
     def test_current_scenario_uses_the_finite_operating_state_and_soc_anchor(self) -> None:
         power, pdu = _training_data()
@@ -845,7 +927,13 @@ class OperatingScenarioTests(unittest.TestCase):
         pdu["PDUOutlet8Watts"] = (("time",), np.full(power.sizes["time"], 230.0))
         pdu["PDUOutlet8State"] = (("time",), np.ones(power.sizes["time"]))
         tier = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
-        model = fit_operating_model(power, pdu, uas_tier=tier, lookback_days=2)
+        model = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tier,
+            uas_dock2_tier=tier,
+            lookback_days=2,
+        )
         issue = pd.Timestamp(power["time"].values[-1])
         deterministic, ensemble = _forecast_inputs(issue)
 
@@ -885,7 +973,13 @@ class OperatingScenarioTests(unittest.TestCase):
         pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
         tiers = pd.Series(raw_tiers, index=pd.DatetimeIndex(power["time"].values))
 
-        result = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        result = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
+            lookback_days=2,
+        )
 
         self.assertEqual(set(result.uas_tier_profiles), {"1", "2"})
         self.assertEqual(result.uas_tier_profiles["1"]["source_effective_tiers"], [11])
@@ -901,13 +995,19 @@ class OperatingScenarioTests(unittest.TestCase):
             np.where(raw_tiers == 11.0, 1.0, 2.0),
         )
 
-    def test_uas_charge_is_estimated_for_three_hours_then_returns_to_base_tier(self) -> None:
+    def test_uas_charge_uses_the_empirical_energy_prior_then_returns_to_base_tier(self) -> None:
         power, pdu = _training_data()
         sample_count = power.sizes["time"]
         pdu["PDUOutlet4Watts"] = (("time",), np.full(sample_count, 108.0))
         pdu["PDUOutlet4State"] = (("time",), np.ones(sample_count))
         tiers = pd.Series(3.0, index=pd.DatetimeIndex(power["time"].values))
-        model = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        model = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
+            lookback_days=2,
+        )
         issue = pd.Timestamp(power["time"].values[-1])
         deterministic, ensemble = _forecast_inputs(issue)
 
@@ -924,17 +1024,25 @@ class OperatingScenarioTests(unittest.TestCase):
             charging["ScenarioLoadP50Watts"].values
             - base["ScenarioLoadP50Watts"].values
         )
+        difference_p10 = (
+            charging["ScenarioLoadP10Watts"].values
+            - base["ScenarioLoadP10Watts"].values
+        )
+        difference_p90 = (
+            charging["ScenarioLoadP90Watts"].values
+            - base["ScenarioLoadP90Watts"].values
+        )
 
-        np.testing.assert_allclose(difference[:4], UAS_CHARGE_ESTIMATE_W)
-        np.testing.assert_allclose(difference[4:], 0.0)
-        np.testing.assert_array_equal(
-            charging["ScenarioUASCharging"].values[:5],
-            [1, 1, 1, 1, 0],
-        )
-        self.assertEqual(
-            pd.Timestamp(charging.time.values[3]) - pd.Timestamp(charging.time.values[0]),
-            pd.Timedelta(hours=UAS_CHARGE_DURATION_HOURS),
-        )
+        active = np.asarray(charging["ScenarioUASCharging"].values, dtype=bool)
+        self.assertTrue(active[0])
+        self.assertFalse(active[1:].any())
+        # The scenario stores finite-member quantiles, so discrete ranks are
+        # close to rather than identically equal to the empirical prior.
+        self.assertAlmostEqual(float(difference_p10[0]), UAS_CHARGE_EMPIRICAL_INCREMENT_P10_W, delta=8.0)
+        self.assertAlmostEqual(float(difference[0]), UAS_CHARGE_EMPIRICAL_INCREMENT_P50_W, delta=8.0)
+        self.assertAlmostEqual(float(difference_p90[0]), UAS_CHARGE_EMPIRICAL_INCREMENT_P90_W, delta=8.0)
+        np.testing.assert_allclose(difference[~active], 0.0)
+        self.assertLess(UAS_CHARGE_DURATION_HOURS, 1.0)
         self.assertEqual(str(charging["scenario_mode_maturity"].item()), "estimated")
         self.assertEqual(
             str(charging["ScenarioPowerState"].isel(time=0).item()),
@@ -945,7 +1053,7 @@ class OperatingScenarioTests(unittest.TestCase):
             "dc_uas__uas_tier_3",
         )
 
-    def test_explicit_charge_episode_replaces_the_estimate_after_learning(self) -> None:
+    def test_single_explicit_charge_episode_remains_provisional(self) -> None:
         power, pdu = _training_data()
         sample_count = power.sizes["time"]
         uas_watts = np.full(sample_count, 105.0)
@@ -962,18 +1070,20 @@ class OperatingScenarioTests(unittest.TestCase):
         result = fit_operating_model(
             power,
             pdu,
-            uas_tier=tiers,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
             events=events,
             lookback_days=2,
         )
         charge = result.uas_charge_profiles["3"]
 
-        self.assertEqual(charge["maturity"], "reliable")
+        self.assertEqual(charge["maturity"], "provisional")
         self.assertEqual(charge["episode_count"], 1.0)
         self.assertEqual(charge["observed_hours"], 3.0)
+        self.assertEqual(charge["observed_days"], 1.0)
         self.assertAlmostEqual(charge["increment_p50_w"], 300.0)
         self.assertAlmostEqual(charge["duration_p50_hours"], 3.0)
-        self.assertAlmostEqual(charge["duration_hours"], 3.0)
+        self.assertAlmostEqual(charge["duration_hours"], UAS_CHARGE_DURATION_HOURS)
 
     def test_provisional_uas_tier_profile_uses_conservative_fallback(self) -> None:
         members = _tier_profile_members(
@@ -1001,7 +1111,13 @@ class OperatingScenarioTests(unittest.TestCase):
         tier_values[18:20] = 2.0
         tiers = pd.Series(tier_values, index=pd.DatetimeIndex(power["time"].values))
 
-        result = fit_operating_model(power, pdu, uas_tier=tiers, lookback_days=2)
+        result = fit_operating_model(
+            power,
+            pdu,
+            uas_dock1_tier=tiers,
+            uas_dock2_tier=tiers,
+            lookback_days=2,
+        )
         tier3 = result.uas_tier_profiles["3"]
 
         self.assertEqual(tier3["episode_count"], 3.0)
@@ -1112,6 +1228,79 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertEqual(result.instrument_hours, {"CL61": 12.0, "Radar": 0.0, "HATPRO": 0.0})
         self.assertAlmostEqual(result.controlled_energy_kwh, 5.88)
 
+    def test_cl61_primary_policy_reserves_cl61_before_other_instruments(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
+        solar = np.zeros((20, len(times)))
+        components = np.tile(
+            np.array([40.0, 40.0, 250.0, 200.0, 0.0, 0.0]),
+            (20, 1),
+        )
+
+        combined, primary = optimize_cl61_primary_schedule(
+            times=times,
+            solar_members_w=solar,
+            component_members=components,
+            initial_soc=100.0,
+            capacity_kwh=26.0,
+            base_mode=MODE_DC_ONLY,
+            horizon_hours=96,
+        )
+
+        self.assertTrue(primary.safe)
+        self.assertTrue(combined.safe)
+        self.assertEqual(primary.instrument_hours, {"CL61": 96.0})
+        self.assertEqual(combined.instrument_hours["CL61"], 96.0)
+        self.assertEqual(combined.instrument_hours["Radar"], 0.0)
+        self.assertEqual(combined.instrument_hours["HATPRO"], 0.0)
+        self.assertTrue(
+            all("CL61" in mode_kits(value) for value in combined.modes[1:97])
+        )
+
+    def test_cl61_primary_policy_does_not_shed_an_existing_cl61(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
+        solar = np.zeros((20, len(times)))
+        components = np.tile(
+            np.array([40.0, 20.0, 400.0, 300.0, 0.0, 0.0]),
+            (20, 1),
+        )
+
+        combined, primary = optimize_cl61_primary_schedule(
+            times=times,
+            solar_members_w=solar,
+            component_members=components,
+            initial_soc=100.0,
+            capacity_kwh=26.0,
+            base_mode=mode_id(("CL61",)),
+            horizon_hours=96,
+        )
+
+        self.assertTrue(primary.safe)
+        self.assertTrue(combined.safe)
+        self.assertEqual(combined.starts, 0)
+        self.assertTrue(all("CL61" in mode_kits(value) for value in combined.modes))
+
+    def test_cl61_primary_policy_holds_other_current_pdu_loads(self) -> None:
+        times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
+        solar = np.zeros((20, len(times)))
+        components = np.tile(
+            np.array([40.0, 20.0, 400.0, 300.0, 0.0, 0.0]),
+            (20, 1),
+        )
+
+        combined, primary = optimize_cl61_primary_schedule(
+            times=times,
+            solar_members_w=solar,
+            component_members=components,
+            initial_soc=100.0,
+            capacity_kwh=26.0,
+            base_mode=mode_id(("CL61", "Radar")),
+            horizon_hours=96,
+        )
+
+        self.assertTrue(all("Radar" in mode_kits(value) for value in primary.modes))
+        self.assertTrue(all("Radar" in mode_kits(value) for value in combined.modes))
+        self.assertTrue(all("CL61" in mode_kits(value) for value in combined.modes))
+
     def test_optimizer_protects_reserve_through_full_planning_horizon(self) -> None:
         times = pd.date_range("2026-07-15T00:00:00", periods=241, freq="1h")
         solar = np.zeros((20, len(times)))
@@ -1197,7 +1386,9 @@ class OperatingScenarioTests(unittest.TestCase):
         self.assertGreater(float(np.nanmax(tail_solar)), 0.0)
         self.assertGreater(float(np.nanmax(tail_solar) - np.nanmin(tail_solar)), 0.0)
         optimized_codes = scenarios.sel(scenario=SCENARIO_OPTIMIZED)["ScenarioModeCode"].values
-        self.assertTrue(np.all((optimized_codes[97:] & 1) == 0))
+        # The current observed CL61 state remains held through the full
+        # planning horizon under the CL61-first continuation policy.
+        self.assertTrue(np.all((optimized_codes[97:] & 1) == 1))
 
     def test_generator_persists_versioned_state_scenarios_and_recommendation(self) -> None:
         power, pdu = _training_data()
@@ -1217,6 +1408,9 @@ class OperatingScenarioTests(unittest.TestCase):
                 "scenarios": root / "operating_scenarios.zarr",
                 "model": root / "model.json",
                 "recommendations": root / "recommendations.json",
+                "automation_intent": root / "cl61_automation_intent.json",
+                "automation_status": root / "cl61_automation_status.json",
+                "automation_history": root / "cl61_automation_history.jsonl",
             }
             power.to_zarr(paths["power"], mode="w", consolidated=True)
             pdu.to_zarr(paths["pdu"], mode="w", consolidated=True)
@@ -1236,6 +1430,10 @@ class OperatingScenarioTests(unittest.TestCase):
                 planning_hours=240,
                 optimization_hours=96,
                 lookback_days=2,
+                automation_intent_output=paths["automation_intent"],
+                automation_status_output=paths["automation_status"],
+                automation_history_output=paths["automation_history"],
+                automation_shadow_enabled=True,
             )
 
             state = xr.open_zarr(paths["state"], chunks={})
@@ -1265,6 +1463,40 @@ class OperatingScenarioTests(unittest.TestCase):
                 scenarios.close()
             self.assertTrue(paths["model"].exists())
             self.assertTrue(paths["recommendations"].exists())
+            automation_status = json.loads(paths["automation_status"].read_text(encoding="utf-8"))
+            self.assertEqual(automation_status["mode"], "observe_only")
+            self.assertFalse(automation_status["capability"])
+            self.assertEqual(automation_status["target"]["pdu_outlet"], 5)
+            self.assertEqual(
+                automation_status["forecast"]["forecast_system_version"],
+                deterministic.attrs["forecast_system_version"],
+            )
+            self.assertEqual(
+                automation_status["forecast"]["feature_set_version"],
+                deterministic.attrs["feature_set_version"],
+            )
+            self.assertEqual(
+                automation_status["forecast"]["feature_set_digest"],
+                deterministic.attrs["feature_set_digest"],
+            )
+            self.assertEqual(
+                automation_status["forecast"]["forecast_code_revision"],
+                deterministic.attrs["forecast_code_revision"],
+            )
+            self.assertEqual(
+                automation_status["forecast"]["source_cycle_set_id"],
+                deterministic.attrs["source_cycle_set_id"],
+            )
+            self.assertEqual(
+                automation_status["forecast"]["source_manifest_digest"],
+                deterministic.attrs["source_manifest_digest"],
+            )
+            self.assertEqual(
+                automation_status["forecast"]["forecast_identity_id"],
+                deterministic.attrs["forecast_identity_id"],
+            )
+            self.assertTrue(paths["automation_intent"].exists())
+            self.assertTrue(paths["automation_history"].exists())
             archive = json.loads(paths["recommendations"].read_text(encoding="utf-8"))
             self.assertEqual(archive["schema_version"], 4)
             record = archive["recommendations"][-1]

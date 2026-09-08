@@ -14,6 +14,367 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_power_bundle_digest_has_fixed_cross_repo_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "nested").mkdir()
+            (root / "a.txt").write_bytes(b"alpha")
+            (root / "nested" / "b.bin").write_bytes(bytes([0, 255]))
+
+            digest = mobile_catalog._power_bundle_artifact_digest(root)
+
+        self.assertEqual(
+            digest,
+            "b30b81d6b3aaa8da809cf52efe5a39de3b52a097e49a66d5aa0a44bc896b5eb2",
+        )
+
+    def test_power_bundle_status_validates_digests_and_observes_failed_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generation = root / "generation-one"
+            forecast = generation / "power_forecast_display.zarr"
+            forecast.mkdir(parents=True)
+            (forecast / "zarr.json").write_text("forecast", encoding="utf-8")
+            digest = mobile_catalog._power_bundle_artifact_digest(forecast)
+            sibling_products = {}
+            for logical_name, relative in (
+                ("currentDisplay", "power_current_display.zarr"),
+                ("displaySummary", "power_display_summary.zarr"),
+                ("operatingScenarios", "power_operating_scenarios.zarr"),
+            ):
+                product_path = generation / relative
+                product_path.mkdir()
+                (product_path / "zarr.json").write_text(
+                    logical_name, encoding="utf-8"
+                )
+                sibling_products[logical_name] = {
+                    "relativePath": relative,
+                    "sha256": mobile_catalog._power_bundle_artifact_digest(
+                        product_path
+                    ),
+                }
+            manifest = generation / "generation.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "status": "complete",
+                        "dataUpdatedAt": "2026-09-05T12:00:00Z",
+                        "validUntil": "2026-09-09T12:00:00Z",
+                        "forecastIdentityID": "identity-one",
+                        "sourceCycleSetID": "cycle-one",
+                        "forecastRefreshKind": "ecmwf_cycle",
+                        "independentCycle": True,
+                        "controlAuthority": "advisory_only",
+                        "cl61ActuationEnabled": False,
+                        "products": {
+                            **sibling_products,
+                            "forecastDisplay": {
+                                "relativePath": "power_forecast_display.zarr",
+                                "sha256": digest,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status_path = root / "status.json"
+            status_path.write_text(json.dumps({"status": "complete"}), encoding="utf-8")
+            mobile_catalog._POWER_BUNDLE_VALIDATION_CACHE.clear()
+            environment = {
+                "AURORA_POWER_FORECAST_ORCHESTRATION_ENABLED": "true",
+                "AURORA_POWER_FORECAST_PUBLICATION_ACTIVE": "true",
+                "AURORA_POWER_FORECAST_BUNDLE_READY_PATH": str(manifest),
+                "AURORA_POWER_FORECAST_BUNDLE_STATUS_PATH": str(status_path),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                self.assertEqual(
+                    mobile_catalog.power_display_section_path("forecast").resolve(),
+                    forecast.resolve(),
+                )
+                self.assertEqual(
+                    mobile_catalog.power_display_section_path("current").resolve(),
+                    (generation / "power_current_display.zarr").resolve(),
+                )
+                self.assertEqual(
+                    mobile_catalog.power_display_summary_path().resolve(),
+                    (generation / "power_display_summary.zarr").resolve(),
+                )
+                self.assertEqual(
+                    tuple(
+                        path.resolve()
+                        for path in mobile_catalog.power_operating_scenario_paths()
+                    ),
+                    ((generation / "power_operating_scenarios.zarr").resolve(),),
+                )
+                current = mobile_catalog.power_forecast_bundle_status(forecast)
+                self.assertEqual(current["status"], "complete")
+                self.assertEqual(
+                    current["verifiedProducts"],
+                    [
+                        "currentDisplay",
+                        "displaySummary",
+                        "forecastDisplay",
+                        "operatingScenarios",
+                    ],
+                )
+                self.assertEqual(current["forecastRefreshKind"], "ecmwf_cycle")
+                self.assertIs(current["independentCycle"], True)
+                with patch.object(
+                    mobile_catalog, "datetime", wraps=datetime
+                ) as mocked_datetime:
+                    mocked_datetime.now.return_value = datetime(
+                        2026, 9, 10, tzinfo=timezone.utc
+                    )
+                    expired_from_cache = mobile_catalog.power_forecast_bundle_status(
+                        forecast
+                    )
+                self.assertEqual(expired_from_cache["status"], "stale")
+                self.assertEqual(
+                    expired_from_cache["staleReason"], "bundle_validity_expired"
+                )
+                status_path.write_text(
+                    json.dumps({"status": "failed", "failedStage": "ensemble"}),
+                    encoding="utf-8",
+                )
+                failed_retry = mobile_catalog.power_forecast_bundle_status(forecast)
+
+        self.assertEqual(failed_retry["status"], "complete")
+        self.assertEqual(failed_retry["lastAttemptStatus"], "failed")
+        self.assertEqual(failed_retry["lastAttemptReason"], "ensemble")
+
+    def test_power_bundle_activation_pending_uses_explicit_legacy_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / "legacy_forecast.zarr"
+            ready = root / "forecast-bundle" / "active" / "generation.json"
+            environment = {
+                "AURORA_POWER_FORECAST_ORCHESTRATION_ENABLED": "true",
+                "AURORA_POWER_FORECAST_PUBLICATION_ACTIVE": "true",
+                "AURORA_POWER_FORECAST_BUNDLE_READY_PATH": str(ready),
+                "POWER_FORECAST_DISPLAY_ZARR_PATH": str(legacy),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                selected = mobile_catalog.power_display_section_path("forecast")
+                publication = mobile_catalog.power_forecast_bundle_status(selected)
+
+        self.assertEqual(selected, legacy)
+        self.assertEqual(publication["status"], "activation_pending")
+        self.assertEqual(publication["displaySource"], "legacy")
+
+    def test_shadow_orchestration_does_not_change_legacy_power_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / "legacy_forecast.zarr"
+            ready = root / "forecast-bundle" / "active" / "generation.json"
+            environment = {
+                "AURORA_POWER_FORECAST_ORCHESTRATION_ENABLED": "true",
+                "AURORA_POWER_FORECAST_PUBLICATION_ACTIVE": "false",
+                "AURORA_POWER_FORECAST_BUNDLE_READY_PATH": str(ready),
+                "POWER_FORECAST_DISPLAY_ZARR_PATH": str(legacy),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                selected = mobile_catalog.power_display_section_path("forecast")
+                publication = mobile_catalog.power_forecast_bundle_status(selected)
+
+        self.assertEqual(selected, legacy)
+        self.assertFalse(publication["enabled"])
+        self.assertEqual(publication["status"], "shadow_unpublished")
+
+    def test_power_current_fails_closed_after_invalid_bundle_activation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "forecast-bundle" / "active" / "generation.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps({"schemaVersion": 1, "status": "incomplete"}),
+                encoding="utf-8",
+            )
+            environment = {
+                "AURORA_POWER_FORECAST_ORCHESTRATION_ENABLED": "true",
+                "AURORA_POWER_FORECAST_PUBLICATION_ACTIVE": "true",
+                "AURORA_POWER_FORECAST_BUNDLE_READY_PATH": str(manifest),
+                "AURORA_POWER_FORECAST_BUNDLE_STATUS_PATH": str(root / "status.json"),
+                "POWER_CURRENT_DISPLAY_ZARR_PATH": str(root / "legacy-current.zarr"),
+                "POWER_FORECAST_DISPLAY_ZARR_PATH": str(root / "legacy-forecast.zarr"),
+            }
+            mobile_catalog._POWER_BUNDLE_VALIDATION_CACHE.clear()
+            with patch.dict(os.environ, environment, clear=False):
+                response = mobile_catalog.power(window="24h", group="current")
+
+        self.assertEqual(response["status"], "unavailable")
+        self.assertEqual(response["panels"], [])
+        self.assertIn("failed validation", response["warning"])
+
+    def test_cl61_automation_status_is_read_only_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cl61_automation_status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "mode": "observe_only",
+                        "capability": False,
+                        "control_authority": "observe_only",
+                        "target": {"instrument": "CL61", "pdu_outlet": 5},
+                        "last_proposed_action": "start",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"CL61_AUTOMATION_STATUS_PATH": str(path)}):
+                payload = mobile_catalog.cl61_automation_status()
+
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["status"]["mode"], "observe_only")
+        self.assertFalse(payload["status"]["capability"])
+        self.assertEqual(payload["status"]["target"]["pdu_outlet"], 5)
+        self.assertNotIn("path", payload["source"])
+
+    def test_cl61_automation_status_rejects_control_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cl61_automation_status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "mode": "armed",
+                        "capability": True,
+                        "control_authority": "operational",
+                        "target": {"instrument": "CL61", "pdu_outlet": 5},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"CL61_AUTOMATION_STATUS_PATH": str(path)}):
+                payload = mobile_catalog.cl61_automation_status()
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["status"]["capability"])
+        self.assertEqual(payload["status"]["reason_codes"], ["non_observe_only_status_rejected"])
+
+    def test_power_candidate_evaluation_is_explicitly_development_only(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lane = "D_physical_solar_load_residual"
+            signature = "candidate-signature"
+            pair_id = "pair-id"
+            bundle = root / "lanes" / lane / "pairs" / pair_id / signature
+            bundle.mkdir(parents=True)
+            times = pd.date_range("2026-06-21T12:00:00", periods=2, freq="3h")
+            baseline = xr.Dataset(
+                {
+                    "BatterySOCForecast": (("time",), [70.0, 69.0]),
+                    "ForecastLoadWatts": (("time",), [100.0, 100.0]),
+                    "ForecastSolarWatts": (("time",), [0.0, 200.0]),
+                },
+                coords={"time": times},
+            )
+            candidate = baseline.copy(deep=True)
+            candidate["BatterySOCForecast"][:] = np.asarray([70.0, 69.5])
+            candidate.attrs.update(
+                {
+                    "forecast_system_version": "power-v12-hybrid-candidate",
+                    "forecast_model_contract_id": "contract-id",
+                    "feature_set_version": "features-v1",
+                    "feature_set_digest": "feature-digest",
+                    "source_manifest_digest": "manifest-digest",
+                    "source_cycle_set_id": "cycle-set",
+                    "source_availability_code": "ecmwf_control=available;gfs=not_enrolled",
+                    "local_feature_contract_id": "issue-features-v1-test",
+                    "baseline_control_contract_id": "baseline-control-test",
+                    "degraded_mode_code": "candidate_only",
+                    "load_residual_model_status": "active",
+                    "generated_at_utc": "2026-06-21T12:05:00Z",
+                    "observation_cutoff_utc": "2026-06-21T12:00:00Z",
+                    "forecast_code_revision": "revision-test",
+                    "adaptive_calibration_state_id": "calibration-state-test",
+                    "soc_bias_correction_method": "continuous_piecewise_linear_with_net_discharge_guard_v2",
+                    "soc_physical_consistency_status": "passed",
+                }
+            )
+            baseline.to_zarr(bundle / "baseline_forecast.zarr", mode="w", consolidated=True)
+            candidate.to_zarr(bundle / "candidate_forecast.zarr", mode="w", consolidated=True)
+            (bundle / "pair_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "pair_status": "complete",
+                        "evaluation_pair_id": pair_id,
+                        "candidate_publication_signature": signature,
+                        "baseline_publication_signature": "baseline-signature",
+                    }
+                )
+            )
+            (root / "lanes" / lane / "evaluation_summary.json").write_text("{}")
+            (root / "status.json").write_text(
+                json.dumps(
+                    {
+                        "environment": "development",
+                        "authority": "candidate",
+                        "status": "complete",
+                        "data_updated_at_utc": "2026-06-21T12:05:00Z",
+                        "valid_until_utc": "2026-06-21T15:00:00Z",
+                        "promotion_status": "not_eligible_requires_campaign_evidence",
+                        "lanes": {lane: {"publication_signature": signature}},
+                        "public_model_ablation_results": {
+                            "ifs": {
+                                "status": "complete",
+                                "candidate_lane": "E_public_source_ifs",
+                                "path": "/data/aurora/dev-products/secret.zarr",
+                            }
+                        },
+                    }
+                )
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "AURORA_POWER_CANDIDATE_API_ENABLED": "true",
+                    "AURORA_POWER_V12_CANDIDATE_ROOT": str(root),
+                },
+            ):
+                payload = mobile_catalog.power_solar_evaluation(lane)
+                (root / "run_status.json").write_text(
+                    json.dumps(
+                        {
+                            "status": "failed",
+                            "reason_code": "candidate_generation_failed:ValueError",
+                            "requested_at_utc": "2026-06-22T00:00:00Z",
+                            "updated_at_utc": "2026-06-22T00:00:01Z",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                after_failed_attempt = mobile_catalog.power_solar_evaluation(lane)
+            self.assertEqual(payload["environment"], "development")
+            self.assertEqual(payload["authority"], "candidate")
+            self.assertEqual(payload["status"], "stale")
+            self.assertEqual(payload["staleReason"], "forecast_validity_ended")
+            self.assertEqual(payload["generatedAt"], "2026-06-21T12:05:00Z")
+            self.assertNotEqual(payload["generatedAt"], payload["requestedAt"])
+            self.assertEqual(payload["validUntil"], "2026-06-21T15:00:00Z")
+            self.assertEqual(payload["pairID"], pair_id)
+            self.assertEqual(payload["comparison"][1]["candidateSOC"], 69.5)
+            self.assertEqual(payload["localFeatureContractID"], "issue-features-v1-test")
+            self.assertIn("gfs=not_enrolled", payload["sourceAvailabilityCode"])
+            self.assertEqual(payload["forecastCodeRevision"], "revision-test")
+            self.assertEqual(payload["calibrationStateID"], "calibration-state-test")
+            self.assertEqual(payload["physicalDrivers"]["physicalConsistencyStatus"], "passed")
+            self.assertEqual(after_failed_attempt["status"], "stale")
+            self.assertEqual(
+                after_failed_attempt["staleReason"],
+                "forecast_validity_ended",
+            )
+            self.assertEqual(
+                after_failed_attempt["lastAttemptReason"],
+                "candidate_generation_failed:ValueError",
+            )
+            self.assertEqual(after_failed_attempt["comparison"], payload["comparison"])
+            self.assertEqual(payload["publicSourceAblations"]["ifs"]["status"], "complete")
+            self.assertNotIn("path", json.dumps(payload).lower())
+
     def test_float_health_states_are_normalized_and_counted(self) -> None:
         self.assertEqual(mobile_catalog.normalize_level(1.0), "green")
         self.assertEqual(mobile_catalog.normalize_level(0.0), "red")
@@ -428,6 +789,9 @@ class MobileCatalogTests(unittest.TestCase):
 
         self.assertEqual(response["window"], "24h")
         self.assertEqual([record["effectiveTier"] for record in response["records"]], [3])
+        self.assertEqual([record["dock1Tier"] for record in response["records"]], [2])
+        self.assertEqual([record["dock2Tier"] for record in response["records"]], [3])
+        self.assertEqual(response["records"][0]["sharedTier"], None)
 
     def test_uas_flight_catalog_filters_day_and_hides_product_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1727,14 +2091,14 @@ class MobileCatalogTests(unittest.TestCase):
             with patch.dict(os.environ, {"UAS_MQTT_LOG_PATH": str(log)}):
                 labels = mobile_catalog._powered_instrument_labels({4: True})
 
-        self.assertEqual(labels.get("uas"), "On (Tier 3)")
+        self.assertEqual(labels.get("uas"), "On (Dock 1 Tier 4; Dock 2 Tier 3)")
         row = mobile_catalog._pdu_instrument_status(
             "uas",
             {4: True},
             "PDU sample 2m old",
             labels,
         )
-        self.assertEqual(row["state"], "On (Tier 3)")
+        self.assertEqual(row["state"], "On (Dock 1 Tier 4; Dock 2 Tier 3)")
         self.assertEqual(row["level"], "green")
 
     def test_uas_tier_never_overrides_powered_off(self) -> None:

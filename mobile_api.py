@@ -149,6 +149,26 @@ def power(
         raise _not_found(str(exc)) from exc
 
 
+@app.get("/power/solar-evaluation", dependencies=[Depends(require_read_access)])
+def power_solar_evaluation(
+    lane: str = Query(
+        "D_physical_solar_load_residual",
+        pattern="^(B_physical_solar|C_load_residual|D_physical_solar_load_residual)$",
+    ),
+) -> dict:
+    """Development-only, explicitly-labelled paired v12 candidate evidence."""
+    try:
+        return catalog.power_solar_evaluation(lane=lane)
+    except KeyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@app.get("/power/cl61-automation", dependencies=[Depends(require_read_access)])
+def power_cl61_automation() -> dict:
+    """Read-only CL61 automation readiness and shadow-decision status."""
+    return catalog.cl61_automation_status()
+
+
 @app.get("/media/power/figure/{section}", dependencies=[Depends(require_read_access)])
 def power_figure(request: Request, section: str) -> Response:
     """Serve a cacheable prewarmed Plotly figure without exposing a Zarr store."""
