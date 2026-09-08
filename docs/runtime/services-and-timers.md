@@ -184,7 +184,8 @@ UTC deterministic cycle twice daily and writes a 240-hour forecast under
 `aurora-power-operating-scenarios.service` runs every five minutes. It learns
 new mode/component evidence and regenerates named and optimized plans from
 current SOC. It also aligns the mirrored UAS MQTT log so tier-specific loads
-can be learned and the all-instruments/UAS-tier-3 scenario can be evaluated.
+can be learned, the all-instruments/UAS-tier-3 scenario can be evaluated, and
+the standard UAS tier 1-5 comparison can hold all non-UAS loads fixed.
 The app merges that compact product into the display summary at read time; it
 does not rebuild the full Power summary every five minutes. Both environments
 run these advisory products: production writes under `/data/aurora/products`,

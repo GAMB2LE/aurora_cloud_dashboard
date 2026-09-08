@@ -2680,6 +2680,7 @@ def _forecast_panel_start(dataset, times, panel):
         ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCurrentSOCP50", "OperatingCL61OptimizedSOCP50"),
+        "uas_tier_scenarios": ("OperatingUASTier1SOCP50",),
         "operating_plan_schedule": (
             "OperatingCL61OptimizedActiveCount",
             "OperatingCL61OptimizedCL61On",
@@ -2700,7 +2701,7 @@ def _forecast_panel_start(dataset, times, panel):
 
 def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
     """Return label, SOC anchor, issue time, and horizon for one card."""
-    operating_panel = panel_key.startswith("operating_plan")
+    operating_panel = panel_key.startswith("operating_plan") or panel_key == "uas_tier_scenarios"
     system_uses_operating = (
         panel_key in {"soc_24h_forecast", "soc_ecmwf_forecast"}
         and str(dataset.attrs.get("system_as_is_decision_source", "")) == "operating_scenario"
@@ -2753,6 +2754,7 @@ def _power_forecast_panel_end(dataset, panel_key: str, *, default):
         "soc_ecmwf_forecast",
         "ecmwf_solar_forecast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
         "operating_plan_schedule",
     }:
         return default
@@ -2772,6 +2774,7 @@ def _power_forecast_context(dataset, panel_key: str, traces: list[dict[str, Any]
         "soc_ecmwf_forecast",
         "ecmwf_solar_forecast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
         "operating_plan_schedule",
     }
     if panel_key not in forecast_panels:

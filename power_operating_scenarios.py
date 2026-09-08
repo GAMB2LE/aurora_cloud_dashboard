@@ -35,6 +35,8 @@ from power_load_dynamics import (
 from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
+    UAS_TIER_SCENARIOS,
+    UAS_TIER_SCENARIO_IDS,
 )
 from power_state_catalog import (
     LEARNED_POWER_STATE_IDS,
@@ -102,6 +104,15 @@ UAS_CHARGE_RELIABLE_DAYS = 5
 UAS_TIER3_FALLBACK_P10_W = 55.0
 UAS_TIER3_FALLBACK_P50_W = 108.0
 UAS_TIER3_FALLBACK_P90_W = 302.0
+
+UAS_TIER_FALLBACKS = {
+    definition.tier: (
+        definition.fallback_p10_w,
+        definition.fallback_p50_w,
+        definition.fallback_p90_w,
+    )
+    for definition in UAS_TIER_SCENARIOS
+}
 
 SCENARIO_CURRENT = "current_mode"
 SCENARIO_DC_ONLY = "dc_only"
@@ -1101,16 +1112,18 @@ def _tier_profile_members(
     count: int,
     *,
     seed: int,
+    tier: int = 3,
 ) -> np.ndarray:
+    fallback = UAS_TIER_FALLBACKS.get(int(tier), UAS_TIER_FALLBACKS[3])
     if profile is None or str(profile.get("maturity", "provisional")) not in {
         "reliable",
         "reliable_proxy",
     }:
-        p10, p50, p90 = UAS_TIER3_FALLBACK_P10_W, UAS_TIER3_FALLBACK_P50_W, UAS_TIER3_FALLBACK_P90_W
+        p10, p50, p90 = fallback
     else:
-        p10 = float(profile.get("p10_w", UAS_TIER3_FALLBACK_P10_W))
-        p50 = float(profile.get("p50_w", UAS_TIER3_FALLBACK_P50_W))
-        p90 = float(profile.get("p90_w", UAS_TIER3_FALLBACK_P90_W))
+        p10 = float(profile.get("p10_w", fallback[0]))
+        p50 = float(profile.get("p50_w", fallback[1]))
+        p90 = float(profile.get("p90_w", fallback[2]))
     ordered = np.maximum.accumulate(np.asarray([max(p10, 0.0), max(p50, 0.0), max(p90, 0.0)]))
     rng = np.random.default_rng(seed)
     quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
@@ -3887,6 +3900,19 @@ def build_operating_scenarios(
             scenario_cl61_phases[definition.scenario_id] = str(
                 definition.cl61_phase
             )
+    # Hold the currently detected non-UAS kits fixed so these five scenarios
+    # isolate only the consequence of changing the standard Menapia tier.
+    uas_comparison_kits = tuple(kit for kit in mode_kits(base_mode) if kit != "UAS")
+    for definition in UAS_TIER_SCENARIOS:
+        active_kits = (
+            uas_comparison_kits + ("UAS",)
+            if definition.station_powered
+            else uas_comparison_kits
+        )
+        scenario_modes[definition.scenario_id] = tuple(
+            mode_id(active_kits) for _ in times
+        )
+        scenario_uas_tiers[definition.scenario_id] = definition.tier
     for observed_mode in model.observed_modes:
         if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
@@ -3913,6 +3939,7 @@ def build_operating_scenarios(
     power_state_definitions = {
         definition.scenario_id: definition for definition in POWER_STATE_SCENARIOS
     }
+    labels.update({definition.scenario_id: definition.label for definition in UAS_TIER_SCENARIOS})
     load_p10: list[np.ndarray] = []
     load_p50: list[np.ndarray] = []
     load_p90: list[np.ndarray] = []
@@ -3947,6 +3974,9 @@ def build_operating_scenarios(
                 model.uas_tier_profiles.get(str(tier)),
                 member_count,
                 seed=seed + tier * 1009,
+                # Conservative per-tier fallbacks belong to the comparison;
+                # keep the commissioned canonical-state fallback unchanged.
+                tier=tier if scenario_id in UAS_TIER_SCENARIO_IDS else 3,
             )
         charge_hours = scenario_uas_charge_hours.get(scenario_id, 0.0)
         if (
@@ -4137,7 +4167,7 @@ def build_operating_scenarios(
                     "maturity", "unobserved"
                 )
             )
-        if scenario_id in SUGGESTED_OPERATING_SCENARIO_IDS:
+        if scenario_id in SUGGESTED_OPERATING_SCENARIO_IDS + UAS_TIER_SCENARIO_IDS:
             if scenario_id in scenario_uas_tiers:
                 return str(
                     model.uas_tier_profiles.get(
@@ -4388,6 +4418,11 @@ def build_operating_scenarios(
             "optimized_base_mode_label": optimized_diagnostic.base_mode_label,
             "optimized_blocking_instruments": json.dumps(list(optimized_diagnostic.blocking_instruments)),
             "optimized_operator_action_required": str(optimized_diagnostic.operator_action_required).lower(),
+            "uas_tier_comparison_base_mode": mode_id(uas_comparison_kits),
+            "uas_tier_comparison_base_mode_label": mode_label(mode_id(uas_comparison_kits)),
+            "uas_tier_comparison_tiers": json.dumps(
+                [definition.tier for definition in UAS_TIER_SCENARIOS]
+            ),
             **solar_metadata,
             **battery_model.attrs(),
         },

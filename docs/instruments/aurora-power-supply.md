@@ -93,6 +93,11 @@ Typical panels include:
   - CL61, CL61 + Radar, CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar,
     Radar, HATPRO, and all instruments + UAS tier 3
   - median SOC for each combination and a 40% minimum operational reference
+- **UAS Tier SOC Forecasts**
+  - standard tiers 1-5 while the current non-UAS instrument configuration is
+    held fixed
+  - median SOC for each tier, provisional labelling for fallback load profiles,
+    and the same 40% minimum operational reference
 - **Custom CL61 Operating Plan**
   - user-selected UTC start and run duration
   - immediate advisory safety, collection-hour, minimum-P10, and final-P10
@@ -251,6 +256,16 @@ reports **No Feasible Instrument Schedule**; zero traces are diagnostic, not
 PDU instructions. The custom CL61 plan editor
 evaluates a selected start and duration against the stored ensembles
 immediately. All plans are advisory only.
+
+The **UAS Tier SOC Forecasts** panel isolates the effect of the five standard
+Menapia tiers. Every trace uses the same latest `BatterySOC` anchor, ECMWF solar
+ensemble, battery model, and current non-UAS kit combination. Tiers 1-4 keep
+the UAS station load active; tier 5 represents the docks running from finite
+internal batteries with no station-side UAS draw. Each tier uses learned load
+quantiles after three independent episodes and six observed hours, otherwise
+the trace is labelled provisional and uses the documented tier fallback.
+Diagnostic tiers 11 and 12 are omitted because they mimic tiers 1 and 2. The
+comparison is advisory and does not publish Menapia or PDU commands.
 
 A separate **P50 continuation** comparison can keep controlled instruments
 that are already on in the plotted recommendation until median SOC next

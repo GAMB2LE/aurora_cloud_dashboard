@@ -37,7 +37,7 @@ from power_operating_scenarios import (
     optimize_priority_schedule,
     _tier_profile_members,
 )
-from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS, UAS_TIER_SCENARIOS
 from power_state_catalog import (
     LEARNED_POWER_STATE_IDS,
     POWER_STATE_SCENARIO_IDS,
@@ -958,6 +958,39 @@ class OperatingScenarioTests(unittest.TestCase):
             str(tier3["scenario_mode_maturity"].item()),
             "provisional",
         )
+
+        base_kits = tuple(kit for kit in mode_kits(model.current_mode) if kit != "UAS")
+        for definition in UAS_TIER_SCENARIOS:
+            with self.subTest(tier=definition.tier):
+                scenario = scenarios.sel(scenario=definition.scenario_id)
+                np.testing.assert_array_equal(
+                    scenario["ScenarioUASEffectiveTier"].values,
+                    definition.tier,
+                )
+                expected_kits = (
+                    base_kits + ("UAS",)
+                    if definition.station_powered
+                    else base_kits
+                )
+                expected_mode = mode_id(expected_kits)
+                codes = np.asarray(scenario["ScenarioModeCode"].values)
+                self.assertTrue(all(mode_from_code(value) == expected_mode for value in codes))
+
+    def test_standard_uas_tier_fallbacks_reduce_station_load_by_tier(self) -> None:
+        medians = []
+        for definition in UAS_TIER_SCENARIOS:
+            members = _tier_profile_members(
+                None,
+                10_000,
+                seed=definition.tier,
+                tier=definition.tier,
+            )
+            median = float(np.median(members))
+            medians.append(median)
+            self.assertAlmostEqual(median, definition.fallback_p50_w, delta=1.0)
+
+        self.assertEqual(medians, sorted(medians, reverse=True))
+        self.assertEqual(medians[-1], 0.0)
 
     def test_tier_11_and_12_train_canonical_tier_1_and_2_profiles(self) -> None:
         power, pdu = _training_data()

@@ -27,7 +27,8 @@ On every browser width and in the native app, **Power** is divided into
 **Current Conditions** and **Forecast & Planning**. Current Conditions is the
 default and contains observed electrical and thermal panels. Forecast &
 Planning is loaded on demand and contains the 24-hour and 96-hour outlooks,
-operating scenarios, custom schedules, and forecast verification. The selected
+instrument-mode and UAS tier 1-5 scenarios, custom schedules, and forecast
+verification. The selected
 browser section is retained in share links as `power_view=current|forecast`.
 
 The URL continues to store the selected view. A desktop share link uses the

@@ -461,6 +461,10 @@ def test_iceland_panel_uses_collocated_deployment_and_production_overlap(tmp_pat
     module = _load_model_evaluation_module()
     day_root = tmp_path / "2026" / "08" / "01"
     (day_root / "scorecards").mkdir(parents=True)
+    (day_root / "provenance").mkdir()
+    (day_root / "provenance" / "v1_acceptance.json").write_text(
+        json.dumps({"accepted": True}), encoding="utf-8"
+    )
     (day_root / "bundle.json").write_text(
         json.dumps(
             {
