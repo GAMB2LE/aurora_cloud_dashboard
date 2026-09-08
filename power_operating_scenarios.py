@@ -33,13 +33,15 @@ from power_load_dynamics import (
 from power_scenario_catalog import (
     SUGGESTED_OPERATING_SCENARIOS,
     SUGGESTED_OPERATING_SCENARIO_IDS,
+    UAS_TIER_SCENARIOS,
+    UAS_TIER_SCENARIO_IDS,
 )
 from power_battery_model import BatteryModel
 
 MODEL_NAME = "hybrid_state_space_phases_v10"
 MODEL_VERSION = 10
 STATE_SCHEMA_VERSION = 6
-SCENARIO_SCHEMA_VERSION = 11
+SCENARIO_SCHEMA_VERSION = 12
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -63,9 +65,18 @@ P50_CONTINUATION_RECOVERY_SOC_PCT = 95.0
 P50_CONTINUATION_MINIMUM_SOC_PCT = MINIMUM_OPERATIONAL_SOC_PCT
 UAS_TIER_RELIABLE_EPISODES = 3
 UAS_TIER_RELIABLE_HOURS = 6.0
-UAS_TIER3_FALLBACK_P10_W = 55.0
-UAS_TIER3_FALLBACK_P50_W = 108.0
-UAS_TIER3_FALLBACK_P90_W = 302.0
+UAS_TIER_FALLBACKS = {
+    definition.tier: (
+        definition.fallback_p10_w,
+        definition.fallback_p50_w,
+        definition.fallback_p90_w,
+    )
+    for definition in UAS_TIER_SCENARIOS
+}
+# Retain the public constants used by existing callers and tests.
+UAS_TIER3_FALLBACK_P10_W, UAS_TIER3_FALLBACK_P50_W, UAS_TIER3_FALLBACK_P90_W = (
+    UAS_TIER_FALLBACKS[3]
+)
 
 SCENARIO_CURRENT = "current_mode"
 SCENARIO_DC_ONLY = "dc_only"
@@ -752,13 +763,15 @@ def _tier_profile_members(
     count: int,
     *,
     seed: int,
+    tier: int = 3,
 ) -> np.ndarray:
+    fallback = UAS_TIER_FALLBACKS.get(int(tier), UAS_TIER_FALLBACKS[3])
     if profile is None or str(profile.get("maturity", "provisional")) != "reliable":
-        p10, p50, p90 = UAS_TIER3_FALLBACK_P10_W, UAS_TIER3_FALLBACK_P50_W, UAS_TIER3_FALLBACK_P90_W
+        p10, p50, p90 = fallback
     else:
-        p10 = float(profile.get("p10_w", UAS_TIER3_FALLBACK_P10_W))
-        p50 = float(profile.get("p50_w", UAS_TIER3_FALLBACK_P50_W))
-        p90 = float(profile.get("p90_w", UAS_TIER3_FALLBACK_P90_W))
+        p10 = float(profile.get("p10_w", fallback[0]))
+        p50 = float(profile.get("p50_w", fallback[1]))
+        p90 = float(profile.get("p90_w", fallback[2]))
     ordered = np.maximum.accumulate(np.asarray([max(p10, 0.0), max(p50, 0.0), max(p90, 0.0)]))
     rng = np.random.default_rng(seed)
     quantiles = (np.arange(max(int(count), 1), dtype=np.float64) + 0.5) / max(int(count), 1)
@@ -2927,6 +2940,19 @@ def build_operating_scenarios(
         )
         if definition.uas_effective_tier is not None:
             scenario_uas_tiers[definition.scenario_id] = int(definition.uas_effective_tier)
+    # Hold the currently detected non-UAS kits fixed so these five scenarios
+    # isolate only the consequence of changing the standard Menapia tier.
+    uas_comparison_kits = tuple(kit for kit in mode_kits(base_mode) if kit != "UAS")
+    for definition in UAS_TIER_SCENARIOS:
+        active_kits = (
+            uas_comparison_kits + ("UAS",)
+            if definition.station_powered
+            else uas_comparison_kits
+        )
+        scenario_modes[definition.scenario_id] = tuple(
+            mode_id(active_kits) for _ in times
+        )
+        scenario_uas_tiers[definition.scenario_id] = definition.tier
     for observed_mode in model.observed_modes:
         if observed_mode in {MODE_DC_ONLY, mode_id(("CL61",))}:
             continue
@@ -2947,6 +2973,7 @@ def build_operating_scenarios(
     labels.update(
         {definition.scenario_id: definition.label for definition in SUGGESTED_OPERATING_SCENARIOS}
     )
+    labels.update({definition.scenario_id: definition.label for definition in UAS_TIER_SCENARIOS})
     load_p10: list[np.ndarray] = []
     load_p50: list[np.ndarray] = []
     load_p90: list[np.ndarray] = []
@@ -2977,6 +3004,7 @@ def build_operating_scenarios(
                 model.uas_tier_profiles.get(str(tier)),
                 member_count,
                 seed=seed + tier * 1009,
+                tier=tier,
             )
         loads, soc, member_load_phases = _scenario_members(
             modes,
@@ -3151,7 +3179,7 @@ def build_operating_scenarios(
                     str(model.uas_tier_profiles.get(str(scenario_uas_tiers[value]), {}).get("maturity", "provisional"))
                     if value in scenario_uas_tiers
                     else "suggested"
-                ) if value in SUGGESTED_OPERATING_SCENARIO_IDS else
+                ) if value in SUGGESTED_OPERATING_SCENARIO_IDS + UAS_TIER_SCENARIO_IDS else
                 model.mode_maturity.get(value.removeprefix("learned_"), "observed")
                 for value in scenario_ids
             ], dtype=str)),
@@ -3248,6 +3276,11 @@ def build_operating_scenarios(
             "optimized_base_mode_label": optimized_diagnostic.base_mode_label,
             "optimized_blocking_instruments": json.dumps(list(optimized_diagnostic.blocking_instruments)),
             "optimized_operator_action_required": str(optimized_diagnostic.operator_action_required).lower(),
+            "uas_tier_comparison_base_mode": mode_id(uas_comparison_kits),
+            "uas_tier_comparison_base_mode_label": mode_label(mode_id(uas_comparison_kits)),
+            "uas_tier_comparison_tiers": json.dumps(
+                [definition.tier for definition in UAS_TIER_SCENARIOS]
+            ),
             **solar_metadata,
             **battery_model.attrs(),
         },

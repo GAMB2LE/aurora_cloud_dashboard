@@ -20,7 +20,12 @@ from rebuild_cutoff import cutoff_date, filter_dataset_from_time, parse_from_tim
 ROOT_DEFAULT = Path("/project/aurora/raw/power/level1")
 ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 FILE_REGEX = re.compile(r"power_data_(\d{4})(\d{2})(\d{2})\.csv$")
-OPTIONAL_SCHEMA_EXPANSION_VARS = {"InternalHumidity"}
+OPTIONAL_SCHEMA_EXPANSION_VARS = {
+    "InternalHumidity",
+    "SolarMPPMode_East",
+    "SolarMPPMode_South",
+    "SolarMPPMode_West",
+}
 
 
 def _parse_file_date(path: Path) -> date | None:

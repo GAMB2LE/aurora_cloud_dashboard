@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import xarray as xr
 
 from quicklook_time_axis import apply_quicklook_time_axis
-from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS, UAS_TIER_SCENARIOS
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_LABEL,
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -89,6 +89,7 @@ POWER_PANEL_TIME_GROUPS = OrderedDict(
                 "ecmwf_solar_forecast",
                 "soc_ecmwf_forecast",
                 "operating_plan_scenarios",
+                "uas_tier_scenarios",
                 "operating_plan_schedule",
             ),
         ),
@@ -284,6 +285,10 @@ OPERATING_SUGGESTED_PREFIXES = OrderedDict(
     (definition.scenario_id, f"OperatingSuggested{index}")
     for index, definition in enumerate(SUGGESTED_OPERATING_SCENARIOS, start=1)
 )
+OPERATING_UAS_TIER_PREFIXES = OrderedDict(
+    (definition.scenario_id, f"OperatingUASTier{definition.tier}")
+    for definition in UAS_TIER_SCENARIOS
+)
 MAX_OPERATING_LEARNED_SCENARIOS = 6
 OPERATING_LEARNED_PREFIXES = tuple(
     f"OperatingLearned{index}" for index in range(1, MAX_OPERATING_LEARNED_SCENARIOS + 1)
@@ -304,6 +309,7 @@ OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     for prefix in (
         tuple(OPERATING_SCENARIO_PREFIXES.values())
         + tuple(OPERATING_SUGGESTED_PREFIXES.values())
+        + tuple(OPERATING_UAS_TIER_PREFIXES.values())
         + OPERATING_LEARNED_PREFIXES
     )
     for _source, suffix in OPERATING_SCENARIO_SOURCE_FIELDS
@@ -570,6 +576,19 @@ def power_trace_label(ds: xr.Dataset, trace: TraceSpec) -> str:
                 if priority_plan
                 else "Reserve-only CL61-off plan"
             )
+    for definition in UAS_TIER_SCENARIOS:
+        if trace.var != f"OperatingUASTier{definition.tier}SOCP50":
+            continue
+        label = str(
+            ds.attrs.get(
+                f"operating_uas_tier_{definition.tier}_label",
+                definition.label,
+            )
+        ).strip()
+        maturity = str(
+            ds.attrs.get(f"operating_uas_tier_{definition.tier}_maturity", "")
+        ).strip()
+        return f"{label} (provisional)" if maturity == "provisional" else label
     for index, prefix in enumerate(OPERATING_LEARNED_PREFIXES, start=1):
         if trace.var == f"{prefix}SOCP50":
             mode = str(ds.attrs.get(f"operating_learned_{index}_label", "")).strip()
@@ -820,6 +839,19 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
                 {"label": "UAS tier 3", "detail": "Tier-specific load estimate; provisional until the minimum independent evidence gate is met."},
             ],
         },
+        "uas_tier_scenarios": {
+            "title": "UAS tier SOC forecasts",
+            "summary": "The five standard Menapia tiers are compared while the current non-UAS station configuration is held fixed.",
+            "implementation": "Every tier starts from the same measured APS SOC and uses the same ECMWF solar ensemble, battery assumptions, and current non-UAS kit combination. Only the UAS tier load changes. A tier uses its learned load quantiles after at least three independent episodes and six observed hours; before then it is marked provisional and uses the documented fallback distribution. Tier 5 represents no station-side UAS draw because the docks rely on their internal batteries; this does not imply indefinite dock endurance. Diagnostic tiers 11 and 12 are omitted because they mimic tiers 1 and 2. These curves are advisory and never issue Menapia or PDU commands.",
+            "metrics": [
+                {"label": "P50", "detail": "Median SOC path for each standard UAS tier."},
+                {"label": "Common basis", "detail": "The SOC anchor, weather, battery model, and non-UAS station loads are identical across all five traces."},
+                {"label": "Tiers 1-3", "detail": "Operational and standby modes whose fallback uncertainty includes their documented higher-power behaviour."},
+                {"label": "Tier 4", "detail": "Forced 12 V standby with the UAS station load still present."},
+                {"label": "Tier 5", "detail": "No station-side UAS load; the docks depend on finite internal battery energy."},
+                {"label": "Maturity", "detail": "Provisional labels identify tiers still using documented fallback quantiles rather than mature field evidence."},
+            ],
+        },
         "operating_plan_schedule": {
             "title": "Additive instrument operating schedule",
             "summary": "The advisory additive schedule and whether its SOC constraint is feasible.",
@@ -907,6 +939,13 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
             "implementation": f"{presentation.explanation} {info['implementation']}",
             "metrics": metrics,
         }
+    elif panel_key == "uas_tier_scenarios" and ds is not None:
+        base_mode = str(ds.attrs.get("operating_uas_tier_comparison_base_mode_label", "")).strip()
+        if base_mode:
+            info = {
+                **info,
+                "summary": f"{info['summary']} Current non-UAS baseline: {base_mode}.",
+            }
     return {"id": panel_key, **info}
 
 
@@ -1774,6 +1813,54 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     valid_min=0.0,
                     valid_max=100.0,
                     line_width=2.6,
+                ),
+            ),
+        ),
+        PanelSpec(
+            "uas_tier_scenarios",
+            "UAS Tier SOC Forecasts",
+            "SOC [%]",
+            None,
+            (
+                TraceSpec(
+                    "OperatingUASTier1SOCP50",
+                    "Tier 1 - Unrestricted",
+                    COLOR["red"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.5,
+                ),
+                TraceSpec(
+                    "OperatingUASTier2SOCP50",
+                    "Tier 2 - Flight operations",
+                    COLOR["magenta"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.3,
+                ),
+                TraceSpec(
+                    "OperatingUASTier3SOCP50",
+                    "Tier 3 - Heating disabled",
+                    COLOR["purple"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.3,
+                ),
+                TraceSpec(
+                    "OperatingUASTier4SOCP50",
+                    "Tier 4 - 12 V standby",
+                    COLOR["blue"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.3,
+                ),
+                TraceSpec(
+                    "OperatingUASTier5SOCP50",
+                    "Tier 5 - Internal battery only",
+                    COLOR["green"],
+                    valid_min=0.0,
+                    valid_max=100.0,
+                    line_width=2.5,
                 ),
             ),
         ),
@@ -2697,6 +2784,17 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
                 ds[source_name].isel(scenario=index).values,
                 dtype=np.float64,
             )
+    for scenario_id, prefix in OPERATING_UAS_TIER_PREFIXES.items():
+        if scenario_id not in scenario_ids:
+            continue
+        index = scenario_ids.index(scenario_id)
+        for source_name, suffix in OPERATING_SCENARIO_SOURCE_FIELDS:
+            if source_name not in ds or ds[source_name].dims != ("scenario", "time"):
+                continue
+            values[f"{prefix}{suffix}"] = np.asarray(
+                ds[source_name].isel(scenario=index).values,
+                dtype=np.float64,
+            )
     current_mode = str(ds.attrs.get("current_mode", ""))
     learned_ids = [
         value
@@ -2831,7 +2929,13 @@ def power_panel_label(ds: xr.Dataset, panel: PanelSpec) -> str:
         if panel.key == "operating_plan_schedule"
         else panel.label
     )
-    if panel.key not in {"ecmwf_solar_forecast", "soc_ecmwf_forecast", "operating_plan_scenarios", "operating_plan_schedule"}:
+    if panel.key not in {
+        "ecmwf_solar_forecast",
+        "soc_ecmwf_forecast",
+        "operating_plan_scenarios",
+        "uas_tier_scenarios",
+        "operating_plan_schedule",
+    }:
         return label
     if str(ds.attrs.get("operating_planning_forecast_refresh_kind", "")).strip() == "cached_reanchor":
         return f"{label} [Cached forecast - reduced confidence]"
@@ -2914,6 +3018,12 @@ def _operating_scenario_attrs(
         ("p50_continuation_fallback", "operating_p50_continuation_fallback"),
         ("minimum_controlled_run_hours", "operating_minimum_controlled_run_hours"),
         ("max_controlled_starts_per_utc_day", "operating_max_controlled_starts_per_utc_day"),
+        ("uas_tier_comparison_base_mode", "operating_uas_tier_comparison_base_mode"),
+        (
+            "uas_tier_comparison_base_mode_label",
+            "operating_uas_tier_comparison_base_mode_label",
+        ),
+        ("uas_tier_comparison_tiers", "operating_uas_tier_comparison_tiers"),
     ):
         if source_name in ds.attrs:
             attrs[target_name] = str(ds.attrs[source_name])
@@ -2925,6 +3035,11 @@ def _operating_scenario_attrs(
         if value.startswith("learned_") and value != f"learned_{current_mode}"
     ][:MAX_OPERATING_LEARNED_SCENARIOS]
     labels = [str(value) for value in ds["scenario_label"].values] if "scenario_label" in ds else scenario_ids
+    maturities = (
+        [str(value) for value in ds["scenario_mode_maturity"].values]
+        if "scenario_mode_maturity" in ds
+        else [""] * len(scenario_ids)
+    )
     for slot, definition in enumerate(SUGGESTED_OPERATING_SCENARIOS, start=1):
         if definition.scenario_id in scenario_ids:
             attrs[f"operating_suggested_{slot}_label"] = labels[
@@ -2932,6 +3047,12 @@ def _operating_scenario_attrs(
             ]
     for slot, scenario_id in enumerate(learned_ids, start=1):
         attrs[f"operating_learned_{slot}_label"] = labels[scenario_ids.index(scenario_id)]
+    for definition in UAS_TIER_SCENARIOS:
+        if definition.scenario_id not in scenario_ids:
+            continue
+        index = scenario_ids.index(definition.scenario_id)
+        attrs[f"operating_uas_tier_{definition.tier}_label"] = labels[index]
+        attrs[f"operating_uas_tier_{definition.tier}_maturity"] = maturities[index]
     return attrs
 
 

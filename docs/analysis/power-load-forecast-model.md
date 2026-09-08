@@ -105,8 +105,12 @@ an impossible zero-watt DC baseline.
 The UAS MQTT log is aligned to the same 15-minute operating-state timeline.
 UAS load is learned by effective tier. A tier becomes a reliable learned input
 only after at least three independent episodes and six observed hours. Until
-then, the tier-3 scenario is marked provisional and uses the documented
-fallback distribution: P10 `55 W`, P50 `108 W`, P90 `302 W`.
+then, its curve is marked provisional and uses a documented tier-specific
+fallback distribution. Tier 3 retains P10 `55 W`, P50 `108 W`, and P90
+`302 W`; the other standard-tier values and their operational basis are listed
+in the [Power Zarr contract](../data-products/power-zarr.md). Tier 5 has zero
+station-side UAS load because the docks depend on their finite internal
+batteries.
 
 SOC integration uses a calibrated battery model fitted only to usable,
 non-saturated, stable telemetry. It estimates usable capacity, charge and
@@ -136,6 +140,10 @@ model has learned. The fixed comparison set also includes CL61, CL61 + Radar,
 CL61 + HATPRO, CL61 + HATPRO + Radar, HATPRO + Radar, Radar, HATPRO, and **all
 instruments + UAS tier 3**. The old `100-600 W` plot is retained only as a
 backwards-compatible data contract and is no longer the operating interface.
+The dedicated UAS comparison additionally evaluates standard tiers 1-5 while
+holding the current non-UAS kit combination fixed, so tier curves differ only
+in UAS load. Diagnostic tiers 11 and 12 are excluded because they mimic tiers
+1 and 2.
 The dashboard derives canonical `SystemAsIsDecision*` traces from the freshly
 re-anchored current-mode scenario. The SOC 96 h panel and the current line in
 the scenario panel therefore share one SOC anchor, issue, weather basis, load

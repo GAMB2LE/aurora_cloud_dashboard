@@ -27,7 +27,8 @@ On every browser width and in the native app, **Power** is divided into
 **Current Conditions** and **Forecast & Planning**. Current Conditions is the
 default and contains observed electrical and thermal panels. Forecast &
 Planning is loaded on demand and contains the 24-hour and 96-hour outlooks,
-operating scenarios, custom schedules, and forecast verification. The selected
+instrument-mode and UAS tier 1-5 scenarios, custom schedules, and forecast
+verification. The selected
 browser section is retained in share links as `power_view=current|forecast`.
 
 The URL continues to store the selected view. A desktop share link uses the
@@ -131,7 +132,10 @@ but the full-resolution JPEGs remain in the raw mirror under
 
 This tab shows the mirrored Menapia MQTT tier log, including the current
 reported/effective tier, freshness, tier-change history, and recent parsed log
-records. It starts its periodic refresh only after the tab is opened.
+records. It also shows the independent Menapia S3 flight-data ingest state,
+latest source flight, GWS/object-store delivery backlog, campaign-classification
+count, and credential-rotation warning. No credential value reaches the
+dashboard. The tab starts its periodic refresh only after it is opened.
 
 The Overview instrument list combines this effective tier with the assigned
 UAS PDU outlet. A freshly powered UAS is shown as `On (Tier N)` when the tier

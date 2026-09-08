@@ -14,6 +14,7 @@ from typing import Any
 
 from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
 from display_artifact_manifest import load_manifest
+from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import load_uas_mqtt_log
 from instrument_registry import (
     INSTRUMENTS,
@@ -1825,6 +1826,7 @@ def _forecast_panel_start(dataset, times, panel):
         ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCurrentSOCP50", "OperatingCL61OptimizedSOCP50"),
+        "uas_tier_scenarios": ("OperatingUASTier1SOCP50",),
         "operating_plan_schedule": (
             "OperatingCL61OptimizedActiveCount",
             "OperatingCL61OptimizedCL61On",
@@ -1845,7 +1847,7 @@ def _forecast_panel_start(dataset, times, panel):
 
 def _power_forecast_basis(dataset, panel_key: str) -> tuple[str, str, str, int]:
     """Return label, SOC anchor, issue time, and horizon for one card."""
-    operating_panel = panel_key.startswith("operating_plan")
+    operating_panel = panel_key.startswith("operating_plan") or panel_key == "uas_tier_scenarios"
     system_uses_operating = (
         panel_key in {"soc_24h_forecast", "soc_ecmwf_forecast"}
         and str(dataset.attrs.get("system_as_is_decision_source", "")) == "operating_scenario"
@@ -1898,6 +1900,7 @@ def _power_forecast_panel_end(dataset, panel_key: str, *, default):
         "soc_ecmwf_forecast",
         "ecmwf_solar_forecast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
         "operating_plan_schedule",
     }:
         return default
@@ -1917,6 +1920,7 @@ def _power_forecast_context(dataset, panel_key: str, traces: list[dict[str, Any]
         "soc_ecmwf_forecast",
         "ecmwf_solar_forecast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
         "operating_plan_schedule",
     }
     if panel_key not in forecast_panels:
@@ -1961,6 +1965,7 @@ def uas(window: str = "24h") -> dict[str, Any]:
     # A corrupted or unexpectedly high-rate log must not make the mobile API
     # response unbounded. The newest records preserve the current state.
     records = records[-2_000:]
+    flight_data = summarize_menapia_flight(read_json_file(archive_health_path()))
     return {
         "serverTime": utc_now_iso(),
         "window": window,
@@ -1973,6 +1978,7 @@ def uas(window: str = "24h") -> dict[str, Any]:
         },
         "source": {**file_record(result.path), "path": str(result.path)},
         "malformedLineCount": len(result.malformed_lines),
+        "flightData": flight_data,
         "records": [
             {
                 "timeUTC": record.timestamp.isoformat().replace("+00:00", "Z"),

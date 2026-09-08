@@ -83,6 +83,10 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertIn("DC-Only", markup)
         self.assertIn("CL61 + HATPRO + Radar", markup)
         self.assertIn("HATPRO + Radar", markup)
+        self.assertIn("UAS tier scenarios", markup)
+        self.assertIn("Tier 1 - Unrestricted", markup)
+        self.assertIn("Tier 5 - Internal battery only", markup)
+        self.assertIn("current non-UAS station configuration is held fixed", markup)
         self.assertIn("40% operational minimum", markup)
 
     def test_forecast_info_documents_finite_state_load_uncertainty(self) -> None:
@@ -1500,6 +1504,11 @@ class PowerSocForecastTests(unittest.TestCase):
                 "OperatingSuggested6SOCP50": (("time",), [60.0, 54.0, 48.0, 42.0]),
                 "OperatingSuggested7SOCP50": (("time",), [60.0, 53.0, 46.0, 39.0]),
                 "OperatingSuggested8SOCP50": (("time",), [60.0, 43.0, 25.0, 7.0]),
+                "OperatingUASTier1SOCP50": (("time",), [60.0, 42.0, 24.0, 6.0]),
+                "OperatingUASTier2SOCP50": (("time",), [60.0, 46.0, 32.0, 18.0]),
+                "OperatingUASTier3SOCP50": (("time",), [60.0, 50.0, 40.0, 30.0]),
+                "OperatingUASTier4SOCP50": (("time",), [60.0, 54.0, 48.0, 42.0]),
+                "OperatingUASTier5SOCP50": (("time",), [60.0, 57.0, 54.0, 51.0]),
             },
             coords={"time": times},
         )
@@ -1507,12 +1516,14 @@ class PowerSocForecastTests(unittest.TestCase):
         figure = build_summary_plotly(ds, "power")
 
         references = [trace for trace in figure.data if trace.name == MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL]
-        self.assertEqual(len(references), 4)
+        self.assertEqual(len(references), 5)
         for trace in references:
             np.testing.assert_allclose(trace.y, MINIMUM_OPERATIONAL_SOC_PCT)
 
         scenario_panel = next(trace for trace in figure.data if trace.name == "All instruments + UAS tier 3")
         np.testing.assert_allclose(scenario_panel.y, [60.0, 43.0, 25.0, 7.0])
+        uas_panel = next(trace for trace in figure.data if trace.name == "Tier 1 - Unrestricted")
+        np.testing.assert_allclose(uas_panel.y, [60.0, 42.0, 24.0, 6.0])
 
     def test_unavailable_operating_product_removes_baked_stale_recommendations(self) -> None:
         times = pd.date_range("2026-07-10T00:00:00", periods=3, freq="1h")

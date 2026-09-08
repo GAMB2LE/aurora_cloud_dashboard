@@ -667,16 +667,51 @@ class MobileCatalogTests(unittest.TestCase):
                 coords={"time": times},
                 attrs={"forecast_initial_soc_time": times[0].isoformat()},
             ).to_zarr(display_path, mode="w", consolidated=True)
-            scenario_ids = np.asarray(["suggested_all_uas_tier3"], dtype=str)
+            scenario_ids = np.asarray(
+                [
+                    "suggested_all_uas_tier3",
+                    "uas_tier_1",
+                    "uas_tier_2",
+                    "uas_tier_3",
+                    "uas_tier_4",
+                    "uas_tier_5",
+                ],
+                dtype=str,
+            )
             xr.Dataset(
                 {
-                    "ScenarioSOCP50": (("scenario", "time"), [[80.0, 72.0, 64.0, 56.0]]),
-                    "scenario_label": (("scenario",), ["All instruments + UAS tier 3 (provisional)"]),
+                    "ScenarioSOCP50": (
+                        ("scenario", "time"),
+                        [
+                            [80.0, 72.0, 64.0, 56.0],
+                            [80.0, 68.0, 56.0, 44.0],
+                            [80.0, 70.0, 60.0, 50.0],
+                            [80.0, 73.0, 66.0, 59.0],
+                            [80.0, 76.0, 72.0, 68.0],
+                            [80.0, 78.0, 76.0, 74.0],
+                        ],
+                    ),
+                    "scenario_label": (
+                        ("scenario",),
+                        [
+                            "All instruments + UAS tier 3",
+                            "Tier 1 - Unrestricted",
+                            "Tier 2 - Flight operations",
+                            "Tier 3 - Heating disabled",
+                            "Tier 4 - 12 V standby",
+                            "Tier 5 - Internal battery only",
+                        ],
+                    ),
+                    "scenario_mode_maturity": (
+                        ("scenario",),
+                        ["provisional"] * 6,
+                    ),
                 },
                 coords={"scenario": scenario_ids, "time": times},
                 attrs={
                     "planning_status": "ready",
                     "initial_soc_time": times[0].isoformat(),
+                    "uas_tier_comparison_base_mode_label": "DC-Only",
                 },
             ).to_zarr(scenario_path, mode="w", consolidated=True)
             with patch.dict(
@@ -696,6 +731,24 @@ class MobileCatalogTests(unittest.TestCase):
             [point["value"] for point in traces["OperatingSuggested8SOCP50"]["points"]],
             [80.0, 72.0, 64.0, 56.0],
         )
+        uas_panel = next(panel for panel in response["panels"] if panel["id"] == "uas_tier_scenarios")
+        uas_traces = {trace["id"]: trace for trace in uas_panel["traces"]}
+        self.assertEqual(
+            list(uas_traces),
+            [
+                "OperatingUASTier1SOCP50",
+                "OperatingUASTier2SOCP50",
+                "OperatingUASTier3SOCP50",
+                "OperatingUASTier4SOCP50",
+                "OperatingUASTier5SOCP50",
+            ],
+        )
+        self.assertEqual(
+            [point["value"] for point in uas_traces["OperatingUASTier5SOCP50"]["points"]],
+            [80.0, 78.0, 76.0, 74.0],
+        )
+        self.assertTrue(all(trace["label"].endswith("(provisional)") for trace in uas_traces.values()))
+        self.assertIn("Current non-UAS baseline: DC-Only", uas_panel["info"]["summary"])
 
     def test_unsafe_cl61_fallback_is_explained_in_mobile_power_payload(self) -> None:
         import numpy as np

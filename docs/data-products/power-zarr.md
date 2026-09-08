@@ -34,8 +34,8 @@ Important ingest rules:
 - raw column names are normalized by replacing `.` with `_`
 - columns containing `wind` are excluded
 - columns ending in `time` are excluded
-- `InternalHumidity` is the reserved optional APS internal relative-humidity
-  field in percent, used for operations dew-point monitoring when present
+- reserved optional schema expansions are `InternalHumidity` and the three
+  `SolarMPPMode_*` fields; they are backfilled with `NaN` when first introduced
 
 Examples include:
 
@@ -56,14 +56,17 @@ Examples include:
 - `TempSensor3`
 - `TempSensor4`
 - `MaxSolarWatts_East`
+- `SolarMPPMode_East`, `SolarMPPMode_South`, and `SolarMPPMode_West`, where
+  `0 = off`, `1 = voltage/current limited`, and `2 = MPPT active`
 
 ## Schema note
 
 - append runs keep the existing variable set fixed in the same way as
   `vaisalamet`
-- `InternalHumidity` is the one allowed optional schema expansion; if it first
-  appears in new raw APS CSV files, the appender adds it to the existing store
-  with `NaN` backfill for older samples instead of silently dropping it
+- `InternalHumidity` and `SolarMPPMode_East/South/West` are allowed optional
+  schema expansions; when they first appear in new raw APS CSV files, the
+  appender adds them to the existing store with `NaN` backfill for older
+  samples instead of silently dropping them
 - append writes materialize only the already-filtered new sample block before
   writing, matching the cross-instrument Zarr append policy
 
@@ -446,12 +449,31 @@ The scenario product carries P10, P50, and P90 SOC and load for these plans:
 - Radar
 - HATPRO
 - all instruments + UAS tier 3
+- UAS tiers 1-5 with the current non-UAS kit combination held fixed
 - each additional learned kit combination
 
 The all-instruments scenario keeps CL61, Radar, HATPRO, and UAS active and sets
 the UAS effective tier to 3 for the complete horizon. Until tier-3 evidence is
 mature it is labelled provisional and uses P10/P50/P90 fallback loads of
 `55/108/302 W`; mature observed tier-3 quantiles replace that fallback.
+
+The separate UAS tier comparison holds the current CL61, Radar, and HATPRO
+states fixed and changes only the standard Menapia tier. Tiers 1-4 retain the
+UAS station load; tier 5 removes station-side UAS draw because the docks use
+their internal batteries. Diagnostic tiers 11 and 12 are not separate forecast
+curves because they mimic tiers 1 and 2. Until a tier passes the same
+three-episode/six-hour evidence gate, its provisional P10/P50/P90 load fallback
+is:
+
+| Tier | P10 | P50 | P90 | Operational interpretation |
+|---:|---:|---:|---:|---|
+| 1 | 300 W | 375 W | 800 W | unrestricted, including a possible charging tail |
+| 2 | 120 W | 160 W | 590 W | flight operations, including a possible charging tail |
+| 3 | 55 W | 108 W | 302 W | dock heating disabled |
+| 4 | 24 W | 32 W | 40 W | forced 12 V standby |
+| 5 | 0 W | 0 W | 0 W | dock internal battery only; finite endurance |
+
+Reliable observed tier quantiles replace these fallbacks independently.
 
 The optimized plan jointly searches all eight on/off combinations of CL61,
 Radar, and HATPRO. It first maximizes additive controlled energy, then total

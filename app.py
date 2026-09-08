@@ -43,7 +43,7 @@ from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_REFERENCE_LABEL,
     SOC_REFERENCE_PANEL_KEYS,
 )
-from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS
+from power_scenario_catalog import SUGGESTED_OPERATING_SCENARIOS, UAS_TIER_SCENARIOS
 try:
     from PIL import Image
 except Exception:  # pragma: no cover - dashboard can still serve source images.
@@ -105,6 +105,7 @@ from wxcam_catalog import (
     latest_record,
     representative_hourly_records,
 )
+from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import UASMqttParseResult, UASMqttRecord, load_uas_mqtt_log
 import mobile_catalog
 from browser_icons import instrument_icon_svg
@@ -7539,6 +7540,25 @@ def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord
     parse_level = "warn" if result.missing or result.error or result.malformed_lines else "ok"
     parse_label = "Missing log" if result.missing else "Read error" if result.error else "Parse warnings" if result.malformed_lines else "OK"
     current_level = _uas_level_for_age(age)
+    try:
+        archive_health = json.loads(ARCHIVE_HEALTH_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        archive_health = {}
+    flight_data = summarize_menapia_flight(archive_health, now=now)
+    flight_level = {
+        "green": "ok",
+        "amber": "warn",
+        "red": "warn",
+    }.get(flight_data["level"], "info")
+    latest_flight = " / ".join(
+        value
+        for value in (
+            flight_data.get("latestSourceDate"),
+            flight_data.get("latestSourceFlight"),
+        )
+        if value
+    ) or "--"
+    credential_days = flight_data.get("credentialDaysRemaining")
 
     cards = [
         ("Current effective tier", str(latest.effective_tier) if latest else "--", current_level),
@@ -7547,6 +7567,20 @@ def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord
         ("Log age", _format_duration(age), current_level),
         ("Records in window", str(len(records)), "info"),
         ("Parse status", parse_label, parse_level),
+        ("Flight-data ingest", str(flight_data["title"]), flight_level),
+        ("Latest source flight", latest_flight, flight_level),
+        ("Source objects", f"{flight_data['objectsExamined']:,}", "info"),
+        ("GWS pending", f"{flight_data['gwsPendingFiles']:,}", flight_level),
+        (
+            "Object-store pending",
+            f"{flight_data['objectStorePendingFiles']:,}",
+            flight_level,
+        ),
+        (
+            "Credential",
+            "--" if credential_days is None else f"{credential_days} d remaining",
+            flight_level,
+        ),
     ]
     card_markup = "".join(
         (
@@ -7564,6 +7598,7 @@ def _uas_summary_markup(result: UASMqttParseResult, records: tuple[UASMqttRecord
         ("Source", str(result.path), "info"),
         ("Window", uas_window.value, "info"),
         ("Malformed lines", str(len(result.malformed_lines)), "warn" if result.malformed_lines else "ok"),
+        ("Flight data", str(flight_data["detail"]), flight_level),
     ]
     if detail:
         diagnostic_items.append(("Detail", detail[:160], "warn"))
@@ -8980,6 +9015,7 @@ def _mobile_forecast_panel_start(ds: xr.Dataset, panel) -> pd.Timestamp | None:
         ),
         "ecmwf_solar_forecast": ("ForecastSolarWatts", "ECMWFSolarIrradiance"),
         "operating_plan_scenarios": ("OperatingCL61OptimizedSOCP50",),
+        "uas_tier_scenarios": ("OperatingUASTier1SOCP50",),
         "operating_plan_schedule": (
             "OperatingCL61OptimizedActiveCount",
             "OperatingCL61OptimizedCL61On",
@@ -9094,6 +9130,7 @@ def _power_plot_card(ds: xr.Dataset, panel, *, mobile: bool) -> pn.Column | None
         "soc_24h_forecast",
         "soc_ecmwf_forecast",
         "operating_plan_scenarios",
+        "uas_tier_scenarios",
         "operating_plan_schedule",
         "ecmwf_solar_forecast",
     }
@@ -9305,12 +9342,14 @@ def _browser_power_briefing_markup(ds: xr.Dataset) -> str:
     current_mode = str(ds.attrs.get("operating_current_mode_label", "Current system state")).strip()
     horizon = str(ds.attrs.get("operating_optimization_horizon_hours", "96")).strip()
     scenario_labels = ", ".join(definition.label for definition in SUGGESTED_OPERATING_SCENARIOS)
+    uas_tier_labels = ", ".join(definition.label for definition in UAS_TIER_SCENARIOS)
     return (
         "<div class='power-browser-briefing'>"
         "<div class='power-browser-briefing__title'>Forecast scenarios</div>"
         "<div class='power-browser-briefing__grid'>"
         "<div><strong>System as-is</strong><br>ECMWF ensemble forecast anchored to the latest confirmed finite instrument state and its detected sustained load phase. P10/P90 include weather, bounded battery parameters, and only recurrent startup or fan uncertainty within that same state.</div>"
         f"<div><strong>Instrument scenarios</strong><br>Current system mode: {escape(current_mode)}. Across {escape(horizon)} hours: {escape(scenario_labels)}. Each trace starts from the latest SOC and uses the learned load distribution for exactly its named state; states are never blended. UAS tier 3 remains provisional until repeated operating evidence is available.</div>"
+        f"<div><strong>UAS tier scenarios</strong><br>{escape(uas_tier_labels)}. The current non-UAS station configuration is held fixed so only the tier load changes. Provisional tiers use documented fallback quantiles until field evidence is mature.</div>"
         "<div><strong>Safety rule</strong><br>The recommended schedule is advisory only and aims to keep P10 SOC at or above the 40% operational minimum.</div>"
         "</div></div>"
     )
