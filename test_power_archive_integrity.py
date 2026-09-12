@@ -69,7 +69,9 @@ def snapshot(root: Path, hour: int, *, soc_adjustment: float = 0.0, directory_na
         "sourceCycleSetID": forecast.attrs["source_cycle_set_id"],
         "sourceCycleUTC": forecast.attrs["ecmwf_cycle_time"],
         "contentDigest": marker["contentDigest"],
-        "snapshotMarkerDigest": "sha256:" + hashlib.sha256(marker_bytes).hexdigest(),
+        "snapshotMarkerDigest": "sha256:" + hashlib.sha256(
+            ISSUE_SNAPSHOT_DIGEST_MARKER.encode("utf-8") + b"\0" + marker_bytes + b"\0"
+        ).hexdigest(),
     }
     (directory / "issue_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return directory

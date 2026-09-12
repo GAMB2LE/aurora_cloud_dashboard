@@ -55,8 +55,12 @@ def verified_issue_snapshot(directory: Path) -> tuple[xr.Dataset, dict[str, str]
     if not signature:
         raise ValueError("Issue manifest lacks a publication signature")
     snapshot = directory / "forecast.zarr"
+    # The deployed publisher's artifact_digest binds filename + NUL + bytes
+    # + NUL, including for a single file. A bare file-byte hash is not its
+    # manifest contract. Keep this identical to the publisher, not permissive.
     marker_digest = "sha256:" + hashlib.sha256(
-        (snapshot / ISSUE_SNAPSHOT_DIGEST_MARKER).read_bytes()
+        ISSUE_SNAPSHOT_DIGEST_MARKER.encode("utf-8") + b"\0"
+        + (snapshot / ISSUE_SNAPSHOT_DIGEST_MARKER).read_bytes() + b"\0"
     ).hexdigest()
     if marker_digest != manifest.get("snapshotMarkerDigest"):
         raise ValueError("Issue manifest does not match the snapshot marker")
