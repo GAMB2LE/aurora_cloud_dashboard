@@ -190,7 +190,7 @@ class PhysicalSolarIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(forecast.attrs["solar_model_name"], PHYSICAL_SOLAR_MODEL_NAME)
-        self.assertEqual(forecast.attrs["forecast_model_version"], "11")
+        self.assertEqual(forecast.attrs["forecast_model_version"], "14")
         self.assertEqual(forecast.attrs["forecast_model_status"], "candidate")
         self.assertEqual(
             forecast.attrs["solar_residual_calibration"],

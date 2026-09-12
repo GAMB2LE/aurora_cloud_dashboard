@@ -35,6 +35,7 @@ from generate_power_soc_forecast import (
     _write_state,
     generate,
     site_irradiance_series_digest,
+    embedded_source_meteorology,
     validate_paired_candidate,
     validate_provider,
 )
@@ -49,7 +50,9 @@ from power_issue_time_features import (
     build_issue_time_feature_snapshot,
 )
 from power_public_source_ablation import run_public_source_ablations
+from power_implementation_identity import forecast_implementation_digest
 from power_v12_ensemble import (
+    align_baseline_ensemble_grid,
     append_candidate_ensemble_archive,
     baseline_ensemble_signature,
     build_candidate_memberwise_ensemble,
@@ -691,9 +694,16 @@ def run_candidate(
     physical_contract = physical_solar_contract_id(configuration, latitude=latitude, longitude=longitude)
     baseline_control_contract_id, baseline_control_system_version = _baseline_control_identity(attrs)
     code_revision = _code_revision()
+    implementation_digest = forecast_implementation_digest()
     baseline_ensemble, baseline_ensemble_signature_value, ensemble_input_status = (
         _load_baseline_ensemble(baseline_ensemble_zarr)
     )
+    if baseline_ensemble is not None:
+        try:
+            baseline_ensemble = align_baseline_ensemble_grid(baseline, baseline_ensemble)
+        except (ValueError, KeyError) as exc:
+            baseline_ensemble = None
+            ensemble_input_status = f"blocked_baseline_ensemble_alignment:{exc}"
     public_source_manifest_root_digest = _public_source_manifest_root_digest(
         public_source_manifest_root
     )
@@ -704,6 +714,7 @@ def run_candidate(
         and existing_status.get("baseline_publication_signature") == baseline_signature
         and existing_status.get("candidate_feature_set_version") == V12_FEATURE_SET_VERSION
         and existing_status.get("candidate_code_revision") == code_revision
+        and existing_status.get("forecast_implementation_digest") == implementation_digest
         and existing_status.get("physical_solar_config_sha256") == config_digest
         and existing_status.get("baseline_control_contract_id") == baseline_control_contract_id
         and existing_status.get("baseline_control_system_version") == baseline_control_system_version
@@ -746,6 +757,17 @@ def run_candidate(
     power_for_fit = power_for_evidence.sel(
         time=slice(history_start.to_datetime64(), issue_time.to_datetime64())
     )
+    # PDU state is read-only, bounded and explicitly absent when unavailable.
+    # The fit sees no state after its issue cutoff; campaign evidence is also
+    # matured only through this run's observation cutoff.
+    operating_state = None
+    if Path(pdu_zarr).exists():
+        with xr.open_zarr(pdu_zarr, chunks={}) as opened:
+            state_fields = [name for name in opened.data_vars if name.startswith("PDUOutlet")]
+            if state_fields and "time" in opened.coords:
+                operating_state = opened[state_fields].sel(
+                    time=slice(evidence_start.to_datetime64(), issue_time.to_datetime64())
+                ).load()
     feature_snapshot = build_issue_time_feature_snapshot(
         issue_time=issue_time,
         power_history=power_for_fit,
@@ -779,6 +801,7 @@ def run_candidate(
         load_mode=str(attrs.get("load_mode", "unknown")),
         control_forecast_model_contract_id=baseline_control_contract_id,
         control_forecast_system_version=baseline_control_system_version,
+        operating_state=operating_state,
     )
     seed_state = _baseline_seed_state(attrs)
     fixed_bias = _fixed_bias_from_baseline(attrs)
@@ -824,6 +847,7 @@ def run_candidate(
             source_availability_code=feature_snapshot.source_availability_code,
             feature_degradation_codes=feature_snapshot.degradation_codes,
         )
+        identity["forecast_implementation_digest"] = implementation_digest
         output = generate(
             power_zarr=power_zarr,
             pdu_zarr=pdu_zarr,
@@ -859,6 +883,8 @@ def run_candidate(
             ),
             site_irradiance_override=site_irradiance,
             site_irradiance_provenance=site_irradiance_provenance,
+            site_meteorology_override=embedded_source_meteorology(baseline),
+            fixed_load_reference=baseline,
         )
         with xr.open_zarr(output, chunks={}) as opened:
             candidate = opened.load()
@@ -909,6 +935,7 @@ def run_candidate(
             power_for_evidence,
             lane=lane,
             evaluation_contract=evaluation_contract,
+            operating_state=operating_state,
         )
         _atomic_write_zarr(evidence, lane_root / "campaign_evidence.zarr")
         summary = campaign_score_surfaces(evidence)
@@ -927,6 +954,7 @@ def run_candidate(
                     physical_config=configuration,
                     latitude=latitude,
                     longitude=longitude,
+                    load_residual_profile=load_profile,
                 )
                 ensemble_contract = str(
                     candidate_ensemble.attrs["candidate_ensemble_contract_id"]
@@ -1037,6 +1065,7 @@ def run_candidate(
         "baseline_control_contract_id": baseline_control_contract_id,
         "baseline_control_system_version": baseline_control_system_version,
         "baseline_issue_snapshot": str(baseline_forecast_zarr),
+        "forecast_implementation_digest": implementation_digest,
         "baseline_ensemble_path": str(baseline_ensemble_zarr or ""),
         "baseline_ensemble_signature": baseline_ensemble_signature_value,
         "memberwise_ensemble_input_status": ensemble_input_status,

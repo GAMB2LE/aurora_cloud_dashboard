@@ -25,12 +25,15 @@ from generate_power_soc_forecast import (
     _aggregate_physical_soc_forecast,
     _atomic_write_zarr,
     _write_state,
+    embedded_source_meteorology,
     integrate_soc_forecast,
     integrate_soc_from_available_solar,
 )
 from power_battery_model import BatteryModel
+from power_archive_io import write_forecast_archive
 from power_solar_model import PhysicalSolarConfig, build_physical_solar_forecast_frames
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+from power_implementation_identity import semantic_code_key
 from power_v12_hybrid import (
     LEAD_BUCKETS,
     PAIR_ARTIFACT_DIGEST_ALGORITHM,
@@ -41,7 +44,7 @@ from power_v12_hybrid import (
 )
 
 
-CANDIDATE_ENSEMBLE_VERSION = "memberwise_physical_pv_load_delta_v1"
+CANDIDATE_ENSEMBLE_VERSION = "memberwise_physical_pv_correlated_load_residual_v2"
 MIN_RESERVE_EVENTS = 10
 ENSEMBLE_EVALUATION_CONTRACT_ATTRS = (
     "forecast_model_contract_id",
@@ -142,6 +145,82 @@ def _same_timestamp(left: object, right: object, *, name: str) -> None:
         raise ValueError(f"Unable to parse paired {name}") from exc
     if left_time != right_time:
         raise ValueError(f"Candidate ensemble {name} does not match the baseline pair")
+
+
+def align_baseline_ensemble_grid(baseline: xr.Dataset, ensemble: xr.Dataset) -> xr.Dataset:
+    """Conservatively remap site intervals, never anchors, cycles or missing tails.
+
+    SSRD-derived means are right-end labelled. Linear interpolation of power
+    or SOC would invent energy. Remap interval energy and reintegrate the
+    baseline members instead, retaining the immutable original signature.
+    """
+    target, source = _time_index(baseline), _time_index(ensemble)
+    for name in ("initial_soc_time", "ecmwf_cycle_time"):
+        _same_timestamp(baseline.attrs.get(name), ensemble.attrs.get(name), name=name)
+    if not np.isclose(_finite_attr(baseline, "initial_soc_pct"),
+                      _finite_attr(ensemble, "initial_soc_pct"), atol=1e-6, rtol=0):
+        raise ValueError("Cannot align different ensemble SOC anchors")
+    if np.array_equal(target.values, source.values):
+        return ensemble
+    if target[0] != source[0] or target[-1] > source[-1]:
+        raise ValueError("Ensemble source intervals do not cover the exact paired horizon")
+    if target[0] != _utc_naive(baseline.attrs["initial_soc_time"]):
+        raise ValueError("Paired time grid does not start at its SOC anchor")
+    starts, ends = source.asi8[:-1], source.asi8[1:]
+    weights = np.maximum(0, np.minimum(target.asi8[1:, None], ends[None, :])
+                         - np.maximum(target.asi8[:-1, None], starts[None, :])).astype(float)
+    durations = np.diff(target.asi8).astype(float)
+    if not np.allclose(weights.sum(axis=1), durations, atol=1, rtol=0):
+        raise ValueError("Incomplete interval coverage while aligning ensemble")
+    weights /= durations[:, None]
+    out = ensemble.drop_dims("time").assign_coords(time=target.to_numpy(dtype="datetime64[ns]"))
+    for name in _MEMBER_SERIES:
+        values = np.asarray(ensemble[name].transpose("member", "time").values, dtype=float)
+        if not np.isfinite(values[:, 1:]).all():
+            raise ValueError(f"Cannot align missing {name} intervals")
+        mapped = values[:, 1:] @ weights.T
+        out[name] = (("member", "time"), np.column_stack((values[:, 0], mapped)))
+    available = ensemble.get("ForecastPVAvailableWattsEnsemble")
+    if available is not None and np.isfinite(available.values[:, 1:]).all():
+        values = np.asarray(available.values, dtype=float)
+        out["ForecastPVAvailableWattsEnsemble"] = (("member", "time"),
+            np.column_stack((values[:, 0], values[:, 1:] @ weights.T)))
+    results = []
+    for index, _ in enumerate(_member_values(ensemble)):
+        model = _member_battery_model(baseline, ensemble, index)
+        common = dict(initial_soc=_finite_attr(baseline, "initial_soc_pct"),
+                      initial_time=target[0], battery_model=model,
+                      irradiance=_member_series(out, "ECMWFSolarIrradianceEnsemble", index, target),
+                      load_w=_member_series(out, "ForecastLoadWattsEnsemble", index, target))
+        if "ForecastPVAvailableWattsEnsemble" in out:
+            result = integrate_soc_from_available_solar(
+                **common, available_solar_w=_member_series(out, "ForecastPVAvailableWattsEnsemble", index, target),
+                capacity_kwh=model.usable_capacity_kwh)
+        else:
+            result = _legacy_member_result(**common,
+                solar_w=_member_series(out, "ForecastSolarWattsEnsemble", index, target))
+        results.append(result.reindex(target)["BatterySOCForecast"].to_numpy(dtype=float))
+    soc = np.asarray(results)
+    if not np.isfinite(soc).all():
+        raise ValueError("Aligned baseline integration is incomplete")
+    shared, target_index, source_index = np.intersect1d(
+        target.asi8, source.asi8, return_indices=True)
+    original_soc = np.asarray(ensemble["BatterySOCForecastEnsemble"].values, dtype=float)
+    difference = np.abs(soc[:, target_index] - original_soc[:, source_index])
+    # Reconstructing interval energy can alter a clipped/nonlinearly corrected
+    # baseline. Such a result is diagnostic, not the archived comparator, and
+    # must not silently enter a promotion pair.
+    if not difference.size or not np.isfinite(difference).all() or difference.max() > 0.05:
+        raise ValueError("Aligned baseline differs from archived SOC at shared times")
+    out["BatterySOCForecastEnsemble"] = (("member", "time"), soc)
+    for q, name in ((.1, "P10"), (.5, "P50"), (.9, "P90")):
+        out[f"BatterySOCForecast{name}"] = (("time",), np.quantile(soc, q, axis=0))
+    out.attrs.update(ensemble.attrs)
+    out.attrs["original_baseline_ensemble_signature"] = baseline_ensemble_signature(ensemble)
+    out.attrs["baseline_grid_alignment"] = "exact_anchor_cycle_conservative_interval_energy_v1"
+    out.attrs["baseline_grid_alignment_max_shared_soc_difference_pct"] = str(float(difference.max()))
+    out.attrs["baseline_grid_alignment_comparator"] = "reconstructed_verified_against_shared_archived_times"
+    return apply_operational_soc_threshold(out)
 
 
 def _finite_attr(dataset: xr.Dataset, name: str) -> float:
@@ -283,10 +362,9 @@ def candidate_ensemble_contract_id(
     """Return the complete semantic contract for one candidate ensemble lane."""
 
     payload = {
-        "schema": 1,
+        "schema": 2,
         "algorithm": CANDIDATE_ENSEMBLE_VERSION,
         "candidate_forecast_model_contract_id": _text(candidate.attrs.get("forecast_model_contract_id")),
-        "candidate_forecast_identity_id": _text(candidate.attrs.get("forecast_identity_id")),
         "candidate_lane": _text(candidate.attrs.get("candidate_lane")),
         "solar_model_contract_id": _text(candidate.attrs.get("solar_model_contract_id")),
         "physical_config": _text(candidate.attrs.get("solar_physical_config_sha256")),
@@ -294,13 +372,19 @@ def candidate_ensemble_contract_id(
             name: _text(candidate.attrs.get(name))
             for name in (
                 "battery_energy_model",
-                "battery_parasitic_load_w",
-                "battery_max_charge_w",
-                "battery_max_discharge_w",
             )
         },
-        "baseline_ensemble_signature": baseline_ensemble_signature(baseline_ensemble),
-        "member_load_policy": "baseline_member_spread_plus_candidate_deterministic_delta",
+        # Issue identities, member arrays and fitted battery parameters belong
+        # in immutable publication provenance, not the campaign algorithm key.
+        # Otherwise every issue silently starts a one-cycle campaign.
+        "baseline_forecast_model_contract_id": _text(
+            baseline_ensemble.attrs.get("forecast_model_contract_id")
+        ),
+        "baseline_forecast_system_version": _text(
+            baseline_ensemble.attrs.get("forecast_system_version")
+        ),
+        "load_residual_model_contract_id": _text(candidate.attrs.get("load_residual_model_contract_id")),
+        "member_load_policy": "baseline_member_spread_plus_correlated_residual_quantiles_v2",
     }
     return "candidate-ensemble-v1-" + stable_json_digest(payload)[:20]
 
@@ -337,6 +421,7 @@ def _candidate_member_load(
     member_index: int,
     times: pd.DatetimeIndex,
     apply_load_residual: bool,
+    load_residual_profile: Mapping[str, object] | None = None,
 ) -> pd.Series:
     base = _member_series(baseline_ensemble, "ForecastLoadWattsEnsemble", member_index, times)
     if not apply_load_residual:
@@ -348,7 +433,36 @@ def _candidate_member_load(
         floor = 0.0
     if not np.isfinite(floor):
         floor = 0.0
-    return (base + delta).clip(lower=max(floor, 0.0))
+    noise = pd.Series(0.0, index=times)
+    if (load_residual_profile is not None and load_residual_profile.get("status") == "active"
+            and load_residual_profile.get("uncertainty_status") == "blocked_holdout"):
+        quantiles = []
+        for name in ("p10_correction_w", "p50_correction_w", "p90_correction_w"):
+            source = load_residual_profile.get(name)
+            if isinstance(source, pd.Series):
+                values = source.reindex(times).to_numpy(dtype=np.float64)
+            else:
+                values = np.asarray(source, dtype=np.float64)
+            if values.shape != (len(times),) or not np.isfinite(values).all():
+                raise ValueError(f"Residual quantile {name} must cover the exact member grid")
+            quantiles.append(values)
+        q10, q50, q90 = quantiles
+        if np.any(q10 > q50) or np.any(q50 > q90):
+            raise ValueError("Residual quantiles are unordered")
+        # One stratified rank per member, kept across lead times, propagates
+        # coherent errors rather than independent hourly white noise. Hashing
+        # member identity decouples residual ranks from ECMWF member ordering.
+        members = _member_values(baseline_ensemble)
+        ranked = sorted(range(len(members)), key=lambda i: hashlib.sha256(
+            f"{candidate.attrs.get('forecast_identity_id', '')}:{members[i]}".encode()
+        ).digest())
+        probability = (ranked.index(member_index) + 0.5) / len(members)
+        sampled = np.asarray([
+            np.interp(probability, (0.1, 0.5, 0.9), (low, median, high))
+            for low, median, high in zip(q10, q50, q90)
+        ])
+        noise = pd.Series(sampled - q50, index=times)
+    return (base + delta + noise).clip(lower=max(floor, 0.0))
 
 
 def _member_battery_model(
@@ -391,6 +505,7 @@ def _physical_member_result(
     config: PhysicalSolarConfig,
     latitude: float,
     longitude: float,
+    meteorology: Mapping[str, pd.Series] | None = None,
 ) -> pd.DataFrame:
     intervals, substeps, _ = build_physical_solar_forecast_frames(
         irradiance,
@@ -398,6 +513,7 @@ def _physical_member_result(
         longitude=longitude,
         config=config,
         forecast_start_time=initial_time,
+        **dict(meteorology or {}),
     )
     if intervals.empty or substeps.empty:
         raise ValueError("Physical member solar forcing has no future substeps")
@@ -520,6 +636,7 @@ def build_candidate_memberwise_ensemble(
     physical_config: PhysicalSolarConfig,
     latitude: float,
     longitude: float,
+    load_residual_profile: Mapping[str, object] | None = None,
 ) -> xr.Dataset:
     """Propagate the exact baseline members through one isolated candidate lane."""
 
@@ -543,6 +660,11 @@ def build_candidate_memberwise_ensemble(
     discharge_efficiencies: list[float] = []
     parasitic_loads: list[float] = []
     phase_source = baseline_ensemble.get("ForecastLoadPhaseCodeEnsemble")
+    # Retain genuine same-issue meteorological fields. Do not mistake the
+    # deterministic direct beam for member-specific cloud forcing: each
+    # member retains its own GHI decomposition.
+    meteorology = {key: value for key, value in embedded_source_meteorology(candidate).items()
+                   if key in {"air_temperature_c", "wind_speed_m_s", "ground_albedo"}}
 
     for member_index, _member in enumerate(members):
         irradiance = _member_series(
@@ -560,6 +682,7 @@ def build_candidate_memberwise_ensemble(
             member_index=member_index,
             times=times,
             apply_load_residual=load_residual,
+            load_residual_profile=load_residual_profile,
         )
         model = _member_battery_model(candidate, baseline_ensemble, member_index)
         result = (
@@ -573,6 +696,7 @@ def build_candidate_memberwise_ensemble(
                 config=physical_config,
                 latitude=latitude,
                 longitude=longitude,
+                meteorology=meteorology,
             )
             if physical_solar
             else _legacy_member_result(
@@ -676,10 +800,22 @@ def build_candidate_memberwise_ensemble(
             ),
             "baseline_ensemble_signature": baseline_ensemble_signature(baseline_ensemble),
             "memberwise_solar_forcing": "same_baseline_ecmwf_site_members",
+            "memberwise_meteorology_policy": "shared_exact_issue_temperature_wind_albedo_no_invented_member_spread",
+            "memberwise_meteorology_fields": ",".join(sorted(meteorology)),
             "memberwise_load_policy": (
-                "baseline_member_spread_plus_candidate_deterministic_delta"
+                "baseline_member_spread_plus_correlated_residual_quantiles_v2"
                 if load_residual
                 else "same_baseline_member_load_distribution"
+            ),
+            "memberwise_residual_uncertainty_status": (
+                "propagated_requires_heldout_coverage_validation"
+                if load_residual and load_residual_profile is not None
+                and load_residual_profile.get("status") == "active"
+                and load_residual_profile.get("uncertainty_status") == "blocked_holdout"
+                else "not_available" if load_residual else "not_applicable"
+            ),
+            "memberwise_residual_uncertainty_holdout_samples": str(
+                (load_residual_profile or {}).get("uncertainty_samples", 0)
             ),
             "solar_forcing_mode": (
                 "memberwise_physical_available_pv" if physical_solar else "baseline_member_legacy_solar_replayed"
@@ -961,12 +1097,16 @@ def append_candidate_ensemble_archive(
     cutoff = issues.max() - pd.Timedelta(days=float(retention_days))
     combined = combined.isel(issue_time=issues >= cutoff)
     combined.attrs.update(row.attrs)
-    _atomic_write_zarr(combined, Path(path))
+    write_forecast_archive(combined, Path(path))
     return combined
 
 
 def ensemble_evaluation_contract_from_forecast(forecast: xr.Dataset) -> dict[str, str]:
-    return {name: _text(forecast.attrs.get(name)) for name in ENSEMBLE_EVALUATION_CONTRACT_ATTRS}
+    contract = {name: _text(forecast.attrs.get(name)) for name in ENSEMBLE_EVALUATION_CONTRACT_ATTRS}
+    if forecast.attrs.get("forecast_implementation_digest"):
+        contract.pop("forecast_code_revision", None)
+        contract["forecast_implementation_digest"] = semantic_code_key(forecast.attrs)
+    return contract
 
 
 def _matches_ensemble_evaluation_contract(
@@ -974,10 +1114,8 @@ def _matches_ensemble_evaluation_contract(
 ) -> bool:
     if contract is None:
         return True
-    return all(
-        _text(forecast.attrs.get(name)) == _text(contract.get(name))
-        for name in ENSEMBLE_EVALUATION_CONTRACT_ATTRS
-    )
+    actual = ensemble_evaluation_contract_from_forecast(forecast)
+    return dict(contract) == actual
 
 
 def _power_soc(power: xr.Dataset) -> pd.Series:
@@ -1033,6 +1171,9 @@ def build_campaign_ensemble_evidence(
         observations = observed.reindex(
             times, method="nearest", tolerance=pd.Timedelta(minutes=10)
         ).to_numpy(dtype=np.float64)
+        latest_observation = observed.dropna().index.max() if observed.notna().any() else pd.NaT
+        observations[np.asarray(times > latest_observation) if not pd.isna(latest_observation)
+                     else np.ones(len(times), dtype=bool)] = np.nan
         lead_hours = (times - issue) / pd.Timedelta(hours=1)
         for index, valid_time in enumerate(times):
             records.append(
@@ -1053,7 +1194,9 @@ def build_campaign_ensemble_evidence(
                     "LoadMode": _text(candidate.attrs.get("load_mode"), "unknown"),
                     "DegradedModeCode": _text(candidate.attrs.get("degraded_mode_code"), "none"),
                     "ObservedSOC": float(observations[index]),
-                    "EvaluationAvailable": bool(np.isfinite(observations[index])),
+                    "EvaluationAvailable": bool(np.isfinite(observations[index])
+                        and np.count_nonzero(np.isfinite(candidate_soc[:, index])) >= 2
+                        and np.count_nonzero(np.isfinite(baseline_soc[:, index])) >= 2),
                 }
             )
             candidate_rows.append(candidate_soc[:, index])
@@ -1133,6 +1276,23 @@ def build_campaign_ensemble_evidence(
     )
 
 
+def _reserve_episode_count(times: pd.DatetimeIndex, observations: np.ndarray) -> int:
+    """Count distinct observed downcrossings, not repeated forecast rows.
+
+    An initially low battery or a crossing across a >6 h observation gap is
+    left-censored evidence, not an independently established reserve event.
+    Conflicting observations at one valid time also fail closed.
+    """
+    frame = pd.DataFrame({"soc": observations}, index=times).sort_index()
+    groups = frame.groupby(level=0)["soc"]
+    soc = groups.first().where((groups.max() - groups.min()).abs() < 1e-5)
+    below = soc < MINIMUM_OPERATIONAL_SOC_PCT
+    contiguous = soc.index.to_series().diff() <= pd.Timedelta(hours=6)
+    crossings = below & ~below.shift(1, fill_value=True) & contiguous
+    crossings &= soc.notna() & soc.shift(1).notna()
+    return int(crossings.sum())
+
+
 def _ensemble_metric_summary(evidence: xr.Dataset, mask: np.ndarray) -> dict[str, object]:
     if evidence.sizes.get("record", 0) == 0 or "EvaluationAvailable" not in evidence:
         return {"status": "insufficient_evidence", "samples": 0, "cycles": 0, "utc_days": 0}
@@ -1192,7 +1352,8 @@ def _ensemble_metric_summary(evidence: xr.Dataset, mask: np.ndarray) -> dict[str
     ]
     cycles = len(set(usable_cycles)) if usable_cycles else int(issue_values.nunique())
     days = int(issue_values.floor("D").nunique())
-    events = int(np.count_nonzero(outcomes))
+    valid_times = pd.DatetimeIndex(evidence["ValidTime"].values)[selected][valid]
+    events = _reserve_episode_count(valid_times, observations)
     summary: dict[str, object] = {
         "status": "evidence" if len(observations) >= 2 else "diagnostic_sparse",
         "samples": int(len(observations)),
@@ -1211,6 +1372,8 @@ def _ensemble_metric_summary(evidence: xr.Dataset, mask: np.ndarray) -> dict[str
             )
         ),
         "reserve_events": events,
+        "reserve_event_count_method": "unique_valid_time_observed_downcrossings_max_gap_6h",
+        "reserve_below_threshold_rows": int(np.count_nonzero(outcomes)),
         "reserve_samples": int(len(outcomes)),
         "candidate_brier": float(np.mean(candidate_brier)),
         "baseline_brier": float(np.mean(baseline_brier)),

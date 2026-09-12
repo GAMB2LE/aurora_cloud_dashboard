@@ -1,0 +1,13 @@
+# Example only; enable after one reviewed, successful bounded replay.
+[Unit]
+Description=Retry the bounded AURORA candidate replay queue
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=30min
+RandomizedDelaySec=5min
+Persistent=false
+Unit=aurora-power-candidate-replay.service
+
+[Install]
+WantedBy=timers.target
