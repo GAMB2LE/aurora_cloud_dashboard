@@ -118,3 +118,39 @@ part of this repair.
 
 Daily rolling diagnostics remain separate from cumulative promotion evidence.
 Neither an empty score nor a full battery establishes forecast skill.
+
+## Deployment evidence: 12 September 2026
+
+Code revision `83f0622fe524d53a3894e30c5854635424048ab6` is staged on
+data-ocean at `/opt/aurora-power-integrity-83f0622`. The transferred source
+archive SHA-256 is
+`bcdb586b9bd179ec1e24550694e0d822368dd86cba73652d84e1b254e5b96149`.
+The live checkout remains clean at `db6bc869cef05254569f8e3599883062f2fddce0`;
+no public forecast paths or instrument controls were changed.
+
+- Frozen products: `/data/aurora/dev-products/power-baselines/v10-20260912`.
+  The completed manifest verifies all 18 allowlisted products (43,505,758
+  bytes) with source-before = source-after = copied content. Two earlier
+  publication-race failures remain labelled failed, not accepted evidence.
+  The completed tree is read-only and also contains the original code archive
+  `code-db6bc869.tar.gz` (SHA-256
+  `244c34320ab1adf04f0788318c6b822b18f8a266a42ce67df81556d5f15ba25c`).
+  This does not claim that external effective service configuration has yet
+  been captured for a live replacement.
+- Recovery: `/data/aurora/dev-products/power/candidates/integrity-repair-20260912/recovered.zarr`.
+  `recovery-report-verified.json` records 53 checksum-verified issues and 25
+  distinct source cycles. The incoming directory and current-pointer files
+  were excluded. Original issue directories and the live archive were not
+  modified. Recovery completed with a 220.2 MiB recorded memory peak.
+- The recovery verifier now uses the deployed publisher's exact marker
+  contract: SHA-256(filename + NUL + content + NUL). The initial bare-byte
+  checksum incompatibility was fixed and regression-tested, not bypassed.
+- The bounded replay smoke run at 06:36 UTC exited explicitly `deferred`,
+  `model_evaluation_not_idle`, with zero issues processed. Its append-only
+  evidence is in `candidates/replay-20260912/replay_history.jsonl`.
+  No recurring replay timer was enabled and no campaign result is claimed.
+
+Next release steps remain: replay when the wider evaluator is idle; complete
+the blocked-origin and unpublished live evidence; obtain missing MPPT/hardware
+evidence; capture effective configuration and pass promotion gates before
+switching any public development forecast. Production remains out of scope.
