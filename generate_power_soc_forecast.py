@@ -1124,9 +1124,30 @@ def _power_frame(power: xr.Dataset) -> pd.DataFrame:
     if "time" not in power or not fields:
         return pd.DataFrame()
     times = pd.DatetimeIndex(power["time"].values)
-    frame = pd.DataFrame({name: np.asarray(power[name].values, dtype=np.float64) for name in fields}, index=times)
+    frame = pd.DataFrame({name: np.asarray(power[name].values, dtype=np.float64) for name in fields}, index=times, copy=False)
+    # Avoid three full-frame copies for the normal, sorted ingestion stream.
+    if not times.hasnans and (len(times) < 2 or np.all(times.values[1:] > times.values[:-1])):
+        return frame
     frame = frame[~frame.index.isna()].sort_index()
     return frame[~frame.index.duplicated(keep="last")]
+
+
+def _latest_power_soc(power: xr.Dataset) -> tuple[pd.Timestamp, float]:
+    """Freshness needs one SOC value, not every telemetry column in history."""
+    if "time" not in power or "BatterySOC" not in power or power.BatterySOC.dims != ("time",):
+        raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
+    times = pd.DatetimeIndex(power.time.values)
+    if times.hasnans or (len(times) > 1 and not np.all(times.values[1:] > times.values[:-1])):
+        # Preserve the existing duplicate/unsorted policy on anomalous inputs.
+        return latest_finite(_power_frame(power[["BatterySOC"]])["BatterySOC"])
+    for end in range(len(times), 0, -65536):
+        start = max(0, end - 65536)
+        values = np.asarray(power.BatterySOC.isel(time=slice(start, end)).values, dtype=float)
+        finite = np.flatnonzero(np.isfinite(values))
+        if finite.size:
+            index = int(finite[-1])
+            return pd.Timestamp(times[start + index]), float(values[index])
+    raise ValueError("No finite samples available for BatterySOC")
 
 
 def latest_finite(series: pd.Series) -> tuple[pd.Timestamp, float]:
@@ -1143,10 +1164,7 @@ def validate_power_input_freshness(
     now: pd.Timestamp | None = None,
 ) -> tuple[pd.Timestamp, float]:
     """Return the latest SOC anchor and reject an operationally stale input."""
-    frame = _power_frame(power)
-    if frame.empty or "BatterySOC" not in frame:
-        raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
-    latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    latest_time, latest_soc = _latest_power_soc(power)
     if max_age_minutes is None:
         return latest_time, latest_soc
     reference = pd.Timestamp(now if now is not None else datetime.now(timezone.utc))
@@ -3602,8 +3620,11 @@ def build_forecast_dataset(
     if frame.empty or "BatterySOC" not in frame:
         raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
     latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    # The fitter already uses only this window. Slice before assign(), which
+    # would otherwise copy every telemetry column in the entire archive.
+    battery_history = frame.loc[frame.index >= frame.index.max() - pd.Timedelta(days=float(calibration_days))]
     battery_model = fit_battery_model(
-        frame.assign(ObservedLoadWatts=_observed_load_w(frame)),
+        battery_history.assign(ObservedLoadWatts=_observed_load_w(frame).reindex(battery_history.index)),
         nominal_capacity_kwh=capacity_kwh,
         lookback_days=calibration_days,
     )
