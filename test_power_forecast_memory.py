@@ -16,6 +16,16 @@ def forbidden_read():
 
 
 class ForecastMemoryTests(unittest.TestCase):
+    def test_archive_text_repeats_references_without_changing_values(self):
+        values = np.array(["contract-" + "a" * 512, "contract-" + "b" * 512])
+        archive = xr.Dataset({"contract": ("issue_time", values)},
+                             coords={"issue_time": [0, 1], "forecast_step": np.arange(82)})
+        repeated = forecast._repeat_archive_text(archive, "contract")
+        np.testing.assert_array_equal(repeated, np.repeat(values, 82))
+        self.assertIs(repeated[0], repeated[81])
+        self.assertEqual(repeated.nbytes, repeated.size * np.dtype(object).itemsize)
+        np.testing.assert_array_equal(forecast._repeat_archive_text(archive, "missing"), [""] * 164)
+
     def test_archive_rechunk_drops_inherited_store_layout(self):
         import tempfile
         from pathlib import Path

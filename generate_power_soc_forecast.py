@@ -1927,6 +1927,15 @@ def _errors_for_archive_variable(
     return forecast_values[paired] - observed_values[paired], lead_hours[paired]
 
 
+def _repeat_archive_text(archive: xr.Dataset, name: str, default: str = "") -> np.ndarray:
+    """Share per-issue strings across steps instead of copying Unicode buffers."""
+    steps = int(archive.sizes.get("forecast_step", 0))
+    if name not in archive:
+        return np.full(int(archive.sizes.get("issue_time", 0)) * steps, default, dtype=object)
+    values = np.asarray(archive[name].values, dtype=str).reshape(-1).astype(object)
+    return np.repeat(values, steps)
+
+
 def _archive_verification_frame(
     archive: xr.Dataset,
     observed: pd.Series,
@@ -1952,10 +1961,7 @@ def _archive_verification_frame(
     else:
         model_versions = np.full(len(forecast_values), np.nan, dtype=np.float64)
     if "LoadMode" in archive:
-        load_modes = np.repeat(
-            np.asarray(archive["LoadMode"].values, dtype=str).reshape(-1),
-            int(archive.sizes.get("forecast_step", 0)),
-        )
+        load_modes = _repeat_archive_text(archive, "LoadMode")
     else:
         load_modes = np.full(len(forecast_values), "unknown", dtype="U16")
     if "LoadModeLearningReady" in archive:
@@ -1983,12 +1989,7 @@ def _archive_verification_frame(
         independent_cycles = verification_eligible.copy()
 
     def repeated_text(name: str, default: str = "") -> np.ndarray:
-        if name not in archive:
-            return np.full(len(forecast_values), default, dtype="U1")
-        return np.repeat(
-            np.asarray(archive[name].values, dtype=str).reshape(-1),
-            int(archive.sizes.get("forecast_step", 0)),
-        )
+        return _repeat_archive_text(archive, name, default)
 
     forecast_contracts = repeated_text("ForecastModelContractID")
     forecast_identity_ids = repeated_text("ForecastIdentityID")
