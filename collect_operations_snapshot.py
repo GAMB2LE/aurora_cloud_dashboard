@@ -28,6 +28,7 @@ from collection_freshness import (
     PDU_STREAM_OUTLETS, collect_product_freshness, collection_state,
     recent_pdu_states,
 )
+from asfs_storage_health import storage_metrics, storage_status
 
 
 RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
@@ -950,6 +951,28 @@ def _merge_archive_health(record: dict[str, Any], health_path: Path, now: dateti
     record["gws_available_state"] = 1 if verifier_ok else 0
 
 
+def _collect_asfs_storage_metrics(record: dict[str, Any], now: datetime) -> None:
+    """Read one small edge status file with bounded output and SSH runtime."""
+    host = os.environ.get("ASFS_LOGGER_SOURCE_HOST") or os.environ.get("RADAR_SOURCE_HOST")
+    user = os.environ.get("ASFS_LOGGER_SOURCE_USER", "aurora")
+    payload: dict[str, Any] = {}
+    if host:
+        try:
+            response = _run(
+                _tailscale_ssh_base() + [
+                    f"{user}@{host}",
+                    "head -c 65536 /home/aurora/data/asfs/logger_storage_health.json",
+                ],
+                timeout=15.0,
+            )
+            decoded = json.loads(response.stdout)
+            if isinstance(decoded, dict):
+                payload = decoded
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    record.update(storage_metrics(payload, now))
+
+
 def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     now_epoch = now.timestamp()
@@ -963,6 +986,7 @@ def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[s
     # A successful archive/sync run can transfer zero new observations. Publish
     # measured product times separately so collection failures remain visible.
     record.update(collect_product_freshness(now))
+    _collect_asfs_storage_metrics(record, now)
 
     host_reachability: dict[str, bool] = {}
     for prefix, cfg in SOURCE_HOSTS.items():
@@ -1495,6 +1519,9 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
     )
 
     collection_now = datetime.now(timezone.utc)
+    storage = storage_status(snapshot, collection_now)
+    if storage:
+        _health_check(checks, storage["level"], "source", "ASFS logger directory headroom", details=storage["detail"])
     pdu_states = recent_pdu_states(collection_now) or {}
     for stream_name, prefix in STREAM_PREFIXES.items():
         label = stream_name.replace("_", " ")

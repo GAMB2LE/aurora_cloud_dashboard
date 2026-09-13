@@ -17,7 +17,7 @@ historical trend rebuild.
 
 Validation on 13 September 2026:
 
-- 146 passed and 15 subtests passed across `test_collection_freshness.py`,
+- 153 passed and 15 subtests passed across `test_asfs_storage_health.py`, `test_collection_freshness.py`,
   `test_mobile_catalog.py`, `test_ops_alerts.py`,
   `test_operations_storage_paths.py`, and `test_dashboard_shell.py`.
 - One unrelated date-dependent power fixture was excluded:
@@ -34,3 +34,19 @@ success alongside stale products yields red collection/Operations state,
 that absent evidence degrades status, and that current PDU-off evidence
 preserves intentional-off status. Verify actual alert state after its normal
 evaluation; testing the evaluator does not prove an external message was sent.
+
+The edge producer also publishes
+`/home/aurora/data/asfs/logger_storage_health.json` during its ASFS sync.
+The collector reads at most 64 KiB over the existing ASS SSH identity with a
+15-second timeout, using `ASFS_LOGGER_SOURCE_HOST/USER` (the existing radar
+host is a compatibility fallback). Deploy the producer from `realtime-scripts`
+commit `588d267` or its descendant before validating this evidence. No new
+infrastructure role, credentials, or logger privileges are required.
+
+Schema version 1 records a filename-based FAT directory-slot estimate;
+55,000 slots warns and 60,000 slots is critical against a 65,536-slot limit.
+It is explicitly independent of authenticated CardStatus availability.
+Missing, malformed, future, or older-than-two-hours evidence degrades status.
+Unknown evidence has a 180-minute alert persistence rule; current pressure
+thresholds alert immediately on evaluation. Browser/mobile Operations expose
+this independently from current collection and archive delivery.

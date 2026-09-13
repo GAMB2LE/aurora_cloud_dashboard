@@ -26,6 +26,7 @@ from instrument_registry import (
 )
 from wxcam_catalog import parse_timestamp as parse_wxcam_timestamp
 from collection_freshness import collection_state
+from asfs_storage_health import storage_status
 
 
 UTC = timezone.utc
@@ -1048,6 +1049,19 @@ def operations() -> dict[str, Any]:
         for alert in _active_alerts(alert_state)
         if alert.get("id") not in {"archive:health_red", "archive:verification"}
     ]
+    logger_storage = storage_status(snapshot, datetime.now(UTC))
+    logger_storage_alert = None
+    if logger_storage:
+        active_alerts = [alert for alert in active_alerts if alert.get("id") != "logger:directory-headroom"]
+    if logger_storage and logger_storage["level"] in {"amber", "red"}:
+        logger_storage_alert = {
+            "id": "logger:directory-headroom",
+            "title": "ASFS logger directory estimate unavailable" if logger_storage["state"] == "unknown" else "ASFS logger directory headroom needs attention",
+            "level": logger_storage["level"],
+            "detail": logger_storage["detail"],
+        }
+        active_alerts = [logger_storage_alert, *active_alerts]
+        overall = _worst_level(overall, logger_storage["level"])
     if power_alert:
         active_alerts = [
             alert for alert in active_alerts if alert.get("id") != "power:freshness"
@@ -1070,6 +1084,8 @@ def operations() -> dict[str, Any]:
     archive_level = normalize_level(archive_status["level"])
     if archive_level in check_counts:
         check_counts[archive_level] = check_counts.get(archive_level, 0) + 1
+    if logger_storage:
+        check_counts[logger_storage["level"]] = check_counts.get(logger_storage["level"], 0) + 1
 
     return {
         "serverTime": utc_now_iso(),
@@ -1082,6 +1098,7 @@ def operations() -> dict[str, Any]:
             snapshot_error,
             archive_status,
             power_alert,
+            logger_storage_alert,
         ),
         "checkCounts": check_counts,
         "streamStates": stream_states,
@@ -1166,6 +1183,7 @@ def _operations_summary(
     snapshot_error: Any,
     archive_status: dict[str, str],
     power_alert: dict[str, Any] | None = None,
+    logger_storage_alert: dict[str, Any] | None = None,
 ) -> str:
     if health_error:
         return f"Health JSON error: {health_error}"
@@ -1178,6 +1196,8 @@ def _operations_summary(
     unknown_count = sum(1 for stream in streams if stream["level"] == "unknown")
     if red_count:
         return f"{red_count} stream group{'s' if red_count != 1 else ''} need attention"
+    if logger_storage_alert:
+        return str(logger_storage_alert["title"])
     if power_alert:
         return str(power_alert["title"])
     if unknown_count == len(streams):
@@ -1245,7 +1265,7 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
         )
         if part
     )
-    return [
+    groups = [
         {"id": "source", "title": "Collection freshness", "level": "red" if source_issues else "amber" if source_unknown else "green" if streams else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "Freshness unavailable: " + ", ".join(source_unknown[:4]) if source_unknown else "Delivered samples are current or instruments are intentionally off"},
         {"id": "processing", "title": "Local processing", "level": "red" if service_issues else "green" if snapshot else "unknown", "detail": ", ".join(service_issues[:4]) if service_issues else "Append, catalog, and quicklook services healthy"},
         {"id": "storage", "title": "Storage pressure", "level": storage_level, "detail": "Storage is below alert thresholds" if storage_level == "green" else "Storage needs attention"},
@@ -1265,6 +1285,10 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
         },
         {"id": "dashboard", "title": "Public dashboard", "level": dashboard_level, "detail": "Dashboard endpoint probes are healthy" if dashboard_level == "green" else "Dashboard endpoint probe needs attention"},
     ]
+    logger_storage = storage_status(snapshot, datetime.now(UTC))
+    if logger_storage:
+        groups.append({"id": "logger-storage", "title": "ASFS logger directory headroom", "level": logger_storage["level"], "detail": logger_storage["detail"]})
+    return groups
 
 
 def _archive_delivery(

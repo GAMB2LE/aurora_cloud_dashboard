@@ -2773,7 +2773,7 @@ def _ops_root_cause_cards_markup(
             _ops_worst_level([source_level, source_freshness_level]),
             f"{source_probe_failures} host failures, {source_stale} active stale streams"
             + (f", {source_paused} paused" if source_paused else ""),
-            "Remote source reachability and whether each stream has produced data within 1.5 hours",
+            "Remote source reachability and instrument-specific delivered-sample freshness",
         ),
         _ops_card_markup(
             "Network and source sync",
@@ -2846,6 +2846,8 @@ def _ops_operations_markup() -> str:
         paused_prefixes = _ops_expected_paused_prefixes()
         source_recent_count, source_stale_count, source_paused_count = _ops_source_health(snapshot, paused_prefixes)
         source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
+        logger_storage = mobile_catalog.storage_status(snapshot, datetime.now(timezone.utc))
+        logger_storage_level = logger_storage["level"] if logger_storage else "gray"
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
@@ -2880,6 +2882,7 @@ def _ops_operations_markup() -> str:
             snapshot_level,
             source_level,
             source_freshness_level,
+            logger_storage_level,
             battery_level,
             battery_soc_level,
             battery_depletion_level,
@@ -2925,6 +2928,8 @@ def _ops_operations_markup() -> str:
             source_paused_count,
         )
         trend_cards = _ops_trend_cards_markup(paused_prefixes)
+        if logger_storage:
+            root_cause_cards += _ops_card_markup("ASFS logger directory headroom", logger_storage_level, logger_storage["state"].capitalize(), logger_storage["detail"])
         failover_endpoint_levels = [
             _ops_worst_level(
                 [
@@ -9433,11 +9438,13 @@ def _mobile_overview_markup() -> str:
         paused_prefixes = _ops_expected_paused_prefixes()
         _source_recent, source_stale_count, _source_paused = _ops_source_health(snapshot, paused_prefixes)
         source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
+        logger_storage = mobile_catalog.storage_status(snapshot, datetime.now(timezone.utc))
+        logger_storage_level = logger_storage["level"] if logger_storage else "gray"
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
-        ops_level = _ops_worst_level([source_level, source_freshness_level, battery_level, battery_soc_level, battery_depletion_level, processing_level])
+        ops_level = _ops_worst_level([source_level, source_freshness_level, logger_storage_level, battery_level, battery_soc_level, battery_depletion_level, processing_level])
         ops_value = "Healthy" if ops_level == "green" else "Attention" if ops_level == "amber" else "Action" if ops_level == "red" else "Waiting"
         failed = len(_ops_failed_service_names(snapshot))
         snapshot_age = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"

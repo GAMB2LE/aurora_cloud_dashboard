@@ -20,6 +20,7 @@ from typing import Any
 
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
 from collection_freshness import collection_state
+from asfs_storage_health import storage_status
 
 
 SNAPSHOT_DEFAULT = Path("/project/aurora/raw/ops_monitor/latest.json")
@@ -199,6 +200,17 @@ def _service_label(key: str) -> str:
 def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bool] | None = None, now: datetime | None = None) -> list[AlertRule]:
     alerts: list[AlertRule] = []
     now = now or _utc_now()
+    logger_storage = storage_status(snapshot, now)
+    if logger_storage and logger_storage["level"] in {"amber", "red"}:
+        alerts.append(AlertRule(
+            id="logger:directory-headroom",
+            title="ASFS logger directory estimate unavailable" if logger_storage["state"] == "unknown" else "ASFS logger directory headroom needs attention",
+            message=logger_storage["detail"],
+            value=logger_storage["estimated_directory_slots"] if logger_storage["estimated_directory_slots"] is not None else "unknown",
+            threshold="estimated slots >= 55000 warning / >= 60000 critical; evidence expires after 120 min",
+            level=logger_storage["level"],
+            hold_minutes=180.0 if logger_storage["state"] == "unknown" else 0.0,
+        ))
 
     storage_alerts: dict[tuple[str, ...], AlertRule] = {}
     for key, raw_value in sorted(snapshot.items()):
