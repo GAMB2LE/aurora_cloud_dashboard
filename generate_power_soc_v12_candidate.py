@@ -747,26 +747,30 @@ def run_candidate(
         issue_time=issue_time,
         training_start=history_start,
     )
+    # Scoring may use matured truth; predictors must still stop at issue time.
+    evidence_end = min(
+        pd.Timestamp.now(tz="UTC").tz_localize(None),
+        pd.Timestamp(baseline["time"].values[-1]),
+    )
     with xr.open_zarr(power_zarr, chunks={}) as opened:
         fields = [name for name in POWER_HISTORY_FIELDS if name in opened]
         if "BatterySOC" not in fields:
             raise ValueError("Power input is missing BatterySOC for candidate load/evidence features")
         power_for_evidence = opened[fields].sel(
-            time=slice(evidence_start.to_datetime64(), issue_time.to_datetime64())
+            time=slice(evidence_start.to_datetime64(), evidence_end.to_datetime64())
         ).load()
     power_for_fit = power_for_evidence.sel(
         time=slice(history_start.to_datetime64(), issue_time.to_datetime64())
     )
     # PDU state is read-only, bounded and explicitly absent when unavailable.
-    # The fit sees no state after its issue cutoff; campaign evidence is also
-    # matured only through this run's observation cutoff.
+    # Separate scoring state from the issue-time fit to prevent future leakage.
     operating_state = None
     if Path(pdu_zarr).exists():
         with xr.open_zarr(pdu_zarr, chunks={}) as opened:
             state_fields = [name for name in opened.data_vars if name.startswith("PDUOutlet")]
             if state_fields and "time" in opened.coords:
                 operating_state = opened[state_fields].sel(
-                    time=slice(evidence_start.to_datetime64(), issue_time.to_datetime64())
+                    time=slice(evidence_start.to_datetime64(), evidence_end.to_datetime64())
                 ).load()
     feature_snapshot = build_issue_time_feature_snapshot(
         issue_time=issue_time,
@@ -801,7 +805,8 @@ def run_candidate(
         load_mode=str(attrs.get("load_mode", "unknown")),
         control_forecast_model_contract_id=baseline_control_contract_id,
         control_forecast_system_version=baseline_control_system_version,
-        operating_state=operating_state,
+        operating_state=(operating_state.sel(time=slice(None, issue_time.to_datetime64()))
+                         if operating_state is not None else None),
     )
     seed_state = _baseline_seed_state(attrs)
     fixed_bias = _fixed_bias_from_baseline(attrs)
@@ -937,6 +942,8 @@ def run_candidate(
             evaluation_contract=evaluation_contract,
             operating_state=operating_state,
         )
+        evidence.attrs["evaluation_observation_cutoff_utc"] = evidence_end.isoformat()
+        evidence.attrs["evaluation_policy"] = "matured_truth_positive_leads_v2"
         _atomic_write_zarr(evidence, lane_root / "campaign_evidence.zarr")
         summary = campaign_score_surfaces(evidence)
         ensemble_summary: dict[str, object] = {

@@ -784,7 +784,9 @@ def build_campaign_evidence(
             xr.DataArray(np.full(len(times), np.nan) if baseline_available_pv else baseline_solar)).values, dtype=float)
         initial_soc = float(candidate.attrs.get("initial_soc_pct", np.nan))
         for index, valid_time in enumerate(times):
-            available = bool(np.isfinite(observed_soc_values[index]))
+            # The authoring SOC anchor is not an out-of-sample forecast.
+            positive_lead = bool(lead_hours[index] > 0)
+            available = positive_lead and bool(np.isfinite(observed_soc_values[index]))
             records.append(
                 {
                     "IssueTime": issue.to_datetime64(),
@@ -841,7 +843,7 @@ def build_campaign_evidence(
                     "ObservedSolarStatus": str(truth.solar_available_status.iloc[index]),
                     "CandidateSolarDeliveredWatts": float(candidate_delivered[index]),
                     "BaselineSolarDeliveredWatts": float(baseline_delivered[index]),
-                    "SolarEvaluationAvailable": bool(np.isfinite(observed_solar_values[index])),
+                    "SolarEvaluationAvailable": positive_lead and bool(np.isfinite(observed_solar_values[index])),
                     "ECMWFGHI": float(ghi[index]),
                     "EvaluationAvailable": available,
                 }

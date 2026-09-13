@@ -1194,7 +1194,7 @@ def build_campaign_ensemble_evidence(
                     "LoadMode": _text(candidate.attrs.get("load_mode"), "unknown"),
                     "DegradedModeCode": _text(candidate.attrs.get("degraded_mode_code"), "none"),
                     "ObservedSOC": float(observations[index]),
-                    "EvaluationAvailable": bool(np.isfinite(observations[index])
+                    "EvaluationAvailable": bool(lead_hours[index] > 0 and np.isfinite(observations[index])
                         and np.count_nonzero(np.isfinite(candidate_soc[:, index])) >= 2
                         and np.count_nonzero(np.isfinite(baseline_soc[:, index])) >= 2),
                 }

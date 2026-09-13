@@ -492,6 +492,13 @@ class HybridCandidateTests(unittest.TestCase):
                 baseline_digest = _tree_digest(baseline_issue_path)
                 archive_digest = _tree_digest(archive_path)
                 input_path.unlink()
+                # Mature observations arrive after the immutable issue was made.
+                future_power = power.isel(time=[-1] * 15).assign_coords(
+                    time=pd.date_range(power_times[-1] + pd.Timedelta(hours=1), periods=15, freq="1h")
+                )
+                xr.concat([power, future_power], dim="time").to_zarr(
+                    power_path, mode="w", consolidated=True
+                )
                 results = run_candidate(
                     baseline_issue_zarr=baseline_issue_path,
                     baseline_archive_zarr=archive_path,
@@ -515,6 +522,12 @@ class HybridCandidateTests(unittest.TestCase):
                 self.assertEqual(provider_open.call_count, 1)
             self.assertEqual(set(results), {"B_physical_solar", "C_load_residual", "D_physical_solar_load_residual"})
             self.assertEqual(results, repeated)
+            for result in results.values():
+                with xr.open_zarr(result.parent / "campaign_evidence.zarr", chunks={}) as evidence:
+                    evidence.load()
+                    scored = evidence.where(evidence.EvaluationAvailable, drop=True)
+                    self.assertGreater(scored.sizes["record"], 1)
+                    self.assertTrue(bool((scored.LeadHours > 0).all()))
             self.assertFalse(input_path.exists())
             self.assertEqual(_tree_digest(baseline_issue_path), baseline_digest)
             self.assertEqual(_tree_digest(archive_path), archive_digest)
@@ -706,7 +719,8 @@ class HybridCandidateTests(unittest.TestCase):
         np.testing.assert_array_equal(evidence["SOCAnchorTime"], evidence["IssueTime"])
         summary = campaign_score_surfaces(evidence)["campaign_evidence"]["lead_buckets"]["0_6h"]
         self.assertEqual(summary["cycles"], 1)
-        self.assertEqual(summary["samples"], 2)
+        self.assertEqual(summary["samples"], 1)
+        self.assertFalse(bool(evidence.EvaluationAvailable.where(evidence.LeadHours == 0, False).any()))
 
     def test_campaign_evidence_rejects_changed_pair_artifact_bytes(self) -> None:
         issue = pd.Timestamp("2026-06-01T00:00:00")
