@@ -3000,6 +3000,8 @@ def _apply_soc_bias_corrections(
     *,
     issue_time: pd.Timestamp,
     parasitic_load_w: float = 0.0,
+    charge_efficiency: float = 1.0,
+    discharge_efficiency: float = 1.0,
 ) -> pd.DataFrame:
     """Apply a continuous residual by attenuating physical SOC increments only.
 
@@ -3067,6 +3069,8 @@ def _apply_soc_bias_corrections(
             solar[index],
             load[index],
             parasitic_load_w=parasitic_load_w,
+            charge_efficiency=charge_efficiency,
+            discharge_efficiency=discharge_efficiency,
         )
         raw_delta = float(raw_soc[index] - raw_soc[index - 1])
         if direction is None:
@@ -3097,12 +3101,19 @@ def _battery_flow_direction(
     load: float,
     *,
     parasitic_load_w: float = 0.0,
+    charge_efficiency: float = 1.0,
+    discharge_efficiency: float = 1.0,
     tolerance: float = 1.0e-6,
 ) -> int | None:
     """Return +1 charge, -1 discharge, 0 balanced, or None if unknown."""
 
+    if not (np.isfinite(charge_efficiency) and 0 < charge_efficiency <= 1
+            and np.isfinite(discharge_efficiency) and 0 < discharge_efficiency <= 1):
+        raise ValueError("Battery flow efficiencies must be finite and in (0, 1]")
     if np.isfinite(charge) and np.isfinite(discharge):
-        net = float(charge - discharge)
+        # These are terminal input/output powers. Mixed substeps can have
+        # positive terminal net input but negative stored-energy change.
+        net = float(charge * charge_efficiency - discharge / discharge_efficiency)
     elif np.isfinite(solar) and np.isfinite(load):
         parasitic = float(parasitic_load_w) if np.isfinite(parasitic_load_w) else 0.0
         net = float(solar - load - max(parasitic, 0.0))
@@ -3119,6 +3130,8 @@ def validate_soc_physical_consistency(
     forecast: pd.DataFrame,
     *,
     parasitic_load_w: float = 0.0,
+    charge_efficiency: float = 1.0,
+    discharge_efficiency: float = 1.0,
 ) -> None:
     """Fail closed when SOC direction contradicts interval-average energy flow."""
 
@@ -3156,6 +3169,8 @@ def validate_soc_physical_consistency(
                 solar[index],
                 load[index],
                 parasitic_load_w=parasitic_load_w,
+                charge_efficiency=charge_efficiency,
+                discharge_efficiency=discharge_efficiency,
             )
             for index in range(1, len(soc))
         ],
@@ -4255,6 +4270,8 @@ def build_forecast_dataset(
         validate_soc_physical_consistency(
             scenario_for_validation,
             parasitic_load_w=battery_model.parasitic_load_w,
+            charge_efficiency=battery_model.charge_efficiency,
+            discharge_efficiency=battery_model.discharge_efficiency,
         )
     if fixed_soc_bias_corrections is None:
         soc_bias_corrections = _soc_bias_corrections(
@@ -4273,10 +4290,14 @@ def build_forecast_dataset(
         soc_bias_corrections,
         issue_time=latest_time,
         parasitic_load_w=battery_model.parasitic_load_w,
+        charge_efficiency=battery_model.charge_efficiency,
+        discharge_efficiency=battery_model.discharge_efficiency,
     )
     validate_soc_physical_consistency(
         forecast,
         parasitic_load_w=battery_model.parasitic_load_w,
+        charge_efficiency=battery_model.charge_efficiency,
+        discharge_efficiency=battery_model.discharge_efficiency,
     )
     soc_mae = float(previous_metrics.get("soc_mae_pct_points", np.nan))
     solar_mae = float(previous_metrics.get("solar_mae_w", np.nan))
@@ -4313,6 +4334,7 @@ def build_forecast_dataset(
         "load_model_version": LOAD_MODEL_VERSION,
         "load_state_contract": CONTROLLED_LOAD_CONTRACT,
         "battery_energy_model": "bounded_bidirectional_efficiency_v1",
+        "soc_consistency_energy_basis": "stored_energy_efficiency_adjusted_v2",
     }
     forecast_model_contract = "forecast-model-v1-" + hashlib.sha256(
         json.dumps(forecast_contract_payload, sort_keys=True).encode("utf-8")
