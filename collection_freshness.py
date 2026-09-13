@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 
@@ -30,7 +31,10 @@ PDU_STREAM_OUTLETS = {"cl61": 5, "radar": 6, "hatpro": 8}
 
 def parse_time(value: Any) -> datetime | None:
     try:
-        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        # Python 3.10 rejects the 9-digit fractions emitted for nanosecond Zarr
+        # times. datetime's evidence precision is microseconds on every host.
+        text = re.sub(r"(\.\d{6})\d+", r"\1", str(value))
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
         return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
     except (TypeError, ValueError, OverflowError):
         return None

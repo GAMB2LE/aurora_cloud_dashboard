@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+import re
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -83,6 +85,17 @@ def test_stopped_collector_does_not_freeze_sample_age_or_green_state():
     aged = freshness.collection_state(snapshot, "asfs_logger", NOW + timedelta(hours=3))
     assert aged["level"] == "red"
     assert aged["ageMinutes"] == 185
+
+
+def test_nanosecond_product_timestamps_work_with_python310_iso_parser():
+    def production_parser(text):
+        if re.search(r"\.\d{7,}", text):
+            raise ValueError("Python 3.10 requires three or six fractional digits")
+        return datetime.fromisoformat(text)
+
+    with patch.object(freshness, "datetime", SimpleNamespace(fromisoformat=production_parser)):
+        stamp = freshness.parse_time("2026-09-13T06:30:57.195348633Z")
+    assert stamp == datetime(2026, 9, 13, 6, 30, 57, 195348, tzinfo=timezone.utc)
 
 
 def test_overview_and_operations_agree_on_collection_timestamp():

@@ -17,7 +17,7 @@ historical trend rebuild.
 
 Validation on 13 September 2026:
 
-- 153 passed and 15 subtests passed across `test_asfs_storage_health.py`, `test_collection_freshness.py`,
+- 154 passed and 15 subtests passed across `test_asfs_storage_health.py`, `test_collection_freshness.py`,
   `test_mobile_catalog.py`, `test_ops_alerts.py`,
   `test_operations_storage_paths.py`, and `test_dashboard_shell.py`.
 - One unrelated date-dependent power fixture was excluded:
@@ -50,3 +50,9 @@ Missing, malformed, future, or older-than-two-hours evidence degrades status.
 Unknown evidence has a 180-minute alert persistence rule; current pressure
 thresholds alert immediately on evaluation. Browser/mobile Operations expose
 this independently from current collection and archive delivery.
+
+Live production validation found that Python 3.10 rejects nine-digit ISO
+fractions emitted for nanosecond power/CL61 Zarr coordinates. The follow-up
+normalizes monitoring timestamps to datetime's microsecond precision before
+parsing; stored source samples are unchanged. A regression emulates the
+production parser and checks the observed timestamp exactly.
