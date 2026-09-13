@@ -1,0 +1,32 @@
+[Unit]
+Description=Isolated verified power campaign replay (September 2026 repair)
+ConditionPathExists=/data/aurora/dev-products/power/candidates/integrity-repair-20260912/recovered.zarr/.zmetadata
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-power-integrity-bbefa43
+Environment=AURORA_FORECAST_CODE_REVISION=bbefa4375826a5e014cb11246608b743e51a8170
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python /opt/aurora-power-integrity-bbefa43/run_power_candidate_replay.py --issues-root /data/aurora/dev-products/power/forecast-issues --recovered-archive-zarr /data/aurora/dev-products/power/candidates/integrity-repair-20260912/recovered.zarr --candidate-root /data/aurora/dev-products/power/candidates/replay-20260912 --power-zarr /data/aurora/products/power/power.zarr --pdu-zarr /data/aurora/products/power/pdu.zarr --asfs-zarr /data/aurora/products/asfs_logger/asfs_logger.zarr --menapia-mqtt-log /project/aurora/raw/menapia/menapia_mqtt.log --physical-config /opt/aurora-power-integrity-bbefa43/config/power_solar_physical_candidate_v1.json --max-issues 1 --max-seconds 1200
+Nice=19
+CPUQuota=25%
+CPUWeight=5
+MemoryMax=1.5G
+TimeoutStartSec=24min
+TimeoutStopSec=30s
+OOMPolicy=stop
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/data/aurora/dev-products/power/candidates/replay-20260912
+

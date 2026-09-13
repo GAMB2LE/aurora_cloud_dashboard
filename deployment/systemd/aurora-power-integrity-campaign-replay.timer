@@ -1,0 +1,13 @@
+[Unit]
+Description=Accumulate bounded unpublished power replay evidence
+
+[Timer]
+# Avoid the evaluator's :20 launch window. The replay independently defers
+# whenever that service is active or its status is unknown.
+OnCalendar=*-*-* *:45:00
+RandomizedDelaySec=1min
+Persistent=false
+Unit=aurora-power-integrity-campaign-replay.service
+
+[Install]
+WantedBy=timers.target
