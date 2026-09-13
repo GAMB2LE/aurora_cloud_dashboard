@@ -73,3 +73,35 @@ cp /data/aurora/dev-products/power/candidates/battery-pair-repair-20260913-tLQfk
 
 This restores the prior code pin without deleting either implementation's
 candidate evidence or changing the timer, resource cap, or scientific gates.
+
+## Verified deployment result
+
+- Runtime revision: `83cc7e68414a0ef13d335b02bc6afc8effed48c6` at
+  `/opt/aurora-power-integrity-83cc7e6`.
+- Transferred source archive SHA-256:
+  `b98313dc9153e79b1493628f3431d138dfa0ab4b9b2ea99199d056a840d8b22f`;
+  verified before extraction.
+- Local and remote implementation digest:
+  `sha256:61d913c55878ca5a8a8ecdfad9daa5b5ba327a74f41cc458bcd3f004355da9b3`.
+- A read-only server probe verified all 53 recovered immutable issues against
+  the strict battery reader, including exact restored attribute values and
+  unchanged before/after issue checksums. The recovered archive checksum also
+  remained `307c62444556f4a5d81c0e2df150e2b90e75d8eebe0764d4f8099afebb41afb8`.
+  Elapsed time was 71.80 seconds; maximum RSS 165,496 KiB, under a 512 MiB cap.
+- The server runtime passed 23 provider, battery and physical-solar integration
+  tests in a separate bounded unit (49.49 seconds including startup; maximum
+  RSS 185,400 KiB). Its runtime does not install pytest; these server checks
+  used unittest, without adding dependencies to a shared environment.
+- Effective replay configuration was verified: 1.5 GiB hard cap, 25% CPU,
+  private network, strict filesystem protection, and only the isolated replay
+  output root writable. The service unit was validated before installation.
+- The repaired service ran at **18:42:35–18:42:48 UTC** and exited successfully
+  with `deferred / model_evaluation_not_idle`, processing no issues. The
+  evaluator kept the same 18:21:49 start time and invocation
+  `93310a140d424bedb4385e25f60b6d8f`; it was not restarted or interrupted.
+
+The hourly replay timer remains active. Full historical replay on the new
+implementation is **pending an idle evaluator window**, not yet verified
+complete. Its first issue will create a new implementation-keyed evidence
+tree; the previous implementation's successful issue and failed attempts
+remain intact and are not pooled into the repaired campaign.

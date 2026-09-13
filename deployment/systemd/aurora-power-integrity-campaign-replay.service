@@ -6,9 +6,9 @@ ConditionPathExists=/data/aurora/dev-products/power/candidates/integrity-repair-
 Type=oneshot
 User=aurora
 Group=aurora
-WorkingDirectory=/opt/aurora-power-integrity-cecffb8
-Environment=AURORA_FORECAST_CODE_REVISION=cecffb8ba5ef46bb48e681af11de695e15d9794b
-ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python /opt/aurora-power-integrity-cecffb8/run_power_candidate_replay.py --issues-root /data/aurora/dev-products/power/forecast-issues --recovered-archive-zarr /data/aurora/dev-products/power/candidates/integrity-repair-20260912/recovered.zarr --candidate-root /data/aurora/dev-products/power/candidates/replay-20260912 --power-zarr /data/aurora/products/power/power.zarr --pdu-zarr /data/aurora/products/power/pdu.zarr --asfs-zarr /data/aurora/products/asfs_logger/asfs_logger.zarr --menapia-mqtt-log /project/aurora/raw/menapia/menapia_mqtt.log --physical-config /opt/aurora-power-integrity-cecffb8/config/power_solar_physical_candidate_v1.json --max-issues 1 --max-seconds 1200
+WorkingDirectory=/opt/aurora-power-integrity-83cc7e6
+Environment=AURORA_FORECAST_CODE_REVISION=83cc7e68414a0ef13d335b02bc6afc8effed48c6
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python /opt/aurora-power-integrity-83cc7e6/run_power_candidate_replay.py --issues-root /data/aurora/dev-products/power/forecast-issues --recovered-archive-zarr /data/aurora/dev-products/power/candidates/integrity-repair-20260912/recovered.zarr --candidate-root /data/aurora/dev-products/power/candidates/replay-20260912 --power-zarr /data/aurora/products/power/power.zarr --pdu-zarr /data/aurora/products/power/pdu.zarr --asfs-zarr /data/aurora/products/asfs_logger/asfs_logger.zarr --menapia-mqtt-log /project/aurora/raw/menapia/menapia_mqtt.log --physical-config /opt/aurora-power-integrity-83cc7e6/config/power_solar_physical_candidate_v1.json --max-issues 1 --max-seconds 1200
 Nice=19
 CPUQuota=25%
 CPUWeight=5
