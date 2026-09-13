@@ -154,3 +154,49 @@ Next release steps remain: replay when the wider evaluator is idle; complete
 the blocked-origin and unpublished live evidence; obtain missing MPPT/hardware
 evidence; capture effective configuration and pass promotion gates before
 switching any public development forecast. Production remains out of scope.
+
+## SOC correction and first successful replay: 13 September 2026
+
+The original validator input was captured without bypassing its failure at
+`candidates/physical-debug-20260913/failing-interval.json` on data-ocean. In
+the 7 September 06--09 UTC interval, mean terminal charge input was
+111.8898056923 W and discharge output was 104.2834681598 W. The calibrated
+efficiencies were 0.884466 and 0.947819: stored-energy flow was therefore
+`111.8898056923 * 0.884466 - 104.2834681598 / 0.947819 = -11.06193633 W`.
+The observed modelled SOC increment, -0.13188438 percentage points over three
+hours with 25.163 kWh capacity, was physically correct. The former guard
+incorrectly used terminal charge minus discharge, ignoring conversion losses.
+
+Commit `bbefa4375826a5e014cb11246608b743e51a8170` makes both direction checking
+and bias attenuation use the integrator's efficiency-adjusted stored-energy
+basis. Invalid efficiencies and deliberately unphysical SOC changes remain
+rejected. The full captured 34-endpoint frame passes the corrected validator.
+The model contract records the changed consistency basis; no old evidence is
+relabelled. **293 tests passed**, including the captured-interval regressions.
+
+The isolated real replay completed at 08:54:14 UTC: one immutable issue
+succeeded across B physical solar, C load residual, and D hybrid, with zero
+failures; 52 issues remain queued. Memory peak was 860.5 MiB and CPU time
+199.229 seconds. The code archive deployed to `/opt/aurora-power-integrity-bbefa43`
+has SHA-256 `30531fb36d483f76bf4af37b6d441c5a9dca3f927bda0de39b38f6cd8d1ce56d`.
+
+`aurora-power-integrity-campaign-replay.timer` is enabled hourly at :45 UTC
+(up to one minute jitter), after a successful smoke issue and unit validation.
+Each job processes at most one issue, has a 1.5 GiB memory cap and 24-minute
+timeout, and defers when the wider evaluator is active or unknown. Its only
+writable product tree is `candidates/replay-20260912`; it runs as `aurora`.
+Disable collection with `systemctl disable --now aurora-power-integrity-campaign-replay.timer`.
+This is historical deterministic replay, not a live candidate or an ensemble
+acceptance lane. The frozen recovery archive contains 53 issues/25 distinct
+source cycles; further issue-safe collection and ensemble comparators are
+still needed. Candidate promotion remains `not_eligible_requires_campaign_evidence`.
+
+Separately, Earthkit 1.2.2 and its dependencies were installed in the evaluator's
+isolated runtime; service-account import and `pip check` pass. Evaluator release
+`db0706b` adds a real backend import check before expensive work. Thirty focused
+deployment/backend/GFS tests pass. The full daily evaluator was restarted after
+power replay; terminal completion is still pending, not inferred from imports.
+An hourly thread follow-up (`verify-power-forecast-recovery-and-campaign`) checks
+terminal evaluation results, replay progress and evidence gaps. It cannot
+promote forecasts or enable instrument controls. Public forecast paths remain
+unchanged.
