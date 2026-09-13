@@ -849,7 +849,14 @@ def _atomic_write_archive(ds: xr.Dataset, output_zarr: Path) -> None:
     if "ForecastValidTime" in ds:
         ds["ForecastValidTime"].encoding["units"] = "nanoseconds since 1970-01-01"
         ds["ForecastValidTime"].encoding["dtype"] = "int64"
-    ds.chunk(chunk_spec).to_zarr(tmp, mode="w", consolidated=True)
+    # Reindexing/concatenation may retain the old store's chunk encoding
+    # (e.g. 34 steps) even when the archive now spans more steps. Match the
+    # new store layout to the Dask chunks instead of disabling safe writes.
+    ds = ds.chunk(chunk_spec)
+    for variable in ds.variables.values():
+        variable.encoding.pop("chunks", None)
+        variable.encoding.pop("preferred_chunks", None)
+    ds.to_zarr(tmp, mode="w", consolidated=True)
     if output_zarr.exists():
         shutil.rmtree(output_zarr)
     tmp.rename(output_zarr)

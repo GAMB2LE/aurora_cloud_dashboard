@@ -16,6 +16,19 @@ def forbidden_read():
 
 
 class ForecastMemoryTests(unittest.TestCase):
+    def test_archive_rechunk_drops_inherited_store_layout(self):
+        import tempfile
+        from pathlib import Path
+        data = xr.Dataset({"solar": (("issue_time", "forecast_step"),
+                                    np.arange(130.).reshape(2, 65))},
+                          coords={"issue_time": [0, 1], "forecast_step": np.arange(65)})
+        data.solar.encoding["chunks"] = (1, 34)
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "archive.zarr"
+            forecast._atomic_write_archive(data, path)
+            with xr.open_zarr(path) as restored:
+                xr.testing.assert_equal(restored.load(), data)
+
     def test_disk_backed_history_retains_every_value_after_file_handle_closes(self):
         import gc
         times = pd.date_range("2026-01-01", periods=150000, freq="s")
