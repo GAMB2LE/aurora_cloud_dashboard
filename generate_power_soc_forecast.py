@@ -3838,6 +3838,7 @@ def build_forecast_dataset(
     site_meteorology_override: Mapping[str, pd.Series] | None = None,
     allow_calibration_update: bool = True,
     fixed_load_reference: xr.Dataset | None = None,
+    fixed_battery_model: BatteryModel | None = None,
 ) -> xr.Dataset:
     selected_solar_model = validate_solar_model(solar_model)
     if fixed_legacy_solar_w is not None and selected_solar_model != LEGACY_SOLAR_MODEL_NAME:
@@ -3857,7 +3858,13 @@ def build_forecast_dataset(
         and verification_id != state.get("calibration_verification_id", "")
     )
     battery_attrs = state.get("battery_model", {})
-    if isinstance(battery_attrs, Mapping) and battery_attrs and not new_verification:
+    if fixed_battery_model is not None:
+        # Paired solar/load ablations must hold the archived battery fixed,
+        # including repeated-cycle re-anchors and newly matured verification.
+        if fixed_battery_model != fixed_battery_model.validated():
+            raise ValueError("Fixed paired battery model must already be valid")
+        battery_model = fixed_battery_model
+    elif isinstance(battery_attrs, Mapping) and battery_attrs and not new_verification:
         battery_model = BatteryModel.from_attrs(battery_attrs, default_capacity_kwh=capacity_kwh)
     elif allow_calibration_update:
         battery_model = fit_battery_model(
@@ -4610,6 +4617,7 @@ def generate(
     site_irradiance_provenance: Mapping[str, object] | None = None,
     site_meteorology_override: Mapping[str, pd.Series] | None = None,
     fixed_load_reference: xr.Dataset | None = None,
+    fixed_battery_model: BatteryModel | None = None,
 ) -> Path:
     provider = validate_provider(provider)
     selected_solar_model = validate_solar_model(solar_model)
@@ -4878,6 +4886,7 @@ def generate(
         site_meteorology_override=site_meteorology_override,
         allow_calibration_update=new_source_cycle,
         fixed_load_reference=fixed_load_reference,
+        fixed_battery_model=fixed_battery_model,
     )
     forecast.attrs["ecmwf_input_file"] = input_label
     forecast.attrs["solar_input_representation"] = (

@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 import xarray as xr
 
+from power_battery_model import BatteryModel
 from generate_power_soc_forecast import (
     DEFAULT_PHYSICAL_SOLAR_CONFIG_PATH,
     PHYSICAL_SOLAR_MODEL_NAME,
@@ -110,6 +111,7 @@ def run_candidate(
     with xr.open_zarr(baseline_forecast_zarr, chunks={}) as baseline:
         baseline_snapshot = baseline.load()
         baseline_attrs = dict(baseline_snapshot.attrs)
+    baseline_battery = BatteryModel.from_paired_attrs(baseline_attrs)
     baseline_signature = str(baseline_attrs.get("publication_signature", "")).strip()
     if not baseline_signature:
         raise ValueError("Baseline forecast does not have a publication signature")
@@ -191,6 +193,7 @@ def run_candidate(
         expected_physical_config_sha256=physical_config_digest,
         pair_reference=baseline_snapshot,
         state_override=_baseline_seed_state(baseline_attrs),
+        fixed_battery_model=baseline_battery,
     )
     with xr.open_zarr(result, chunks={}) as candidate:
         candidate_snapshot = candidate.load()

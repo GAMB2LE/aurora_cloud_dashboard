@@ -40,6 +40,7 @@ from generate_power_soc_forecast import (
     validate_provider,
 )
 from generate_power_soc_physical_candidate import _baseline_seed_state
+from power_battery_model import BatteryModel
 from power_solar_model import (
     load_physical_solar_config,
     physical_solar_config_digest,
@@ -673,6 +674,7 @@ def run_candidate(
         baseline_forecast_zarr,
         expected_signature=baseline_signature,
     )
+    baseline_battery = BatteryModel.from_paired_attrs(attrs)
     site_irradiance, site_irradiance_digest, site_irradiance_provenance = (
         _embedded_site_irradiance(baseline)
     )
@@ -890,6 +892,7 @@ def run_candidate(
             site_irradiance_provenance=site_irradiance_provenance,
             site_meteorology_override=embedded_source_meteorology(baseline),
             fixed_load_reference=baseline,
+            fixed_battery_model=baseline_battery,
         )
         with xr.open_zarr(output, chunks={}) as opened:
             candidate = opened.load()
