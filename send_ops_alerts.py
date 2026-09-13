@@ -19,6 +19,7 @@ import sys
 from typing import Any
 
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
+from collection_freshness import collection_state
 
 
 SNAPSHOT_DEFAULT = Path("/project/aurora/raw/ops_monitor/latest.json")
@@ -48,6 +49,7 @@ STREAM_PREFIXES = {
     "Meteorology": "vaisalamet",
     "Radiation": "asfs_logger",
     "ASFS Fast Sonic": "asfs_fast_sonic",
+    "ASFS Fast Gas": "asfs_fast_gas",
     "Aurora Power Supply": "power",
     "ASS PDU": "pdu",
     "WXcam": "wxcam",
@@ -64,6 +66,7 @@ STREAM_SERVICE_KEYS = {
         "asfs_fast_sonic_append_service_healthy_state",
         "asfs_fast_sonic_quicklooks_service_healthy_state",
     ),
+    "ASFS Fast Gas": ("asfs_fast_gas_source_sync_service_healthy_state", "asfs_fast_gas_append_service_healthy_state"),
     "Aurora Power Supply": ("power_source_sync_service_healthy_state", "power_append_service_healthy_state", "power_quicklooks_service_healthy_state"),
     "ASS PDU": ("pdu_source_sync_service_healthy_state", "pdu_append_service_healthy_state"),
     "WXcam": (
@@ -193,8 +196,9 @@ def _service_label(key: str) -> str:
     return label.replace("_", " ")
 
 
-def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bool] | None = None) -> list[AlertRule]:
+def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bool] | None = None, now: datetime | None = None) -> list[AlertRule]:
     alerts: list[AlertRule] = []
+    now = now or _utc_now()
 
     storage_alerts: dict[tuple[str, ...], AlertRule] = {}
     for key, raw_value in sorted(snapshot.items()):
@@ -340,15 +344,28 @@ def evaluate_alerts(snapshot: dict[str, Any], *, pdu_outlet_states: dict[int, bo
     for stream_label, prefix in STREAM_PREFIXES.items():
         outlet = STREAM_PDU_OUTLETS.get(stream_label)
         expected_off = outlet is not None and pdu_outlet_states is not None and pdu_outlet_states.get(outlet) is False
-        source_age = _float(snapshot.get(f"{prefix}_source_age_min"))
-        if not expected_off and manifest_recent is not False and source_age is not None and source_age >= STREAM_HOLD_MINUTES:
+        collection = collection_state(snapshot, prefix, now)
+        source_age = collection["ageMinutes"]
+        product_evidence = collection["evidence"] == "cloud_product_sample"
+        if not expected_off and (product_evidence or manifest_recent is not False) and source_age is not None and source_age >= STREAM_HOLD_MINUTES:
             alerts.append(
                 AlertRule(
                     id=f"stream:{prefix}:source_stale",
-                    title=f"{stream_label} source stale for {_fmt_value(source_age, ' min')}",
-                    message=f"{stream_label} source data age is {_fmt_value(source_age, ' min')}.",
+                    title=f"{stream_label} {'delivered sample' if product_evidence else 'source'} stale for {_fmt_value(source_age, ' min')}",
+                    message=f"{stream_label} {'cloud product sample' if product_evidence else 'source data'} age is {_fmt_value(source_age, ' min')}. Transfer success does not establish current collection.",
                     value=source_age,
                     threshold=f">= {STREAM_HOLD_MINUTES:.0f} min",
+                )
+            )
+        if not expected_off and collection["level"] == "unknown" and f"{prefix}_product_sample_available_state" in snapshot:
+            alerts.append(
+                AlertRule(
+                    id=f"stream:{prefix}:collection_unknown",
+                    title=f"{stream_label} collection evidence unavailable",
+                    message=f"No valid cloud product sample timestamp is available for {stream_label}.",
+                    value="unknown",
+                    threshold=f"continuous for {STREAM_HOLD_MINUTES:.0f} min",
+                    hold_minutes=STREAM_HOLD_MINUTES,
                 )
             )
 
@@ -386,7 +403,8 @@ def _recent_pdu_outlet_states(now: datetime, path: Path = PDU_ZARR_DEFAULT) -> d
             sample_time = pd.Timestamp(dataset["time"].values[-1]).to_pydatetime()
             if sample_time.tzinfo is None:
                 sample_time = sample_time.replace(tzinfo=timezone.utc)
-            if now - sample_time.astimezone(timezone.utc) > timedelta(minutes=PDU_STATE_MAX_AGE_MINUTES):
+            sample_age = now - sample_time.astimezone(timezone.utc)
+            if sample_age < timedelta(minutes=-5) or sample_age > timedelta(minutes=PDU_STATE_MAX_AGE_MINUTES):
                 return None
             states: dict[int, bool] = {}
             for outlet in set(STREAM_PDU_OUTLETS.values()):

@@ -1819,6 +1819,12 @@ OPS_STREAM_SPECS = (
         ),
     },
     {
+        "label": "ASFS Fast Gas",
+        "stream_prefix": "asfs_fast_gas",
+        "source_key": "asfs_fast_gas_source_sync_service_healthy_state",
+        "processing_keys": ("asfs_fast_gas_append_service_healthy_state",),
+    },
+    {
         "label": "Aurora Power Supply",
         "stream_prefix": "power",
         "source_key": "power_source_sync_service_healthy_state",
@@ -2069,25 +2075,36 @@ def _ops_expected_paused_prefixes() -> set[str]:
 def _ops_source_health(snapshot: dict, paused_prefixes: set[str]) -> tuple[int, int, int]:
     """Return active recent, active stale, and intentionally paused stream counts."""
     active_specs = [spec for spec in OPS_STREAM_SPECS if spec["stream_prefix"] not in paused_prefixes]
-    recent = sum(_ops_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")) is True for spec in active_specs)
-    stale = sum(_ops_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")) is False for spec in active_specs)
+    levels = [_ops_collection_level(snapshot, spec["stream_prefix"]) for spec in active_specs]
+    recent = levels.count("green")
+    stale = levels.count("red")
     paused = sum(spec["stream_prefix"] in paused_prefixes for spec in OPS_STREAM_SPECS)
     return recent, stale, paused
 
 
+def _ops_collection_level(snapshot: dict, prefix: str) -> str:
+    state = mobile_catalog.collection_state(snapshot, prefix, datetime.now(timezone.utc))
+    return "amber" if state["level"] == "unknown" else state["level"]
+
+
+def _ops_collection_health_level(snapshot: dict, paused_prefixes: set[str]) -> str:
+    return _ops_worst_level([
+        _ops_collection_level(snapshot, spec["stream_prefix"])
+        for spec in OPS_STREAM_SPECS if spec["stream_prefix"] not in paused_prefixes
+    ])
+
+
 def _ops_source_freshness_text(snapshot: dict, prefix: str, *, intentionally_paused: bool = False) -> str:
-    recent = _ops_bool(snapshot.get(f"{prefix}_source_recent_state"))
-    age_min = _ops_float(snapshot.get(f"{prefix}_source_age_min"))
+    collection = mobile_catalog.collection_state(snapshot, prefix, datetime.now(timezone.utc))
+    age_min = collection["ageMinutes"]
     if intentionally_paused:
         if age_min is None:
             return "Paused - PDU outlet off"
         return f"Paused - PDU outlet off (last data {_format_duration(timedelta(minutes=age_min))} ago)"
-    if recent is None:
-        return "No source timestamp"
     if age_min is None:
-        return "Recent" if recent else "Stale"
+        return "Collection timestamp unavailable"
     age_text = _format_duration(timedelta(minutes=age_min))
-    return f"Recent ({age_text})" if recent else f"Stale ({age_text})"
+    return f"Delivered sample recent ({age_text})" if collection["level"] == "green" else f"Delivered sample stale ({age_text})"
 
 
 def _ops_battery_text(snapshot: dict) -> tuple[str, str]:
@@ -2828,7 +2845,7 @@ def _ops_operations_markup() -> str:
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
         paused_prefixes = _ops_expected_paused_prefixes()
         source_recent_count, source_stale_count, source_paused_count = _ops_source_health(snapshot, paused_prefixes)
-        source_freshness_level = _ops_level_from_count(source_stale_count, amber_at=0.0)
+        source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
@@ -2949,14 +2966,14 @@ def _ops_operations_markup() -> str:
                 f"{int(_ops_float(snapshot.get('source_host_probe_fail_count')) or 0)} probe failures",
             ),
             _ops_card_markup(
-                "Source freshness",
+                "Collection freshness",
                 source_freshness_level,
                 (
                     f"{source_stale_count} active stale streams"
                     if source_stale_count
                     else f"{source_recent_count}/{len(OPS_STREAM_SPECS) - source_paused_count} active streams recent"
                 ),
-                "Source data seen within the last 1.5 hours"
+                "Delivered samples meet their instrument cadence; missing evidence needs attention"
                 + (f"; {source_paused_count} PDU stream(s) intentionally paused" if source_paused_count else ""),
             ),
             _ops_card_markup(
@@ -3242,7 +3259,7 @@ def _ops_operations_markup() -> str:
                 else _ops_worst_level(
                     [
                         _ops_level_from_bool(snapshot.get(spec["source_key"])),
-                        _ops_level_from_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")),
+                        _ops_collection_level(snapshot, spec["stream_prefix"]),
                     ]
                 )
             )
@@ -9415,7 +9432,7 @@ def _mobile_overview_markup() -> str:
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
         paused_prefixes = _ops_expected_paused_prefixes()
         _source_recent, source_stale_count, _source_paused = _ops_source_health(snapshot, paused_prefixes)
-        source_freshness_level = _ops_level_from_count(source_stale_count, amber_at=0.0)
+        source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
         battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
         battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)

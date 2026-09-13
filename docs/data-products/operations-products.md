@@ -24,10 +24,15 @@ These snapshots capture:
 - snapshot collection time as both `time_utc` and `snapshot_time_utc`
 - source-host disk usage and probe reachability
 - resolved `pwd -P` paths for the filesystem locations that were actually probed
-- per-stream source recency, with a red operational state if a source has not
-  produced data in the last 1.5 hours; HATPRO uses a `3 h` source-recency
-  window because it arrives as hourly batches and should only go stale after
-  two missed batches
+- per-stream measured cloud-product collection evidence, separately from
+  source-sync success and archive parity: `*_product_sample_time_utc`,
+  `*_product_age_min`, `*_product_recent_state`,
+  `*_product_sample_available_state`, and `*_collection_evidence`
+- collection windows of 90 minutes for CL61/radar, 180 minutes for HATPRO,
+  120 minutes for Vaisala/ASFS science/sonic/gas/power/WXcam, and 30 minutes
+  for PDU. ASFS files normally close every 30 minutes; the 120-minute status
+  limit permits batching and transfer latency, while the 180-minute alert
+  limit represents sustained loss of delivered observations.
 - Aurora Power Supply battery voltage from the latest `DCInverterVolts` sample
   in the power Zarr, scored green above `52 V`, amber from `50-52 V`, and red
   below `50 V`
@@ -56,6 +61,23 @@ These snapshots capture:
 The health assessment is deliberately observe-only. It summarizes the raw
 snapshot into green/amber/red checks, but it does not restart services, delete
 data, rebuild stores, or modify code.
+
+`cloud_product_sample` means the most recent delivered product observation,
+not a direct measurement of logger or edge acquisition. These fields never
+overwrite legacy `*_source_*` metrics. Source, transfer, processing, product,
+and archive evidence retain separate meanings. Browser/mobile status and
+alerts recompute age from the timestamp at read time; a stopped collector
+cannot indefinitely preserve a green cached age. Missing/invalid timestamps
+degrade collection status even when sync and processing jobs return success.
+Fresh PDU-off evidence suppresses expected collection outages for CL61,
+radar, and HATPRO only; ASFS science, sonic, and gas are monitored separately.
+
+Stale cloud-product alerts use their own timestamp evidence even if archive
+verification is delayed. Unavailable product evidence raises a separate
+alert after 180 minutes of persistence. Legacy source-age alerts continue to
+require valid verifier evidence because their original ages came from that
+snapshot. Product evidence does not establish direct logger status or prove
+where an upstream failure occurred.
 
 ## Operations Zarr
 

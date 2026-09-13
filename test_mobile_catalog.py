@@ -382,6 +382,7 @@ class MobileCatalogTests(unittest.TestCase):
         spec = mobile_catalog.OPERATIONS_STREAMS[0]
         snapshot = {str(spec["source"]): 1.0}
         snapshot.update({str(key): 1.0 for key in spec["services"]})
+        snapshot["cl61_product_sample_time_utc"] = mobile_catalog.utc_now_iso()
         state = mobile_catalog._stream_state(snapshot, spec)
 
         self.assertEqual(state["level"], "green")
@@ -463,6 +464,7 @@ class MobileCatalogTests(unittest.TestCase):
             }
             for spec in mobile_catalog.OPERATIONS_STREAMS:
                 snapshot_payload[str(spec["source"])] = 1
+                snapshot_payload[f"{mobile_catalog._stream_prefix(spec)}_product_sample_time_utc"] = mobile_catalog.utc_now_iso()
                 for service in spec["services"]:
                     snapshot_payload[str(service)] = 1
             snapshot.write_text(json.dumps(snapshot_payload), encoding="utf-8")
@@ -610,7 +612,12 @@ class MobileCatalogTests(unittest.TestCase):
             health = root / "health.json"
             archive = root / "archive.json"
             alerts = root / "alerts.json"
-            snapshot.write_text('{"time_utc":"2026-08-16T12:00:00Z"}')
+            snapshot_payload = {"time_utc": mobile_catalog.utc_now_iso()}
+            for spec in mobile_catalog.OPERATIONS_STREAMS:
+                snapshot_payload[str(spec["source"])] = 1
+                snapshot_payload[f"{mobile_catalog._stream_prefix(spec)}_product_sample_time_utc"] = mobile_catalog.utc_now_iso()
+                snapshot_payload.update({key: 1 for key in spec["services"]})
+            snapshot.write_text(json.dumps(snapshot_payload))
             health.write_text('{"overall_level":"green"}')
             archive.write_text(
                 json.dumps(

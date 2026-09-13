@@ -24,6 +24,11 @@ import urllib.request
 import pandas as pd
 import xarray as xr
 
+from collection_freshness import (
+    PDU_STREAM_OUTLETS, collect_product_freshness, collection_state,
+    recent_pdu_states,
+)
+
 
 RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
 HEALTH_OUTPUT_ROOT_DEFAULT = Path("/data/aurora/products/ops_monitor/health")
@@ -955,6 +960,9 @@ def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[s
     }
 
     _merge_archive_health(record, archive_health_path, now)
+    # A successful archive/sync run can transfer zero new observations. Publish
+    # measured product times separately so collection failures remain visible.
+    record.update(collect_product_freshness(now))
 
     host_reachability: dict[str, bool] = {}
     for prefix, cfg in SOURCE_HOSTS.items():
@@ -1486,9 +1494,15 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
         affects_overall=dewpoint_level != "gray",
     )
 
+    collection_now = datetime.now(timezone.utc)
+    pdu_states = recent_pdu_states(collection_now) or {}
     for stream_name, prefix in STREAM_PREFIXES.items():
         label = stream_name.replace("_", " ")
-        source_level = _level_from_bool(_state(snapshot, f"{prefix}_source_recent_state"))
+        collection = collection_state(snapshot, prefix, collection_now)
+        expected_off = pdu_states.get(PDU_STREAM_OUTLETS.get(prefix)) is False
+        source_level = "green" if expected_off else collection["level"]
+        if source_level == "unknown":
+            source_level = "amber"
         local_level = _level_from_count(_value(snapshot, f"{prefix}_local_missing_count") or 0.0)
         local_mismatch_level = _level_from_count(_value(snapshot, f"{prefix}_local_mismatch_count") or 0.0)
         gws_level = _level_from_count(_value(snapshot, f"{prefix}_gws_missing_count") or 0.0)
@@ -1501,7 +1515,8 @@ def build_health_assessment(snapshot: dict[str, Any], raw_snapshot_path: Path | 
             "stream",
             f"{label} stream",
             details=(
-                f"source_age={_fmt(_value(snapshot, f'{prefix}_source_age_min'), ' min')}, "
+                f"collection={'intentionally off' if expected_off else collection['evidence']}, "
+                f"sample_age={_fmt(collection['ageMinutes'], ' min')}, "
                 f"local_coverage={_fmt(_value(snapshot, f'{prefix}_local_coverage_pct'), '%', 2)}, "
                 f"gws_coverage={_fmt(_value(snapshot, f'{prefix}_gws_coverage_pct'), '%', 2)}"
             ),
