@@ -16,6 +16,31 @@ def forbidden_read():
 
 
 class ForecastMemoryTests(unittest.TestCase):
+    def test_disk_backed_history_retains_every_value_after_file_handle_closes(self):
+        import gc
+        times = pd.date_range("2026-01-01", periods=150000, freq="s")
+        values = np.arange(len(times), dtype=float)
+        values[::37] = np.nan
+        power = xr.Dataset({"BatterySOC": ("time", values),
+                            "BatteryWatts": ("time", -values)}, coords={"time": times}).chunk(time=8192)
+        with patch.object(forecast, "POWER_FRAME_MEMMAP_ROWS", 1):
+            frame = forecast._power_frame(power)
+        gc.collect()
+        np.testing.assert_array_equal(frame.BatterySOC, values)
+        np.testing.assert_array_equal(frame.BatteryWatts, -values)
+        self.assertEqual(len(frame), len(times))
+
+    def test_chunked_row_sum_is_exact_with_nan_and_minimum_coverage(self):
+        rng = np.random.default_rng(4)
+        frame = pd.DataFrame(rng.normal(size=(150000, 3)), columns=["a", "b", "c"])
+        frame.iloc[::3, 0] = np.nan
+        frame.iloc[::7, :] = np.nan
+        for count in (1, 3):
+            pd.testing.assert_series_equal(
+                forecast._sum_power_columns(frame, list(frame), min_count=count),
+                frame.sum(axis=1, min_count=count), check_exact=True,
+            )
+
     def test_freshness_reads_only_the_last_soc_chunk(self):
         count = 65536
         forbidden = da.from_delayed(delayed(forbidden_read)(), shape=(count,), dtype=float)

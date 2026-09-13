@@ -1106,6 +1106,9 @@ def _physical_solar_meteorology(ds: xr.Dataset, irradiance: pd.Series) -> dict[s
     }
 
 
+POWER_FRAME_MEMMAP_ROWS = 1_000_000
+
+
 def _power_frame(power: xr.Dataset) -> pd.DataFrame:
     fields = [
         name
@@ -1124,7 +1127,21 @@ def _power_frame(power: xr.Dataset) -> pd.DataFrame:
     if "time" not in power or not fields:
         return pd.DataFrame()
     times = pd.DatetimeIndex(power["time"].values)
-    frame = pd.DataFrame({name: np.asarray(power[name].values, dtype=np.float64) for name in fields}, index=times, copy=False)
+    if len(times) >= POWER_FRAME_MEMMAP_ROWS:
+        # Keep the complete history, but let the OS reclaim source-column pages
+        # during pandas reductions. TemporaryFile is unlinked automatically;
+        # numpy views retain the mapping until the last dataframe reference dies.
+        with tempfile.TemporaryFile(prefix="aurora-power-frame-") as scratch:
+            columns = np.memmap(scratch, dtype=np.float64, mode="w+", shape=(len(fields), len(times)))
+            for column, name in enumerate(fields):
+                for start in range(0, len(times), 65536):
+                    end = min(len(times), start + 65536)
+                    chunk = power[name].isel(time=slice(start, end)).compute(scheduler="synchronous")
+                    columns[column, start:end] = np.asarray(chunk.values, dtype=np.float64)
+                columns.flush()
+            frame = pd.DataFrame({name: columns[index] for index, name in enumerate(fields)}, index=times, copy=False)
+    else:
+        frame = pd.DataFrame({name: np.asarray(power[name].values, dtype=np.float64) for name in fields}, index=times, copy=False)
     # Avoid three full-frame copies for the normal, sorted ingestion stream.
     if not times.hasnans and (len(times) < 2 or np.all(times.values[1:] > times.values[:-1])):
         return frame
@@ -1498,11 +1515,20 @@ def _update_load_mode_registry(
     return registry, learned_level
 
 
+def _sum_power_columns(frame: pd.DataFrame, fields: list[str], *, min_count: int) -> pd.Series:
+    """Apply the same pandas row sum without a full multi-column temporary."""
+    result = np.empty(len(frame), dtype=np.float64)
+    for start in range(0, len(frame), 65536):
+        end = min(len(frame), start + 65536)
+        result[start:end] = frame.iloc[start:end][fields].sum(axis=1, min_count=min_count).to_numpy(dtype=np.float64)
+    return pd.Series(result, index=frame.index, copy=False)
+
+
 def _observed_solar_w(frame: pd.DataFrame) -> pd.Series:
     solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
     if not solar_fields:
         return pd.Series(dtype=np.float64)
-    return frame[solar_fields].sum(axis=1, min_count=1).clip(lower=0.0)
+    return _sum_power_columns(frame, solar_fields, min_count=1).clip(lower=0.0)
 
 
 def _mpp_active_available_power_mask(frame: pd.DataFrame) -> pd.Series:
@@ -1646,7 +1672,7 @@ def _solar_verification_status(*, excluded: int, accepted_available_power: int) 
 def _observed_load_w(frame: pd.DataFrame) -> pd.Series:
     solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
     if "BatteryWatts" in frame and len(solar_fields) == 3:
-        solar = frame[solar_fields].sum(axis=1, min_count=len(solar_fields))
+        solar = _sum_power_columns(frame, solar_fields, min_count=len(solar_fields))
         # APS BatteryWatts is positive while charging and negative while
         # discharging, so generation minus battery flow is total station load.
         balanced = (solar - frame["BatteryWatts"]).clip(lower=0.0)
@@ -1655,7 +1681,7 @@ def _observed_load_w(frame: pd.DataFrame) -> pd.Series:
     load_fields = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in frame]
     if not load_fields:
         return pd.Series(dtype=np.float64)
-    return frame[load_fields].sum(axis=1, min_count=1).clip(lower=0.0)
+    return _sum_power_columns(frame, load_fields, min_count=1).clip(lower=0.0)
 
 
 def _clean_dc_only_observation(
@@ -1668,14 +1694,15 @@ def _clean_dc_only_observation(
     if len(solar_fields) != 3 or not required.issubset(frame.columns):
         return None
     start = end - pd.Timedelta(hours=float(DEFAULT_DARK_LOAD_LOOKBACK_HOURS))
+    window = frame.loc[start:end]
     samples = pd.DataFrame(
         {
-            "load_w": _observed_load_w(frame),
-            "solar_w": frame[solar_fields].sum(axis=1, min_count=3),
-            "battery_w": frame["BatteryWatts"],
-            "ac_w": frame["ACOutputWatts"],
+            "load_w": _observed_load_w(frame).loc[start:end],
+            "solar_w": window[solar_fields].sum(axis=1, min_count=3),
+            "battery_w": window["BatteryWatts"],
+            "ac_w": window["ACOutputWatts"],
         }
-    ).loc[start:end]
+    )
     samples = samples.resample("15min").median()
     clean = samples.loc[
         (samples["solar_w"] <= DEFAULT_ZERO_SOLAR_THRESHOLD_W)
