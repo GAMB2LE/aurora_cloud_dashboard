@@ -223,7 +223,7 @@ def append_new(
     existing = xr.open_zarr(zarr_path, chunks={})
     if "time" not in existing:
         raise KeyError("Zarr store missing time coordinate")
-    last_time = pd.to_datetime(existing["time"].max().values).to_pydatetime()
+    last_time = pd.Timestamp(existing["time"].max().values)
     print(f"Latest time in Zarr: {last_time}")
 
     scan_date = (last_time - timedelta(days=max(lookback_days, 0))).date()
@@ -240,7 +240,7 @@ def append_new(
         print("Candidate files contain no readable ASFS fast-gas samples.")
         return
     combined = filter_dataset_from_time(combined, from_time)
-    combined = combined.isel(time=(combined["time"] > np.datetime64(last_time)).values)
+    combined = combined.isel(time=(combined["time"] > last_time.to_datetime64()).values)
     if combined.sizes.get("time", 0) == 0:
         print("Candidate files contain no samples newer than the existing Zarr.")
         return
