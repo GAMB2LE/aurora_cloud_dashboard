@@ -1,0 +1,21 @@
+[Unit]
+Description=Capture immutable power issues and matching baseline ensembles (no publication)
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-power-improvement-20260922-IovZvf
+Environment=EARTHKIT_DATA_CONFIG_FILE=/tmp/aurora-live-evidence-earthkit/config.yaml
+ExecCondition=/usr/bin/bash -c 'for unit in aurora-model-evaluation-daily.service aurora-power-integrity-campaign-replay.service; do state=$(/usr/bin/systemctl show "$unit" --property=ActiveState --value) || exit 1; case "$state" in inactive|failed) ;; *) exit 1 ;; esac; done'
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python collect_power_live_evidence.py --issues-root /data/aurora/dev-products/power/forecast-issues --candidate-root /data/aurora/dev-products/power/candidates/live-evidence-20260922 --ensemble-zarr /data/aurora/dev-products/power/forecast-bundle/latest-independent/ensemble_forecast.zarr
+MemoryMax=1500M
+CPUQuota=25%
+Nice=19
+TimeoutStartSec=10min
+PrivateNetwork=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data/aurora/dev-products/power/candidates/live-evidence-20260922

@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect live power evidence without altering forecasts
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=30
+Unit=aurora-power-live-evidence.service
+
+[Install]
+WantedBy=timers.target

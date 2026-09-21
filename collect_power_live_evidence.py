@@ -46,6 +46,16 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
+def discard_staging(staging: Path, root: Path):
+    # copytree preserves immutable source directory modes. Only our freshly
+    # allocated private staging tree may be made writable for cleanup.
+    if staging.parent != root or not staging.name.startswith(('.capture-', '.ensemble-')):
+        raise ValueError('Refusing cleanup outside private staging')
+    for current, directories, files in os.walk(staging, followlinks=False):
+        os.chmod(current, 0o700)
+    shutil.rmtree(staging)
+
+
 def collect(issues_root: Path, candidate_root: Path, ensemble_zarr: Path | None = None,
             *, maximum_snapshots=10000):
     source, root = issues_root.resolve(), candidate_root.resolve()
@@ -110,7 +120,7 @@ def collect(issues_root: Path, candidate_root: Path, ensemble_zarr: Path | None 
                     enrolled += 1
                 finally:
                     if staging.exists():
-                        shutil.rmtree(staging)
+                        discard_staging(staging, root)
             # A later invocation may fill a missing ensemble, but never replace
             # a comparator already admitted for this immutable issue.
             final_ensemble = target / 'ensemble'
@@ -148,7 +158,7 @@ def collect(issues_root: Path, candidate_root: Path, ensemble_zarr: Path | None 
                     reasons[reason] = reasons.get(reason, 0) + 1
                 finally:
                     if staging.exists():
-                        shutil.rmtree(staging)
+                        discard_staging(staging, root)
         total = sum(p.is_dir() for p in destinations.iterdir())
         paired = sum((p / 'ensemble' / 'manifest.json').is_file() for p in destinations.iterdir())
         status = {'schema_version': 1, 'status': 'capture_complete',

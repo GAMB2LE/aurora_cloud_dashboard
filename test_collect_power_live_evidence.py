@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 import fcntl
 
-from collect_power_live_evidence import collect, validate_ensemble_pair
+from collect_power_live_evidence import collect, validate_ensemble_pair, discard_staging
 from test_power_snapshot_fixture import snapshot, issue
 
 
@@ -74,6 +74,17 @@ class CollectorTests(unittest.TestCase):
             altered.attrs[field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 validate_ensemble_pair(baseline, altered)
+
+    def test_readonly_staging_cleanup_is_scoped(self):
+        staging = self.root / '.ensemble-test'
+        nested = staging / 'data'
+        nested.mkdir(parents=True)
+        (nested / 'chunk').write_text('test')
+        nested.chmod(0o555)
+        discard_staging(staging, self.root)
+        self.assertFalse(staging.exists())
+        with self.assertRaises(ValueError):
+            discard_staging(self.source, self.root)
 
 
 if __name__ == '__main__':
