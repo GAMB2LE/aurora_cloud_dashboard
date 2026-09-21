@@ -575,6 +575,26 @@ def apply_operational_soc_threshold(ds: xr.Dataset) -> xr.Dataset:
     return out
 
 
+def _clip_member_horizon(series: pd.Series, anchor: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
+    """Clip right-labelled interval means at the exact requested endpoint.
+
+    The partial final interval uses its source interval's mean, not a linear
+    interpolation or persistence extrapolation. A missing enclosing interval
+    fails closed instead of silently shortening the ensemble horizon.
+    """
+    if not series.index.is_monotonic_increasing or series.index.has_duplicates:
+        raise ValueError('Ensemble irradiance intervals must be ordered and unique')
+    if series.empty or series.index[-1] < end:
+        raise ValueError('Ensemble irradiance does not cover the exact horizon')
+    clipped = series.loc[(series.index >= anchor) & (series.index <= end)].copy()
+    if end not in clipped.index:
+        value = float(series.loc[series.index >= end].iloc[0])
+        if not np.isfinite(value):
+            raise ValueError('Missing irradiance in final ensemble interval')
+        clipped.loc[end] = value
+    return clipped
+
+
 def build_ensemble_dataset(
     power: xr.Dataset,
     deterministic: xr.Dataset,
@@ -605,7 +625,7 @@ def build_ensemble_dataset(
     member_irradiance: list[pd.Series] = []
     for member in member_values:
         series = solar_irradiance_from_ssrd(solar_ensemble.sel({member_dim: member}))
-        series = series[(series.index >= latest_time) & (series.index <= latest_time + pd.Timedelta(hours=horizon_hours))]
+        series = _clip_member_horizon(series, latest_time, latest_time + pd.Timedelta(hours=horizon_hours))
         if len(series) >= 2:
             member_irradiance.append(series)
     if not member_irradiance:
@@ -801,6 +821,13 @@ def build_ensemble_dataset(
         },
     )
     out = apply_operational_soc_threshold(out)
+    # This changes the forecast algorithm. Keep its evidence separate from
+    # older ensembles that silently omitted the last partial interval.
+    out.attrs['ensemble_interval_contract'] = 'right_labelled_exact_endpoint_v1'
+    out.attrs['feature_set_version'] = str(out.attrs.get('feature_set_version', '')) + '+ensemble_exact_endpoint_v1'
+    out.attrs['feature_set_digest'] = hashlib.sha256((
+        str(out.attrs.get('feature_set_digest', '')) + ':ensemble_exact_endpoint_v1'
+    ).encode()).hexdigest()
     for name in out.data_vars:
         out[name].attrs["units"] = "1" if name.endswith("Probability") else "%" if "SOC" in name else "W m-2" if "Irradiance" in name else "W"
     out["ForecastLoadPhaseCodeEnsemble"].attrs.update(
