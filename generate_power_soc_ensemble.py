@@ -938,13 +938,8 @@ def append_ensemble_archive(forecast: xr.Dataset, path: Path, *, retention_days:
     for name, variable in list(combined.variables.items()):
         if variable.dtype.kind == "O":
             combined[name] = variable.fillna("").astype(str).load()
-    tmp = path.with_name(f"{path.name}.tmp")
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    combined.chunk({"issue_time": 8, "member": 10, "forecast_step": 64}).to_zarr(tmp, mode="w", consolidated=True)
-    if path.exists():
-        shutil.rmtree(path)
-    tmp.rename(path)
+    from power_archive_io import write_forecast_archive
+    write_forecast_archive(combined, path)
     return combined
 
 

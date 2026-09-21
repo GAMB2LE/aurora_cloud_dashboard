@@ -828,38 +828,12 @@ def _write_state(path: Path, state: dict[str, object]) -> None:
 
 
 def _atomic_write_archive(ds: xr.Dataset, output_zarr: Path) -> None:
-    # Mixed Python values can leave an object-typed archive variable even
-    # after xarray concatenation. Zarr's VLenUTF8 codec then fails when an
-    # integer appears in a nominally textual chunk. Materialize only those
-    # small metadata variables as fixed-width Unicode before writing.
-    object_variables = [name for name, var in ds.variables.items() if var.dtype.kind == "O"]
-    if object_variables:
-        ds = ds.copy()
-        for name in object_variables:
-            ds[name] = ds[name].astype(str).load()
-    output_zarr.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output_zarr.with_name(f"{output_zarr.name}.tmp")
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    chunk_spec = {}
-    if "issue_time" in ds.sizes:
-        chunk_spec["issue_time"] = min(max(ds.sizes.get("issue_time", 1), 1), 64)
-    if "forecast_step" in ds.sizes:
-        chunk_spec["forecast_step"] = min(max(ds.sizes.get("forecast_step", 1), 1), 64)
-    if "ForecastValidTime" in ds:
-        ds["ForecastValidTime"].encoding["units"] = "nanoseconds since 1970-01-01"
-        ds["ForecastValidTime"].encoding["dtype"] = "int64"
-    # Reindexing/concatenation may retain the old store's chunk encoding
-    # (e.g. 34 steps) even when the archive now spans more steps. Match the
-    # new store layout to the Dask chunks instead of disabling safe writes.
-    ds = ds.chunk(chunk_spec)
-    for variable in ds.variables.values():
-        variable.encoding.pop("chunks", None)
-        variable.encoding.pop("preferred_chunks", None)
-    ds.to_zarr(tmp, mode="w", consolidated=True)
-    if output_zarr.exists():
-        shutil.rmtree(output_zarr)
-    tmp.rename(output_zarr)
+    # Inherited fixed-width encodings can truncate identity strings even when
+    # concat widened the array. Verify the entire metadata round trip before
+    # replacing the store; preserve the original on any failure.
+    from power_archive_io import write_forecast_archive
+    write_forecast_archive(ds, output_zarr)
+    return
 
 
 def _atomic_write_skill(ds: xr.Dataset, output_zarr: Path) -> None:
