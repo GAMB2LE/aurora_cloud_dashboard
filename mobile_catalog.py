@@ -778,12 +778,20 @@ def normalize_level(value: Any) -> str:
 
 
 def level_from_booleans(values: list[Any]) -> str:
-    known = [value for value in values if value is not None]
-    if not known:
-        return "unknown"
-    if any(str(value).strip().lower() in {"0", "false", "red", "failed", "error"} for value in known):
+    # JSON snapshots and Zarr rows store these states as floats. Stringifying
+    # 0.0 used to miss the failure case and turn failed probes green.
+    levels = []
+    for value in values:
+        if isinstance(value, str) and value.strip() in {"0.0", "1.0"}:
+            value = float(value)
+        levels.append(normalize_level(value))
+    if "red" in levels:
         return "red"
-    return "green"
+    if "amber" in levels:
+        return "amber"
+    if "green" in levels:
+        return "green"
+    return "unknown"
 
 
 def media_url(*parts: str) -> str:

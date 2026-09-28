@@ -87,7 +87,12 @@ class MobileCatalogTests(unittest.TestCase):
                 "AURORA_POWER_FORECAST_BUNDLE_READY_PATH": str(manifest),
                 "AURORA_POWER_FORECAST_BUNDLE_STATUS_PATH": str(status_path),
             }
-            with patch.dict(os.environ, environment, clear=False):
+            with (
+                patch.dict(os.environ, environment, clear=False),
+                patch.object(mobile_catalog, "datetime", wraps=datetime) as clock,
+            ):
+                # This fixture is deliberately valid on its recorded issue date.
+                clock.now.return_value = datetime(2026, 9, 6, tzinfo=timezone.utc)
                 self.assertEqual(
                     mobile_catalog.power_display_section_path("forecast").resolve(),
                     forecast.resolve(),
