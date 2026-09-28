@@ -89,9 +89,9 @@ class DashboardShellTests(TestCase):
             self.assertIsNone(app._browser_performance_probe())
 
     def test_browser_performance_probe_rejects_unknown_events(self) -> None:
-        probe = app.BrowserPerformanceProbe()
         events = []
         with patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))):
+            probe = app.BrowserPerformanceProbe(log_callback=app._perf_log)
             probe._handle_msg({"event": "untrusted", "duration_ms": 1})
             probe._handle_msg({"event": "browser_document_ready", "duration_ms": 12.5, "path": "/app"})
 

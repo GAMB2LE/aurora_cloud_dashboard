@@ -1,5 +1,23 @@
 # Performance Logging
 
+## Browser session component lifetime
+
+Custom Panel component classes live in `dashboard_components.py`, a normally
+imported module. `app.py` is executed again for every browser session, so it
+must create component instances without redefining their classes. Repeated
+class registration made Panel's resource enumeration consume both production
+workers and fill the connection backlog in September 2026. Restarting the
+dashboard cleared the accumulated classes; sharing the definitions prevents
+that accumulation. Per-session callbacks are passed to component instances.
+
+`test_dashboard_session_health.py` exercises the actual Bokeh script runner
+with multiple retained sessions and checks that component classes remain
+identical. It also checks the Operations API's numeric probe states: `0.0`
+means failed, `1.0` means healthy, and invalid or absent evidence alone must
+not produce a green status.
+
+## Timing events
+
 The dashboard writes structured JSONL timing events to:
 
 - `/data/aurora/products/dashboard/dashboard_perf.jsonl`
