@@ -2218,6 +2218,67 @@ class PowerSocForecastTests(unittest.TestCase):
         np.testing.assert_allclose(merged["SystemAsIsDecisionSOCP50"], [90.0, 86.0, 82.0])
         self.assertEqual(merged.attrs["system_as_is_decision_source"], "ensemble_fallback")
 
+    def test_stored_decision_fallback_requires_complete_known_provenance(self) -> None:
+        times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
+        display = xr.Dataset(
+            {
+                "SystemAsIsDecisionSOCP10": (("time",), [88.0, 82.0, 76.0]),
+                "SystemAsIsDecisionSOCP50": (("time",), [90.0, 86.0, 82.0]),
+                "SystemAsIsDecisionSOCP90": (("time",), [92.0, 90.0, 88.0]),
+                "SystemAsIsDecisionBelow40Probability": (("time",), [0.0, 0.0, 0.1]),
+                "OperatingCurrentSOCP50": (("time",), [90.0, 60.0, 30.0]),
+            },
+            coords={"time": times},
+        )
+        for source in ("ensemble_fallback", "legacy_forecast_fallback", "operating_scenario", "", "unknown"):
+            for complete in (True, False):
+                with self.subTest(source=source, complete=complete):
+                    candidate = display.copy()
+                    candidate.attrs["system_as_is_decision_source"] = source
+                    if not complete:
+                        candidate = candidate.drop_vars("SystemAsIsDecisionSOCP90")
+                    merged = merge_operating_scenarios_into_display_summary(candidate, None)
+                    self.assertNotIn("OperatingCurrentSOCP50", merged)
+                    decision_names = [name for name in merged if name.startswith("SystemAsIsDecision")]
+                    if complete and source in {"ensemble_fallback", "legacy_forecast_fallback"}:
+                        self.assertEqual(len(decision_names), 4)
+                        np.testing.assert_allclose(merged["SystemAsIsDecisionSOCP50"], [90.0, 86.0, 82.0])
+                        self.assertEqual(merged.attrs["system_as_is_decision_source"], source)
+                    else:
+                        self.assertEqual(decision_names, [])
+                        self.assertEqual(merged.attrs["system_as_is_decision_source"], "unavailable")
+
+    def test_fresh_operating_plan_replaces_stored_ensemble_decision_fallback(self) -> None:
+        times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
+        display = xr.Dataset(
+            {
+                "SystemAsIsDecisionSOCP10": (("time",), [88.0, 82.0, 76.0]),
+                "SystemAsIsDecisionSOCP50": (("time",), [90.0, 86.0, 82.0]),
+                "SystemAsIsDecisionSOCP90": (("time",), [92.0, 90.0, 88.0]),
+                "SystemAsIsDecisionBelow40Probability": (("time",), [0.0, 0.0, 0.1]),
+            },
+            coords={"time": times},
+            attrs={
+                "system_as_is_decision_source": "ensemble_fallback",
+                "forecast_initial_soc_time": times[0].isoformat(),
+            },
+        )
+        operating = xr.Dataset(
+            {
+                "ScenarioSOCP10": (("scenario", "time"), [[88.0, 72.0, 56.0]]),
+                "ScenarioSOCP50": (("scenario", "time"), [[90.0, 76.0, 62.0]]),
+                "ScenarioSOCP90": (("scenario", "time"), [[92.0, 80.0, 68.0]]),
+                "ScenarioBelow40Probability": (("scenario", "time"), [[0.0, 0.0, 0.2]]),
+            },
+            coords={"scenario": ["current_mode"], "time": times},
+            attrs={"initial_soc_time": times[0].isoformat()},
+        )
+
+        merged = merge_operating_scenarios_into_display_summary(display, operating)
+
+        np.testing.assert_allclose(merged["SystemAsIsDecisionSOCP50"], [90.0, 76.0, 62.0])
+        self.assertEqual(merged.attrs["system_as_is_decision_source"], "operating_scenario")
+
     def test_mismatched_operating_plan_anchor_is_withheld_from_display(self) -> None:
         times = pd.date_range("2026-07-20T20:00:00", periods=3, freq="1h")
         display = xr.Dataset(
