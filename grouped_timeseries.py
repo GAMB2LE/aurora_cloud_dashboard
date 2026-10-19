@@ -2905,6 +2905,22 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     return frame[~frame.index.duplicated(keep="last")]
 
 
+def _stored_system_as_is_fallback_source(ds: xr.Dataset) -> str:
+    """Identify a complete decision distribution independent of the planner.
+
+    Section display products retain the derived decision fields and provenance,
+    but omit the raw ensemble variables. Only those explicitly derived from a
+    forecast fallback can survive replacement of an unavailable operating plan.
+    """
+    source = str(ds.attrs.get("system_as_is_decision_source", ""))
+    if source in {"ensemble_fallback", "legacy_forecast_fallback"} and all(
+        name in ds and ds[name].dims == ("time",)
+        for name in SYSTEM_AS_IS_DECISION_FIELDS
+    ):
+        return source
+    return ""
+
+
 def _with_system_as_is_decision_fields(
     ds: xr.Dataset,
     *,
@@ -2943,7 +2959,13 @@ def _with_system_as_is_decision_fields(
             else "legacy_forecast_fallback"
         )
     else:
-        return ds, "unavailable"
+        stored_source = _stored_system_as_is_fallback_source(ds)
+        if stored_source:
+            return ds, stored_source
+        result = ds.copy()
+        result.attrs = dict(ds.attrs)
+        result.attrs["system_as_is_decision_source"] = "unavailable"
+        return result, "unavailable"
 
     result = ds.copy()
     result.attrs = dict(ds.attrs)
@@ -3201,11 +3223,15 @@ def merge_operating_scenarios_into_display_summary(
     """Merge the compact scenario contract into an existing display summary."""
     # Display summaries may contain an older pre-merged operating plan. The
     # standalone scenario product is authoritative, including its unavailable
-    # state, so never retain those stale traces.
+    # state, so never retain those stale traces. A complete forecast fallback
+    # is independent of that plan and may be the only SOC data retained by a
+    # compact section product; preserve it unless fresh source fields replace it.
+    stored_fallback = _stored_system_as_is_fallback_source(display_ds)
     stale_fields = [
         name
         for name in display_ds.data_vars
-        if name.startswith("Operating") or name in SYSTEM_AS_IS_DECISION_FIELDS
+        if name.startswith("Operating")
+        or (name in SYSTEM_AS_IS_DECISION_FIELDS and not stored_fallback)
     ]
     base_ds = display_ds.drop_vars(stale_fields) if stale_fields else display_ds
     aligned, alignment_reason = _operating_scenario_alignment(base_ds, operating_scenarios_ds)
