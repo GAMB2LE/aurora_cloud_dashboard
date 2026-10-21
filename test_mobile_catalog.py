@@ -69,6 +69,51 @@ class MobileCatalogTests(unittest.TestCase):
                 response = mobile_catalog.continuity_status()
         self.assertIn("_error", response["status"])
 
+    def test_operations_continuity_uses_snapshot_time_without_refreshing_archive_evidence(self) -> None:
+        archive_time = "2026-10-18T06:12:00Z"
+        health_time = "2026-10-21T20:00:00Z"
+        snapshot_time = "2026-10-21T20:02:00Z"
+        archive_payload = {
+            "generated_at": archive_time,
+            "overall_level": "red",
+            "failures": ["object_store_raw_missing=3"],
+            "verification": {"state": "failed", "generated_at": archive_time},
+            "retention": {"pruning_allowed": False},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "archive.json"
+            original = json.dumps(archive_payload)
+            archive.write_text(original, encoding="utf-8")
+            archive_epoch = datetime.fromisoformat(archive_time.replace("Z", "+00:00")).timestamp()
+            os.utime(archive, (archive_epoch, archive_epoch))
+            (root / "health.json").write_text(json.dumps({"time_utc": health_time}), encoding="utf-8")
+            (root / "alerts.json").write_text("{}", encoding="utf-8")
+            environment = {
+                "AURORA_DATA_MODE": "",
+                "AURORA_CONTINUITY_STATUS_PATH": "",
+                "OPS_MONITOR_LATEST_HEALTH": str(root / "health.json"),
+                "OPS_MONITOR_LATEST_SNAPSHOT": str(root / "snapshot.json"),
+                "ARCHIVE_HEALTH_PATH": str(archive),
+                "OPS_MONITOR_ALERT_STATE": str(root / "alerts.json"),
+            }
+            for timestamp_key in ("time_utc", "snapshot_time_utc", None):
+                with self.subTest(timestamp_key=timestamp_key):
+                    snapshot = {timestamp_key: snapshot_time} if timestamp_key else {}
+                    (root / "snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+                    with patch.dict(os.environ, environment):
+                        normal = mobile_catalog.operations()
+                        with patch.dict(os.environ, {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                            continuity = mobile_catalog.operations()
+                    self.assertEqual(normal["updatedAt"], archive_time)
+                    self.assertEqual(continuity["updatedAt"], snapshot_time if timestamp_key else health_time)
+                    self.assertEqual(continuity["overallLevel"], "red")
+                    for key in ("archiveStatus", "archiveDelivery", "alerts", "rootCauseGroups"):
+                        self.assertEqual(continuity[key], normal[key])
+                    self.assertEqual(continuity["archiveStatus"]["verification"], archive_payload["verification"])
+                    self.assertEqual(continuity["sources"]["archiveHealth"], normal["sources"]["archiveHealth"])
+                    self.assertEqual(archive.read_text(encoding="utf-8"), original)
+
     def test_power_bundle_digest_has_fixed_cross_repo_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

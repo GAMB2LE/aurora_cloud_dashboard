@@ -1024,6 +1024,7 @@ def _archive_operator_status(archive_health: dict[str, Any]) -> dict[str, str]:
 def operations() -> dict[str, Any]:
     health = read_json_file(operations_health_path())
     snapshot = read_json_file(operations_snapshot_path())
+    snapshot_updated_at = snapshot.get("time_utc") or snapshot.get("snapshot_time_utc")
     archive_health = read_json_file(archive_health_path())
     archive_status = _archive_operator_status(archive_health)
     archive_metrics = archive_health.get("metrics", {})
@@ -1063,13 +1064,21 @@ def operations() -> dict[str, Any]:
         *("amber" if stream["level"] == "unknown" else stream["level"] for stream in stream_states),
     )
 
-    updated_at = (
-        archive_health.get("generated_at")
-        or health.get("time_utc")
-        or health.get("snapshot_time_utc")
-        or snapshot.get("time_utc")
-        or snapshot.get("snapshot_time_utc")
-    )
+    if direct_field_continuity_enabled():
+        updated_at = (
+            snapshot_updated_at
+            or health.get("time_utc")
+            or health.get("snapshot_time_utc")
+            or archive_health.get("generated_at")
+        )
+    else:
+        updated_at = (
+            archive_health.get("generated_at")
+            or health.get("time_utc")
+            or health.get("snapshot_time_utc")
+            or snapshot.get("time_utc")
+            or snapshot.get("snapshot_time_utc")
+        )
     active_alerts = [
         alert
         for alert in _active_alerts(alert_state)
