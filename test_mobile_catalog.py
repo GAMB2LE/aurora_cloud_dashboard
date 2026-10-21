@@ -14,6 +14,61 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_deployment_descriptor_only_changes_data_role_for_continuity_mode(self) -> None:
+        environment = {
+            "AURORA_SITE_ENV": "development",
+            "AURORA_DOMAIN": "data-ocean.gamb2le.co.uk",
+            "AURORA_DASHBOARD_REVISION": "abc123def456",
+            "AURORA_DATA_MODE": "",
+        }
+        with patch.dict(os.environ, environment):
+            normal = mobile_catalog.deployment_descriptor()
+            with patch.dict(os.environ, {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                continuity = mobile_catalog.deployment_descriptor()
+        self.assertEqual(normal["dataRole"], "live-mirror")
+        self.assertEqual(continuity, {**normal, "dataRole": "direct-field-continuity"})
+
+    def test_operations_continuity_preserves_real_alerts_and_health(self) -> None:
+        status = {"updatedAt": "2026-10-21T20:00:00Z", "streams": {"power": {"latestSample": "2026-10-21T19:59:00Z"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "continuity.json"
+            original = json.dumps(status)
+            status_path.write_text(original, encoding="utf-8")
+            (Path(tmp) / "alerts.json").write_text(json.dumps({
+                "active": {"test:source-stale": {"title": "Source is stale", "level": "red"}},
+            }), encoding="utf-8")
+            environment = {
+                "AURORA_DATA_MODE": "",
+                "AURORA_CONTINUITY_STATUS_PATH": str(status_path),
+                "OPS_MONITOR_LATEST_HEALTH": str(Path(tmp) / "health.json"),
+                "OPS_MONITOR_LATEST_SNAPSHOT": str(Path(tmp) / "snapshot.json"),
+                "ARCHIVE_HEALTH_PATH": str(Path(tmp) / "archive.json"),
+                "OPS_MONITOR_ALERT_STATE": str(Path(tmp) / "alerts.json"),
+            }
+            with patch.dict(os.environ, environment):
+                normal = mobile_catalog.operations()
+                with patch.dict(os.environ, {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                    response = mobile_catalog.operations()
+            self.assertEqual(status_path.read_text(encoding="utf-8"), original)
+        self.assertNotIn("continuity", normal)
+        self.assertEqual(response["continuity"]["status"], status)
+        self.assertEqual(response["alerts"], normal["alerts"])
+        self.assertIn("test:source-stale", [alert["id"] for alert in response["alerts"]])
+        self.assertEqual(response["overallLevel"], normal["overallLevel"])
+        self.assertEqual(response["streamStates"], normal["streamStates"])
+        self.assertEqual(response["summary"], "Recent direct field data; JASMIN mirror unavailable. " + normal["summary"])
+
+    def test_continuity_reports_invalid_status_without_claiming_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text("incomplete json", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "AURORA_DATA_MODE": "direct-field-continuity",
+                "AURORA_CONTINUITY_STATUS_PATH": str(path),
+            }):
+                response = mobile_catalog.continuity_status()
+        self.assertIn("_error", response["status"])
+
     def test_power_bundle_digest_has_fixed_cross_repo_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

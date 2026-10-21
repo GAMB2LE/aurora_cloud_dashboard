@@ -16,6 +16,18 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_development_banner_labels_direct_field_continuity(self) -> None:
+        with (
+            patch.object(app, "SITE_ENV", "development"),
+            patch.object(app, "SITE_ENV_EXPLICIT", True),
+            patch.dict("os.environ", {"AURORA_DATA_MODE": ""}),
+        ):
+            normal = app._site_env_banner_pane()
+            with patch.dict("os.environ", {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                continuity = app._site_env_banner_pane()
+        self.assertIn("Development site - live mirrored data", normal.object)
+        self.assertIn("Development site - recent direct field data; JASMIN mirror unavailable", continuity.object)
+
     def test_naive_utc_datetime_rejects_non_finite_timestamp(self) -> None:
         self.assertIsNone(app._as_naive_utc_datetime(pd.NaT))
         self.assertIsNone(app._as_naive_utc_datetime(np.datetime64("NaT")))

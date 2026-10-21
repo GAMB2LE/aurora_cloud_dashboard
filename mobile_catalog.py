@@ -834,12 +834,30 @@ def dashboard_revision() -> str | None:
     return head[:12] if head else None
 
 
+def direct_field_continuity_enabled() -> bool:
+    return os.environ.get("AURORA_DATA_MODE", "").strip().lower() == "direct-field-continuity"
+
+
+def continuity_status() -> dict[str, Any] | None:
+    """Describe the explicitly configured read-only field-data presentation."""
+    if not direct_field_continuity_enabled():
+        return None
+    status_path = os.environ.get("AURORA_CONTINUITY_STATUS_PATH", "").strip()
+    return {
+        "mode": "direct-field-continuity",
+        "summary": "Recent direct field data; JASMIN mirror unavailable.",
+        "status": read_json_file(Path(status_path)) if status_path else {},
+    }
+
+
 def deployment_descriptor() -> dict[str, Any]:
     domain = os.environ.get("AURORA_DOMAIN", "").strip() or "data-ocean.gamb2le.co.uk"
     environment = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
     if not environment:
         environment = "development" if "data-ocean" in domain else "production"
     data_role = "live-mirror" if environment == "development" else "authoritative"
+    if direct_field_continuity_enabled():
+        data_role = "direct-field-continuity"
     return {
         "environment": environment,
         "domain": domain,
@@ -1095,7 +1113,7 @@ def operations() -> dict[str, Any]:
     if logger_storage:
         check_counts[logger_storage["level"]] = check_counts.get(logger_storage["level"], 0) + 1
 
-    return {
+    response = {
         "serverTime": utc_now_iso(),
         "updatedAt": updated_at,
         "overallLevel": overall,
@@ -1127,6 +1145,11 @@ def operations() -> dict[str, Any]:
             "archiveHealth": {**file_record(archive_health_path()), "path": str(archive_health_path())},
         },
     }
+    continuity = continuity_status()
+    if continuity is not None:
+        response["continuity"] = continuity
+        response["summary"] = f"{continuity['summary']} {response['summary']}"
+    return response
 
 
 def _stream_prefix(spec: dict[str, Any]) -> str:

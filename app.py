@@ -8615,9 +8615,14 @@ def _site_env_banner_pane() -> pn.pane.HTML | None:
     if SITE_ENV != "development" or not SITE_ENV_EXPLICIT:
         return None
     domain = SITE_DOMAIN or "data-ocean.gamb2le.co.uk"
+    label = (
+        "Development site - recent direct field data; JASMIN mirror unavailable"
+        if mobile_catalog.direct_field_continuity_enabled()
+        else "Development site - live mirrored data"
+    )
     return pn.pane.HTML(
         "<div class='site-env-banner'>"
-        "<span>Development site - live mirrored data</span>"
+        f"<span>{escape(label)}</span>"
         f"<span class='site-env-banner__meta'>{escape(domain)}</span>"
         "</div>",
         sizing_mode="stretch_width",
