@@ -102,8 +102,8 @@ from extra_housekeeping import (
 from time_gap_breaks import insert_time_gap_breaks
 from radar_colormaps import radar_plotly_colorscale
 from auroracam_catalog import (
-    AURORACAM_CAMERAS,
-    available_days as auroracam_available_days,
+    ACTIVE_AURORACAM_CAMERAS as AURORACAM_CAMERAS,
+    active_available_days as auroracam_available_days,
     day_records as auroracam_day_records,
     latest_record as auroracam_latest_record,
 )

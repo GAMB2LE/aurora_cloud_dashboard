@@ -14,6 +14,35 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_retired_camera_is_hidden_for_latest_and_historical_dates_without_removing_media(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for camera, day, time in (
+                ("mid-south-array-cam", "2026-10-01", "08-00"),
+                ("mid-south-array-cam", "2026-10-02", "09-55"),
+                ("radar-cam", "2026-10-02", "09-56"),
+            ):
+                path = root / camera / day / f"{camera}_{day}_{time}.jpg"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"archived-camera-image")
+            retired = root / "mid-south-array-cam/2026-10-02/mid-south-array-cam_2026-10-02_09-55.jpg"
+
+            with patch.dict(os.environ, {"AURORACAM_RAW_ROOT": str(root)}):
+                latest = mobile_catalog.auroracam()
+                historical = mobile_catalog.auroracam("2026-10-02")
+                retired_time = mobile_catalog.auroracam("2026-10-02", "2026-10-02 09:55")
+                resolved = mobile_catalog.resolve_auroracam_image_path("mid-south-array-cam", "2026-10-02", retired.name)
+                with self.assertRaises(KeyError):
+                    mobile_catalog.auroracam("2026-10-01")
+
+            for response in (latest, historical):
+                self.assertEqual([frame["cameraID"] for frame in response["frames"]], ["radar-cam"])
+                self.assertEqual(response["availableDays"], ["2026-10-02"])
+            self.assertEqual(historical["availableTimesUTC"], ["2026-10-02 09:56"])
+            self.assertEqual(retired_time["frames"], [])
+            self.assertEqual(resolved, retired)
+            self.assertEqual(retired.read_bytes(), b"archived-camera-image")
+
     def test_deployment_descriptor_only_changes_data_role_for_continuity_mode(self) -> None:
         environment = {
             "AURORA_SITE_ENV": "development",

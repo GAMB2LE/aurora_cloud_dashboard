@@ -30,6 +30,16 @@ AURORACAM_CAMERAS: dict[str, dict[str, str]] = {
     },
 }
 
+# Keep the complete registry above for archive parsing, indexing and direct
+# historical media access. Retiring a camera only removes it from presentation.
+# Mid South Array was confirmed broken and taken offline in October 2026.
+RETIRED_AURORACAM_CAMERAS = frozenset({"mid-south-array-cam"})
+ACTIVE_AURORACAM_CAMERAS = {
+    camera_id: spec
+    for camera_id, spec in AURORACAM_CAMERAS.items()
+    if camera_id not in RETIRED_AURORACAM_CAMERAS
+}
+
 _FILENAME_REGEX = re.compile(
     r"^(?P<camera>[a-z0-9-]+)_(?P<day>\d{4}-\d{2}-\d{2})_(?P<hour>\d{2})-(?P<minute>\d{2})\.jpe?g$",
     re.IGNORECASE,
@@ -200,6 +210,15 @@ def iter_image_records(root: Path, camera_id: str | None = None) -> Iterable[Aur
 def available_days(root: Path, camera_id: str | None = None) -> list[str]:
     root = Path(root)
     return list(_available_days_cached(_root_key(root), camera_id, _available_days_fingerprint(root, camera_id)))
+
+
+def active_available_days(root: Path) -> list[str]:
+    """Days offered by dashboards/apps, excluding archive-only cameras."""
+    return sorted({
+        day
+        for camera_id in ACTIVE_AURORACAM_CAMERAS
+        for day in available_days(root, camera_id)
+    })
 
 
 def day_records(root: Path, camera_id: str, day_utc: str) -> list[AuroracamRecord]:

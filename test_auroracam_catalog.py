@@ -47,6 +47,26 @@ class AuroracamCatalogTests(unittest.TestCase):
 
         self.assertEqual(rows[10].filename, target_path.name)
 
+    def test_retired_camera_is_hidden_but_remains_in_archive_index(self) -> None:
+        from index_auroracam_zarr import _records_to_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            retired = self._write_image(root, "mid-south-array-cam", "2026-10-02", "09-55")
+            self._write_image(root, "radar-cam", "2026-10-22", "00-01")
+            before = retired.read_bytes()
+
+            self.assertNotIn("mid-south-array-cam", auroracam_catalog.ACTIVE_AURORACAM_CAMERAS)
+            self.assertEqual(auroracam_catalog.active_available_days(root), ["2026-10-22"])
+            self.assertEqual(auroracam_catalog.available_days(root), ["2026-10-02", "2026-10-22"])
+            records = list(auroracam_catalog.iter_image_records(root))
+            archive = _records_to_dataset(records, root)
+
+            self.assertIn(b"mid-south-array-cam", archive.camera_id.values)
+            self.assertIn(b"mid-south-array-cam", archive.camera.values)
+            self.assertEqual(auroracam_catalog.latest_record(root, "mid-south-array-cam").filename, retired.name)
+            self.assertEqual(retired.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

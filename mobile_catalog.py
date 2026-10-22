@@ -13,7 +13,13 @@ import sqlite3
 from time import monotonic
 from typing import Any
 
-from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
+from auroracam_catalog import (
+    ACTIVE_AURORACAM_CAMERAS,
+    AURORACAM_CAMERAS,
+    active_available_days as auroracam_available_days,
+    day_records as auroracam_day_records,
+    latest_records as auroracam_latest_records,
+)
 from display_artifact_manifest import load_manifest
 from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import load_uas_mqtt_log
@@ -2214,7 +2220,7 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
     else:
         selected_day = day
         records = {}
-        for camera_id in AURORACAM_CAMERAS:
+        for camera_id in ACTIVE_AURORACAM_CAMERAS:
             candidates = auroracam_day_records(root, camera_id, day)
             available_times.extend(record.time_utc for record in candidates)
             if time_utc:
@@ -2224,7 +2230,7 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
 
     frames = []
 
-    for camera_id in AURORACAM_CAMERAS:
+    for camera_id in ACTIVE_AURORACAM_CAMERAS:
         record = records.get(camera_id)
         if record is None:
             continue
