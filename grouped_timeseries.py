@@ -144,6 +144,7 @@ POWER_DISPLAY_ENERGY_MAP = {
 POWER_DISPLAY_SUMMARY_FIELDS = (
     "GridWatts",
     "MultiPlusDCWatts",
+    "ChargerTemperature",
     "SolarWatts_East",
     "SolarWatts_South",
     "SolarWatts_West",
@@ -1204,6 +1205,7 @@ HUMAN_LABELS = {
     "BatteryWatts": "Battery Power",
     "GridWatts": "Grid AC Input",
     "MultiPlusDCWatts": "MultiPlus DC Charging",
+    "ChargerTemperature": "Charger Temperature",
     "BatteryAmps": "Battery Current",
     "BatterySOC": "State of Charge",
     "BatteryState": "Battery State",
@@ -1388,6 +1390,7 @@ HUMAN_UNITS = {
     "BatteryWatts": "W",
     "GridWatts": "W",
     "MultiPlusDCWatts": "W",
+    "ChargerTemperature": "C",
     "BattsOnline": "state",
     "DCInverterAmps": "A",
     "DCInverterVolts": "V",
@@ -1845,6 +1848,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("InternalTemperature", "Internal Temperature", COLOR["red"], valid_min=-40.0, valid_max=100.0),
                 TraceSpec("HeatsinkTemperature", "Heatsink Temperature", COLOR["brown"], valid_min=-40.0, valid_max=120.0),
+                TraceSpec("ChargerTemperature", "Charger Temperature", COLOR["magenta"], valid_min=-40.0, valid_max=120.0),
                 TraceSpec("TempSensor1", "Temperature Sensor 1", COLOR["teal"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"], axis="right", valid_min=-40.0, valid_max=100.0),
