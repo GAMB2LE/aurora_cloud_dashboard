@@ -18,6 +18,7 @@ def _power(times=None, *, solar=300.0, load=200.0):
     load = np.broadcast_to(np.asarray(load, dtype=float), len(times))
     return xr.Dataset({
         "BatterySOC": ("time", np.linspace(50, 53, len(times))),
+        "MultiPlusDCWatts": ('time', np.zeros_like(solar - load, dtype=float)),
         "BatteryWatts": ("time", solar - load),
         "ACOutputWatts": ("time", np.full(len(times), 40.0)),
         "DCInverterWatts": ("time", np.full(len(times), 10.0)),
@@ -47,7 +48,7 @@ def test_interval_means_use_integrated_truth_not_endpoint_and_preserve_partial_f
     assert truth.solar_delivered_w.iloc[2] == pytest.approx(400)
     assert truth.load_w.iloc[1] == pytest.approx(200)
     assert truth.load_fallback_w.iloc[1] == 50
-    assert truth.load_measurement.iloc[1] == "total_solar_minus_battery"
+    assert truth.load_measurement.iloc[1] == "total_solar_plus_multiplus_supply_minus_battery"
 
 
 def test_missing_solar_sensor_does_not_become_partial_station_truth():

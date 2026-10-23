@@ -160,7 +160,7 @@ def fit_battery_model(
     delta_soc = sample["BatterySOC"] - previous_soc
     elapsed_h = sample.index.to_series().diff() / pd.Timedelta(hours=1)
     battery_w = (sample["BatteryWatts"] + sample["BatteryWatts"].shift(1)) / 2.0
-    stable_load = load.diff().abs().fillna(0.0) <= 100.0
+    stable_load = load.notna() & load.shift(1).notna() & (load.diff().abs() <= 100.0)
     usable = (
         previous_soc.between(5.0, 95.0)
         & sample["BatterySOC"].between(5.0, 95.0)

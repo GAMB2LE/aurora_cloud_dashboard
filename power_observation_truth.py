@@ -15,8 +15,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from power_grid import station_load
 
-TRUTH_CONTRACT_VERSION = "interval_electrical_truth_v1"
+
+TRUTH_CONTRACT_VERSION = "interval_electrical_truth_v2"
 SOLAR_FIELDS = tuple(f"SolarWatts_{direction}" for direction in ("East", "South", "West"))
 MPP_FIELDS = tuple(f"SolarMPPMode_{direction}" for direction in ("East", "South", "West"))
 KIT_OUTLETS = {"CL61": 5, "Radar": 6, "HATPRO": 8, "UAS": 4}
@@ -25,7 +27,7 @@ STATE_FIELDS = (
     "DirectStateConfirmed", "OperatingStateConfirmed",
     *(f"PDUOutlet{outlet}{metric}" for outlet in KIT_OUTLETS.values() for metric in ("State", "Watts")),
 )
-POWER_OBSERVATION_FIELDS = ("BatterySOC", "BatteryWatts", *SOLAR_FIELDS, *MPP_FIELDS,
+POWER_OBSERVATION_FIELDS = ("GridWatts", "MultiPlusDCWatts", "BatterySOC", "BatteryWatts", *SOLAR_FIELDS, *MPP_FIELDS,
                             "ACOutputWatts", "DCInverterWatts", *STATE_FIELDS)
 
 
@@ -138,10 +140,8 @@ def electrical_observation_series(power: xr.Dataset) -> pd.DataFrame:
     source = _frame(power)
     result = pd.DataFrame(index=source.index)
     solar = source.reindex(columns=SOLAR_FIELDS).apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=3)
-    battery = pd.to_numeric(source.get("BatteryWatts", pd.Series(np.nan, index=source.index)), errors="coerce")
-    balance = solar - battery
     # Negative station consumption is bad telemetry, not a zero-watt truth.
-    result["load_w"] = balance.where(balance >= 0.0)
+    result["load_w"] = station_load(source)
     result["solar_delivered_w"] = solar.where(solar >= 0.0)
     result["load_fallback_w"] = source.reindex(columns=("ACOutputWatts", "DCInverterWatts")).apply(
         pd.to_numeric, errors="coerce").sum(axis=1, min_count=2).clip(lower=0.0)
@@ -284,7 +284,7 @@ def evaluate_power_observations(
         stats = _interval_stats(electrical[f"{name}_w"], starts, ends, policy)
         for field in ("mean_w", "energy_wh", "coverage", "max_gap_seconds", "status"):
             result[f"{name}_{'w' if field == 'mean_w' else field}"] = stats[field].values
-    result["load_measurement"] = np.where(np.isfinite(result.load_w), "total_solar_minus_battery",
+    result["load_measurement"] = np.where(np.isfinite(result.load_w), "total_solar_plus_multiplus_supply_minus_battery",
         np.where(np.isfinite(result.load_fallback_w), "fallback_ac_inverter_not_total", "unavailable"))
     result["solar_available_status"] = np.where(
         np.isfinite(result.solar_delivered_w) & ~np.isfinite(result.solar_available_w),

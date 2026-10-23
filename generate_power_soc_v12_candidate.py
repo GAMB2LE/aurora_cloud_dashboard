@@ -126,6 +126,8 @@ LANE_LOAD_RESIDUAL = "C_load_residual"
 LANE_HYBRID = "D_physical_solar_load_residual"
 LANES = (LANE_PHYSICAL_SOLAR, LANE_LOAD_RESIDUAL, LANE_HYBRID)
 POWER_HISTORY_FIELDS = (
+    "GridWatts",
+    "MultiPlusDCWatts",
     "BatterySOC",
     "SolarWatts_East",
     "SolarWatts_South",
