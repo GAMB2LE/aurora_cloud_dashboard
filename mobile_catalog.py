@@ -812,12 +812,30 @@ def dashboard_revision() -> str | None:
     return head[:12] if head else None
 
 
+def direct_field_continuity_enabled() -> bool:
+    return os.environ.get("AURORA_DATA_MODE", "").strip().lower() == "direct-field-continuity"
+
+
+def continuity_status() -> dict[str, Any] | None:
+    """Describe the configured data lane without inferring mirror availability."""
+    if not direct_field_continuity_enabled():
+        return None
+    status_path = os.environ.get("AURORA_CONTINUITY_STATUS_PATH", "").strip()
+    return {
+        "mode": "direct-field-continuity",
+        "summary": "Direct field continuity data.",
+        "status": read_json_file(Path(status_path)) if status_path else {},
+    }
+
+
 def deployment_descriptor() -> dict[str, Any]:
     domain = os.environ.get("AURORA_DOMAIN", "").strip() or "data-ocean.gamb2le.co.uk"
     environment = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
     if not environment:
         environment = "development" if "data-ocean" in domain else "production"
     data_role = "live-mirror" if environment == "development" else "authoritative"
+    if direct_field_continuity_enabled():
+        data_role = "direct-field-continuity"
     return {
         "environment": environment,
         "domain": domain,
@@ -1056,7 +1074,7 @@ def operations() -> dict[str, Any]:
     if archive_level in check_counts:
         check_counts[archive_level] = check_counts.get(archive_level, 0) + 1
 
-    return {
+    response = {
         "serverTime": utc_now_iso(),
         "updatedAt": updated_at,
         "overallLevel": overall,
@@ -1088,6 +1106,11 @@ def operations() -> dict[str, Any]:
             "archiveHealth": {**file_record(archive_health_path()), "path": str(archive_health_path())},
         },
     }
+    continuity = continuity_status()
+    if continuity is not None:
+        response["continuity"] = continuity
+        response["summary"] = f"{continuity['summary']} {response['summary']}"
+    return response
 
 
 def _stream_state(snapshot: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
@@ -1504,6 +1527,14 @@ def overview() -> dict[str, Any]:
     # seconds to every Overview/API request. Keep the direct read only as a
     # compatibility fallback for older snapshots.
     latest_power_time = _snapshot_power_time(snapshot) or _latest_power_time()
+    battery_soc_time = _metric_sample_time(snapshot, "aps_battery_soc_age_min")
+    battery_voltage_time = _metric_sample_time(snapshot, "aps_battery_voltage_age_min")
+    battery_power_time = _metric_sample_time(snapshot, "aps_battery_power_age_min")
+    depletion_time = (
+        min((battery_soc_time, battery_power_time), key=_parse_utc)
+        if battery_soc_time is not None and battery_power_time is not None else None
+    )
+    depletion_level = _age_level(depletion_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)
     power_level = _age_level(
         latest_power_time,
         POWER_FRESH_MINUTES,
@@ -1511,8 +1542,8 @@ def overview() -> dict[str, Any]:
     )
     depletion_value, depletion_detail = _battery_depletion_text(
         snapshot,
-        power_level=power_level,
-        power_time=latest_power_time,
+        power_level=depletion_level,
+        power_time=depletion_time,
     )
     environmental_cards = _environmental_signal_cards()
     science_source_times = {
@@ -1531,9 +1562,9 @@ def overview() -> dict[str, Any]:
     }
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
-        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _freshness_guarded_level(_trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
-        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
-        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), power_level), latest_power_time, depletion_detail),
+        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _freshness_guarded_level(_trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), _age_level(battery_soc_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)), battery_soc_time, _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
+        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), _age_level(battery_voltage_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)), battery_voltage_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
+        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), depletion_level), depletion_time, depletion_detail),
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), power_level, latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
         *environmental_cards,
@@ -1859,9 +1890,44 @@ def _operations_value(level: str) -> str:
     return {"green": "Healthy", "amber": "Attention", "red": "Action"}.get(level, "Waiting")
 
 
+def _metric_sample_time(snapshot: dict[str, Any], age_key: str) -> str | None:
+    """Resolve one measurement's time, including older age-only snapshots."""
+    now = datetime.now(UTC)
+    time_key = age_key.removesuffix("_age_min") + "_time_utc"
+    if time_key in snapshot:
+        value = str(snapshot[time_key])
+        moment = _parse_utc(value)
+        # Invalid or future measurements cannot establish current freshness.
+        return value if moment is not None and moment <= now else None
+
+    if age_key not in snapshot:
+        # The original snapshot contract supplied one shared power sample time.
+        # Use it only when no metric-specific timing evidence was supplied.
+        value = _snapshot_power_time(snapshot)
+        moment = _parse_utc(value)
+        return value if moment is not None and moment <= now else None
+
+    age = _metric_value(snapshot, (age_key,))
+    snapshot_time = _parse_utc(
+        str(snapshot.get("time_utc") or snapshot.get("snapshot_time_utc") or "")
+    )
+    if (
+        age is None or not math.isfinite(age) or age < 0
+        or snapshot_time is None or snapshot_time > now
+    ):
+        return None
+    try:
+        return (snapshot_time - timedelta(minutes=age)).isoformat()
+    except OverflowError:
+        return None
+
+
 def _metric_age_detail(snapshot: dict[str, Any], key: str) -> str:
-    age = _metric_value(snapshot, (key,))
-    return "Age unknown" if age is None else f"{_duration_text(age / 60)} old"
+    moment = _parse_utc(_metric_sample_time(snapshot, key))
+    if moment is None:
+        return "Age unknown"
+    age_hours = max((datetime.now(UTC) - moment).total_seconds(), 0) / 3600
+    return f"{_duration_text(age_hours)} old"
 
 
 def _power_time_text(value: Any) -> str:
@@ -1919,7 +1985,7 @@ def _battery_depletion_text(
     if normalize_level(power_level) in {"red", "unknown"}:
         return (
             "Unavailable",
-            _stale_power_detail(power_time),
+            _stale_power_detail(power_time, label="Required battery telemetry"),
         )
     soc = _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))
     power_w = _metric_value(snapshot, ("aps_battery_power_w", "BatteryWatts"))
@@ -1940,7 +2006,7 @@ def _battery_depletion_text(
         return _duration_text(hours), f"{energy_text}; discharging at {abs(power_w):.0f} W"
     if power_w > deadband_w:
         return "Charging", f"{energy_text}; charging at {power_w:.0f} W"
-    return "Flat", f"{energy_text}; battery power {power_w:.0f} W"
+    return "Steady", f"{energy_text}; battery power {power_w:.0f} W within +/-{deadband_w:.0f} W"
 
 
 def _battery_depletion_level(snapshot: dict[str, Any]) -> str:
@@ -2021,18 +2087,22 @@ def _worst_level(*levels: Any) -> str:
 
 
 def _freshness_guarded_level(value_level: Any, freshness_level: Any) -> str:
-    if normalize_level(value_level) == "unknown":
+    if "unknown" in {normalize_level(value_level), normalize_level(freshness_level)}:
         return "unknown"
     return _worst_level(value_level, freshness_level)
 
 
-def _stale_power_detail(value: str | None) -> str:
+def _stale_power_detail(value: str | None, *, label: str = "APS power telemetry") -> str:
     moment = _parse_utc(value)
     if moment is None:
-        return "Latest APS power measurement is unavailable; depletion cannot be estimated"
+        unavailable = (
+            "Latest APS power measurement is unavailable"
+            if label == "APS power telemetry" else f"{label} is unavailable"
+        )
+        return f"{unavailable}; depletion cannot be estimated"
     age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
     return (
-        f"APS power telemetry is {_duration_text(age_minutes / 60)} old; "
+        f"{label} is {_duration_text(age_minutes / 60)} old; "
         "depletion cannot be estimated from stale data"
     )
 

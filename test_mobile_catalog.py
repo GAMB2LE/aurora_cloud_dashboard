@@ -762,6 +762,24 @@ class MobileCatalogTests(unittest.TestCase):
             },
         )
 
+    def test_direct_continuity_describes_data_lane_without_claiming_mirror_outage(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AURORA_DATA_MODE": "direct-field-continuity",
+                "AURORA_CONTINUITY_STATUS_PATH": "",
+            },
+        ):
+            status = mobile_catalog.continuity_status()
+            deployment = mobile_catalog.deployment_descriptor()
+
+        self.assertEqual(status["summary"], "Direct field continuity data.")
+        self.assertNotIn("unavailable", status["summary"])
+        self.assertNotIn("Recent", status["summary"])
+        self.assertEqual(deployment["dataRole"], "direct-field-continuity")
+        with patch.dict(os.environ, {"AURORA_DATA_MODE": ""}):
+            self.assertIsNone(mobile_catalog.continuity_status())
+
     def test_auroracam_lists_day_times_for_native_time_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1964,7 +1982,7 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(cards["battery-soc"]["level"], "red")
         self.assertEqual(
             cards["battery-soc"]["updatedAt"],
-            "2026-08-17T18:29:31Z",
+            "2026-08-17T18:23:55+00:00",
         )
         self.assertEqual(cards["battery-voltage"]["level"], "red")
         self.assertEqual(cards["battery-depletion"]["level"], "red")
@@ -1981,6 +1999,132 @@ class MobileCatalogTests(unittest.TestCase):
             "APS power telemetry is stale",
         )
         self.assertIn("18:29 UTC", response["activeAlerts"][0]["detail"])
+
+    def test_overview_ages_and_levels_use_each_battery_measurement_time(self) -> None:
+        snapshot = {
+            "time_utc": "2026-10-22T12:13:00Z",
+            "power_latest_time_utc": "2026-10-22T13:46:00Z",
+            "aps_battery_soc_pct": 100.0,
+            "aps_battery_soc_age_min": 3.0,
+            "aps_battery_soc_time_utc": "2026-10-22T12:10:00Z",
+            "aps_battery_voltage_v": 53.3,
+            "aps_battery_voltage_age_min": 3.0,
+            "aps_battery_voltage_time_utc": "2026-10-22T11:09:00Z",
+        }
+        with patch.object(mobile_catalog, "read_json_file", return_value=snapshot), patch.object(
+            mobile_catalog, "operations",
+            return_value={"overallLevel": "green", "summary": "Healthy", "alerts": []},
+        ), patch.object(mobile_catalog, "auroracam", return_value={"frames": []}), patch.object(
+            mobile_catalog, "_environmental_signal_cards", return_value=[],
+        ), patch.object(mobile_catalog, "_instrument_power_states", return_value=[]), patch.object(
+            mobile_catalog, "datetime", wraps=datetime,
+        ) as mocked_datetime:
+            mocked_datetime.now.return_value = datetime(2026, 10, 22, 13, 47, tzinfo=timezone.utc)
+            cards = {card["id"]: card for card in mobile_catalog.overview()["cards"]}
+
+        self.assertEqual(cards["battery-soc"]["updatedAt"], snapshot["aps_battery_soc_time_utc"])
+        self.assertEqual(cards["battery-soc"]["detail"], "1h 37m old")
+        self.assertEqual(cards["battery-soc"]["level"], "amber")
+        self.assertEqual(cards["battery-voltage"]["updatedAt"], snapshot["aps_battery_voltage_time_utc"])
+        self.assertEqual(cards["battery-voltage"]["detail"], "2h 38m old")
+        self.assertEqual(cards["battery-voltage"]["level"], "red")
+        self.assertEqual(cards["power"]["level"], "green")
+
+    def test_depletion_requires_fresh_soc_and_battery_power(self) -> None:
+        now = datetime(2026, 10, 22, 13, 47, tzinfo=timezone.utc)
+        fresh = "2026-10-22T13:46:00Z"
+        stale = "2026-10-22T11:09:00Z"
+        for soc_time, power_time, expected_value, expected_level, expected_time in (
+            (stale, fresh, "Unavailable", "red", stale),
+            (fresh, stale, "Unavailable", "red", stale),
+            (fresh, fresh, "Steady", "green", fresh),
+            (None, fresh, "Unavailable", "unknown", None),
+        ):
+            with self.subTest(soc_time=soc_time, power_time=power_time):
+                snapshot = {
+                    "power_latest_time_utc": fresh,
+                    "aps_battery_soc_pct": 100.0,
+                    "aps_battery_soc_time_utc": soc_time,
+                    "aps_battery_power_w": 42.0,
+                    "aps_battery_power_time_utc": power_time,
+                    "aps_battery_depletion_deadband_w": 50.0,
+                }
+                with patch.object(mobile_catalog, "read_json_file", return_value=snapshot), patch.object(
+                    mobile_catalog, "operations",
+                    return_value={"overallLevel": "green", "summary": "Healthy", "alerts": []},
+                ), patch.object(mobile_catalog, "auroracam", return_value={"frames": []}), patch.object(
+                    mobile_catalog, "_environmental_signal_cards", return_value=[],
+                ), patch.object(mobile_catalog, "_instrument_power_states", return_value=[]), patch.object(
+                    mobile_catalog, "datetime", wraps=datetime,
+                ) as mocked_datetime:
+                    mocked_datetime.now.return_value = now
+                    cards = {card["id"]: card for card in mobile_catalog.overview()["cards"]}
+                self.assertEqual(cards["battery-depletion"]["value"], expected_value)
+                self.assertEqual(cards["battery-depletion"]["level"], expected_level)
+                self.assertEqual(cards["battery-depletion"]["updatedAt"], expected_time)
+                self.assertEqual(cards["power"]["level"], "green")
+                if expected_value == "Unavailable":
+                    self.assertTrue(cards["battery-depletion"]["detail"].startswith("Required battery telemetry is "))
+                    self.assertNotIn("APS power telemetry", cards["battery-depletion"]["detail"])
+
+    def test_metric_age_advances_legacy_snapshot_age_and_rejects_invalid_evidence(self) -> None:
+        key = "aps_battery_soc_age_min"
+        with patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
+            mocked_datetime.now.return_value = datetime(2026, 10, 22, 13, 47, tzinfo=timezone.utc)
+            for snapshot_key in ("time_utc", "snapshot_time_utc"):
+                with self.subTest(snapshot_key=snapshot_key):
+                    self.assertEqual(
+                        mobile_catalog._metric_age_detail(
+                            {snapshot_key: "2026-10-22T12:13:00Z", key: 3.0}, key,
+                        ),
+                        "1h 37m old",
+                    )
+            self.assertEqual(
+                mobile_catalog._metric_age_detail(
+                    {"power_latest_time_utc": "2026-10-22T12:10:00Z"}, key,
+                ),
+                "1h 37m old",
+            )
+            self.assertEqual(
+                mobile_catalog._stale_power_detail("2026-10-22T12:10:00Z"),
+                "APS power telemetry is 1h 37m old; depletion cannot be estimated from stale data",
+            )
+            self.assertEqual(
+                mobile_catalog._stale_power_detail(None),
+                "Latest APS power measurement is unavailable; depletion cannot be estimated",
+            )
+            invalid_snapshots = [
+                {}, {key: 3.0},
+                {"time_utc": "invalid", key: 3.0},
+                {"time_utc": "2026-10-22T14:00:00Z", key: 3.0},
+                *({"time_utc": "2026-10-22T12:13:00Z", key: age} for age in (-1.0, float("nan"), float("inf"), 1e300)),
+                # Explicit invalid measurement times must not fall back to an old age.
+                *({"time_utc": "2026-10-22T12:13:00Z", key: 3.0, "power_latest_time_utc": "2026-10-22T13:46:00Z", "aps_battery_soc_time_utc": value} for value in ("invalid", "2026-10-22T14:00:00Z", "", None)),
+                {"power_latest_time_utc": "2026-10-22T14:00:00Z"},
+            ]
+            for snapshot in invalid_snapshots:
+                with self.subTest(snapshot=snapshot):
+                    self.assertIsNone(mobile_catalog._metric_sample_time(snapshot, key))
+                    self.assertEqual(mobile_catalog._metric_age_detail(snapshot, key), "Age unknown")
+                    self.assertEqual(mobile_catalog._freshness_guarded_level("green", "unknown"), "unknown")
+
+    def test_battery_depletion_steady_means_power_within_deadband(self) -> None:
+        snapshot = {
+            "aps_battery_soc_pct": 100.0,
+            "aps_battery_capacity_kwh": 26.0,
+            "aps_battery_power_w": 42.0,
+            "aps_battery_depletion_deadband_w": 50.0,
+        }
+        value, detail = mobile_catalog._battery_depletion_text(snapshot)
+        self.assertEqual(value, "Steady")
+        self.assertIn("26.0 kWh remaining", detail)
+        self.assertIn("within +/-50 W", detail)
+        for power, expected in ((-51.0, "21d 5h"), (51.0, "Charging")):
+            with self.subTest(power=power):
+                self.assertEqual(
+                    mobile_catalog._battery_depletion_text({**snapshot, "aps_battery_power_w": power})[0],
+                    expected,
+                )
 
     def test_environmental_signal_cards_derive_wind_and_preserve_source_times(self) -> None:
         with patch.object(
