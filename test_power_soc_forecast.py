@@ -74,6 +74,32 @@ from power_soc_thresholds import (
 from power_load_dynamics import PHASE_CODES, PHASE_STARTUP
 
 
+def _no_grid_load_fixture(frame):
+    """Complete synthetic electrical measurements for the no-grid test cases."""
+    frame = frame.copy()
+    for side in ("East", "South", "West"):
+        if f"SolarWatts_{side}" not in frame:
+            frame[f"SolarWatts_{side}"] = 0.0
+    frame["MultiPlusDCWatts"] = 0.0
+    if "BatteryWatts" not in frame:
+        solar = frame[[f"SolarWatts_{side}" for side in ("East", "South", "West")]].sum(axis=1)
+        frame["BatteryWatts"] = solar - frame.get("ACOutputWatts", 0.0) - frame.get("DCInverterWatts", 0.0)
+    return frame
+
+
+def _no_grid_power_fixture(power):
+    return xr.Dataset.from_dataframe(_no_grid_load_fixture(power.to_dataframe()))
+
+
+def _no_grid_history_fixture(frame):
+    # The verification examples provide sparse SOC endpoints; explicitly
+    # supply continuous zero-charger telemetry between those endpoints.
+    dense = pd.date_range(frame.index.min(), frame.index.max(), freq="s")
+    frame = frame.reindex(frame.index.union(dense))
+    frame["MultiPlusDCWatts"] = 0.0
+    return frame
+
+
 class PowerSocForecastTests(unittest.TestCase):
     def test_browser_power_briefing_documents_system_and_operating_scenarios(self) -> None:
         from app import _browser_power_briefing_markup
@@ -388,7 +414,7 @@ class PowerSocForecastTests(unittest.TestCase):
         panel = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "soc_24h_forecast")
 
         self.assertEqual(panel.label, "SOC Next 24 h Forecast")
-        self.assertEqual([trace.var for trace in panel.traces], ["SystemAsIsDecisionSOCP50"])
+        self.assertEqual([trace.var for trace in panel.traces], ["SystemAsIsDecisionSOCP50", "GridContinuesSOCP50"])
         trace = panel.traces[0]
         self.assertEqual(trace.display_horizon_hours, 24.0)
 
@@ -429,7 +455,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_build_forecast_dataset_integrates_soc(self) -> None:
         power_times = pd.date_range("2026-07-09T00:00:00", periods=25, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.full(len(power_times), 50.0)),
@@ -439,7 +465,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 10.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=5, freq="3h")
         solar = xr.Dataset(
             {"ssrd": (("time",), np.arange(len(forecast_times), dtype=float) * 3 * 3600 * 200.0)},
@@ -455,8 +481,8 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertGreaterEqual(float(forecast["BatterySOCForecast"].min()), 0.0)
         self.assertLessEqual(float(forecast["BatterySOCForecast"].max()), 100.0)
         self.assertEqual(forecast.attrs["forecast_horizon_hours"], "12")
-        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v10")
-        self.assertEqual(forecast.attrs["load_model_version"], "10")
+        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_grid_v11")
+        self.assertEqual(forecast.attrs["load_model_version"], "11")
         self.assertIn("battery_charge_efficiency", forecast.attrs)
         self.assertIn("battery_discharge_efficiency", forecast.attrs)
         self.assertEqual(
@@ -516,7 +542,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "load_mode_signature": "dc_cl61",
                 "load_current_phase": "fan_low",
                 "load_state_dynamics": '{"phase_profiles":{"fan_low":{"p50_w":275}}}',
-                "load_model_version": "10",
+                "load_model_version": "11",
             }
         )
         first = forecast_publication_signature(forecast)
@@ -676,7 +702,7 @@ class PowerSocForecastTests(unittest.TestCase):
             "forecast_refresh_kind": "ecmwf_cycle",
             "forecast_verification_eligible": "true",
             "independent_cycle": "true",
-            "load_model_version": "10",
+            "load_model_version": "11",
         }
         old = xr.Dataset(
             {"BatterySOCForecast": (("time",), [60.0, 10.0])},
@@ -714,7 +740,7 @@ class PowerSocForecastTests(unittest.TestCase):
         )
         frame.index.name = "time"
 
-        metrics = evaluate_independent_forecast_archive(archive, frame)
+        metrics = evaluate_independent_forecast_archive(archive, _no_grid_history_fixture(frame))
         hindcast = build_soc_hindcast_dataset(archive, frame.to_xarray(), retention_days=1)
 
         self.assertAlmostEqual(float(metrics["soc_mae"]), 0.0)
@@ -732,7 +758,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_load_scenarios_decline_with_higher_loads(self) -> None:
         power_times = pd.date_range("2026-07-09T00:00:00", periods=25, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.zeros(len(power_times))),
@@ -742,7 +768,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 10.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=6, freq="3h")
         solar = xr.Dataset(
             {"ssrd": (("time",), np.zeros(len(forecast_times), dtype=float))},
@@ -760,7 +786,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_build_forecast_dataset_supports_96h_horizon(self) -> None:
         power_times = pd.date_range("2026-07-09T00:00:00", periods=25, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.full(len(power_times), 50.0)),
@@ -770,7 +796,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 10.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=34, freq="3h")
         solar = xr.Dataset(
             {"ssrd": (("time",), np.arange(len(forecast_times), dtype=float) * 3 * 3600 * 200.0)},
@@ -787,20 +813,20 @@ class PowerSocForecastTests(unittest.TestCase):
         times = pd.date_range("2026-07-01T00:00:00", periods=10 * 24 * 4, freq="15min")
         total_load = np.full(len(times), 9.0)
         total_load[(times >= times[3 * 24 * 4]) & (times < times[7 * 24 * 4])] = 650.0
-        frame = pd.DataFrame(
+        frame = _no_grid_load_fixture(pd.DataFrame(
             {
                 "ACOutputWatts": total_load * 0.75,
                 "DCInverterWatts": total_load * 0.25,
             },
             index=times,
-        )
+        ))
         forecast_times = pd.date_range(times[-1], periods=33, freq="3h")
 
         load = build_historical_load_forecast(frame, forecast_times, end=times[-1], calibration_days=10)
 
         np.testing.assert_allclose(load.to_numpy(), 9.0)
-        self.assertEqual(load.attrs["load_model"], "finite_controlled_state_phases_v10")
-        self.assertEqual(load.attrs["load_model_version"], 10)
+        self.assertEqual(load.attrs["load_model"], "finite_controlled_state_phases_grid_v11")
+        self.assertEqual(load.attrs["load_model_version"], 11)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
         self.assertEqual(load.attrs["load_regime"], "DC-Only")
         self.assertGreater(float(load.attrs["load_regime_threshold_w"]), 9.0)
@@ -810,7 +836,7 @@ class PowerSocForecastTests(unittest.TestCase):
         times = pd.date_range("2026-07-15T00:00:00", periods=24 * 4, freq="15min")
         solar_total = np.zeros(len(times))
         solar_total[24:72] = np.sin(np.linspace(0.0, np.pi, 48)) * 600.0
-        frame = pd.DataFrame(
+        frame = _no_grid_load_fixture(pd.DataFrame(
             {
                 "SolarWatts_East": solar_total * 0.25,
                 "SolarWatts_South": solar_total * 0.45,
@@ -820,19 +846,19 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": np.full(len(times), 9.0),
             },
             index=times,
-        )
+        ))
         forecast_times = pd.date_range(times[-1], periods=9, freq="3h")
 
         load = build_historical_load_forecast(frame, forecast_times, end=times[-1], calibration_days=1)
 
         np.testing.assert_allclose(load.to_numpy(), 220.0)
         self.assertEqual(load.attrs["load_mode"], "DC-Only")
-        self.assertEqual(load.attrs["load_measurement"], "solar_generation_minus_battery_power")
-        self.assertEqual(load.attrs["load_balance_measurement"], "solar_generation_minus_battery_power")
+        self.assertEqual(load.attrs["load_measurement"], "solar_plus_measured_multiplus_supply_minus_battery_power")
+        self.assertEqual(load.attrs["load_balance_measurement"], "solar_plus_measured_multiplus_supply_minus_battery_power")
 
     def test_active_pdu_kit_names_the_learned_mode(self) -> None:
         power_times = pd.date_range("2026-07-15T00:00:00", periods=25, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.full(len(power_times), 100.0)),
@@ -843,7 +869,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 9.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         pdu_times = pd.date_range(power_times[-1] - pd.Timedelta(minutes=30), periods=3, freq="15min")
         pdu = xr.Dataset(
             {
@@ -873,7 +899,7 @@ class PowerSocForecastTests(unittest.TestCase):
         power_times = pd.date_range(end - pd.Timedelta(hours=48), end, freq="15min")
         battery_watts = np.full(len(power_times), -220.0)
         battery_watts[-5:] = -900.0
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(82.0, 80.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.zeros(len(power_times))),
@@ -884,7 +910,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 9.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         pdu_times = pd.date_range(end - pd.Timedelta(minutes=30), end, freq="15min")
         pdu = xr.Dataset(
             {
@@ -981,6 +1007,7 @@ class PowerSocForecastTests(unittest.TestCase):
             },
             index=times,
         )
+        frame["MultiPlusDCWatts"] = 0.0
         frame.loc[frame.index >= end - pd.Timedelta(minutes=30), "BatteryWatts"] = -450.0
         frame.loc[frame.index >= end - pd.Timedelta(minutes=30), "ACOutputWatts"] = 175.0
         raw_registry = {
@@ -999,7 +1026,7 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_retired_hourly_model_bias_does_not_distort_regime_forecast(self) -> None:
         power_times = pd.date_range("2026-07-09T00:00:00", periods=25, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.full(len(power_times), 50.0)),
@@ -1009,7 +1036,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 50.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=5, freq="3h")
         solar = xr.Dataset(
             {"ssrd": (("time",), np.arange(len(forecast_times), dtype=float) * 3 * 3600 * 200.0)},
@@ -1024,12 +1051,12 @@ class PowerSocForecastTests(unittest.TestCase):
 
         self.assertEqual(float(forecast.attrs["load_bias_correction_w"]), 0.0)
         self.assertAlmostEqual(float(forecast["ForecastLoadWatts"].median()), 250.0)
-        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_v10")
+        self.assertEqual(forecast.attrs["load_model"], "finite_controlled_state_phases_grid_v11")
         self.assertIn("ForecastLoadBiasRecent", forecast)
 
     def test_stale_negative_load_bias_cannot_zero_ac_dc_load_forecast(self) -> None:
         power_times = pd.date_range("2026-07-09T00:00:00", periods=48, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.full(len(power_times), 25.0)),
@@ -1039,7 +1066,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(len(power_times), 180.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=5, freq="3h")
         solar = xr.Dataset(
             {"ssrd": (("time",), np.arange(len(forecast_times), dtype=float) * 3 * 3600 * 100.0)},
@@ -1080,7 +1107,7 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={"initial_soc_time": issue_time.isoformat()},
         )
         archive = append_forecast_archive(forecast, self.tmp_archive_path)
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), [49.0, 46.0, 42.0, 41.0, 38.0, 35.0, 30.0, 25.0]),
                 "SolarWatts_East": (("time",), [0.0, 12.0, 18.0, 21.0, 31.0, 34.0, 39.0, 44.0]),
@@ -1088,9 +1115,9 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(8, 5.0)),
             },
             coords={"time": forecast["time"].values},
-        )
+        ))
 
-        metrics = evaluate_forecast_archive(archive, pd.DataFrame({name: power[name].values for name in power.data_vars}, index=pd.DatetimeIndex(power["time"].values)))
+        metrics = evaluate_forecast_archive(archive, _no_grid_history_fixture(pd.DataFrame({name: power[name].values for name in power.data_vars}, index=pd.DatetimeIndex(power["time"].values))))
 
         self.assertIn("soc_mae_0_6h", metrics)
         self.assertIn("soc_mae_6_24h", metrics)
@@ -1109,7 +1136,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "ForecastLoadPhaseCode": (("time",), [1, 2, 3]),
             },
             coords={"time": times},
-            attrs={"initial_soc_time": issue_time.isoformat(), "load_model_version": "10"},
+            attrs={"initial_soc_time": issue_time.isoformat(), "load_model_version": "11"},
         )
 
         archive = append_forecast_archive(forecast, self.tmp_archive_path)
@@ -1136,7 +1163,7 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={"initial_soc_time": issue_time.isoformat()},
         )
         archive = append_forecast_archive(forecast, self.tmp_archive_path)
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), [50.0, 48.5, 47.5, 46.0, 45.0]),
                 "SolarWatts_East": (("time",), [0.0, 11.0, 18.0, 9.0, 0.0]),
@@ -1144,7 +1171,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "DCInverterWatts": (("time",), np.full(5, 10.0)),
             },
             coords={"time": forecast_times},
-        )
+        ))
 
         skill = build_forecast_skill_dataset(archive, power, window_hours=24, retention_days=1, freq="3h")
 
@@ -1177,31 +1204,31 @@ class PowerSocForecastTests(unittest.TestCase):
             attrs={
                 "initial_soc_time": new_issue.isoformat(),
                 "ecmwf_cycle_time": new_issue.isoformat(),
-                "load_model_version": "10",
+                "load_model_version": "11",
             },
         )
         archive = append_forecast_archive(new_forecast, self.tmp_archive_path)
         power_times = pd.date_range(old_issue, new_times[-1], freq="15min")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "ACOutputWatts": (("time",), np.full(len(power_times), 90.0)),
                 "DCInverterWatts": (("time",), np.full(len(power_times), 10.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         frame = pd.DataFrame(
             {name: power[name].values for name in power.data_vars},
             index=pd.DatetimeIndex(power["time"].values),
         )
 
-        metrics = evaluate_forecast_archive(archive, frame)
+        metrics = evaluate_forecast_archive(archive, _no_grid_history_fixture(frame))
         skill = build_forecast_skill_dataset(archive, power, window_hours=24, retention_days=1, freq="1h")
 
         self.assertAlmostEqual(float(metrics["load_mae_w"]), 10.0)
         finite_mae = skill["ForecastLoadMAE24h"].dropna("time")
         self.assertTrue(len(finite_mae))
         self.assertAlmostEqual(float(finite_mae.values[-1]), 10.0)
-        self.assertEqual(skill.attrs["load_model_version"], "10")
+        self.assertEqual(skill.attrs["load_model_version"], "11")
 
     def test_hindcast_selects_fixed_lead_forecasts(self) -> None:
         issue = pd.Timestamp("2026-07-10T00:00:00")
@@ -1246,14 +1273,14 @@ class PowerSocForecastTests(unittest.TestCase):
             )
             archive = append_forecast_archive(forecast, self.tmp_archive_path)
         power_times = pd.date_range(issue, issue + pd.Timedelta(hours=3), freq="15min")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(60.0, 57.0, len(power_times))),
                 "ACOutputWatts": (("time",), np.full(len(power_times), 90.0)),
                 "DCInverterWatts": (("time",), np.full(len(power_times), 10.0)),
             },
             coords={"time": power_times},
-        )
+        ))
 
         skill = build_forecast_skill_dataset(archive, power, window_hours=24, retention_days=1, freq="1h")
 
@@ -1277,8 +1304,8 @@ class PowerSocForecastTests(unittest.TestCase):
             index=pd.DatetimeIndex([cycle, cycle + pd.Timedelta(minutes=15), cycle + pd.Timedelta(hours=3)]),
         )
 
-        raw = evaluate_forecast_archive(archive, frame)
-        independent = evaluate_independent_forecast_archive(archive, frame)
+        raw = evaluate_forecast_archive(archive, _no_grid_history_fixture(frame))
+        independent = evaluate_independent_forecast_archive(archive, _no_grid_history_fixture(frame))
 
         self.assertGreater(float(raw["soc_mae_0_6h"]), 0.0)
         self.assertAlmostEqual(float(independent["soc_mae_0_6h"]), 0.0)
@@ -1317,7 +1344,7 @@ class PowerSocForecastTests(unittest.TestCase):
             index=pd.DatetimeIndex([cycle, cached_time, valid_time]),
         )
 
-        metrics = evaluate_independent_forecast_archive(archive, frame)
+        metrics = evaluate_independent_forecast_archive(archive, _no_grid_history_fixture(frame))
 
         self.assertEqual(
             archive["ForecastRefreshKind"].values.tolist(),
@@ -1332,14 +1359,14 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_build_ensemble_starts_every_member_at_actual_soc(self) -> None:
         power_times = pd.date_range("2026-07-10T00:00:00", periods=49, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(70.0, 66.0, len(power_times))),
                 "ACOutputWatts": (("time",), np.full(len(power_times), 100.0)),
                 "DCInverterWatts": (("time",), np.full(len(power_times), 20.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=6, freq="3h")
         accumulated = np.stack(
             [np.arange(len(forecast_times), dtype=float) * 3 * 3600 * value for value in (100.0, 200.0, 300.0)]
@@ -1404,14 +1431,14 @@ class PowerSocForecastTests(unittest.TestCase):
         skill_path = root / "ensemble_skill.zarr"
         cutoff = pd.Timestamp("2026-07-10T04:00:00")
         power_times = pd.date_range("2026-07-10T00:00:00", periods=6, freq="1h")
-        xr.Dataset(
+        _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), [70.0, 69.0, 68.0, 67.0, 66.0, 12.0]),
                 "ACOutputWatts": (("time",), np.full(6, 100.0)),
                 "DCInverterWatts": (("time",), np.full(6, 20.0)),
             },
             coords={"time": power_times},
-        ).to_zarr(power_path, mode="w", consolidated=True)
+        )).to_zarr(power_path, mode="w", consolidated=True)
         xr.Dataset(
             attrs={
                 "initial_soc_time": cutoff.isoformat(),
@@ -1585,14 +1612,14 @@ class PowerSocForecastTests(unittest.TestCase):
         power_times = pd.date_range("2026-06-20", periods=20 * 24 + 1, freq="1h")
         cutoff = pd.Timestamp(power_times[-1])
         load = 180.0 + 20.0 * np.sin(np.arange(len(power_times)) / 12.0)
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(90.0, 70.0, len(power_times))),
                 "ACOutputWatts": (("time",), load),
                 "DCInverterWatts": (("time",), np.full(len(power_times), 20.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(cutoff, periods=3, freq="3h")
         solar = xr.Dataset(
             {
@@ -1682,14 +1709,14 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_ensemble_load_members_span_one_stationary_state_distribution(self) -> None:
         power_times = pd.date_range("2026-07-10T00:00:00", periods=49, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(70.0, 66.0, len(power_times))),
                 "ACOutputWatts": (("time",), np.full(len(power_times), 100.0)),
                 "DCInverterWatts": (("time",), np.full(len(power_times), 20.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=6, freq="3h")
         accumulated = np.stack(
             [np.arange(len(forecast_times), dtype=float) * 3 * 3600 * value for value in (100.0, 200.0, 300.0, 400.0, 500.0)]
@@ -1726,14 +1753,14 @@ class PowerSocForecastTests(unittest.TestCase):
 
     def test_ensemble_tracks_startup_and_fan_uncertainty_inside_one_state(self) -> None:
         power_times = pd.date_range("2026-07-20T00:00:00", periods=49, freq="1h")
-        power = xr.Dataset(
+        power = _no_grid_power_fixture(xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(95.0, 92.0, len(power_times))),
                 "ACOutputWatts": (("time",), np.full(len(power_times), 250.0)),
                 "DCInverterWatts": (("time",), np.full(len(power_times), 25.0)),
             },
             coords={"time": power_times},
-        )
+        ))
         forecast_times = pd.date_range(power_times[-1], periods=6, freq="3h")
         accumulated = np.stack(
             [np.arange(len(forecast_times), dtype=float) * 3 * 3600 * value for value in (100.0, 200.0, 300.0, 400.0, 500.0)]
@@ -1769,8 +1796,8 @@ class PowerSocForecastTests(unittest.TestCase):
                 "forecast_load_p10_w": "260",
                 "forecast_load_p50_w": "275",
                 "forecast_load_p90_w": "500",
-                "load_model": "finite_controlled_state_phases_v10",
-                "load_model_version": "10",
+                "load_model": "finite_controlled_state_phases_grid_v11",
+                "load_model_version": "11",
                 "load_mode": "DC-Only + CL61",
                 "load_state_contract": "finite_operating_state_phases_v2",
                 "load_state_hold_policy": "hold_confirmed_state_allow_detected_phase_or_explicit_schedule_transition",
@@ -2067,7 +2094,7 @@ class PowerSocForecastTests(unittest.TestCase):
                 "load_mode_learning_observations": "2",
                 "load_mode_pdu_active_watts": "nan",
                 "load_measurement": "battery_discharge_when_solar_zero",
-                "load_balance_measurement": "solar_generation_minus_battery_power",
+                "load_balance_measurement": "solar_plus_measured_multiplus_supply_minus_battery_power",
             },
         )
         skill = xr.Dataset(
@@ -2166,7 +2193,7 @@ class PowerSocForecastTests(unittest.TestCase):
         self.assertEqual(summary.attrs["forecast_load_mode_signature"], "ACOutputWatts<=25W")
         self.assertEqual(summary.attrs["forecast_load_mode_learning_ready"], "true")
         self.assertEqual(summary.attrs["forecast_load_measurement"], "battery_discharge_when_solar_zero")
-        self.assertEqual(summary.attrs["forecast_load_balance_measurement"], "solar_generation_minus_battery_power")
+        self.assertEqual(summary.attrs["forecast_load_balance_measurement"], "solar_plus_measured_multiplus_supply_minus_battery_power")
         self.assertEqual(float(summary.attrs["minimum_operational_soc_pct"]), 40.0)
         self.assertGreater(summary.sizes["time"], power.sizes["time"])
 

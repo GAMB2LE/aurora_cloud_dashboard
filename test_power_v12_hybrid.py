@@ -108,6 +108,7 @@ def _dense_load_truth(times: pd.DatetimeIndex, load: np.ndarray) -> xr.Dataset:
     """Complete station-balance truth; complete PDU vector confirms DC-only."""
     return xr.Dataset({
         "BatteryWatts": (("time",), -np.asarray(load)),
+        "MultiPlusDCWatts": (("time",), np.zeros(len(times))),
         **{f"SolarWatts_{direction}": (("time",), np.zeros(len(times))) for direction in ("East", "South", "West")},
         **{f"PDUOutlet{outlet}State": (("time",), np.zeros(len(times))) for outlet in (4, 5, 6, 8)},
     }, coords={"time": times})
@@ -376,6 +377,8 @@ class HybridCandidateTests(unittest.TestCase):
         power_times = pd.date_range("2026-06-21T00:00:00", periods=25, freq="1h")
         power = xr.Dataset(
             {
+                "BatteryWatts": (("time",), np.full(len(power_times), -30.0)),
+                "MultiPlusDCWatts": (("time",), np.zeros(len(power_times))),
                 "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
                 "SolarWatts_East": (("time",), np.zeros(len(power_times))),
                 "SolarWatts_South": (("time",), np.zeros(len(power_times))),

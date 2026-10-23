@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from power_grid import station_load, no_grid_intervals
+
 from ecmwf_forecast_provider import (
     DEFAULT_PROVIDER,
     DEFAULT_SHADOW_REPORT_PATH,
@@ -118,8 +120,8 @@ DEFAULT_PHYSICAL_SOLAR_CONFIG_PATH = Path(
         str(Path(__file__).with_name("config") / "power_solar_physical_candidate_v1.json"),
     )
 )
-LOAD_MODEL_NAME = "finite_controlled_state_phases_v10"
-LOAD_MODEL_VERSION = 10
+LOAD_MODEL_NAME = "finite_controlled_state_phases_grid_v11"
+LOAD_MODEL_VERSION = 11
 PDU_OUTLET_KIT_NAMES = {
     4: "UAS",
     5: "CL61",
@@ -1184,6 +1186,8 @@ def _power_frame(power: xr.Dataset) -> pd.DataFrame:
             "SolarWatts_South",
             "SolarWatts_West",
             *SOLAR_MPP_MODE_FIELDS,
+            "GridWatts",
+            "MultiPlusDCWatts",
             "BatteryWatts",
             "ACOutputWatts",
             "DCInverterWatts",
@@ -1239,7 +1243,7 @@ def estimate_load_w(frame: pd.DataFrame, *, end: pd.Timestamp, calibration_days:
     load = _observed_load_w(window)
     finite = load[np.isfinite(load)]
     if finite.empty:
-        return float(DEFAULT_LOAD_W)
+        raise ValueError("No qualified station load: measured MultiPlus DC telemetry is required")
     return float(finite.median())
 
 
@@ -1260,7 +1264,7 @@ def build_historical_load_forecast(
     load = load.loc[(load.index >= start) & (load.index <= end)]
     finite = load[np.isfinite(load)]
     if finite.empty:
-        return pd.Series(np.full(len(forecast_times), float(default_load_w)), index=forecast_times)
+        raise ValueError("No qualified station load: retaining the previous forecast")
 
     samples = finite.resample("15min").median().dropna()
     if samples.empty:
@@ -1710,18 +1714,7 @@ def _solar_verification_status(*, excluded: int, accepted_available_power: int) 
 
 
 def _observed_load_w(frame: pd.DataFrame) -> pd.Series:
-    solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
-    if "BatteryWatts" in frame and len(solar_fields) == 3:
-        solar = frame[solar_fields].sum(axis=1, min_count=len(solar_fields))
-        # APS BatteryWatts is positive while charging and negative while
-        # discharging, so generation minus battery flow is total station load.
-        balanced = (solar - frame["BatteryWatts"]).clip(lower=0.0)
-        if np.isfinite(balanced.to_numpy(dtype=np.float64)).any():
-            return balanced
-    load_fields = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in frame]
-    if not load_fields:
-        return pd.Series(dtype=np.float64)
-    return frame[load_fields].sum(axis=1, min_count=1).clip(lower=0.0)
+    return station_load(frame)
 
 
 def _clean_dc_only_observation(
@@ -1808,10 +1801,7 @@ def _repair_dc_only_registry(
 
 
 def _load_measurement_name(frame: pd.DataFrame) -> str:
-    solar_fields = {"SolarWatts_East", "SolarWatts_South", "SolarWatts_West"}
-    if "BatteryWatts" in frame and solar_fields.issubset(frame.columns):
-        return "solar_generation_minus_battery_power"
-    return "ac_plus_dc_output_fallback"
+    return "solar_plus_measured_multiplus_supply_minus_battery_power"
 
 
 def evaluate_previous_forecast(previous: xr.Dataset | None, frame: pd.DataFrame) -> dict[str, float | int | str]:
@@ -1830,6 +1820,8 @@ def evaluate_previous_forecast(previous: xr.Dataset | None, frame: pd.DataFrame)
         forecast_soc = forecast_soc.loc[valid_forecast]
         observed_soc = frame["BatterySOC"].reindex(forecast_soc.index, method="nearest", tolerance=pd.Timedelta(minutes=10))
         valid = np.isfinite(forecast_soc.to_numpy()) & np.isfinite(observed_soc.to_numpy())
+        valid &= no_grid_intervals(frame, [forecast_times[0]] * len(forecast_soc), forecast_soc.index)
+        valid &= int(previous.attrs.get("load_model_version", 0)) == LOAD_MODEL_VERSION
         if np.count_nonzero(valid) >= 2:
             errors = forecast_soc.to_numpy()[valid] - observed_soc.to_numpy()[valid]
             metrics["soc_mae_pct_points"] = float(np.mean(np.abs(errors)))
@@ -2195,6 +2187,9 @@ def evaluate_forecast_archive(archive: xr.Dataset | None, frame: pd.DataFrame) -
         )
         soc_table = _filter_active_forecast_contract(soc_table, archive)
         if not soc_table.empty:
+            soc_table = soc_table.loc[no_grid_intervals(frame, soc_table["issue_time"], soc_table["valid_time"])]
+            soc_table = soc_table[soc_table["load_model_version"] == float(LOAD_MODEL_VERSION)]
+        if not soc_table.empty:
             _add_error_metrics(
                 metrics,
                 "soc",
@@ -2312,6 +2307,9 @@ def evaluate_independent_forecast_archive(archive: xr.Dataset | None, frame: pd.
             )
             if solar_status is not None:
                 metrics["solar_verification_status"] = solar_status
+        if name == "soc":
+            table = table.loc[no_grid_intervals(frame, table["issue_time"], table["valid_time"])]
+            table = table[table["load_model_version"] == float(LOAD_MODEL_VERSION)]
         table = _independent_verification_rows(table)
         if table.empty:
             return
@@ -3474,7 +3472,7 @@ def integrate_soc_forecast(
     if isinstance(load_w, pd.Series):
         load_series = load_w.reindex(times, method="nearest", tolerance=pd.Timedelta(hours=2))
         if load_series.isna().all():
-            load_values = np.full(len(times), DEFAULT_LOAD_W, dtype=np.float64)
+            raise ValueError("No qualified forecast load")
         else:
             load_values = load_series.ffill().bfill().to_numpy(dtype=np.float64)
         load = np.clip(load_values, 0.0, None)
@@ -3555,9 +3553,9 @@ def integrate_soc_from_available_solar(
         source_load = source_load[~source_load.index.duplicated(keep="last")].sort_index()
         load_series = source_load.reindex(times, method="bfill")
         if load_series.isna().all():
-            load = np.full(len(times), DEFAULT_LOAD_W, dtype=np.float64)
+            raise ValueError("No qualified forecast load")
         else:
-            load = load_series.ffill().bfill().fillna(DEFAULT_LOAD_W).to_numpy(dtype=np.float64)
+            load = load_series.ffill().bfill().to_numpy(dtype=np.float64)
     else:
         load = np.full(len(times), max(float(load_w), 0.0), dtype=np.float64)
     load = np.clip(load, 0.0, None)
@@ -3847,7 +3845,12 @@ def build_forecast_dataset(
     if frame.empty or "BatterySOC" not in frame:
         raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
     latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    if _observed_load_w(frame.loc[latest_time - pd.Timedelta(minutes=20):latest_time]).dropna().empty:
+        raise ValueError("No qualified recent station load: retaining the previous forecast")
     state = dict(state or {})
+    if int(state.get("load_model_version", 0)) != LOAD_MODEL_VERSION:
+        for name in ("soc_bias_correction_pct_points_by_bucket", "load_mode_registry", "current_load_mode", "battery_model"):
+            state.pop(name, None)
     calibration_state = state.get("solar_calibration_state", {})
     if not isinstance(calibration_state, dict) or calibration_state.get("method") != SOLAR_CALIBRATION_METHOD:
         calibration_state = {}

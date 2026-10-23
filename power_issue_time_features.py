@@ -28,6 +28,8 @@ PUBLIC_SOURCE_ABLATION_SCHEMA_VERSION = "site-extracted-public-source-v2"
 MAX_PUBLIC_SITE_EXTRACT_BYTES = 64 * 1024 * 1024
 
 APS_FIELDS = (
+    "GridWatts",
+    "MultiPlusDCWatts",
     "BatterySOC",
     "BatteryVolts",
     "BatteryWatts",
