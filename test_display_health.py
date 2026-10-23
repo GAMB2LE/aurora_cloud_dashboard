@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import numpy as np
+import xarray as xr
 
 import app
 import infrastructure_status as infrastructure
@@ -106,6 +108,68 @@ def test_future_power_summary_time_is_unavailable():
     snapshot = battery_snapshot(power_latest_time_utc="2026-10-24T00:00:00Z")
     assert mobile_catalog._snapshot_power_time(snapshot) is None
     assert browser_cards(snapshot)["Power Data"][2] == "gray"
+
+
+def test_historical_battery_trend_uses_its_own_last_finite_sample_time():
+    ds = xr.Dataset(
+        {"aps_battery_soc_pct": ("time", [100.0, np.nan]), "aps_battery_soc_age_min": ("time", [2.0, 1.0])},
+        coords={"time": np.array(["2026-10-23T00:42:00", "2026-10-23T06:42:00"], dtype="datetime64[ns]")},
+    )
+    level, detail = app._ops_battery_trend_status(ds, "soc", ds.aps_battery_soc_pct.values, "green")
+    assert level == "red"
+    assert "23 Oct 00:40 UTC" in detail
+    assert "6h 2m old" in detail
+
+
+@pytest.mark.parametrize("timestamp", ["invalid", "2026-10-24T00:00:00Z", "NaT"])
+def test_historical_battery_trend_rejects_invalid_or_future_sample_times(timestamp):
+    ds = xr.Dataset(
+        {"aps_battery_soc_pct": ("time", [100.0]), "aps_battery_soc_age_min": ("time", [2.0]), "aps_battery_soc_time_utc": ("time", [timestamp])},
+        coords={"time": np.array(["2026-10-23T06:42:00"], dtype="datetime64[ns]")},
+    )
+    level, detail = app._ops_battery_trend_status(ds, "soc", ds.aps_battery_soc_pct.values, "green")
+    assert level == "gray"
+    assert detail == "Historical sample time unavailable"
+
+
+def test_historical_battery_trend_requires_measurement_timing_and_keeps_fresh_value_severity():
+    ds = xr.Dataset({"aps_battery_voltage_v": ("time", [55.0])}, coords={"time": np.array(["2026-10-23T06:42:00"], dtype="datetime64[ns]")})
+    assert app._ops_battery_trend_status(ds, "voltage", ds.aps_battery_voltage_v.values, "green")[0] == "gray"
+    ds["aps_battery_voltage_age_min"] = ("time", [2.0])
+    assert app._ops_battery_trend_status(ds, "voltage", ds.aps_battery_voltage_v.values, "green")[0] == "green"
+    assert app._ops_battery_trend_status(ds, "voltage", ds.aps_battery_voltage_v.values, "red")[0] == "red"
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_operations_trend_cards_render_stale_battery_history_with_dates(tmp_path, chunked):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz else NOW.replace(tzinfo=None)
+
+    ds = xr.Dataset(
+        {
+            "aps_battery_soc_pct": ("time", [100.0]), "aps_battery_soc_age_min": ("time", [2.0]),
+            "aps_battery_voltage_v": ("time", [55.33]), "aps_battery_voltage_age_min": ("time", [2.0]),
+        },
+        coords={"time": np.array(["2026-10-23T00:42:00"], dtype="datetime64[ns]")},
+    )
+    if chunked:
+        ds = ds.chunk({"time": 1})
+    with (
+        patch.object(app, "datetime", FrozenDateTime),
+        patch.dict(app._OPS_TREND_CACHE, {}, clear=True),
+        patch.object(app, "_zarr_path", return_value=str(tmp_path)),
+        patch.object(app, "_cfg", return_value={}),
+        patch.object(app.xr, "open_zarr", return_value=ds),
+        patch.object(app, "_ops_trend_card_markup", wraps=app._ops_trend_card_markup) as render,
+    ):
+        markup = app._ops_trend_cards_markup()
+    cards = {call.args[0]: call.args[1:4] for call in render.call_args_list}
+    assert cards["Battery SOC"][0] == cards["Battery voltage"][0] == "red"
+    assert cards["Battery SOC"][1] == "100 %"
+    assert "Historical sample 23 Oct 00:40 UTC; 6h 2m old" in cards["Battery voltage"][2]
+    assert "ops-light--red" in markup
 
 
 def make_worker(root: Path, state="complete", completed_at=None, **status_fields):

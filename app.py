@@ -2325,6 +2325,26 @@ def _ops_trend_card_markup(title: str, level: str, value: str, meta: str, values
     )
 
 
+def _ops_battery_trend_status(ds: xr.Dataset, metric: str, values: np.ndarray | None, value_level: str) -> tuple[str, str]:
+    """Date a historical battery value using timing from its own finite row."""
+    indices = np.flatnonzero(np.isfinite(values)) if values is not None else np.array([], dtype=int)
+    if not indices.size or "time" not in ds:
+        return "gray", "Historical sample time unavailable"
+    index = int(indices[-1])
+    row = ds.isel(time=index)
+    snapshot = {"time_utc": str(row["time"].values)}
+    for key in (f"aps_battery_{metric}_time_utc", f"aps_battery_{metric}_age_min", "power_latest_time_utc"):
+        if key in row:
+            snapshot[key] = str(row[key].values) if key.endswith("_time_utc") else row[key].values.item()
+    freshness = mobile_catalog.battery_display_freshness(snapshot)[metric]
+    timestamp = _ops_timestamp(freshness["time"])
+    detail = (
+        f"Historical sample {timestamp.strftime('%d %b %H:%M UTC')}; {freshness['detail']}"
+        if timestamp else "Historical sample time unavailable"
+    )
+    return _ops_battery_metric_level(snapshot, metric, value_level), detail
+
+
 def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     """Return compact seven-day trend cards from the operations Zarr."""
     paused_prefixes = paused_prefixes or set()
@@ -2396,6 +2416,8 @@ def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     voltage_latest = _ops_value_from_series(voltage_series) if voltage_series is not None else None
     source_lag_latest = _ops_value_from_series(source_lag_series) if source_lag_series is not None else None
     gws_lag_latest = _ops_value_from_series(gws_lag_series) if gws_lag_series is not None else None
+    soc_level, soc_timing = _ops_battery_trend_status(ds, "soc", soc_series, _ops_level_from_battery_soc(soc_latest))
+    voltage_level, voltage_timing = _ops_battery_trend_status(ds, "voltage", voltage_series, _ops_level_from_battery_voltage(voltage_latest))
 
     cards = [
         _ops_trend_card_markup(
@@ -2407,16 +2429,16 @@ def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
         ),
         _ops_trend_card_markup(
             "Battery SOC",
-            _ops_level_from_battery_soc(soc_latest),
+            soc_level,
             "No data" if soc_latest is None else f"{soc_latest:.0f} %",
-            "Aurora Power Supply state of charge",
+            f"Aurora Power Supply state of charge; {soc_timing}",
             soc_series,
         ),
         _ops_trend_card_markup(
             "Battery voltage",
-            _ops_level_from_battery_voltage(voltage_latest),
+            voltage_level,
             "No data" if voltage_latest is None else f"{voltage_latest:.2f} V",
-            "Aurora Power Supply DC inverter voltage",
+            f"Aurora Power Supply DC inverter voltage; {voltage_timing}",
             voltage_series,
         ),
         _ops_trend_card_markup(
