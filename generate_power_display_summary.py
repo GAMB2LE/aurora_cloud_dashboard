@@ -17,6 +17,8 @@ import pandas as pd
 import xarray as xr
 import zarr
 
+from enclosure_sensors import BLE_DISPLAY_FIELDS, BLESENSORS_ZARR_DEFAULT
+
 from grouped_timeseries import (
     PDU_DISPLAY_SUMMARY_FIELDS,
     POWER_CUMULATIVE_CONTEXT_DAYS,
@@ -41,6 +43,7 @@ POWER_DISPLAY_SOURCE_FIELDS = tuple(
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 ASFS_LOGGER_ZARR_PATH = Path(os.environ.get("ASFS_LOGGER_ZARR_PATH", "/data/aurora/products/asfs_logger/asfs_logger.zarr"))
+BLESENSORS_ZARR_PATH = Path(os.environ.get("BLESENSORS_ZARR_PATH", str(BLESENSORS_ZARR_DEFAULT)))
 PDU_ZARR_PATH = Path(os.environ.get("PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
 POWER_SOC_FORECAST_ZARR_PATH = Path(
     os.environ.get("POWER_SOC_FORECAST_ZARR_PATH", "/data/aurora/products/power/power_soc_forecast.zarr")
@@ -261,6 +264,8 @@ def _section_subset(summary: xr.Dataset, section: str) -> xr.Dataset:
             if trace.var in summary
         )
     )
+    if section == "current":
+        names += tuple(name for name in BLE_DISPLAY_FIELDS if name in summary and name not in names)
     if not names:
         return xr.Dataset(coords={"time": summary["time"]})
     out = summary[list(names)].copy(deep=False)
@@ -338,11 +343,16 @@ def _generate_unlocked(
     manifest_path: Path | None = POWER_DISPLAY_MANIFEST_PATH,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
     history_days: float = POWER_DISPLAY_HISTORY_DAYS,
+    blesensors_zarr: Path = BLESENSORS_ZARR_PATH,
 ) -> Path:
     """Build the derived one-minute display-summary store from Power inputs."""
     power = xr.open_zarr(power_zarr, chunks={})
     ass_logger = _open_optional_zarr(ass_logger_zarr, "ASFS logger")
     pdu = _open_optional_zarr(pdu_zarr, "ASS PDU")
+    ble = _open_optional_zarr(blesensors_zarr, "BLE enclosure sensors")
+    if ble is not None and ble.sizes.get("time", 0):
+        ble_end = pd.Timestamp(ble.time.max().values)
+        ble = ble.sel(time=slice(ble_end - pd.Timedelta(days=history_days), ble_end))
     power, ass_logger, pdu, observation_start, observation_end = _recent_observation_views(
         power,
         ass_logger,
@@ -378,6 +388,7 @@ def _generate_unlocked(
         ensemble_skill,
         operating_scenarios,
         freq=freq,
+        ble_ds=ble,
     )
     if display.sizes.get("time", 0) == 0:
         raise ValueError("No display-summary samples could be generated from the Power Zarr")
@@ -439,6 +450,7 @@ def main() -> None:
     parser.add_argument("--power-zarr", type=Path, default=POWER_ZARR_PATH)
     parser.add_argument("--asfs-logger-zarr", type=Path, default=ASFS_LOGGER_ZARR_PATH)
     parser.add_argument("--pdu-zarr", type=Path, default=PDU_ZARR_PATH)
+    parser.add_argument("--blesensors-zarr", type=Path, default=BLESENSORS_ZARR_PATH)
     parser.add_argument("--forecast-zarr", type=Path, default=POWER_SOC_FORECAST_ZARR_PATH)
     parser.add_argument("--forecast-skill-zarr", type=Path, default=POWER_SOC_FORECAST_SKILL_ZARR_PATH)
     parser.add_argument("--hindcast-zarr", type=Path, default=POWER_SOC_HINDCAST_ZARR_PATH)
@@ -471,6 +483,7 @@ def main() -> None:
         output_zarr=args.output_zarr,
         ass_logger_zarr=args.asfs_logger_zarr,
         pdu_zarr=args.pdu_zarr,
+        blesensors_zarr=args.blesensors_zarr,
         forecast_zarr=args.forecast_zarr,
         forecast_skill_zarr=args.forecast_skill_zarr,
         hindcast_zarr=args.hindcast_zarr,

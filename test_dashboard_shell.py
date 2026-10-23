@@ -579,11 +579,28 @@ class DashboardShellTests(TestCase):
 
         app._sync_browser_tab_instrument("power")
         self.assertEqual(app.interactive_tab_host.objects, [])
-        self.assertEqual(app.power_tab_host.objects, [app.interactive_tab])
+        self.assertEqual(app.power_browser_content_host.objects, [app.interactive_tab])
+        self.assertIn(app.enclosure_power_container, app.power_tab_host.objects)
+        self.assertNotIn(app.enclosure_power_container, app.interactive_tab.objects)
 
         app._sync_browser_tab_instrument("interactive")
-        self.assertEqual(app.interactive_tab_host.objects, [app.interactive_tab])
-        self.assertEqual(app.power_tab_host.objects, [])
+        self.assertEqual(app.interactive_tab_host.objects, [app.interactive_tab, app.interactive_footer])
+        self.assertEqual(app.power_browser_content_host.objects, [])
+        self.assertIn(app.enclosure_power_container, app.power_tab_host.objects)
+
+    def test_repeated_power_activation_keeps_rendered_chart_host(self) -> None:
+        app._sync_browser_tab_instrument("interactive")
+        app._prepare_initial_stable_tab_content("power")
+        self.assertEqual(app.power_browser_content_host.objects, [app.interactive_tab])
+        self.assertEqual(app.interactive_tab_host.objects, [])
+        changed = []
+        watcher = app.power_browser_content_host.param.watch(lambda event: changed.append(event), "objects")
+        try:
+            app._sync_browser_tab_instrument("power")
+            app._sync_browser_tab_instrument("power")
+            self.assertEqual(changed, [])
+        finally:
+            app.power_browser_content_host.param.unwatch(watcher)
 
     def test_desktop_tab_labels_scroll_without_abbreviating(self) -> None:
         stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
