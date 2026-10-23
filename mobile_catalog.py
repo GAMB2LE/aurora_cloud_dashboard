@@ -2077,12 +2077,25 @@ def _pdu_instrument_status(
             detail = collection_detail
         else:
             state = (automatic_labels or {}).get(instrument_id, state)
+    level = "green" if powered is True else "unknown" if powered is False else "amber"
+    if instrument_id == "hatpro" and powered is not False:
+        # A failed publisher must not look healthy because its last successful
+        # product is still fresh. Confirmed outlet Off remains the power state.
+        infrastructure = infrastructure_status()
+        worker = next(
+            (item for item in (infrastructure or {}).get("workers", [])
+             if item.get("id") == "hatpro"),
+            None,
+        )
+        if worker is not None and worker.get("state") == "failed":
+            state, level = "Publication failed", "red"
+            detail = worker["detail"]
     return {
         "id": instrument_id,
         "title": title,
         "systemImage": icon,
         "state": state,
-        "level": "green" if powered is True else "unknown" if powered is False else "amber",
+        "level": level,
         "detail": detail,
     }
 
