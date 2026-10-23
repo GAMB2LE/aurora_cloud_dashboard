@@ -81,6 +81,9 @@ def test_display_preserves_empty_minutes_and_power_independence():
     ble = enclosure.display_dataset(ds)
     assert np.isnan(float(ble.APSBLETemperature.sel(time='2026-10-23T07:41')))
     assert 'APSBLEHumidity' in _section_subset(display, 'current')
+    assert 'ASSBLEHumidity' in _section_subset(display, 'current')
+    assert float(display.ASSBLETemperature.sel(time='2026-10-23T07:52')) == 20.
+    assert np.isnan(float(display.APSBLETemperature.sel(time='2026-10-23T07:52')))
     assert 'APSBLEHumidity' not in _section_subset(display, 'forecast')
 
 
@@ -98,18 +101,66 @@ def test_power_panel_survives_missing_legacy_or_bundle_product_and_retains_gaps(
     observations().to_zarr(path, consolidated=True)
     with patch.dict('os.environ', {'BLESENSORS_ZARR_PATH': str(path)}), patch.object(enclosure, 'utc_now', return_value=NOW):
         panel = enclosure.power_panel(max_points=2)
-        assert panel['id'] == 'aps_enclosure'
+        assert panel['id'] == 'enclosure_conditions'
+        assert panel['title'] == 'Enclosure conditions'
+        assert [trace['label'] for trace in panel['traces']] == [
+            'APS temperature', 'ASS temperature', 'APS dew point',
+            'ASS dew point', 'APS relative humidity', 'ASS relative humidity',
+        ]
+        ass_temperature = panel['traces'][1]['points']
+        assert ass_temperature == [{'time': '2026-10-23T07:52:00Z', 'value': 20., 'segment': 0}]
+        assert panel['traces'][3]['points'][0]['value'] == pytest.approx(enclosure.dew_point(20, 50))
+        assert panel['traces'][4]['axis'] == panel['traces'][5]['axis'] == 'right'
+        assert panel['traces'][4]['unit'] == panel['traces'][5]['unit'] == '%'
         points = panel['traces'][0]['points']
         assert len(points) == 2 and points[0]['segment'] != points[1]['segment']
         with patch.object(mobile_catalog, '_power_without_enclosure', return_value={'panels': [], 'warning':'Power unavailable'}):
             payload = mobile_catalog.power(group='current')
-        assert payload['panels'][0]['id'] == 'aps_enclosure'
+        assert payload['panels'][0]['id'] == 'enclosure_conditions'
         assert payload['panels'][0]['traces'][0]['points'][-1]['value'] == 12
 
 
 def test_forecast_api_does_not_add_observed_enclosure_panel():
     with patch.object(mobile_catalog, '_power_without_enclosure', return_value={'panels': []}):
         assert mobile_catalog.power(group='forecast')['panels'] == []
+
+
+@pytest.mark.parametrize('missing', ['APS', 'ASS'])
+@pytest.mark.parametrize('drop_variables', [False, True])
+def test_combined_panel_keeps_missing_sensor_legend_without_fabricating_values(tmp_path, missing, drop_variables):
+    ds = observations()
+    fields = [name for name in ds if name.startswith(missing + 'BLE')]
+    if drop_variables:
+        ds = ds.drop_vars(fields)
+    else:
+        for name in fields:
+            ds[name][:] = np.nan
+    path = tmp_path/'ble.zarr'
+    ds.to_zarr(path, consolidated=True)
+    with patch.dict('os.environ', {'BLESENSORS_ZARR_PATH': str(path)}):
+        panel = enclosure.power_panel(now=NOW)
+    assert len(panel['traces']) == 6
+    for trace in panel['traces']:
+        if trace['id'].startswith(missing):
+            assert trace['points'] == []
+        else:
+            assert trace['points']
+    assert f'{missing}: no readings received.' in panel['explanation']
+
+
+def test_each_enclosure_uses_its_own_paired_values_and_gaps(tmp_path):
+    ds = observations()
+    ds['ASSBLETemperature'][:] = [20., 99., 22.]
+    ds['ASSBLEHumidity'][:] = [50., np.nan, 60.]
+    path = tmp_path/'ble.zarr'
+    ds.to_zarr(path, consolidated=True)
+    with patch.dict('os.environ', {'BLESENSORS_ZARR_PATH': str(path)}):
+        traces = {trace['id']: trace for trace in enclosure.power_panel(now=NOW)['traces']}
+    for prefix, temperatures in [('APS', [10., 12.]), ('ASS', [20., 22.])]:
+        points = traces[prefix + 'BLETemperature']['points']
+        assert [point['value'] for point in points] == temperatures
+        assert points[0]['segment'] != points[1]['segment']
+    assert traces['ASSBLEDewPoint']['points'][-1]['value'] == pytest.approx(enclosure.dew_point(22, 60))
 
 
 def test_cached_power_explanation_uses_absolute_reception_time(tmp_path):
@@ -119,7 +170,8 @@ def test_cached_power_explanation_uses_absolute_reception_time(tmp_path):
         fresh = enclosure.power_panel(now=NOW)['explanation']
         stale = enclosure.power_panel(now=NOW + timedelta(hours=1))['explanation']
     assert fresh == stale
-    assert 'Last reception: 2026-10-23 07:58:00 UTC.' in fresh
+    assert 'APS last reception: 2026-10-23 07:58:00 UTC.' in fresh
+    assert 'ASS last reception: 2026-10-23 07:52:00 UTC.' in fresh
     assert 'Fresh' not in fresh and 'minutes ago' not in fresh
 
 
@@ -149,7 +201,7 @@ def test_enclosure_survives_invalid_activated_immutable_bundle(tmp_path):
     with patch.dict('os.environ', environment), patch.object(enclosure, 'utc_now', return_value=NOW):
         payload = mobile_catalog.power(group='current')
     assert payload['status'] == 'unavailable'
-    assert [panel['id'] for panel in payload['panels']] == ['aps_enclosure']
+    assert [panel['id'] for panel in payload['panels']] == ['enclosure_conditions']
     assert payload['panels'][0]['traces'][0]['points'][-1]['value'] == 12
 
 

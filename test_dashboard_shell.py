@@ -602,6 +602,69 @@ class DashboardShellTests(TestCase):
         finally:
             app.power_browser_content_host.param.unwatch(watcher)
 
+    def test_enclosure_chart_keeps_both_sensor_legends_without_inventing_ass_data(self) -> None:
+        labels = [
+            "APS temperature", "ASS temperature", "APS dew point", "ASS dew point",
+            "APS relative humidity", "ASS relative humidity",
+        ]
+        panel = {
+            "leftAxisLabel": "Temperature / dew point (C)",
+            "rightAxisLabel": "Relative humidity (%)",
+            "explanation": "ASS has no received readings.",
+            "traces": [
+                {
+                    "id": label.replace(" ", ""), "label": label, "color": "#123456",
+                    "axis": "right" if "humidity" in label else "left",
+                    "points": [] if label.startswith("ASS") else [
+                        {"time": "2026-10-23T10:00:00Z", "value": 10, "segment": 0},
+                        {"time": "2026-10-23T10:30:00Z", "value": 11, "segment": 1},
+                    ],
+                }
+                for label in labels
+            ],
+        }
+        original_plot = app._enclosure_power_plot.object
+        original_explanation = app._enclosure_power_explanation.object
+        try:
+            for mobile in (False, True):
+                with (
+                    self.subTest(mobile=mobile),
+                    patch.object(app.enclosure_sensors, "power_panel", return_value=panel),
+                    patch.object(app, "_mobile_view_requested", return_value=mobile),
+                ):
+                    card = app._enclosure_power_card()
+                    self.assertIs(card, app._enclosure_power_card_container)
+                    self.assertIs(card.objects[-1], app._enclosure_power_plot)
+                    self.assertEqual(card.objects[0].object, "### Enclosure conditions")
+                    figure = app._enclosure_power_plot.object
+                    self.assertEqual([trace.name for trace in figure.data], labels)
+                    self.assertGreater(figure.layout.legend.y, 1)
+                    self.assertEqual(figure.layout.legend.yanchor, "bottom")
+                    for trace in figure.data:
+                        self.assertTrue(trace.showlegend)
+                        self.assertFalse(trace.connectgaps)
+                        self.assertEqual(trace.yaxis, "y2" if "humidity" in trace.name else "y")
+                        if trace.name.startswith("ASS"):
+                            self.assertEqual(list(trace.x), [None])
+                            self.assertEqual(list(trace.y), [None])
+                        else:
+                            self.assertEqual(list(trace.y), [10, None, 11])
+                    if mobile:
+                        self.assertEqual(figure.layout.legend.orientation, "v")
+                        self.assertGreaterEqual(figure.layout.margin.t, 6 * 24)
+        finally:
+            app._enclosure_power_plot.object = original_plot
+            app._enclosure_power_explanation.object = original_explanation
+
+    def test_ass_operations_card_uses_documented_enclosure_location(self) -> None:
+        sensor = app.enclosure_sensors._card("ass", "ASS enclosure", {}, None, datetime.now(timezone.utc))
+        with patch.object(app.enclosure_sensors, "load_enclosure_sensors", return_value=[sensor]):
+            markup = app._ops_enclosure_cards_markup()
+        self.assertIn("Inside ASS, below the top shelf, behind the fan", markup)
+        self.assertIn("No data", markup)
+        self.assertIn("Unavailable", markup)
+        self.assertNotIn("Sensor location unspecified", markup)
+
     def test_desktop_tab_labels_scroll_without_abbreviating(self) -> None:
         stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
         css = stylesheet.read_text(encoding="utf-8")

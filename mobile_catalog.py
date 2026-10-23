@@ -2179,7 +2179,7 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     payload = _power_without_enclosure(window=window, group=group)
     if group in {"all", "current", "observed"}:
         enclosure_panel = enclosure_power_panel(window, max_points=MOBILE_POWER_MAX_POINTS)
-        if enclosure_panel["traces"]:
+        if any(trace["points"] for trace in enclosure_panel["traces"]):
             payload["panels"].append(enclosure_panel)
     return payload
 

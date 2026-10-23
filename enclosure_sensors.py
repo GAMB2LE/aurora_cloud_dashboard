@@ -17,10 +17,11 @@ import pandas as pd
 import xarray as xr
 
 BLESENSORS_ZARR_DEFAULT = Path('/data/aurora/products/blesensors/blesensors.zarr')
-SENSORS = (('aps', 'APS enclosure', 'APSBLE'), ('ass', 'ASS sensor', 'ASSBLE'))
+SENSORS = (('aps', 'APS enclosure', 'APSBLE'), ('ass', 'ASS enclosure', 'ASSBLE'))
 METRICS = {'temperatureC': 'Temperature', 'relativeHumidityPct': 'Humidity', 'batteryPct': 'Battery', 'rssiDbm': 'RSSI'}
 SNAPSHOT_METRICS = {'temperatureC': 'temp_c', 'relativeHumidityPct': 'humidity_pct', 'batteryPct': 'battery_pct', 'rssiDbm': 'rssi_dbm', 'dewPointC': 'dewpoint_c', 'dewPointMarginC': 'dewpoint_margin_c'}
-BLE_DISPLAY_FIELDS = ('APSBLETemperature', 'APSBLEHumidity', 'APSBLEDewPoint', 'APSBLEDewPointMargin')
+BLE_DISPLAY_FIELDS = tuple(prefix + metric for _, _, prefix in SENSORS
+                           for metric in ('Temperature', 'Humidity', 'DewPoint', 'DewPointMargin'))
 
 
 def product_path() -> Path:
@@ -160,20 +161,25 @@ def sensors_from_snapshot(snapshot: dict, now=None) -> list[dict]:
 
 
 def display_dataset(ds: xr.Dataset, freq='1min') -> xr.Dataset:
-    """Paired APS values and dew point, averaged only into observed UTC bins."""
-    if 'APSBLETemperature' not in ds or 'APSBLEHumidity' not in ds:
+    """Average each sensor's paired readings independently, preserving gaps."""
+    frames = []
+    for _, _, prefix in SENSORS:
+        temperature, humidity = prefix + 'Temperature', prefix + 'Humidity'
+        if temperature not in ds or humidity not in ds:
+            continue
+        frame = ds[[temperature, humidity]].to_dataframe().sort_index()
+        valid = np.isfinite(frame[temperature]) & frame[temperature].between(-100, 100) & np.isfinite(frame[humidity]) & frame[humidity].between(0, 100)
+        frame = frame.loc[valid].copy()
+        if frame.empty:
+            continue
+        frame[prefix + 'DewPoint'] = np.asarray([dew_point(t, h) for t, h in zip(frame[temperature], frame[humidity])], dtype=float)
+        frame[prefix + 'DewPointMargin'] = frame[temperature] - frame[prefix + 'DewPoint']
+        frames.append(frame.resample(freq).mean())
+    if not frames:
         return xr.Dataset()
-    frame = ds[['APSBLETemperature', 'APSBLEHumidity']].to_dataframe().sort_index()
-    valid = np.isfinite(frame.APSBLETemperature) & frame.APSBLETemperature.between(-100, 100) & np.isfinite(frame.APSBLEHumidity) & frame.APSBLEHumidity.between(0, 100)
-    frame = frame.loc[valid].copy()
-    if frame.empty:
-        return xr.Dataset()
-    frame['APSBLEDewPoint'] = np.asarray([dew_point(t, h) for t, h in zip(frame.APSBLETemperature, frame.APSBLEHumidity)], dtype=float)
-    frame['APSBLEDewPointMargin'] = frame.APSBLETemperature - frame.APSBLEDewPoint
-    frame = frame.resample(freq).mean()
-    output = xr.Dataset.from_dataframe(frame)
+    output = xr.Dataset.from_dataframe(pd.concat(frames, axis=1).sort_index())
     for name in output:
-        output[name].attrs['units'] = '%' if name == 'APSBLEHumidity' else 'C'
+        output[name].attrs['units'] = '%' if name.endswith('Humidity') else 'C'
     return output
 
 
@@ -182,7 +188,8 @@ def load_display_dataset(window='24h', now=None) -> xr.Dataset:
     start = now - pd.Timedelta(hours=96 if window == '96h' else 24)
     try:
         with xr.open_zarr(product_path(), chunks=None, consolidated=True) as ds:
-            return display_dataset(ds[['APSBLETemperature', 'APSBLEHumidity']].sel(time=slice(start, now)).load())
+            fields = [name for name in BLE_DISPLAY_FIELDS if name in ds and name.endswith(('Temperature', 'Humidity'))]
+            return display_dataset(ds[fields].sel(time=slice(start, now)).load())
     except (OSError, ValueError, KeyError) as exc:
         logging.getLogger(__name__).debug('BLE enclosure history unavailable: %s', exc)
         return xr.Dataset()
@@ -190,29 +197,30 @@ def load_display_dataset(window='24h', now=None) -> xr.Dataset:
 
 def power_panel(window='24h', now=None, max_points=160) -> dict:
     """Use the existing generic Power panel contract, independently of power.zarr."""
-    from grouped_timeseries import APS_ENCLOSURE_PANEL
-    panel = APS_ENCLOSURE_PANEL
+    from grouped_timeseries import ENCLOSURE_CONDITIONS_PANEL
+    panel = ENCLOSURE_CONDITIONS_PANEL
     ds = load_display_dataset(window, now=now)
-    sensor = load_enclosure_sensors(now=now)[0]
-    stamp = _utc(sensor['observedAt'])
+    sensors = load_enclosure_sensors(now=now)
     # Generic native Power panels may be cached: relative age or a freshness
     # claim here would freeze at request time. Operations recomputes live age.
-    reception = (f"Last reception: {stamp:%Y-%m-%d %H:%M:%S} UTC."
-                 if stamp is not None else 'Same-sample temperature and humidity are unavailable.')
-    explanation = f"{panel.description} {sensor['source']}. {reception}"
+    receptions = []
+    for sensor in sensors:
+        stamp = _utc(sensor['observedAt'])
+        receptions.append(f"{sensor['id'].upper()} last reception: {stamp:%Y-%m-%d %H:%M:%S} UTC."
+                          if stamp is not None else f"{sensor['id'].upper()}: no readings received.")
+    explanation = f"{panel.description} {sensors[0]['source']}. {' '.join(receptions)}"
     traces = []
     for trace in panel.traces:
-        if trace.var not in ds:
-            continue
-        values = np.asarray(ds[trace.var].values, dtype=float)
+        values = np.asarray(ds[trace.var].values, dtype=float) if trace.var in ds else np.array([], dtype=float)
         valid = np.isfinite(values)
-        times, values = pd.DatetimeIndex(ds.time.values[valid]), values[valid]
+        times = pd.DatetimeIndex(ds.time.values[valid]) if len(values) else pd.DatetimeIndex([])
+        values = values[valid]
         # Segment before thinning: selected plotting points must not hide a gap.
         segments = np.cumsum(np.r_[0, np.diff(times.asi8) > 90_000_000_000])
         keep = np.unique(np.linspace(0, len(times) - 1, min(len(times), max_points), dtype=int)) if len(times) else []
         traces.append({
             'id': trace.var, 'label': trace.label, 'color': trace.color, 'axis': trace.axis,
-            'unit': '%' if trace.var == 'APSBLEHumidity' else 'C', 'step': False,
+            'unit': '%' if trace.var.endswith('Humidity') else 'C', 'step': False,
             'points': [{'time': times[i].isoformat() + 'Z', 'value': float(values[i]), 'segment': int(segments[i])} for i in keep],
         })
     return {'id': panel.key, 'title': panel.label, 'explanation': explanation,

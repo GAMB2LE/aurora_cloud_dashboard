@@ -1478,13 +1478,14 @@ for _outlet in range(1, PDU_OUTLET_COUNT + 1):
     HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}Amps", "A")
     HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}State", "state")
 
-HUMAN_LABELS.update({
-    "APSBLETemperature": "APS enclosure air temperature",
-    "APSBLEHumidity": "APS enclosure relative humidity",
-    "APSBLEDewPoint": "APS enclosure air dew point",
-    "APSBLEDewPointMargin": "APS enclosure air dew-point margin",
-})
-HUMAN_UNITS.update({"APSBLETemperature": "C", "APSBLEHumidity": "%", "APSBLEDewPoint": "C", "APSBLEDewPointMargin": "C"})
+for _enclosure in ("APS", "ASS"):
+    HUMAN_LABELS.update({
+        f"{_enclosure}BLETemperature": f"{_enclosure} enclosure air temperature",
+        f"{_enclosure}BLEHumidity": f"{_enclosure} enclosure relative humidity",
+        f"{_enclosure}BLEDewPoint": f"{_enclosure} enclosure air dew point",
+        f"{_enclosure}BLEDewPointMargin": f"{_enclosure} enclosure air dew-point margin",
+    })
+    HUMAN_UNITS.update({f"{_enclosure}BLETemperature": "C", f"{_enclosure}BLEHumidity": "%", f"{_enclosure}BLEDewPoint": "C", f"{_enclosure}BLEDewPointMargin": "C"})
 
 DISPLAY_SCALE = {}
 
@@ -1497,14 +1498,17 @@ SUMMARY_SOURCE_INSTRUMENTS = {
 }
 
 # This panel is rendered independently so Power outages cannot hide BLE data.
-APS_ENCLOSURE_PANEL = PanelSpec(
-    "aps_enclosure", "APS enclosure environment", "Temperature [C]", "Relative humidity [%]",
+ENCLOSURE_CONDITIONS_PANEL = PanelSpec(
+    "enclosure_conditions", "Enclosure conditions", "Temperature [C]", "Relative humidity [%]",
     (
-        TraceSpec("APSBLETemperature", "Enclosure air temperature", COLOR["red"]),
-        TraceSpec("APSBLEDewPoint", "Enclosure air dew point", COLOR["teal"]),
-        TraceSpec("APSBLEHumidity", "Enclosure relative humidity", COLOR["light_blue"], axis="right"),
+        TraceSpec("APSBLETemperature", "APS temperature", COLOR["red"]),
+        TraceSpec("ASSBLETemperature", "ASS temperature", COLOR["purple"]),
+        TraceSpec("APSBLEDewPoint", "APS dew point", COLOR["teal"]),
+        TraceSpec("ASSBLEDewPoint", "ASS dew point", COLOR["green"]),
+        TraceSpec("APSBLEHumidity", "APS relative humidity", COLOR["light_blue"], axis="right"),
+        TraceSpec("ASSBLEHumidity", "ASS relative humidity", COLOR["blue"], axis="right"),
     ),
-    "SwitchBot inside the APS enclosure, received by ASS. Dew point uses paired BLE readings; it does not measure surface condensation.",
+    "Temperature, humidity and air dew point inside the APS and ASS enclosures.",
 )
 
 
