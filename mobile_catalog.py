@@ -33,6 +33,7 @@ from instrument_registry import (
 from wxcam_catalog import parse_timestamp as parse_wxcam_timestamp
 from collection_freshness import collection_state
 from asfs_storage_health import storage_status
+from infrastructure_status import collect_infrastructure_status
 
 
 UTC = timezone.utc
@@ -856,6 +857,16 @@ def continuity_status() -> dict[str, Any] | None:
     }
 
 
+def infrastructure_status() -> dict[str, Any] | None:
+    """Read current capacity and worker records, independent of Operations."""
+    if not direct_field_continuity_enabled():
+        return None
+    return collect_infrastructure_status(
+        env_path("AURORA_CONTINUITY_STATUS_PATH", "/data/aurora/dev-products/live-continuity/status.json"),
+        env_path("AURORA_SCIENCE_CONTINUITY_ROOT", "/data/aurora/dev-products/science-continuity"),
+    )
+
+
 def deployment_descriptor() -> dict[str, Any]:
     domain = os.environ.get("AURORA_DOMAIN", "").strip() or "data-ocean.gamb2le.co.uk"
     environment = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
@@ -1164,6 +1175,19 @@ def operations() -> dict[str, Any]:
     if continuity is not None:
         response["continuity"] = continuity
         response["summary"] = f"{continuity['summary']} {response['summary']}"
+    infrastructure = infrastructure_status()
+    if infrastructure is not None:
+        response["infrastructure"] = infrastructure
+        response["alerts"] = [*infrastructure["alerts"], *response["alerts"]]
+        response["overallLevel"] = _worst_level(response["overallLevel"], infrastructure["level"])
+        response["rootCauseGroups"].insert(0, {
+            "id": "infrastructure", "title": "Continuity infrastructure",
+            "level": infrastructure["level"], "detail": infrastructure["summary"],
+        })
+        for alert in infrastructure["alerts"]:
+            response["checkCounts"][alert["level"]] = response["checkCounts"].get(alert["level"], 0) + 1
+        if infrastructure["alerts"]:
+            response["summary"] = f"{infrastructure['alerts'][0]['title']}. {response['summary']}"
     return response
 
 
@@ -1668,6 +1692,8 @@ def overview() -> dict[str, Any]:
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
         *environmental_cards,
     ]
+    if status.get("infrastructure") is not None:
+        cards.insert(1, status["infrastructure"]["card"])
     return {
         "serverTime": utc_now_iso(),
         "cards": cards,
@@ -2029,6 +2055,27 @@ def _metric_age_detail(snapshot: dict[str, Any], key: str) -> str:
     return f"{_duration_text(age_hours)} old"
 
 
+def battery_display_freshness(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """One timestamp rule for battery cards in the browser and native API."""
+    result = {}
+    for metric in ("soc", "voltage", "power"):
+        key = f"aps_battery_{metric}_age_min"
+        timestamp = _metric_sample_time(snapshot, key)
+        result[metric] = {
+            "time": timestamp,
+            "level": _age_level(timestamp, POWER_FRESH_MINUTES, POWER_STALE_MINUTES),
+            "detail": _metric_age_detail(snapshot, key),
+        }
+    required = [result[key]["time"] for key in ("soc", "power")]
+    oldest = min(required, key=_parse_utc) if all(required) else None
+    result["depletion"] = {
+        "time": oldest,
+        "level": _age_level(oldest, POWER_FRESH_MINUTES, POWER_STALE_MINUTES),
+        "detail": _stale_power_detail(oldest, label="Required battery telemetry"),
+    }
+    return result
+
+
 def _power_time_text(value: Any) -> str:
     moment = _parse_utc(str(value)) if value else None
     return moment.strftime("%H:%M UTC") if moment else "No data"
@@ -2162,7 +2209,7 @@ def _age_level(value: str | None, green_minutes: float, amber_minutes: float) ->
 
 
 def _snapshot_power_time(snapshot: dict[str, Any]) -> str | None:
-    return next(
+    value = next(
         (
             str(snapshot[key])
             for key in (
@@ -2175,6 +2222,8 @@ def _snapshot_power_time(snapshot: dict[str, Any]) -> str | None:
         ),
         None,
     )
+    moment = _parse_utc(value)
+    return value if moment is not None and moment <= datetime.now(UTC) else None
 
 
 def _worst_level(*levels: Any) -> str:
