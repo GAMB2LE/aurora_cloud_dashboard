@@ -708,6 +708,8 @@ def _prewarmed_interactive_dir() -> Path:
 def _prewarmed_interactive_path(inst: str) -> Path:
     if inst == "power":
         section = power_view_select.value if "power_view_select" in globals() else "current"
+        if section == "forecast" and mobile_catalog.power_forecast_only_publication_active():
+            return mobile_catalog.power_forecast_bundle_manifest_path().parent / ".forecast-prewarm-not-published.json"
         active_forecast = (
             mobile_catalog.power_forecast_active_display_path()
             if section == "forecast"
@@ -908,16 +910,20 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
     return ds
 
 
-def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
+def _get_power_display_section_dataset(section: str, *, selection=None) -> xr.Dataset | None:
     """Open only the display variables required by a Power page section.
 
     The combined store is retained for existing scripts and old deployments, but
     normal browser renders must not open all observed and forecast fields.
     """
-    path = _power_display_section_path(section)
+    if section == "forecast" and selection is None:
+        selection = mobile_catalog.power_forecast_serving_selection()
+    path = (selection["forecastPath"] if selection else _power_display_section_path(section)).resolve()
     if section in {"current", "forecast"}:
-        publication = mobile_catalog.power_forecast_bundle_status(
-            _power_display_section_path("forecast")
+        publication = (
+            selection["publicationStatus"] if selection else mobile_catalog.power_forecast_bundle_status(
+                _power_display_section_path("forecast")
+            )
         )
         if publication.get("enabled") and publication.get("status") == "unavailable":
             return None
@@ -950,15 +956,21 @@ def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
     return ds
 
 
-def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
+def _get_power_operating_scenarios_dataset(*, paths=None) -> xr.Dataset | None:
     """Open the compact learned operating-plan product when available."""
     global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
     global _POWER_OPERATING_SCENARIOS_SOURCE_PATH
     required = {"component", "SolarEnsembleWatts", "ComponentLoadWatts"}
-    paths = _power_operating_scenario_paths()
+    if paths is None:
+        selection = mobile_catalog.power_forecast_serving_selection()
+        if selection and selection["publicationStatus"].get("status") == "unavailable":
+            return None
+        paths = selection["scenarioPaths"] if selection else _power_operating_scenario_paths()
+    paths = tuple(path.resolve() for path in paths)
+    preferred = next((path for path in paths if path.exists()), None)
     if _POWER_OPERATING_SCENARIOS_DS is not None and required.issubset(
         set(_POWER_OPERATING_SCENARIOS_DS.variables)
-    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH in paths:
+    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH == preferred:
         return _POWER_OPERATING_SCENARIOS_DS
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
@@ -1058,12 +1070,22 @@ def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
 def _open_power_display_summary_window(start, end, section: str | None = None) -> xr.Dataset | None:
     """Open a bounded Power display window without scanning every forecast field."""
     section = section or (power_view_select.value if "power_view_select" in globals() else "current")
-    ds = _get_power_display_section_dataset(section)
+    selection = mobile_catalog.power_forecast_serving_selection() if section == "forecast" else None
+    if selection and selection["publicationStatus"].get("status") == "unavailable":
+        return None
+    ds = _get_power_display_section_dataset(section, selection=selection)
     legacy = ds is None
-    if ds is None:
+    if ds is None and selection is None:
         ds = _get_power_display_summary_dataset()
     if ds is None or "time" not in ds:
         return None
+    if section == "forecast" and selection:
+        # Pin both siblings to the same validated generation, even if active
+        # rotates during this render. Never merge a separately selected plan.
+        ds = merge_operating_scenarios_into_display_summary(
+            ds, _get_power_operating_scenarios_dataset(paths=selection["scenarioPaths"]),
+        )
+        mobile_catalog.apply_power_forecast_publication_metadata(ds, selection["publicationStatus"])
     start_dt = _as_naive_utc_datetime(start)
     end_dt = _as_naive_utc_datetime(end)
     if start_dt is None or end_dt is None:

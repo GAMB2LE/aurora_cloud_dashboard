@@ -275,6 +275,9 @@ def power_prewarm_path(section: str) -> Path | None:
     """Return the published Plotly JSON for one Power section, if valid."""
     if section not in {"current", "forecast"}:
         return None
+    if section == "forecast" and power_forecast_only_publication_active():
+        # Legacy Plotly caches are not members of the validated generation.
+        return power_forecast_bundle_manifest_path().parent / ".forecast-prewarm-not-published.json"
     root = env_path("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm")
     return root / f"power_{section}_latest_interactive.json"
 
@@ -391,14 +394,21 @@ def _power_bundle_artifact_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def power_forecast_bundle_status(forecast_display_path: Path) -> dict[str, Any]:
+def power_forecast_bundle_status(
+    forecast_display_path: Path,
+    *,
+    manifest_path: Path | None = None,
+    forecast_only: bool = False,
+) -> dict[str, Any]:
     """Validate the atomic development bundle before exposing forecast cards."""
 
     if not power_forecast_orchestration_enabled():
         return {"enabled": False, "status": "not_enabled"}
-    if not power_forecast_publication_active():
+    if not power_forecast_publication_active() and not (
+        forecast_only and power_forecast_only_publication_active()
+    ):
         return {"enabled": False, "status": "shadow_unpublished"}
-    manifest_path = power_forecast_bundle_manifest_path()
+    manifest_path = manifest_path or power_forecast_bundle_manifest_path()
     external_path = power_forecast_bundle_status_path()
     external = read_json_file(external_path)
     if not manifest_path.exists():
@@ -551,6 +561,74 @@ def power_forecast_bundle_status(forecast_display_path: Path) -> dict[str, Any]:
     _POWER_BUNDLE_VALIDATION_CACHE.clear()
     _POWER_BUNDLE_VALIDATION_CACHE[cache_key] = dict(result)
     return result
+
+
+def power_forecast_only_publication_active() -> bool:
+    """Opt in to immutable forecasts while observed telemetry keeps its source."""
+    return power_forecast_orchestration_enabled() and (
+        os.environ.get("AURORA_POWER_FORECAST_ONLY_PUBLICATION_ACTIVE", "false")
+        .strip().lower() == "true"
+    )
+
+
+def power_forecast_serving_selection() -> dict[str, Any] | None:
+    """Pin and validate one complete generation for a forecast read."""
+    if not power_forecast_only_publication_active():
+        return None
+    configured_manifest = power_forecast_bundle_manifest_path()
+    unavailable = {
+        "forecastPath": configured_manifest.parent / ".forecast-unavailable.zarr",
+        "scenarioPaths": (),
+        "publicationStatus": {
+            "enabled": True, "status": "unavailable", "displaySource": "bundle",
+            "staleReason": "bundle_manifest_missing",
+        },
+    }
+    try:
+        manifest_path = configured_manifest.resolve(strict=True)
+    except OSError:
+        return unavailable
+    manifest = read_json_file(manifest_path)
+    products = manifest.get("products")
+    selected = {}
+    for name in ("forecastDisplay", "operatingScenarios"):
+        record = products.get(name) if isinstance(products, dict) else None
+        relative = str(record.get("relativePath") or "") if isinstance(record, dict) else ""
+        target = (manifest_path.parent / relative).resolve(strict=False)
+        if not relative or manifest_path.parent not in target.parents:
+            unavailable["publicationStatus"]["staleReason"] = f"bundle_product_path_invalid:{name}"
+            return unavailable
+        selected[name] = target
+    status = power_forecast_bundle_status(
+        selected["forecastDisplay"], manifest_path=manifest_path, forecast_only=True,
+    )
+    return {
+        "forecastPath": selected["forecastDisplay"],
+        "scenarioPaths": (selected["operatingScenarios"],),
+        "publicationStatus": status,
+    }
+
+
+def apply_power_forecast_publication_metadata(dataset: Any, status: dict[str, Any]) -> None:
+    """Attach the selected generation's provenance to its display dataset."""
+    if not status.get("enabled"):
+        return
+    dataset.attrs["api_bundle_status"] = str(status.get("status", ""))
+    dataset.attrs["api_bundle_stale_reason"] = str(status.get("staleReason", ""))
+    for source_name, target_name in (
+        ("dataUpdatedAt", "forecast_generated_at_utc"),
+        ("forecastIdentityID", "forecast_identity_id"),
+        ("sourceCycleSetID", "forecast_source_cycle_set_id"),
+        ("degradedModeCode", "forecast_degraded_mode_code"),
+        ("observationCutoffUTC", "forecast_observation_cutoff_utc"),
+        ("forecastCodeRevision", "forecast_code_revision"),
+        ("calibrationStateID", "forecast_adaptive_calibration_state_id"),
+        ("forecastRefreshKind", "forecast_refresh_kind"),
+        ("independentCycle", "forecast_independent_cycle"),
+    ):
+        value = status.get(source_name)
+        if value not in {None, ""}:
+            dataset.attrs[target_name] = bool(value) if source_name == "independentCycle" else str(value)
 
 
 def _power_physical_drivers(dataset: Any) -> dict[str, Any]:
@@ -2417,14 +2495,23 @@ def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[st
     }
     if window not in {"24h", "96h"} or group not in supported_groups:
         raise KeyError("Unsupported Power window or group")
+    if group == "all" and power_forecast_only_publication_active():
+        # Keep live observations independent of forecast publication health.
+        observed = _power_without_enclosure(window=window, group="current")
+        forecast = _power_without_enclosure(window=window, group="forecast")
+        forecast["group"] = "all"
+        forecast["observedSource"] = observed.get("source", {})
+        forecast["panels"] = observed.get("panels", []) + forecast.get("panels", [])
+        return forecast
     if group in {"current", "observed"}:
         section = "current"
     elif group in {"forecast", "forecast_24h", "forecast_96h", "verification"}:
         section = "forecast"
     else:
         section = "all"
-    path = power_display_section_path(section)
-    if section != "all" and not path.exists():
+    selection = power_forecast_serving_selection() if section == "forecast" else None
+    path = selection["forecastPath"] if selection else power_display_section_path(section)
+    if selection is None and section != "all" and not path.exists():
         # A mixed-version deployment can temporarily lack the new product.
         # Retain the established combined store as a read-only fallback.
         path = power_display_summary_path()
@@ -2441,8 +2528,10 @@ def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[st
     # observed/current request so a corrupt active product cannot be mixed
     # with legacy siblings. Before first activation the explicit
     # ``activation_pending`` status keeps the legacy paths available.
-    bundle_status = power_forecast_bundle_status(
-        power_display_section_path("forecast")
+    bundle_status = (
+        selection["publicationStatus"] if selection else power_forecast_bundle_status(
+            power_display_section_path("forecast")
+        )
     )
     if bundle_status.get("enabled"):
         payload["publicationStatus"] = bundle_status
@@ -2497,33 +2586,14 @@ def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[st
         physical_drivers = _power_physical_drivers(dataset)
         if physical_drivers:
             payload["physicalDrivers"] = physical_drivers
-        if bundle_status.get("enabled"):
-            dataset.attrs["api_bundle_status"] = str(bundle_status.get("status", ""))
-            dataset.attrs["api_bundle_stale_reason"] = str(
-                bundle_status.get("staleReason", "")
-            )
-            for source_name, target_name in (
-                ("dataUpdatedAt", "forecast_generated_at_utc"),
-                ("forecastIdentityID", "forecast_identity_id"),
-                ("sourceCycleSetID", "forecast_source_cycle_set_id"),
-                ("degradedModeCode", "forecast_degraded_mode_code"),
-                ("observationCutoffUTC", "forecast_observation_cutoff_utc"),
-                ("forecastCodeRevision", "forecast_code_revision"),
-                ("calibrationStateID", "forecast_adaptive_calibration_state_id"),
-                ("forecastRefreshKind", "forecast_refresh_kind"),
-                ("independentCycle", "forecast_independent_cycle"),
-            ):
-                value = bundle_status.get(source_name)
-                if value not in {None, ""}:
-                    dataset.attrs[target_name] = (
-                        bool(value) if source_name == "independentCycle" else str(value)
-                    )
+        apply_power_forecast_publication_metadata(dataset, bundle_status)
         # The display summary can lag behind the fast planner.  Always replace
         # baked operating traces with the standalone contract, which rejects a
         # plan whose SOC anchor differs from the current ensemble forecast.
         scenarios = None
         if section in {"all", "forecast"}:
-            for scenario_path in power_operating_scenario_paths():
+            scenario_paths = selection["scenarioPaths"] if selection else power_operating_scenario_paths()
+            for scenario_path in scenario_paths:
                 if not scenario_path.exists():
                     continue
                 try:
