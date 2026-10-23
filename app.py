@@ -2263,7 +2263,7 @@ def _ops_enclosure_cards_markup() -> str:
             if sensor[key] is not None:
                 detail.append(f"{label} {sensor[key]:.1f} {units}")
         if sensor["id"] == "ass":
-            detail.append("Sensor location unspecified")
+            detail.append("Inside ASS, below the top shelf, behind the fan")
         detail.append(sensor["source"])
         cards.append(_ops_card_markup(sensor["title"], levels[sensor["level"]], value, "; ".join(detail)))
     return (
@@ -8973,8 +8973,6 @@ interactive_tab = pn.Column(
     power_browser_guidance_container,
     interactive_content,
     power_plan_editor_container,
-    enclosure_power_container,
-    interactive_footer,
     sizing_mode="stretch_width",
 )
 science_quicklooks_tab = pn.Column(
@@ -9848,7 +9846,7 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
 _enclosure_power_plot = pn.pane.Plotly(sizing_mode="stretch_width", config={"displayModeBar": False, "responsive": True})
 _enclosure_power_explanation = pn.pane.Markdown()
 _enclosure_power_card_container = pn.Column(
-    pn.pane.Markdown("### APS enclosure environment"),
+    pn.pane.Markdown("### Enclosure conditions"),
     _enclosure_power_explanation,
     _enclosure_power_plot,
     sizing_mode="stretch_width",
@@ -9868,10 +9866,15 @@ def _enclosure_power_card() -> pn.Column:
             times.append(point["time"])
             values.append(point["value"])
             previous_segment = point["segment"]
-        legend_label = {"APSBLETemperature": "Temperature", "APSBLEDewPoint": "Dew point", "APSBLEHumidity": "Relative humidity"}.get(trace["id"], trace["label"])
-        figure.add_trace(go.Scatter(x=times, y=values, name=legend_label, mode="lines", connectgaps=False, line={"color": trace["color"]}), secondary_y=trace["axis"] == "right")
+        # A null-only trace keeps an unavailable sensor in the legend without
+        # inventing an observation or a timestamp.
+        figure.add_trace(go.Scatter(x=times or [None], y=values or [None], name=trace["label"], mode="lines", connectgaps=False, showlegend=True, line={"color": trace["color"]}), secondary_y=trace["axis"] == "right")
     now = datetime.now(timezone.utc)
-    figure.update_layout(height=420, margin=dict(l=55, r=55, t=75, b=80), legend=dict(orientation="h", y=1.05, yanchor="bottom", x=0, font=dict(size=11)), paper_bgcolor="white", plot_bgcolor="white")
+    mobile = _mobile_view_requested()
+    legend = dict(orientation="v" if mobile else "h", y=1.08, yanchor="bottom", x=0, font=dict(size=12))
+    if not mobile:
+        legend.update(entrywidth=0.32, entrywidthmode="fraction")
+    figure.update_layout(height=560 if mobile else 460, margin=dict(l=55, r=70 if mobile else 55, t=170 if mobile else 100, b=80), legend=legend, paper_bgcolor="white", plot_bgcolor="white")
     figure.update_xaxes(type="date", title_text="Receiver time (UTC)", title_standoff=15, nticks=3, tickfont=dict(size=11), tickformat="%d %b<br>%H:%M", range=[now - timedelta(hours=24), now])
     if not any(trace["points"] for trace in panel["traces"]):
         figure.add_annotation(text="No enclosure readings in the latest 24 hours", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
@@ -10080,11 +10083,17 @@ def _build_mobile_layout() -> pn.Column:
 
 interactive_tab_host = pn.Column(
     interactive_tab,
+    interactive_footer,
     sizing_mode="stretch_width",
     margin=0,
     name="Interactive Data Browser",
 )
+power_browser_content_host = pn.Column(sizing_mode="stretch_width", margin=0)
+power_browser_footer_host = pn.Column(sizing_mode="stretch_width", margin=0)
 power_tab_host = pn.Column(
+    power_browser_content_host,
+    enclosure_power_container,
+    power_browser_footer_host,
     sizing_mode="stretch_width",
     margin=0,
     name="Power",
@@ -10139,14 +10148,22 @@ def _sync_browser_tab_instrument(active: str) -> None:
             instrument_select.visible = False
             if instrument_select.value != "power":
                 instrument_select.value = "power"
-            interactive_tab_host.clear()
-            power_tab_host[:] = [interactive_tab]
+            if interactive_tab_host.objects:
+                interactive_tab_host.clear()
+            if power_browser_content_host.objects != [interactive_tab]:
+                power_browser_content_host[:] = [interactive_tab]
+            if power_browser_footer_host.objects != [interactive_footer]:
+                power_browser_footer_host[:] = [interactive_footer]
         elif active == "interactive":
             instrument_select.visible = True
             if instrument_select.value == "power":
                 instrument_select.value = "Ceilometer"
-            power_tab_host.clear()
-            interactive_tab_host[:] = [interactive_tab]
+            if power_browser_content_host.objects:
+                power_browser_content_host.clear()
+            if power_browser_footer_host.objects:
+                power_browser_footer_host.clear()
+            if interactive_tab_host.objects != [interactive_tab, interactive_footer]:
+                interactive_tab_host[:] = [interactive_tab, interactive_footer]
     finally:
         _browser_tab_syncing = False
 
@@ -10222,6 +10239,9 @@ def _prepare_initial_stable_tab_content(slug: str | None) -> None:
     active = _normalize_tab_slug(slug)
     if active == "overview":
         _refresh_browser_overview()
+    elif active == "power":
+        # Place the chart in its final host before the browser renders it.
+        _sync_browser_tab_instrument(active)
     elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
         _refresh_housekeeping_tab_content()
         _LOADED_TABS.add("housekeeping")
@@ -10298,7 +10318,7 @@ def _site_footer_pane() -> pn.pane.HTML:
     return pn.pane.HTML(SITE_FOOTER_HTML, sizing_mode="stretch_width", margin=0)
 
 
-interactive_tab.append(_site_footer_pane())
+interactive_footer.append(_site_footer_pane())
 browser_overview_tab.append(_site_footer_pane())
 science_quicklooks_tab.append(_site_footer_pane())
 housekeeping_quicklooks_tab.append(_site_footer_pane())
