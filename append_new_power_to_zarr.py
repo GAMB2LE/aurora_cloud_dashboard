@@ -21,6 +21,8 @@ ROOT_DEFAULT = Path("/project/aurora/raw/power/level1")
 ZARR_DEFAULT = Path("/data/aurora/products/power/power.zarr")
 FILE_REGEX = re.compile(r"power_data_(\d{4})(\d{2})(\d{2})\.csv$")
 OPTIONAL_SCHEMA_EXPANSION_VARS = {
+    "GridWatts",
+    "MultiPlusDCWatts",
     "InternalHumidity",
     "SolarMPPMode_East",
     "SolarMPPMode_South",
@@ -89,7 +91,7 @@ def _read_file(path: Path) -> xr.Dataset:
             values = series.astype(np.float32)
         else:
             values = pd.to_numeric(series.map(lambda value: 1 if value == "True" else 0 if value == "False" else value), errors="coerce")
-        if not values.notna().any():
+        if not values.notna().any() and clean_name not in {"GridWatts", "MultiPlusDCWatts"}:
             continue
         data_vars[clean_name] = (("time",), values.to_numpy(dtype=np.float32))
 
