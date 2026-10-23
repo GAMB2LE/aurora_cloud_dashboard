@@ -60,8 +60,11 @@ def test_append_retains_existing_store_time_encoding(tmp_path):
 
 
 @pytest.mark.parametrize("legacy_store", [False, True])
-@pytest.mark.parametrize("field", ["GridWatts", "MultiPlusDCWatts"])
-def test_grid_watts_preserves_missing_zero_and_signed_values(tmp_path, legacy_store, field):
+@pytest.mark.parametrize("field,positive,negative", [
+    ("GridWatts", 1500, -50), ("MultiPlusDCWatts", 1500, -50),
+    ("ChargerTemperature", 41.0, -5.5),
+])
+def test_optional_fields_preserve_missing_zero_and_signed_values(tmp_path, legacy_store, field, positive, negative):
     raw = tmp_path / "raw"
     raw.mkdir()
     store = tmp_path / "power.zarr"
@@ -77,12 +80,12 @@ def test_grid_watts_preserves_missing_zero_and_signed_values(tmp_path, legacy_st
     with xr.open_zarr(store) as ds:
         assert field in ds
         assert np.isnan(ds[field].values).all()
-    current.write_text(initial + "2026-09-09 00:00:01,64,0\n2026-09-09 00:00:02,65,1500\n2026-09-09 00:00:03,66,-50\n")
+    current.write_text(initial + f"2026-09-09 00:00:01,64,0\n2026-09-09 00:00:02,65,{positive}\n2026-09-09 00:00:03,66,{negative}\n")
     append_new(raw, store)
     append_new(raw, store)
     with xr.open_zarr(store) as ds:
         prefix = [np.nan] if legacy_store else []
-        np.testing.assert_allclose(ds[field].values, prefix + [np.nan, 0, 1500, -50], equal_nan=True)
+        np.testing.assert_allclose(ds[field].values, prefix + [np.nan, 0, positive, negative], equal_nan=True)
         np.testing.assert_array_equal(ds.BatterySOC.values, ([62] if legacy_store else []) + [63, 64, 65, 66])
         assert ds.indexes["time"].is_unique
         assert ds.indexes["time"].is_monotonic_increasing

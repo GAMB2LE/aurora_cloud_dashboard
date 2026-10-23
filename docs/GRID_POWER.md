@@ -16,13 +16,21 @@ database or dependency and does not issue device-control commands.
   values supply the DC bus. Missing/failed reads and implausible 48 V bus
   voltages remain missing. The unit key `multiplus_monitor` is deliberately
   separate from the logger's dormant legacy charging-control key.
+- `ChargerTemperature`: the MultiPlus BatteryTemp sensor, VE.Bus unit 227
+  register 61, signed tenths of a degree Celsius (`/Dc/0/Temperature`). The
+  Thermal State plot labels it **Charger Temperature**; it is the reported
+  BatteryTemp sensor, not a documented internal heatsink measurement. A live
+  read on 2026-10-23 returned 41.0 C. Failed reads, a missing MultiPlus DC
+  measurement, and values outside -40 to 120 C stay missing. Raw zero also
+  stays missing because Modbus cannot distinguish an unavailable sensor from
+  exactly 0 C; ordinary negative temperatures are retained.
 
 The mappings were checked against Victron's
 [Modbus register list](https://github.com/victronenergy/dbus_modbustcp/blob/master/attributes.csv)
 and [unit mapping](https://github.com/victronenergy/dbus_modbustcp/blob/master/unitid2di.csv),
 and a read-only live check returned 53.96 V and 47.3 A (2552.308 W DC).
 
-Both fields are optional in storage. Older records remain NaN. Daily CSV
+All three fields are optional in storage. Older records remain NaN. Daily CSV
 headers remain fixed: the fields first appear in the next UTC daily file after
 logger deployment. Do not rewrite the current or historical raw CSV files.
 
