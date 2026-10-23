@@ -1478,6 +1478,14 @@ for _outlet in range(1, PDU_OUTLET_COUNT + 1):
     HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}Amps", "A")
     HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}State", "state")
 
+HUMAN_LABELS.update({
+    "APSBLETemperature": "APS enclosure air temperature",
+    "APSBLEHumidity": "APS enclosure relative humidity",
+    "APSBLEDewPoint": "APS enclosure air dew point",
+    "APSBLEDewPointMargin": "APS enclosure air dew-point margin",
+})
+HUMAN_UNITS.update({"APSBLETemperature": "C", "APSBLEHumidity": "%", "APSBLEDewPoint": "C", "APSBLEDewPointMargin": "C"})
+
 DISPLAY_SCALE = {}
 
 SUMMARY_SOURCE_INSTRUMENTS = {
@@ -1487,6 +1495,18 @@ SUMMARY_SOURCE_INSTRUMENTS = {
     "power": ("power", "asfs-logger"),
     "ops-monitor": ("ops-monitor",),
 }
+
+# This panel is rendered independently so Power outages cannot hide BLE data.
+APS_ENCLOSURE_PANEL = PanelSpec(
+    "aps_enclosure", "APS enclosure environment", "Temperature [C]", "Relative humidity [%]",
+    (
+        TraceSpec("APSBLETemperature", "Enclosure air temperature", COLOR["red"]),
+        TraceSpec("APSBLEDewPoint", "Enclosure air dew point", COLOR["teal"]),
+        TraceSpec("APSBLEHumidity", "Enclosure relative humidity", COLOR["light_blue"], axis="right"),
+    ),
+    "SwitchBot inside the APS enclosure, received by ASS. Dew point uses paired BLE readings; it does not measure surface condensation.",
+)
+
 
 SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
     "vaisalamet": (
@@ -3290,6 +3310,7 @@ def build_power_display_summary_dataset(
     ensemble_skill_ds: xr.Dataset | None = None,
     operating_scenarios_ds: xr.Dataset | None = None,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
+    ble_ds: xr.Dataset | None = None,
 ) -> xr.Dataset:
     """Build one-minute APS traces for fast dashboard plotting.
 
@@ -3331,6 +3352,13 @@ def build_power_display_summary_dataset(
         pdu_frame = _resample_display_frame(pdu_frame, freq)
         if not pdu_frame.empty:
             frames.append(pdu_frame)
+
+    if ble_ds is not None:
+        from enclosure_sensors import display_dataset
+        ble_display = display_dataset(ble_ds, freq=freq)
+        if ble_display.sizes.get("time", 0):
+            # BLE observations keep their own time extent, even if APS power stops.
+            frames.append(ble_display.to_dataframe())
 
     if forecast_ds is not None:
         forecast_frame = _time_frame_from_dataset(forecast_ds.sortby("time"), POWER_SOC_FORECAST_FIELDS)
@@ -3401,7 +3429,7 @@ def build_power_display_summary_dataset(
     end = pd.Timestamp(display_frame.index.max()).isoformat()
     summary_attrs = {
         POWER_DISPLAY_SUMMARY_ATTR: "true",
-        "source": "derived from power.zarr plus optional ASS/PDU, SOC forecast verification, ensemble, and learned operating-scenario products",
+        "source": "derived from power.zarr plus optional ASS/PDU/BLE, SOC forecast verification, ensemble, and learned operating-scenario products",
         "frequency": freq,
         "time_coverage_start": start,
         "time_coverage_end": end,
