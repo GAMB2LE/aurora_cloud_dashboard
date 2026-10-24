@@ -901,6 +901,7 @@ class MobileCatalogTests(unittest.TestCase):
                 "domain": "data-ocean.gamb2le.co.uk",
                 "dashboardURL": "https://data-ocean.gamb2le.co.uk/app",
                 "dataRole": "live-mirror",
+                "operationalMirror": False,
                 "revision": "abc123def456",
             },
         )
