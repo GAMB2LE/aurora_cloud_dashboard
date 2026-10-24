@@ -1954,10 +1954,18 @@ def _ops_batch_resource_text(snapshot: dict) -> tuple[str, str]:
     return value, f"{memory_text}; {lock_text}"
 
 
+def _ops_dashboard_bootstrap_state(snapshot: dict, endpoint: str) -> bool | None:
+    prefix = f"failover_{endpoint}_dashboard_http"
+    value = snapshot.get(f"{prefix}_bootstrap_ready_state")
+    if value is None:
+        value = snapshot.get(f"{prefix}_full_document_state")
+    return _ops_bool(value)
+
+
 def _ops_failover_endpoint_card(snapshot: dict, endpoint: str, title: str, expected_role: str) -> str:
     prefix = f"failover_{endpoint}_dashboard"
     ok = _ops_bool(snapshot.get(f"{prefix}_http_ok_state"))
-    full_document = _ops_bool(snapshot.get(f"{prefix}_http_full_document_state"))
+    bootstrap_ready = _ops_dashboard_bootstrap_state(snapshot, endpoint)
     status = _ops_float(snapshot.get(f"{prefix}_http_status_code"))
     response_ms = _ops_float(snapshot.get(f"{prefix}_http_response_ms"))
     content_bytes = _ops_float(snapshot.get(f"{prefix}_http_content_bytes"))
@@ -1965,12 +1973,12 @@ def _ops_failover_endpoint_card(snapshot: dict, endpoint: str, title: str, expec
     error = str(snapshot.get(f"{prefix}_http_error") or "").strip()
     url = str(snapshot.get(f"{prefix}_url") or "").strip()
 
-    if full_document is True:
+    if bootstrap_ready is True:
         level = "green"
-        value = "Full app document"
+        value = "HTTP bootstrap ready"
     elif ok is True:
         level = "red"
-        value = f"HTTP {int(status)} but incomplete" if status is not None else "Incomplete app document"
+        value = f"HTTP {int(status)} but invalid bootstrap" if status is not None else "Invalid app bootstrap"
     elif ok is False:
         level = "red"
         value = f"HTTP {int(status)}" if status is not None else "Unreachable"
@@ -1978,7 +1986,7 @@ def _ops_failover_endpoint_card(snapshot: dict, endpoint: str, title: str, expec
         level = "gray"
         value = "No probe data"
 
-    details: list[str] = [expected_role]
+    details: list[str] = [expected_role, "Browser rendering is not checked by this probe"]
     if response_ms is not None:
         details.append(f"{response_ms:.0f} ms")
     if content_bytes is not None:
@@ -2710,7 +2718,7 @@ def _ops_operations_markup() -> str:
             _ops_worst_level(
                 [
                     _ops_level_from_bool(snapshot.get(f"failover_{endpoint}_dashboard_http_ok_state")),
-                    _ops_level_from_bool(snapshot.get(f"failover_{endpoint}_dashboard_http_full_document_state")),
+                    _ops_level_from_bool(_ops_dashboard_bootstrap_state(snapshot, endpoint)),
                 ]
             )
             for endpoint in ("primary", "standby")

@@ -18,6 +18,23 @@ import mobile_catalog
 NOW = datetime(2026, 10, 23, 6, 42, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("readiness,level,value", [
+    ({"bootstrap_ready_state": 1, "full_document_state": 0}, "green", "HTTP bootstrap ready"),
+    ({"full_document_state": 1}, "green", "HTTP bootstrap ready"),
+    ({"bootstrap_ready_state": 0, "full_document_state": 1}, "red", "HTTP 200 but invalid bootstrap"),
+])
+def test_endpoint_card_reports_http_readiness_without_claiming_browser_render(readiness, level, value):
+    snapshot = {
+        "failover_primary_dashboard_http_ok_state": 1,
+        "failover_primary_dashboard_http_status_code": 200,
+        **{f"failover_primary_dashboard_http_{key}": state for key, state in readiness.items()},
+    }
+    with patch.object(app, "_ops_card_markup", return_value="card") as render:
+        assert app._ops_failover_endpoint_card(snapshot, "primary", "Production endpoint", "JASMIN") == "card"
+    assert render.call_args.args[1:3] == (level, value)
+    assert "Browser rendering is not checked by this probe" in render.call_args.args[3]
+
+
 @pytest.fixture(autouse=True)
 def fixed_clock():
     with patch.object(app, "datetime", wraps=datetime) as browser, patch.object(mobile_catalog, "datetime", wraps=datetime) as catalog:

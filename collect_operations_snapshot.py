@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 import json
 import math
 import numpy as np
@@ -383,12 +384,45 @@ def _html_title(body: bytes) -> str:
     return re.sub(r"\s+", " ", match.group(1)).strip()
 
 
+class _BootstrapElements(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        element_id = dict(attrs).get("id")
+        if element_id:
+            self.ids.add(element_id)
+
+
 def _dashboard_document_state(status_code: int, body: bytes) -> int:
-    if not (200 <= status_code < 400):
+    """Check the HTTP bootstrap; this does not run JavaScript or open a WebSocket."""
+    if not (200 <= status_code < 300) or _html_title(body) != "AURORA Data Viewer":
         return 0
-    # A crashed Panel handler can still return a small Bokeh shell with title
-    # "Bokeh Application". Require the actual dashboard document marker.
-    return 1 if b"AURORA Data Viewer" in body and len(body) > 100_000 else 0
+    # Panel sends a small page and loads its document over the WebSocket.
+    # Check the root bindings instead of treating response size as rendering proof.
+    text = body.decode("utf-8", errors="ignore")
+    assignment = re.search(r"\b(?:const|let|var)\s+render_items\s*=\s*", text)
+    if assignment is None or re.search(r"\bBokeh\.embed\.embed_items\s*\(", text) is None:
+        return 0
+    try:
+        items, _ = json.JSONDecoder().raw_decode(text[assignment.end():])
+    except ValueError:
+        return 0
+    if not isinstance(items, list) or not items:
+        return 0
+    elements = _BootstrapElements()
+    try:
+        elements.feed(text)
+    except (ValueError, AssertionError):
+        return 0
+    return int(all(
+        isinstance(item, dict)
+        and isinstance(item.get("roots"), dict)
+        and bool(item["roots"])
+        and all(isinstance(root, str) and root in elements.ids for root in item["roots"].values())
+        for item in items
+    ))
 
 
 def _probe_http(url: str) -> dict[str, float | int | str | None]:
@@ -406,13 +440,15 @@ def _probe_http(url: str) -> dict[str, float | int | str | None]:
             body = exc.read(1024 * 1024)
         except Exception:
             body = b""
+        bootstrap_ready = _dashboard_document_state(status_code, body)
         return {
             "ok_state": 1 if 200 <= status_code < 400 or status_code == 405 else 0,
             "status_code": status_code,
             "response_ms": (time.monotonic() - start) * 1000.0,
             "content_bytes": len(body),
             "title": _html_title(body),
-            "full_document_state": _dashboard_document_state(status_code, body),
+            "bootstrap_ready_state": bootstrap_ready,
+            "full_document_state": bootstrap_ready,
             "error": str(exc),
         }
     except Exception as exc:
@@ -422,16 +458,21 @@ def _probe_http(url: str) -> dict[str, float | int | str | None]:
             "response_ms": (time.monotonic() - start) * 1000.0,
             "content_bytes": 0,
             "title": "",
+            "bootstrap_ready_state": 0,
             "full_document_state": 0,
             "error": str(exc),
         }
+    bootstrap_ready = _dashboard_document_state(status_code, body)
     return {
         "ok_state": 1 if 200 <= status_code < 400 or status_code == 405 else 0,
         "status_code": status_code,
         "response_ms": (time.monotonic() - start) * 1000.0,
         "content_bytes": len(body),
         "title": _html_title(body),
-        "full_document_state": _dashboard_document_state(status_code, body),
+        "bootstrap_ready_state": bootstrap_ready,
+        # Keep the old field for monitors reading earlier snapshot schemas.
+        # It reports bootstrap readiness, never a browser-render result.
+        "full_document_state": bootstrap_ready,
         "error": "",
     }
 
