@@ -52,15 +52,21 @@ These snapshots capture:
   copied from the authoritative archive-health contract
 - systemd health for source sync, processing, and transfer units
 - dashboard HTTP health and response time
-- primary and standby public dashboard endpoint health, response time, content
-  size, HTML title, and whether the response is the full `AURORA Data Viewer`
-  document rather than a blank Bokeh shell
+- public dashboard endpoint health, response time, content size, HTML title,
+  and whether the response contains the `AURORA Data Viewer` HTTP bootstrap
 - dashboard and infrastructure git branch, commit, dirty state, and local
   ahead/behind counts
 
 The health assessment is deliberately observe-only. It summarizes the raw
 snapshot into green/amber/red checks, but it does not restart services, delete
 data, rebuild stores, or modify code.
+
+The HTTP probe checks the page title and the Bokeh root bindings in the returned
+HTML. Panel can send a small bootstrap and load the document over a WebSocket,
+so response size does not tell us whether the dashboard renders.
+`bootstrap_ready_state` records this check. The older `full_document_state`
+field carries the same value for existing monitors; it is not evidence that a
+browser loaded the plots. Browser rendering still needs a separate browser check.
 
 `cloud_product_sample` means the most recent delivered product observation,
 not a direct measurement of logger or edge acquisition. These fields never

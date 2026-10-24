@@ -28,8 +28,8 @@ stack.
 - dashboard performance-log freshness, including whether browser activity is
   still being written to `/data/aurora/products/dashboard/dashboard_perf.jsonl`
 - dashboard HTTP endpoint health and response time
-- public primary and standby dashboard endpoint health, including a full
-  document check that catches a blank Bokeh shell
+- public dashboard endpoint health, including an HTTP bootstrap check that
+  rejects a blank Bokeh shell
 - dashboard and infrastructure git cleanliness and local ahead/behind counts
 - recent dashboard render-performance statistics, including p50, p95, slowest
   timed event, and live-session counts
@@ -94,13 +94,16 @@ The **Public endpoints** section is snapshot-backed. It probes:
 - `https://data.gamb2le.co.uk/app`
 - `https://data-ocean.gamb2le.co.uk/app`
 
-Each probe requires a successful HTTP response and the full `AURORA Data
-Viewer` document. A small Bokeh shell with title `Bokeh Application` is treated
-as unhealthy because it usually means the Python app handler crashed before
-rendering the dashboard. During the July 2026 JASMIN shutdown window,
-`data.gamb2le.co.uk` identifies the JASMIN endpoint and
-`data-ocean.gamb2le.co.uk` identifies the droplet endpoint, unless a full DNS
-failover is explicitly initiated.
+Each probe requires a successful HTTP response, the `AURORA Data Viewer` title,
+and Bokeh root bindings that match elements in the returned page. A valid Panel
+bootstrap can be small because the document loads over a WebSocket. A wrong
+title, an error response or a placeholder without those bindings fails the check.
+
+The card says **HTTP bootstrap ready** when that check passes. It does not claim
+that JavaScript ran, the WebSocket connected or the plots rendered. Those need a
+separate browser check. New snapshots use `bootstrap_ready_state`; the old
+`full_document_state` field remains as a compatibility alias. The display also
+accepts older snapshots that contain only the old field.
 
 ## Archived products
 
