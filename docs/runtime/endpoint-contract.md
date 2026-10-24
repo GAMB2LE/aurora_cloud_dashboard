@@ -38,6 +38,12 @@ Completed changes, tests and documentation go to `main`. Development and
 production each pin an exact tested revision. A code rollback restores the
 application and configuration, not observations or archives.
 
+The presentation release uses its own Python 3.12 environment. Pillow 13 fixes
+the image-decoder advisories detected by the release audit and requires Python
+3.11 or newer. Keep the existing processing environment separate: changing a
+shared checkout or environment would also change the next scheduled science
+job. The infrastructure presentation-release guide owns the service overrides.
+
 I check source, product and API observation times before calling a stream
 current. A responsive website, successful copy or recent file modification is
 not enough. The infrastructure
