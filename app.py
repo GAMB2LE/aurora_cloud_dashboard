@@ -3117,7 +3117,7 @@ def _ops_operations_markup() -> str:
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Public endpoints</div>"
             f"<div class='ops-grid ops-grid--summary'>{''.join(failover_cards)}</div>"
-            "<div class='ops-footnote'>These probes check both public app URLs and require the full AURORA document, so a small blank Bokeh shell does not count as healthy.</div>"
+            "<div class='ops-footnote'>These probes check the dashboard's HTTP bootstrap at both public app URLs. They do not confirm that the plots rendered in a browser.</div>"
             "</div>"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Storage</div>"
