@@ -2820,12 +2820,13 @@ def _ops_operations_markup() -> str:
                 f"{batch_resource_meta}; diagnostic only, not part of Overall",
             ),
             _ops_card_markup(
-                "Failover endpoints",
+                "Endpoint HTTP readiness",
                 failover_level,
-                "Both apps full"
+                "Both bootstraps ready"
                 if failover_level == "green"
                 else ("No probe data" if failover_level == "gray" else "Endpoint issue"),
-                "Primary and standby public app probes; diagnostic only, not part of Overall",
+                "Primary and standby HTTP bootstrap probes; browser rendering is checked separately; "
+                "diagnostic only, not part of Overall",
             ),
             _ops_card_markup(
                 "Processing pipeline",
