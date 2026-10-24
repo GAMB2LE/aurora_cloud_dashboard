@@ -13,7 +13,13 @@ import sqlite3
 from time import monotonic
 from typing import Any
 
-from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_available_days, day_records as auroracam_day_records, latest_records as auroracam_latest_records
+from auroracam_catalog import (
+    ACTIVE_AURORACAM_CAMERAS,
+    AURORACAM_CAMERAS,
+    active_available_days as auroracam_available_days,
+    day_records as auroracam_day_records,
+    latest_records as auroracam_latest_records,
+)
 from display_artifact_manifest import load_manifest
 from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import load_uas_mqtt_log
@@ -26,6 +32,8 @@ from instrument_registry import (
     SCIENCE_DC_INSTRUMENTS as SCIENCE_DC_INSTRUMENT_CONTRACTS,
 )
 from wxcam_catalog import parse_timestamp as parse_wxcam_timestamp
+from collection_freshness import collection_state
+from asfs_storage_health import storage_status
 
 
 UTC = timezone.utc
@@ -88,6 +96,7 @@ OPERATIONS_TREND_STREAM_PREFIXES = (
     "vaisalamet",
     "asfs_logger",
     "asfs_fast_sonic",
+    "asfs_fast_gas",
     "power",
     "wxcam",
 )
@@ -147,6 +156,18 @@ OPERATIONS_STREAMS = (
         "title": "Radiation",
         "source": "asfs_logger_source_sync_service_healthy_state",
         "services": ("asfs_logger_append_service_healthy_state", "asfs_logger_quicklooks_service_healthy_state"),
+    },
+    {
+        "id": "asfs-fast-sonic",
+        "title": "ASFS Fast Sonic",
+        "source": "asfs_fast_sonic_source_sync_service_healthy_state",
+        "services": ("asfs_fast_sonic_append_service_healthy_state", "asfs_fast_sonic_quicklooks_service_healthy_state"),
+    },
+    {
+        "id": "asfs-fast-gas",
+        "title": "ASFS Fast Gas",
+        "source": "asfs_fast_gas_source_sync_service_healthy_state",
+        "services": ("asfs_fast_gas_append_service_healthy_state",),
     },
     {
         "id": "power",
@@ -764,12 +785,20 @@ def normalize_level(value: Any) -> str:
 
 
 def level_from_booleans(values: list[Any]) -> str:
-    known = [value for value in values if value is not None]
-    if not known:
-        return "unknown"
-    if any(str(value).strip().lower() in {"0", "false", "red", "failed", "error"} for value in known):
+    # JSON snapshots and Zarr rows store these states as floats. Stringifying
+    # 0.0 used to miss the failure case and turn failed probes green.
+    levels = []
+    for value in values:
+        if isinstance(value, str) and value.strip() in {"0.0", "1.0"}:
+            value = float(value)
+        levels.append(normalize_level(value))
+    if "red" in levels:
         return "red"
-    return "green"
+    if "amber" in levels:
+        return "amber"
+    if "green" in levels:
+        return "green"
+    return "unknown"
 
 
 def media_url(*parts: str) -> str:
@@ -812,12 +841,30 @@ def dashboard_revision() -> str | None:
     return head[:12] if head else None
 
 
+def direct_field_continuity_enabled() -> bool:
+    return os.environ.get("AURORA_DATA_MODE", "").strip().lower() == "direct-field-continuity"
+
+
+def continuity_status() -> dict[str, Any] | None:
+    """Describe the explicitly configured read-only field-data presentation."""
+    if not direct_field_continuity_enabled():
+        return None
+    status_path = os.environ.get("AURORA_CONTINUITY_STATUS_PATH", "").strip()
+    return {
+        "mode": "direct-field-continuity",
+        "summary": "Recent direct field data; JASMIN mirror unavailable.",
+        "status": read_json_file(Path(status_path)) if status_path else {},
+    }
+
+
 def deployment_descriptor() -> dict[str, Any]:
     domain = os.environ.get("AURORA_DOMAIN", "").strip() or "data-ocean.gamb2le.co.uk"
     environment = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
     if not environment:
         environment = "development" if "data-ocean" in domain else "production"
     data_role = "live-mirror" if environment == "development" else "authoritative"
+    if direct_field_continuity_enabled():
+        data_role = "direct-field-continuity"
     return {
         "environment": environment,
         "domain": domain,
@@ -984,6 +1031,7 @@ def _archive_operator_status(archive_health: dict[str, Any]) -> dict[str, str]:
 def operations() -> dict[str, Any]:
     health = read_json_file(operations_health_path())
     snapshot = read_json_file(operations_snapshot_path())
+    snapshot_updated_at = snapshot.get("time_utc") or snapshot.get("snapshot_time_utc")
     archive_health = read_json_file(archive_health_path())
     archive_status = _archive_operator_status(archive_health)
     archive_metrics = archive_health.get("metrics", {})
@@ -1003,7 +1051,11 @@ def operations() -> dict[str, Any]:
         else health.get("overall_level") or snapshot.get("overall_level")
     )
 
-    stream_states = [_stream_state(snapshot, spec) for spec in OPERATIONS_STREAMS]
+    paused_prefixes = _intentionally_paused_streams()
+    stream_states = [
+        _stream_state(snapshot, spec, paused=_stream_prefix(spec) in paused_prefixes)
+        for spec in OPERATIONS_STREAMS
+    ]
     power_alert = _power_freshness_alert(snapshot)
     if power_alert:
         for stream in stream_states:
@@ -1014,25 +1066,44 @@ def operations() -> dict[str, Any]:
                 stream["sourceHealthy"] = power_alert["level"]
                 stream["detail"] = power_alert["detail"]
                 break
-    if any(stream["level"] == "red" for stream in stream_states):
-        overall = "red"
-    elif overall == "unknown" and any(
-        stream["level"] == "green" for stream in stream_states
-    ):
-        overall = "green"
-
-    updated_at = (
-        archive_health.get("generated_at")
-        or health.get("time_utc")
-        or health.get("snapshot_time_utc")
-        or snapshot.get("time_utc")
-        or snapshot.get("snapshot_time_utc")
+    overall = _worst_level(
+        overall,
+        *("amber" if stream["level"] == "unknown" else stream["level"] for stream in stream_states),
     )
+
+    if direct_field_continuity_enabled():
+        updated_at = (
+            snapshot_updated_at
+            or health.get("time_utc")
+            or health.get("snapshot_time_utc")
+            or archive_health.get("generated_at")
+        )
+    else:
+        updated_at = (
+            archive_health.get("generated_at")
+            or health.get("time_utc")
+            or health.get("snapshot_time_utc")
+            or snapshot.get("time_utc")
+            or snapshot.get("snapshot_time_utc")
+        )
     active_alerts = [
         alert
         for alert in _active_alerts(alert_state)
         if alert.get("id") not in {"archive:health_red", "archive:verification"}
     ]
+    logger_storage = storage_status(snapshot, datetime.now(UTC))
+    logger_storage_alert = None
+    if logger_storage:
+        active_alerts = [alert for alert in active_alerts if alert.get("id") != "logger:directory-headroom"]
+    if logger_storage and logger_storage["level"] in {"amber", "red"}:
+        logger_storage_alert = {
+            "id": "logger:directory-headroom",
+            "title": "ASFS logger directory estimate unavailable" if logger_storage["state"] == "unknown" else "ASFS logger directory headroom needs attention",
+            "level": logger_storage["level"],
+            "detail": logger_storage["detail"],
+        }
+        active_alerts = [logger_storage_alert, *active_alerts]
+        overall = _worst_level(overall, logger_storage["level"])
     if power_alert:
         active_alerts = [
             alert for alert in active_alerts if alert.get("id") != "power:freshness"
@@ -1055,8 +1126,10 @@ def operations() -> dict[str, Any]:
     archive_level = normalize_level(archive_status["level"])
     if archive_level in check_counts:
         check_counts[archive_level] = check_counts.get(archive_level, 0) + 1
+    if logger_storage:
+        check_counts[logger_storage["level"]] = check_counts.get(logger_storage["level"], 0) + 1
 
-    return {
+    response = {
         "serverTime": utc_now_iso(),
         "updatedAt": updated_at,
         "overallLevel": overall,
@@ -1067,6 +1140,7 @@ def operations() -> dict[str, Any]:
             snapshot_error,
             archive_status,
             power_alert,
+            logger_storage_alert,
         ),
         "checkCounts": check_counts,
         "streamStates": stream_states,
@@ -1088,26 +1162,48 @@ def operations() -> dict[str, Any]:
             "archiveHealth": {**file_record(archive_health_path()), "path": str(archive_health_path())},
         },
     }
+    continuity = continuity_status()
+    if continuity is not None:
+        response["continuity"] = continuity
+        response["summary"] = f"{continuity['summary']} {response['summary']}"
+    return response
 
 
-def _stream_state(snapshot: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+def _stream_prefix(spec: dict[str, Any]) -> str:
+    return str(spec["source"]).removesuffix("_source_sync_service_healthy_state")
+
+
+def _stream_state(snapshot: dict[str, Any], spec: dict[str, Any], *, paused: bool = False) -> dict[str, Any]:
     source_value = snapshot.get(str(spec["source"]))
     service_values = [snapshot.get(str(key)) for key in spec["services"]]
     source_level = level_from_booleans([source_value])
     service_level = level_from_booleans(service_values)
-    level = "red" if "red" in {source_level, service_level} else "green" if "green" in {source_level, service_level} else "unknown"
+    collection = collection_state(snapshot, _stream_prefix(spec), datetime.now(UTC))
+    levels = [source_level, service_level]
+    if not paused:
+        levels.append(collection["level"])
+    level = (
+        "unknown" if all(value == "unknown" for value in levels)
+        else _worst_level(*("amber" if value == "unknown" else value for value in levels))
+    )
 
     failed_services = [
         key.removesuffix("_service_healthy_state").replace("_", " ")
         for key, value in zip(spec["services"], service_values, strict=False)
         if normalize_level(value) == "red"
     ]
-    if normalize_level(source_value) == "red":
+    if not paused and collection["level"] == "red":
+        detail = f"Latest delivered sample {_duration_text(collection['ageMinutes'] / 60)} old"
+    elif not paused and collection["level"] == "unknown":
+        detail = "Collection freshness unavailable"
+    elif normalize_level(source_value) == "red":
         detail = "Source sync is unhealthy"
     elif failed_services:
         detail = "Unhealthy: " + ", ".join(failed_services[:3])
+    elif paused:
+        detail = "Intentionally off; confirmed by fresh PDU data"
     elif level == "green":
-        detail = "Source and processing services healthy"
+        detail = f"Delivered sample {_duration_text(collection['ageMinutes'] / 60)} old; transfer and processing healthy"
     else:
         detail = "No current status sample"
 
@@ -1116,7 +1212,13 @@ def _stream_state(snapshot: dict[str, Any], spec: dict[str, Any]) -> dict[str, A
         "title": spec["title"],
         "level": level,
         "detail": detail,
-        "sourceHealthy": source_value,
+        "sourceHealthy": "green" if paused else collection["level"],
+        "sourceSyncHealthy": source_value,
+        "collectionLevel": collection["level"],
+        "collectionExpected": not paused,
+        "collectionAgeMinutes": collection["ageMinutes"],
+        "collectionSampleAt": collection["sampleAt"],
+        "collectionEvidence": collection["evidence"],
         "serviceHealthyCount": sum(1 for value in service_values if normalize_level(value) == "green"),
         "serviceCount": len(service_values),
     }
@@ -1129,6 +1231,7 @@ def _operations_summary(
     snapshot_error: Any,
     archive_status: dict[str, str],
     power_alert: dict[str, Any] | None = None,
+    logger_storage_alert: dict[str, Any] | None = None,
 ) -> str:
     if health_error:
         return f"Health JSON error: {health_error}"
@@ -1137,13 +1240,18 @@ def _operations_summary(
     if power_alert and normalize_level(power_alert.get("level")) == "red":
         return str(power_alert["title"])
     red_count = sum(1 for stream in streams if stream["level"] == "red")
+    amber_count = sum(1 for stream in streams if stream["level"] == "amber")
     unknown_count = sum(1 for stream in streams if stream["level"] == "unknown")
     if red_count:
         return f"{red_count} stream group{'s' if red_count != 1 else ''} need attention"
+    if logger_storage_alert:
+        return str(logger_storage_alert["title"])
     if power_alert:
         return str(power_alert["title"])
     if unknown_count == len(streams):
         return "No operations snapshot available"
+    if amber_count or unknown_count:
+        return "Collection or service evidence is incomplete"
     if archive_status.get("level") == "amber":
         return "Archive verification is delayed; the last complete check was clean"
     if overall == "green":
@@ -1152,9 +1260,8 @@ def _operations_summary(
 
 
 def _check_counts(health: dict[str, Any], streams: list[dict[str, Any]]) -> dict[str, int]:
-    counts = health.get("check_counts")
-    if isinstance(counts, dict):
-        return {str(key): int(value) for key, value in counts.items() if isinstance(value, int | float)}
+    # Count the same live stream evaluations used above, not cached collector
+    # counts whose sample ages may have crossed a threshold since publication.
     return {
         "green": sum(1 for stream in streams if stream["level"] == "green"),
         "amber": sum(1 for stream in streams if stream["level"] == "amber"),
@@ -1164,8 +1271,9 @@ def _check_counts(health: dict[str, Any], streams: list[dict[str, Any]]) -> dict
 
 
 def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    source_issues = [stream["title"] for stream in streams if normalize_level(stream.get("sourceHealthy")) == "red"]
-    service_issues = [stream["title"] for stream in streams if stream["level"] == "red" and stream["title"] not in source_issues]
+    source_issues = [stream["title"] for stream in streams if stream.get("collectionExpected", True) and normalize_level(stream.get("sourceHealthy")) == "red"]
+    source_unknown = [stream["title"] for stream in streams if stream.get("collectionExpected", True) and normalize_level(stream.get("sourceHealthy")) == "unknown"]
+    service_issues = [stream["title"] for stream in streams if normalize_level(stream.get("sourceSyncHealthy")) == "red" or stream.get("serviceHealthyCount", 0) < stream.get("serviceCount", 0)]
     storage_level = "red" if any(float(snapshot.get(key, 0) or 0) >= 80 for key in ("aurora_data_used_pct", "aurora_root_used_pct", "gws_used_pct")) else "green" if snapshot else "unknown"
     dashboard_level = level_from_booleans(
         [
@@ -1205,8 +1313,8 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
         )
         if part
     )
-    return [
-        {"id": "source", "title": "Source freshness", "level": "red" if source_issues else "green" if snapshot else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "No source freshness issues"},
+    groups = [
+        {"id": "source", "title": "Collection freshness", "level": "red" if source_issues else "amber" if source_unknown else "green" if streams else "unknown", "detail": ", ".join(source_issues[:4]) if source_issues else "Freshness unavailable: " + ", ".join(source_unknown[:4]) if source_unknown else "Delivered samples are current or instruments are intentionally off"},
         {"id": "processing", "title": "Local processing", "level": "red" if service_issues else "green" if snapshot else "unknown", "detail": ", ".join(service_issues[:4]) if service_issues else "Append, catalog, and quicklook services healthy"},
         {"id": "storage", "title": "Storage pressure", "level": storage_level, "detail": "Storage is below alert thresholds" if storage_level == "green" else "Storage needs attention"},
         {
@@ -1225,6 +1333,10 @@ def _root_cause_groups(snapshot: dict[str, Any], streams: list[dict[str, Any]]) 
         },
         {"id": "dashboard", "title": "Public dashboard", "level": dashboard_level, "detail": "Dashboard endpoint probes are healthy" if dashboard_level == "green" else "Dashboard endpoint probe needs attention"},
     ]
+    logger_storage = storage_status(snapshot, datetime.now(UTC))
+    if logger_storage:
+        groups.append({"id": "logger-storage", "title": "ASFS logger directory headroom", "level": logger_storage["level"], "detail": logger_storage["detail"]})
+    return groups
 
 
 def _archive_delivery(
@@ -1292,12 +1404,21 @@ def _archive_delivery(
 
 
 def _trend_cards(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    history = _operations_trend_values(_intentionally_paused_streams())
+    paused = _intentionally_paused_streams()
+    history = _operations_trend_values(paused)
+    snapshot = dict(snapshot)
+    collection_ages = [
+        state["ageMinutes"]
+        for prefix in OPERATIONS_TREND_STREAM_PREFIXES if prefix not in paused
+        if (state := collection_state(snapshot, prefix, datetime.now(UTC)))["ageMinutes"] is not None
+    ]
+    if collection_ages:
+        snapshot["worst_product_age_min"] = max(collection_ages)
     specs = (
         ("storage", "Worst storage use", "%", OPERATIONS_STORAGE_KEYS),
         ("battery-soc", "APS state of charge", "%", ("aps_battery_soc_pct", "BatterySOC", "power_battery_soc")),
         ("battery-voltage", "APS battery voltage", "V", ("aps_battery_voltage_v", "DCInverterVolts", "power_battery_voltage")),
-        ("source-lag", "Worst source lag", "min", ("worst_source_lag_min", "source_lag_max_min")),
+        ("source-lag", "Worst delivered sample lag", "min", ("worst_product_age_min", "worst_source_lag_min", "source_lag_max_min")),
         ("gws-lag", "Worst GWS lag", "min", ("worst_gws_lag_min", "gws_lag_max_min")),
     )
     cards: list[dict[str, Any]] = []
@@ -1375,7 +1496,10 @@ def _operations_trend_values(paused_prefixes: set[str]) -> dict[str, float]:
             "storage": latest_max(OPERATIONS_STORAGE_KEYS),
             "battery-soc": latest("aps_battery_soc_pct"),
             "battery-voltage": latest("aps_battery_voltage_v"),
-            "source-lag": latest_max(tuple(f"{prefix}_source_age_min" for prefix in active_prefixes)),
+            "source-lag": latest_max(tuple(
+                f"{prefix}_product_age_min" if f"{prefix}_product_age_min" in group else f"{prefix}_source_age_min"
+                for prefix in active_prefixes
+            )),
             "gws-lag": latest_max(tuple(f"{prefix}_gws_lag_min" for prefix in active_prefixes)),
         }
         result = {key: value for key, value in values.items() if value is not None}
@@ -1644,16 +1768,16 @@ def _instrument_power_states(
     ]
     science_rows = []
     for instrument_id, title, icon, prefix in SCIENCE_DC_INSTRUMENTS:
-        source_age = _metric_value(snapshot, (f"{prefix}_source_age_min",))
-        recent = snapshot.get(f"{prefix}_source_recent_state")
-        if source_age is None:
-            source_time = _parse_utc(science_source_times.get(instrument_id))
-            if source_time is not None:
-                source_age = max((datetime.now(UTC) - source_time).total_seconds() / 60, 0)
-                recent = int(source_age <= SCIENCE_COLLECTION_FRESHNESS_MINUTES)
-        if recent == 1:
+        evidence = dict(snapshot)
+        source_time = _parse_utc(science_source_times.get(instrument_id))
+        snapshot_time = _parse_utc(snapshot.get(f"{prefix}_product_sample_time_utc"))
+        if source_time is not None and (snapshot_time is None or source_time > snapshot_time):
+            evidence[f"{prefix}_product_sample_time_utc"] = source_time.isoformat()
+        collection = collection_state(evidence, prefix, datetime.now(UTC))
+        source_age = collection["ageMinutes"]
+        if collection["level"] == "green":
             state, level = "Collecting", "green"
-        elif recent == 0:
+        elif collection["level"] == "red":
             state, level = "No recent data", "red"
         else:
             state, level = "Unknown", "amber"
@@ -1742,7 +1866,7 @@ def _pdu_power_snapshot() -> tuple[dict[int, bool], str]:
         if sample_time is None:
             raise ValueError("unsupported PDU time encoding")
         age_minutes = max((datetime.now(UTC) - sample_time).total_seconds() / 60, 0)
-        if age_minutes > PDU_STATE_FRESHNESS_MINUTES:
+        if age_minutes < -5 or age_minutes > PDU_STATE_FRESHNESS_MINUTES:
             raise ValueError("stale PDU sample")
         states = {
             outlet: float(group[f"PDUOutlet{outlet}State"][-1]) >= 0.5
@@ -2098,7 +2222,7 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
     else:
         selected_day = day
         records = {}
-        for camera_id in AURORACAM_CAMERAS:
+        for camera_id in ACTIVE_AURORACAM_CAMERAS:
             candidates = auroracam_day_records(root, camera_id, day)
             available_times.extend(record.time_utc for record in candidates)
             if time_utc:
@@ -2108,7 +2232,7 @@ def auroracam(day: str = "latest", time_utc: str | None = None) -> dict[str, Any
 
     frames = []
 
-    for camera_id in AURORACAM_CAMERAS:
+    for camera_id in ACTIVE_AURORACAM_CAMERAS:
         record = records.get(camera_id)
         if record is None:
             continue

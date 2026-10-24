@@ -1175,6 +1175,9 @@ def _physical_solar_meteorology(ds: xr.Dataset, irradiance: pd.Series) -> dict[s
     }
 
 
+POWER_FRAME_MEMMAP_ROWS = 1_000_000
+
+
 def _power_frame(power: xr.Dataset) -> pd.DataFrame:
     fields = [
         name
@@ -1193,9 +1196,44 @@ def _power_frame(power: xr.Dataset) -> pd.DataFrame:
     if "time" not in power or not fields:
         return pd.DataFrame()
     times = pd.DatetimeIndex(power["time"].values)
-    frame = pd.DataFrame({name: np.asarray(power[name].values, dtype=np.float64) for name in fields}, index=times)
+    if len(times) >= POWER_FRAME_MEMMAP_ROWS:
+        # Keep the complete history, but let the OS reclaim source-column pages
+        # during pandas reductions. TemporaryFile is unlinked automatically;
+        # numpy views retain the mapping until the last dataframe reference dies.
+        with tempfile.TemporaryFile(prefix="aurora-power-frame-") as scratch:
+            columns = np.memmap(scratch, dtype=np.float64, mode="w+", shape=(len(fields), len(times)))
+            for column, name in enumerate(fields):
+                for start in range(0, len(times), 65536):
+                    end = min(len(times), start + 65536)
+                    chunk = power[name].isel(time=slice(start, end)).compute(scheduler="synchronous")
+                    columns[column, start:end] = np.asarray(chunk.values, dtype=np.float64)
+                columns.flush()
+            frame = pd.DataFrame({name: columns[index] for index, name in enumerate(fields)}, index=times, copy=False)
+    else:
+        frame = pd.DataFrame({name: np.asarray(power[name].values, dtype=np.float64) for name in fields}, index=times, copy=False)
+    # Avoid three full-frame copies for the normal, sorted ingestion stream.
+    if not times.hasnans and (len(times) < 2 or np.all(times.values[1:] > times.values[:-1])):
+        return frame
     frame = frame[~frame.index.isna()].sort_index()
     return frame[~frame.index.duplicated(keep="last")]
+
+
+def _latest_power_soc(power: xr.Dataset) -> tuple[pd.Timestamp, float]:
+    """Freshness needs one SOC value, not every telemetry column in history."""
+    if "time" not in power or "BatterySOC" not in power or power.BatterySOC.dims != ("time",):
+        raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
+    times = pd.DatetimeIndex(power.time.values)
+    if times.hasnans or (len(times) > 1 and not np.all(times.values[1:] > times.values[:-1])):
+        # Preserve the existing duplicate/unsorted policy on anomalous inputs.
+        return latest_finite(_power_frame(power[["BatterySOC"]])["BatterySOC"])
+    for end in range(len(times), 0, -65536):
+        start = max(0, end - 65536)
+        values = np.asarray(power.BatterySOC.isel(time=slice(start, end)).values, dtype=float)
+        finite = np.flatnonzero(np.isfinite(values))
+        if finite.size:
+            index = int(finite[-1])
+            return pd.Timestamp(times[start + index]), float(values[index])
+    raise ValueError("No finite samples available for BatterySOC")
 
 
 def latest_finite(series: pd.Series) -> tuple[pd.Timestamp, float]:
@@ -1212,10 +1250,7 @@ def validate_power_input_freshness(
     now: pd.Timestamp | None = None,
 ) -> tuple[pd.Timestamp, float]:
     """Return the latest SOC anchor and reject an operationally stale input."""
-    frame = _power_frame(power)
-    if frame.empty or "BatterySOC" not in frame:
-        raise ValueError("Power dataset needs BatterySOC to initialize the SOC forecast")
-    latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    latest_time, latest_soc = _latest_power_soc(power)
     if max_age_minutes is None:
         return latest_time, latest_soc
     reference = pd.Timestamp(now if now is not None else datetime.now(timezone.utc))
@@ -1549,11 +1584,20 @@ def _update_load_mode_registry(
     return registry, learned_level
 
 
+def _sum_power_columns(frame: pd.DataFrame, fields: list[str], *, min_count: int) -> pd.Series:
+    """Apply the same pandas row sum without a full multi-column temporary."""
+    result = np.empty(len(frame), dtype=np.float64)
+    for start in range(0, len(frame), 65536):
+        end = min(len(frame), start + 65536)
+        result[start:end] = frame.iloc[start:end][fields].sum(axis=1, min_count=min_count).to_numpy(dtype=np.float64)
+    return pd.Series(result, index=frame.index, copy=False)
+
+
 def _observed_solar_w(frame: pd.DataFrame) -> pd.Series:
     solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
     if not solar_fields:
         return pd.Series(dtype=np.float64)
-    return frame[solar_fields].sum(axis=1, min_count=1).clip(lower=0.0)
+    return _sum_power_columns(frame, solar_fields, min_count=1).clip(lower=0.0)
 
 
 def _mpp_active_available_power_mask(frame: pd.DataFrame) -> pd.Series:
@@ -1712,7 +1756,7 @@ def _solar_verification_status(*, excluded: int, accepted_available_power: int) 
 def _observed_load_w(frame: pd.DataFrame) -> pd.Series:
     solar_fields = [name for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West") if name in frame]
     if "BatteryWatts" in frame and len(solar_fields) == 3:
-        solar = frame[solar_fields].sum(axis=1, min_count=len(solar_fields))
+        solar = _sum_power_columns(frame, solar_fields, min_count=len(solar_fields))
         # APS BatteryWatts is positive while charging and negative while
         # discharging, so generation minus battery flow is total station load.
         balanced = (solar - frame["BatteryWatts"]).clip(lower=0.0)
@@ -1721,7 +1765,7 @@ def _observed_load_w(frame: pd.DataFrame) -> pd.Series:
     load_fields = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in frame]
     if not load_fields:
         return pd.Series(dtype=np.float64)
-    return frame[load_fields].sum(axis=1, min_count=1).clip(lower=0.0)
+    return _sum_power_columns(frame, load_fields, min_count=1).clip(lower=0.0)
 
 
 def _clean_dc_only_observation(
@@ -1734,14 +1778,15 @@ def _clean_dc_only_observation(
     if len(solar_fields) != 3 or not required.issubset(frame.columns):
         return None
     start = end - pd.Timedelta(hours=float(DEFAULT_DARK_LOAD_LOOKBACK_HOURS))
+    window = frame.loc[start:end]
     samples = pd.DataFrame(
         {
-            "load_w": _observed_load_w(frame),
-            "solar_w": frame[solar_fields].sum(axis=1, min_count=3),
-            "battery_w": frame["BatteryWatts"],
-            "ac_w": frame["ACOutputWatts"],
+            "load_w": _observed_load_w(frame).loc[start:end],
+            "solar_w": window[solar_fields].sum(axis=1, min_count=3),
+            "battery_w": window["BatteryWatts"],
+            "ac_w": window["ACOutputWatts"],
         }
-    ).loc[start:end]
+    )
     samples = samples.resample("15min").median()
     clean = samples.loc[
         (samples["solar_w"] <= DEFAULT_ZERO_SOLAR_THRESHOLD_W)
@@ -1959,6 +2004,15 @@ def _errors_for_archive_variable(
     return forecast_values[paired] - observed_values[paired], lead_hours[paired]
 
 
+def _repeat_archive_text(archive: xr.Dataset, name: str, default: str = "") -> np.ndarray:
+    """Share per-issue strings across steps instead of copying Unicode buffers."""
+    steps = int(archive.sizes.get("forecast_step", 0))
+    if name not in archive:
+        return np.full(int(archive.sizes.get("issue_time", 0)) * steps, default, dtype=object)
+    values = np.asarray(archive[name].values, dtype=str).reshape(-1).astype(object)
+    return np.repeat(values, steps)
+
+
 def _archive_verification_frame(
     archive: xr.Dataset,
     observed: pd.Series,
@@ -1984,10 +2038,7 @@ def _archive_verification_frame(
     else:
         model_versions = np.full(len(forecast_values), np.nan, dtype=np.float64)
     if "LoadMode" in archive:
-        load_modes = np.repeat(
-            np.asarray(archive["LoadMode"].values, dtype=str).reshape(-1),
-            int(archive.sizes.get("forecast_step", 0)),
-        )
+        load_modes = _repeat_archive_text(archive, "LoadMode")
     else:
         load_modes = np.full(len(forecast_values), "unknown", dtype="U16")
     if "LoadModeLearningReady" in archive:
@@ -2015,12 +2066,7 @@ def _archive_verification_frame(
         independent_cycles = verification_eligible.copy()
 
     def repeated_text(name: str, default: str = "") -> np.ndarray:
-        if name not in archive:
-            return np.full(len(forecast_values), default, dtype="U1")
-        return np.repeat(
-            np.asarray(archive[name].values, dtype=str).reshape(-1),
-            int(archive.sizes.get("forecast_step", 0)),
-        )
+        return _repeat_archive_text(archive, name, default)
 
     forecast_contracts = repeated_text("ForecastModelContractID")
     forecast_identity_ids = repeated_text("ForecastIdentityID")
@@ -3867,8 +3913,13 @@ def build_forecast_dataset(
     elif isinstance(battery_attrs, Mapping) and battery_attrs and not new_verification:
         battery_model = BatteryModel.from_attrs(battery_attrs, default_capacity_kwh=capacity_kwh)
     elif allow_calibration_update:
+        # Fit only the calibration window; copying the full field history can
+        # exhaust the serving host while an otherwise valid forecast is built.
+        battery_history = frame.loc[
+            frame.index >= frame.index.max() - pd.Timedelta(days=float(calibration_days))
+        ]
         battery_model = fit_battery_model(
-            frame.assign(ObservedLoadWatts=_observed_load_w(frame)),
+            battery_history.assign(ObservedLoadWatts=_observed_load_w(frame).reindex(battery_history.index)),
             nominal_capacity_kwh=capacity_kwh, lookback_days=calibration_days,
         )
     else:

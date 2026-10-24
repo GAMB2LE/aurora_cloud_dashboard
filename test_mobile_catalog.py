@@ -14,6 +14,135 @@ import mobile_catalog
 
 
 class MobileCatalogTests(unittest.TestCase):
+    def test_retired_camera_is_hidden_for_latest_and_historical_dates_without_removing_media(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for camera, day, time in (
+                ("mid-south-array-cam", "2026-10-01", "08-00"),
+                ("mid-south-array-cam", "2026-10-02", "09-55"),
+                ("radar-cam", "2026-10-02", "09-56"),
+            ):
+                path = root / camera / day / f"{camera}_{day}_{time}.jpg"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"archived-camera-image")
+            retired = root / "mid-south-array-cam/2026-10-02/mid-south-array-cam_2026-10-02_09-55.jpg"
+
+            with patch.dict(os.environ, {"AURORACAM_RAW_ROOT": str(root)}):
+                latest = mobile_catalog.auroracam()
+                historical = mobile_catalog.auroracam("2026-10-02")
+                retired_time = mobile_catalog.auroracam("2026-10-02", "2026-10-02 09:55")
+                resolved = mobile_catalog.resolve_auroracam_image_path("mid-south-array-cam", "2026-10-02", retired.name)
+                with self.assertRaises(KeyError):
+                    mobile_catalog.auroracam("2026-10-01")
+
+            for response in (latest, historical):
+                self.assertEqual([frame["cameraID"] for frame in response["frames"]], ["radar-cam"])
+                self.assertEqual(response["availableDays"], ["2026-10-02"])
+            self.assertEqual(historical["availableTimesUTC"], ["2026-10-02 09:56"])
+            self.assertEqual(retired_time["frames"], [])
+            self.assertEqual(resolved, retired)
+            self.assertEqual(retired.read_bytes(), b"archived-camera-image")
+
+    def test_deployment_descriptor_only_changes_data_role_for_continuity_mode(self) -> None:
+        environment = {
+            "AURORA_SITE_ENV": "development",
+            "AURORA_DOMAIN": "data-ocean.gamb2le.co.uk",
+            "AURORA_DASHBOARD_REVISION": "abc123def456",
+            "AURORA_DATA_MODE": "",
+        }
+        with patch.dict(os.environ, environment):
+            normal = mobile_catalog.deployment_descriptor()
+            with patch.dict(os.environ, {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                continuity = mobile_catalog.deployment_descriptor()
+        self.assertEqual(normal["dataRole"], "live-mirror")
+        self.assertEqual(continuity, {**normal, "dataRole": "direct-field-continuity"})
+
+    def test_operations_continuity_preserves_real_alerts_and_health(self) -> None:
+        status = {"updatedAt": "2026-10-21T20:00:00Z", "streams": {"power": {"latestSample": "2026-10-21T19:59:00Z"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "continuity.json"
+            original = json.dumps(status)
+            status_path.write_text(original, encoding="utf-8")
+            (Path(tmp) / "alerts.json").write_text(json.dumps({
+                "active": {"test:source-stale": {"title": "Source is stale", "level": "red"}},
+            }), encoding="utf-8")
+            environment = {
+                "AURORA_DATA_MODE": "",
+                "AURORA_CONTINUITY_STATUS_PATH": str(status_path),
+                "OPS_MONITOR_LATEST_HEALTH": str(Path(tmp) / "health.json"),
+                "OPS_MONITOR_LATEST_SNAPSHOT": str(Path(tmp) / "snapshot.json"),
+                "ARCHIVE_HEALTH_PATH": str(Path(tmp) / "archive.json"),
+                "OPS_MONITOR_ALERT_STATE": str(Path(tmp) / "alerts.json"),
+            }
+            with patch.dict(os.environ, environment):
+                normal = mobile_catalog.operations()
+                with patch.dict(os.environ, {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                    response = mobile_catalog.operations()
+            self.assertEqual(status_path.read_text(encoding="utf-8"), original)
+        self.assertNotIn("continuity", normal)
+        self.assertEqual(response["continuity"]["status"], status)
+        self.assertEqual(response["alerts"], normal["alerts"])
+        self.assertIn("test:source-stale", [alert["id"] for alert in response["alerts"]])
+        self.assertEqual(response["overallLevel"], normal["overallLevel"])
+        self.assertEqual(response["streamStates"], normal["streamStates"])
+        self.assertEqual(response["summary"], "Recent direct field data; JASMIN mirror unavailable. " + normal["summary"])
+
+    def test_continuity_reports_invalid_status_without_claiming_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text("incomplete json", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "AURORA_DATA_MODE": "direct-field-continuity",
+                "AURORA_CONTINUITY_STATUS_PATH": str(path),
+            }):
+                response = mobile_catalog.continuity_status()
+        self.assertIn("_error", response["status"])
+
+    def test_operations_continuity_uses_snapshot_time_without_refreshing_archive_evidence(self) -> None:
+        archive_time = "2026-10-18T06:12:00Z"
+        health_time = "2026-10-21T20:00:00Z"
+        snapshot_time = "2026-10-21T20:02:00Z"
+        archive_payload = {
+            "generated_at": archive_time,
+            "overall_level": "red",
+            "failures": ["object_store_raw_missing=3"],
+            "verification": {"state": "failed", "generated_at": archive_time},
+            "retention": {"pruning_allowed": False},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "archive.json"
+            original = json.dumps(archive_payload)
+            archive.write_text(original, encoding="utf-8")
+            archive_epoch = datetime.fromisoformat(archive_time.replace("Z", "+00:00")).timestamp()
+            os.utime(archive, (archive_epoch, archive_epoch))
+            (root / "health.json").write_text(json.dumps({"time_utc": health_time}), encoding="utf-8")
+            (root / "alerts.json").write_text("{}", encoding="utf-8")
+            environment = {
+                "AURORA_DATA_MODE": "",
+                "AURORA_CONTINUITY_STATUS_PATH": "",
+                "OPS_MONITOR_LATEST_HEALTH": str(root / "health.json"),
+                "OPS_MONITOR_LATEST_SNAPSHOT": str(root / "snapshot.json"),
+                "ARCHIVE_HEALTH_PATH": str(archive),
+                "OPS_MONITOR_ALERT_STATE": str(root / "alerts.json"),
+            }
+            for timestamp_key in ("time_utc", "snapshot_time_utc", None):
+                with self.subTest(timestamp_key=timestamp_key):
+                    snapshot = {timestamp_key: snapshot_time} if timestamp_key else {}
+                    (root / "snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+                    with patch.dict(os.environ, environment):
+                        normal = mobile_catalog.operations()
+                        with patch.dict(os.environ, {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                            continuity = mobile_catalog.operations()
+                    self.assertEqual(normal["updatedAt"], archive_time)
+                    self.assertEqual(continuity["updatedAt"], snapshot_time if timestamp_key else health_time)
+                    self.assertEqual(continuity["overallLevel"], "red")
+                    for key in ("archiveStatus", "archiveDelivery", "alerts", "rootCauseGroups"):
+                        self.assertEqual(continuity[key], normal[key])
+                    self.assertEqual(continuity["archiveStatus"]["verification"], archive_payload["verification"])
+                    self.assertEqual(continuity["sources"]["archiveHealth"], normal["sources"]["archiveHealth"])
+                    self.assertEqual(archive.read_text(encoding="utf-8"), original)
+
     def test_power_bundle_digest_has_fixed_cross_repo_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -87,7 +216,12 @@ class MobileCatalogTests(unittest.TestCase):
                 "AURORA_POWER_FORECAST_BUNDLE_READY_PATH": str(manifest),
                 "AURORA_POWER_FORECAST_BUNDLE_STATUS_PATH": str(status_path),
             }
-            with patch.dict(os.environ, environment, clear=False):
+            with (
+                patch.dict(os.environ, environment, clear=False),
+                patch.object(mobile_catalog, "datetime", wraps=datetime) as clock,
+            ):
+                # This fixture is deliberately valid on its recorded issue date.
+                clock.now.return_value = datetime(2026, 9, 6, tzinfo=timezone.utc)
                 self.assertEqual(
                     mobile_catalog.power_display_section_path("forecast").resolve(),
                     forecast.resolve(),
@@ -382,6 +516,7 @@ class MobileCatalogTests(unittest.TestCase):
         spec = mobile_catalog.OPERATIONS_STREAMS[0]
         snapshot = {str(spec["source"]): 1.0}
         snapshot.update({str(key): 1.0 for key in spec["services"]})
+        snapshot["cl61_product_sample_time_utc"] = mobile_catalog.utc_now_iso()
         state = mobile_catalog._stream_state(snapshot, spec)
 
         self.assertEqual(state["level"], "green")
@@ -463,6 +598,7 @@ class MobileCatalogTests(unittest.TestCase):
             }
             for spec in mobile_catalog.OPERATIONS_STREAMS:
                 snapshot_payload[str(spec["source"])] = 1
+                snapshot_payload[f"{mobile_catalog._stream_prefix(spec)}_product_sample_time_utc"] = mobile_catalog.utc_now_iso()
                 for service in spec["services"]:
                     snapshot_payload[str(service)] = 1
             snapshot.write_text(json.dumps(snapshot_payload), encoding="utf-8")
@@ -610,7 +746,12 @@ class MobileCatalogTests(unittest.TestCase):
             health = root / "health.json"
             archive = root / "archive.json"
             alerts = root / "alerts.json"
-            snapshot.write_text('{"time_utc":"2026-08-16T12:00:00Z"}')
+            snapshot_payload = {"time_utc": mobile_catalog.utc_now_iso()}
+            for spec in mobile_catalog.OPERATIONS_STREAMS:
+                snapshot_payload[str(spec["source"])] = 1
+                snapshot_payload[f"{mobile_catalog._stream_prefix(spec)}_product_sample_time_utc"] = mobile_catalog.utc_now_iso()
+                snapshot_payload.update({key: 1 for key in spec["services"]})
+            snapshot.write_text(json.dumps(snapshot_payload))
             health.write_text('{"overall_level":"green"}')
             archive.write_text(
                 json.dumps(

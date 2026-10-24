@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +16,18 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_development_banner_labels_direct_field_continuity(self) -> None:
+        with (
+            patch.object(app, "SITE_ENV", "development"),
+            patch.object(app, "SITE_ENV_EXPLICIT", True),
+            patch.dict("os.environ", {"AURORA_DATA_MODE": ""}),
+        ):
+            normal = app._site_env_banner_pane()
+            with patch.dict("os.environ", {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                continuity = app._site_env_banner_pane()
+        self.assertIn("Development site - live mirrored data", normal.object)
+        self.assertIn("Development site - recent direct field data; JASMIN mirror unavailable", continuity.object)
+
     def test_naive_utc_datetime_rejects_non_finite_timestamp(self) -> None:
         self.assertIsNone(app._as_naive_utc_datetime(pd.NaT))
         self.assertIsNone(app._as_naive_utc_datetime(np.datetime64("NaT")))
@@ -89,9 +101,9 @@ class DashboardShellTests(TestCase):
             self.assertIsNone(app._browser_performance_probe())
 
     def test_browser_performance_probe_rejects_unknown_events(self) -> None:
-        probe = app.BrowserPerformanceProbe()
         events = []
         with patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))):
+            probe = app.BrowserPerformanceProbe(log_callback=app._perf_log)
             probe._handle_msg({"event": "untrusted", "duration_ms": 1})
             probe._handle_msg({"event": "browser_document_ready", "duration_ms": 12.5, "path": "/app"})
 
@@ -896,7 +908,7 @@ class DashboardShellTests(TestCase):
 
     def test_operations_marks_stale_pdu_off_streams_as_paused(self) -> None:
         snapshot = {
-            "time_utc": "2026-07-19T12:00:00Z",
+            "time_utc": datetime.now(timezone.utc).isoformat(),
             "cl61_source_recent_state": 0,
             "cl61_source_age_min": 447,
             "radar_source_recent_state": 0,
@@ -910,13 +922,25 @@ class DashboardShellTests(TestCase):
             "wxcam_source_recent_state": 1,
             "source_host_probe_fail_count": 0,
         }
+        for prefix in ("vaisalamet", "asfs_logger", "asfs_fast_sonic", "asfs_fast_gas", "power", "wxcam"):
+            snapshot[f"{prefix}_product_sample_time_utc"] = datetime.now(timezone.utc).isoformat()
         with patch.object(app.mobile_catalog, "pdu_outlet_states", return_value={5: False, 6: True, 8: False}):
             paused = app._ops_expected_paused_prefixes()
             recent, stale, paused_count = app._ops_source_health(snapshot, paused)
 
         self.assertEqual(paused, {"cl61", "hatpro"})
-        self.assertEqual((recent, stale, paused_count), (5, 1, 2))
+        self.assertEqual((recent, stale, paused_count), (6, 1, 2))
         self.assertIn("Paused - PDU outlet off", app._ops_source_freshness_text(snapshot, "cl61", intentionally_paused=True))
+
+    def test_operations_collection_health_rejects_successful_noop_and_missing_evidence(self) -> None:
+        snapshot = {
+            "asfs_logger_source_sync_service_healthy_state": 1,
+            "asfs_logger_product_sample_time_utc": (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),
+        }
+        self.assertEqual(app._ops_collection_level(snapshot, "asfs_logger"), "red")
+        self.assertIn("Delivered sample stale", app._ops_source_freshness_text(snapshot, "asfs_logger"))
+        self.assertEqual(app._ops_collection_level({}, "asfs_logger"), "amber")
+        self.assertEqual(app._ops_source_freshness_text({}, "asfs_logger"), "Collection timestamp unavailable")
 
     def test_combined_operations_series_allows_all_missing_columns(self) -> None:
         dataset = xr.Dataset({"source_age": (("time",), np.array([np.nan, np.nan]))})
