@@ -24,6 +24,8 @@ import urllib.request
 import pandas as pd
 import xarray as xr
 
+from enclosure_sensors import load_enclosure_sensors, snapshot_metrics
+
 
 RAW_ROOT_DEFAULT = Path("/project/aurora/raw/ops_monitor")
 HEALTH_OUTPUT_ROOT_DEFAULT = Path("/data/aurora/products/ops_monitor/health")
@@ -1142,6 +1144,9 @@ def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[s
             record["aps_internal_dewpoint_risk_state"] = 1 if margin <= APS_DEWPOINT_RED_MARGIN_C else 0
     else:
         record["aps_internal_humidity_available_state"] = 0
+
+    # Display-only BLE metrics never populate the legacy APS email-alert keys.
+    record.update(snapshot_metrics(load_enclosure_sensors(now=now)))
 
     failed_processing, processing_timer_enabled = _collect_unit_metrics(PROCESSING_UNITS, record)
     _collect_batch_resource_metrics(record, now_epoch)

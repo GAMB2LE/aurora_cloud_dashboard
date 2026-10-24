@@ -17,6 +17,7 @@ from auroracam_catalog import AURORACAM_CAMERAS, available_days as auroracam_ava
 from display_artifact_manifest import load_manifest
 from menapia_flight_status import summarize_menapia_flight
 from uas_mqtt import load_uas_mqtt_log
+from enclosure_sensors import load_enclosure_sensors, power_panel as enclosure_power_panel
 from instrument_registry import (
     INSTRUMENTS,
     INSTRUMENT_BY_ID,
@@ -1080,6 +1081,7 @@ def operations() -> dict[str, Any]:
         },
         "alerts": active_alerts,
         "trendCards": _trend_cards(snapshot),
+        "enclosureSensors": load_enclosure_sensors(),
         "sources": {
             "health": {**file_record(operations_health_path()), "path": str(operations_health_path())},
             "snapshot": {**file_record(operations_snapshot_path()), "path": str(operations_snapshot_path())},
@@ -2173,6 +2175,16 @@ def _prune_preview_cache(cache: Path, max_bytes: int = 50 * 1024 * 1024) -> None
 
 
 def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
+    """Add independently timed BLE observations even when Power is unavailable."""
+    payload = _power_without_enclosure(window=window, group=group)
+    if group in {"all", "current", "observed"}:
+        enclosure_panel = enclosure_power_panel(window, max_points=MOBILE_POWER_MAX_POINTS)
+        if any(trace["points"] for trace in enclosure_panel["traces"]):
+            payload["panels"].append(enclosure_panel)
+    return payload
+
+
+def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[str, Any]:
     """Return compact chart points without reading unrelated Power sections."""
     supported_groups = {
         "all",

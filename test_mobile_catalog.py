@@ -1660,6 +1660,91 @@ class MobileCatalogTests(unittest.TestCase):
             "Additive activity (sum 0-3; each instrument 0/1)",
         )
 
+    def test_forecast_section_keeps_ensemble_soc_when_operating_plan_is_unavailable(self) -> None:
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        from generate_power_display_summary import _section_subset
+        from grouped_timeseries import build_power_display_summary_dataset
+
+        anchor = pd.Timestamp("2026-07-20T07:00:00")
+        times = pd.date_range(anchor, periods=121, freq="1h")
+        central = np.linspace(90.0, 50.0, len(times))
+        ensemble = xr.Dataset(
+            {
+                "BatterySOCForecastP10": (("time",), central - 5.0),
+                "BatterySOCForecastP50": (("time",), central),
+                "BatterySOCForecastP90": (("time",), central + 5.0),
+                "BatterySOCBelow40Probability": (("time",), np.zeros(len(times))),
+            },
+            coords={"time": times},
+            attrs={
+                "initial_soc_time": anchor.isoformat(),
+                "generated_at_utc": "2026-07-20T07:05:00+00:00",
+            },
+        )
+        power = xr.Dataset(
+            {"BatterySOC": (("time",), [90.0])}, coords={"time": [anchor]}
+        )
+        section = _section_subset(
+            build_power_display_summary_dataset(power, ensemble_forecast_ds=ensemble),
+            "forecast",
+        )
+        self.assertIn("SystemAsIsDecisionSOCP50", section)
+        self.assertNotIn("BatterySOCForecastP50", section)
+
+        for plan_state in ("missing", "unavailable", "mismatched"):
+            with self.subTest(plan_state=plan_state), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                display_path = root / "power_forecast_display.zarr"
+                scenario_path = root / "power_operating_scenarios.zarr"
+                section.to_zarr(display_path, mode="w", consolidated=True)
+                if plan_state != "missing":
+                    xr.Dataset(
+                        {
+                            "ScenarioSOCP50": (("scenario", "time"), [central - 20.0]),
+                        },
+                        coords={"scenario": ["current_mode"], "time": times},
+                        attrs={
+                            "planning_status": "unavailable" if plan_state == "unavailable" else "ready",
+                            "planning_status_reason": "Insufficient forecast coverage",
+                            "initial_soc_time": (anchor - pd.Timedelta(hours=2)).isoformat(),
+                        },
+                    ).to_zarr(scenario_path, mode="w", consolidated=True)
+                with patch.dict(
+                    os.environ,
+                    {"POWER_FORECAST_DISPLAY_ZARR_PATH": str(display_path)},
+                ), patch.object(
+                    mobile_catalog, "power_operating_scenario_paths", return_value=(scenario_path,)
+                ), patch.object(mobile_catalog, "datetime", wraps=datetime) as mocked_datetime:
+                    mocked_datetime.now.return_value = datetime(2026, 7, 20, 7, tzinfo=timezone.utc)
+                    response = mobile_catalog.power(window="96h", group="forecast")
+
+                self.assertNotIn("warning", response)
+                panels = {panel["id"]: panel for panel in response["panels"]}
+                self.assertNotIn("operating_plan_scenarios", panels)
+                for panel_id, horizon in (("soc_24h_forecast", 24), ("soc_ecmwf_forecast", 96)):
+                    panel = panels[panel_id]
+                    trace = next(
+                        trace for trace in panel["traces"]
+                        if trace["id"] == "SystemAsIsDecisionSOCP50"
+                    )
+                    np.testing.assert_allclose(
+                        [point["value"] for point in trace["points"]], central[:horizon + 1],
+                        atol=1e-5,
+                    )
+                    self.assertEqual(panel["forecastContext"]["anchorTime"], anchor.isoformat())
+                    self.assertEqual(panel["forecastContext"]["horizonHours"], horizon)
+                    self.assertEqual(
+                        trace["points"][-1]["time"],
+                        (anchor + pd.Timedelta(hours=horizon)).isoformat() + "Z",
+                    )
+                traces = {trace["id"] for trace in panels["soc_ecmwf_forecast"]["traces"]}
+                self.assertEqual(traces, {
+                    "SystemAsIsDecisionSOCP10", "SystemAsIsDecisionSOCP50",
+                    "SystemAsIsDecisionSOCP90", "SystemAsIsDecisionBelow40Probability",
+                })
+
     def test_96_hour_system_and_scenario_cards_share_anchor_values_and_endpoint(self) -> None:
         import numpy as np
         import pandas as pd

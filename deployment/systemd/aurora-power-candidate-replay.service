@@ -1,0 +1,37 @@
+# Example only: create and permission the explicit recovery/replay directories
+# and verify the recovered archive before installing/enabling this collector.
+[Unit]
+Description=Bounded offline replay of verified AURORA power forecast issues
+ConditionPathExists=/data/aurora/dev-products/power/candidates/integrity-repair-20260911/recovered.zarr/.zmetadata
+ConditionPathExists=/data/aurora/dev-products/power/forecast-issues
+
+[Service]
+Type=oneshot
+User=aurora
+Group=aurora
+WorkingDirectory=/opt/aurora-cloud-dashboard
+Environment=AURORA_POWER_CANDIDATE_RETRIEVAL_MODE=offline
+ExecStart=/opt/aurora-cloud-dashboard/venv/bin/python /opt/aurora-cloud-dashboard/run_power_candidate_replay.py --issues-root /data/aurora/dev-products/power/forecast-issues --recovered-archive-zarr /data/aurora/dev-products/power/candidates/integrity-repair-20260911/recovered.zarr --candidate-root /data/aurora/dev-products/power/candidates/replay-20260911 --power-zarr /data/aurora/products/power/power.zarr --pdu-zarr /data/aurora/products/power/pdu.zarr --asfs-zarr /data/aurora/products/asfs_logger/asfs_logger.zarr --menapia-mqtt-log /project/aurora/raw/menapia/menapia_mqtt.log --physical-config /opt/aurora-cloud-dashboard/config/power_solar_physical_candidate_v1.json --max-issues 1 --max-seconds 1200
+Nice=19
+CPUQuota=25%
+CPUWeight=5
+MemoryHigh=1G
+MemoryMax=1.5G
+RuntimeMaxSec=24min
+TimeoutStartSec=24min
+TimeoutStopSec=30s
+OOMPolicy=stop
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/opt/aurora-cloud-dashboard /data/aurora/products /data/aurora/dev-products /project/aurora/raw
+ReadWritePaths=/data/aurora/dev-products/power/candidates/replay-20260911

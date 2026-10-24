@@ -35,6 +35,7 @@ DEV_ARCHIVE = Path(
     )
 )
 POWER_ZARR = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
+PDU_ZARR = Path(os.environ.get("POWER_PDU_ZARR_PATH", "/data/aurora/products/power/pdu.zarr"))
 EVALUATION_ROOT = Path(
     os.environ.get(
         "AURORA_POWER_PROD_DEV_EVALUATION_ROOT",
@@ -60,6 +61,7 @@ def _materialise_evidence(
     prod_archive_zarr: Path,
     dev_archive_zarr: Path,
     power_zarr: Path,
+    pdu_zarr: Path | None = None,
 ) -> xr.Dataset:
     """Build pairs first, loading only APS samples those pairs can score."""
 
@@ -73,7 +75,11 @@ def _materialise_evidence(
     with xr.open_zarr(power_zarr, chunks={}) as opened:
         observation_view = paired_observation_view(opened, evidence)
         observations = observation_view.load()
-    return attach_paired_observations(evidence, observations)
+    operating_state = None
+    if pdu_zarr is not None and pdu_zarr.exists():
+        with xr.open_zarr(pdu_zarr, chunks={}) as opened:
+            operating_state = paired_observation_view(opened, evidence).load()
+    return attach_paired_observations(evidence, observations, operating_state=operating_state)
 
 
 def run_evaluation(
@@ -85,6 +91,7 @@ def run_evaluation(
     status_json: Path,
     history_jsonl: Path,
     bootstrap_samples: int = 500,
+    pdu_zarr: Path | None = None,
 ) -> dict[str, Any]:
     """Run one fail-closed evaluation with durable lifecycle evidence."""
 
@@ -117,6 +124,7 @@ def run_evaluation(
             prod_archive_zarr=prod_archive_zarr,
             dev_archive_zarr=dev_archive_zarr,
             power_zarr=power_zarr,
+            pdu_zarr=pdu_zarr,
         )
         evidence_status = str(evidence.attrs.get("status", "complete"))
         return write_paired_products(
@@ -168,6 +176,7 @@ def main() -> None:
     parser.add_argument("--prod-archive-zarr", type=Path, default=PROD_ARCHIVE)
     parser.add_argument("--dev-archive-zarr", type=Path, default=DEV_ARCHIVE)
     parser.add_argument("--power-zarr", type=Path, default=POWER_ZARR)
+    parser.add_argument("--pdu-zarr", type=Path, default=PDU_ZARR)
     parser.add_argument(
         "--output-zarr",
         type=Path,
@@ -198,6 +207,7 @@ def main() -> None:
             status_json=args.status_json,
             history_jsonl=args.history_jsonl,
             bootstrap_samples=args.bootstrap_samples,
+            pdu_zarr=args.pdu_zarr,
         )
     finally:
         for signum, previous in previous_handlers.items():

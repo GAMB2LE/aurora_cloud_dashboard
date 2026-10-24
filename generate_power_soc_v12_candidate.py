@@ -35,10 +35,12 @@ from generate_power_soc_forecast import (
     _write_state,
     generate,
     site_irradiance_series_digest,
+    embedded_source_meteorology,
     validate_paired_candidate,
     validate_provider,
 )
 from generate_power_soc_physical_candidate import _baseline_seed_state
+from power_battery_model import BatteryModel
 from power_solar_model import (
     load_physical_solar_config,
     physical_solar_config_digest,
@@ -49,7 +51,9 @@ from power_issue_time_features import (
     build_issue_time_feature_snapshot,
 )
 from power_public_source_ablation import run_public_source_ablations
+from power_implementation_identity import forecast_implementation_digest
 from power_v12_ensemble import (
+    align_baseline_ensemble_grid,
     append_candidate_ensemble_archive,
     baseline_ensemble_signature,
     build_candidate_memberwise_ensemble,
@@ -670,6 +674,7 @@ def run_candidate(
         baseline_forecast_zarr,
         expected_signature=baseline_signature,
     )
+    baseline_battery = BatteryModel.from_paired_attrs(attrs)
     site_irradiance, site_irradiance_digest, site_irradiance_provenance = (
         _embedded_site_irradiance(baseline)
     )
@@ -691,9 +696,16 @@ def run_candidate(
     physical_contract = physical_solar_contract_id(configuration, latitude=latitude, longitude=longitude)
     baseline_control_contract_id, baseline_control_system_version = _baseline_control_identity(attrs)
     code_revision = _code_revision()
+    implementation_digest = forecast_implementation_digest()
     baseline_ensemble, baseline_ensemble_signature_value, ensemble_input_status = (
         _load_baseline_ensemble(baseline_ensemble_zarr)
     )
+    if baseline_ensemble is not None:
+        try:
+            baseline_ensemble = align_baseline_ensemble_grid(baseline, baseline_ensemble)
+        except (ValueError, KeyError) as exc:
+            baseline_ensemble = None
+            ensemble_input_status = f"blocked_baseline_ensemble_alignment:{exc}"
     public_source_manifest_root_digest = _public_source_manifest_root_digest(
         public_source_manifest_root
     )
@@ -704,6 +716,7 @@ def run_candidate(
         and existing_status.get("baseline_publication_signature") == baseline_signature
         and existing_status.get("candidate_feature_set_version") == V12_FEATURE_SET_VERSION
         and existing_status.get("candidate_code_revision") == code_revision
+        and existing_status.get("forecast_implementation_digest") == implementation_digest
         and existing_status.get("physical_solar_config_sha256") == config_digest
         and existing_status.get("baseline_control_contract_id") == baseline_control_contract_id
         and existing_status.get("baseline_control_system_version") == baseline_control_system_version
@@ -736,16 +749,31 @@ def run_candidate(
         issue_time=issue_time,
         training_start=history_start,
     )
+    # Scoring may use matured truth; predictors must still stop at issue time.
+    evidence_end = min(
+        pd.Timestamp.now(tz="UTC").tz_localize(None),
+        pd.Timestamp(baseline["time"].values[-1]),
+    )
     with xr.open_zarr(power_zarr, chunks={}) as opened:
         fields = [name for name in POWER_HISTORY_FIELDS if name in opened]
         if "BatterySOC" not in fields:
             raise ValueError("Power input is missing BatterySOC for candidate load/evidence features")
         power_for_evidence = opened[fields].sel(
-            time=slice(evidence_start.to_datetime64(), issue_time.to_datetime64())
+            time=slice(evidence_start.to_datetime64(), evidence_end.to_datetime64())
         ).load()
     power_for_fit = power_for_evidence.sel(
         time=slice(history_start.to_datetime64(), issue_time.to_datetime64())
     )
+    # PDU state is read-only, bounded and explicitly absent when unavailable.
+    # Separate scoring state from the issue-time fit to prevent future leakage.
+    operating_state = None
+    if Path(pdu_zarr).exists():
+        with xr.open_zarr(pdu_zarr, chunks={}) as opened:
+            state_fields = [name for name in opened.data_vars if name.startswith("PDUOutlet")]
+            if state_fields and "time" in opened.coords:
+                operating_state = opened[state_fields].sel(
+                    time=slice(evidence_start.to_datetime64(), evidence_end.to_datetime64())
+                ).load()
     feature_snapshot = build_issue_time_feature_snapshot(
         issue_time=issue_time,
         power_history=power_for_fit,
@@ -779,6 +807,8 @@ def run_candidate(
         load_mode=str(attrs.get("load_mode", "unknown")),
         control_forecast_model_contract_id=baseline_control_contract_id,
         control_forecast_system_version=baseline_control_system_version,
+        operating_state=(operating_state.sel(time=slice(None, issue_time.to_datetime64()))
+                         if operating_state is not None else None),
     )
     seed_state = _baseline_seed_state(attrs)
     fixed_bias = _fixed_bias_from_baseline(attrs)
@@ -824,6 +854,7 @@ def run_candidate(
             source_availability_code=feature_snapshot.source_availability_code,
             feature_degradation_codes=feature_snapshot.degradation_codes,
         )
+        identity["forecast_implementation_digest"] = implementation_digest
         output = generate(
             power_zarr=power_zarr,
             pdu_zarr=pdu_zarr,
@@ -859,6 +890,9 @@ def run_candidate(
             ),
             site_irradiance_override=site_irradiance,
             site_irradiance_provenance=site_irradiance_provenance,
+            site_meteorology_override=embedded_source_meteorology(baseline),
+            fixed_load_reference=baseline,
+            fixed_battery_model=baseline_battery,
         )
         with xr.open_zarr(output, chunks={}) as opened:
             candidate = opened.load()
@@ -909,7 +943,10 @@ def run_candidate(
             power_for_evidence,
             lane=lane,
             evaluation_contract=evaluation_contract,
+            operating_state=operating_state,
         )
+        evidence.attrs["evaluation_observation_cutoff_utc"] = evidence_end.isoformat()
+        evidence.attrs["evaluation_policy"] = "matured_truth_positive_leads_v2"
         _atomic_write_zarr(evidence, lane_root / "campaign_evidence.zarr")
         summary = campaign_score_surfaces(evidence)
         ensemble_summary: dict[str, object] = {
@@ -927,6 +964,7 @@ def run_candidate(
                     physical_config=configuration,
                     latitude=latitude,
                     longitude=longitude,
+                    load_residual_profile=load_profile,
                 )
                 ensemble_contract = str(
                     candidate_ensemble.attrs["candidate_ensemble_contract_id"]
@@ -1037,6 +1075,7 @@ def run_candidate(
         "baseline_control_contract_id": baseline_control_contract_id,
         "baseline_control_system_version": baseline_control_system_version,
         "baseline_issue_snapshot": str(baseline_forecast_zarr),
+        "forecast_implementation_digest": implementation_digest,
         "baseline_ensemble_path": str(baseline_ensemble_zarr or ""),
         "baseline_ensemble_signature": baseline_ensemble_signature_value,
         "memberwise_ensemble_input_status": ensemble_input_status,

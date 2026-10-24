@@ -28,6 +28,37 @@ class BatteryModel:
     calibration_confidence: str = "default"
 
     @classmethod
+    def from_paired_attrs(cls, attrs: Mapping[str, object]) -> "BatteryModel":
+        """Read an archived comparator without defaults, clipping or refitting.
+
+        Operational state loading is intentionally tolerant. An ablation is
+        different: silently substituting battery physics invalidates its pair.
+        """
+        model = cls.from_attrs(attrs)
+        restored = model.attrs()
+        if attrs.get("battery_energy_model") != restored["battery_energy_model"]:
+            raise ValueError("Paired baseline battery has an unsupported energy model")
+        for name in (
+            "battery_usable_capacity_kwh", "battery_charge_efficiency",
+            "battery_discharge_efficiency", "battery_parasitic_load_w",
+            "battery_max_charge_w", "battery_max_discharge_w",
+        ):
+            try:
+                value = float(attrs[name])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Paired baseline battery is missing or invalid: {name}") from exc
+            if not np.isfinite(value) or value != float(restored[name]):
+                raise ValueError(f"Paired baseline battery cannot be replayed unchanged: {name}")
+        if "battery_capacity_kwh" in attrs:
+            try:
+                capacity = float(attrs["battery_capacity_kwh"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Paired baseline battery has invalid nominal capacity") from exc
+            if capacity != model.usable_capacity_kwh:
+                raise ValueError("Paired baseline battery has conflicting capacity fields")
+        return model
+
+    @classmethod
     def from_attrs(
         cls,
         attrs: Mapping[str, object],

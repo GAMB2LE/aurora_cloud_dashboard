@@ -37,6 +37,7 @@ from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+import enclosure_sensors
 from power_operating_scenarios import KIT_ORDER, MIN_RUN_HOURS, evaluate_custom_schedule
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -2513,6 +2514,32 @@ def _ops_light_markup(level: str, text: str) -> str:
     )
 
 
+def _ops_enclosure_cards_markup() -> str:
+    cards = []
+    levels = {"ok": "green", "warning": "amber", "error": "red", "unknown": "gray"}
+    states = {"fresh": "Fresh", "delayed": "Delayed", "stale": "No recent reading", "unavailable": "Unavailable"}
+    for sensor in enclosure_sensors.load_enclosure_sensors():
+        temperature, humidity = sensor["temperatureC"], sensor["relativeHumidityPct"]
+        value = "No data" if temperature is None or humidity is None else f"{temperature:.1f} C / {humidity:.0f} % RH"
+        detail = [states[sensor["state"]]]
+        if sensor["observedAt"]:
+            detail.append(f"Received {sensor['observedAt']}")
+        if sensor["ageMinutes"] is not None:
+            detail.append(f"{sensor['ageMinutes']:.1f} min old")
+        for key, label, units in (("dewPointC", "Dew point", "C"), ("dewPointMarginC", "Air dew-point margin", "C"), ("batteryPct", "Battery", "%"), ("rssiDbm", "RSSI", "dBm")):
+            if sensor[key] is not None:
+                detail.append(f"{label} {sensor[key]:.1f} {units}")
+        if sensor["id"] == "ass":
+            detail.append("Inside ASS, below the top shelf, behind the fan")
+        detail.append(sensor["source"])
+        cards.append(_ops_card_markup(sensor["title"], levels[sensor["level"]], value, "; ".join(detail)))
+    return (
+        "<div class='ops-section'><div class='ops-section-title'>Enclosure sensors</div>"
+        f"<div class='ops-grid ops-grid--summary'>{''.join(cards)}</div>"
+        "<div class='ops-footnote'>Display-only sensor reception status. Dew point uses paired air measurements; surface condensation is not measured.</div></div>"
+    )
+
+
 def _ops_card_markup(title: str, level: str, value: str, meta: str = "") -> str:
     meta_markup = f"<div class='ops-card__meta'>{escape(meta)}</div>" if meta else ""
     return (
@@ -2804,6 +2831,7 @@ def _ops_operations_markup() -> str:
                 "<div class='ops-shell'>"
                 "<div class='ops-section-title'>Operations Dashboard</div>"
                 f"{_ops_card_markup('Operations snapshot', 'red', 'Missing', missing_meta)}"
+                f"{_ops_enclosure_cards_markup()}"
                 "</div>"
             )
         if snapshot.get("_error"):
@@ -2812,6 +2840,7 @@ def _ops_operations_markup() -> str:
                 "<div class='ops-shell'>"
                 "<div class='ops-section-title'>Operations Dashboard</div>"
                 f"{_ops_card_markup('Operations snapshot', 'red', 'Unreadable', snapshot.get('_error', 'Unknown error'))}"
+                f"{_ops_enclosure_cards_markup()}"
                 "</div>"
             )
 
@@ -3294,6 +3323,7 @@ def _ops_operations_markup() -> str:
             "<div class='ops-section-title'>System summary</div>"
             f"<div class='ops-grid ops-grid--summary'>{''.join(summary_cards)}</div>"
             "</div>"
+            f"{_ops_enclosure_cards_markup()}"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Root-cause groups</div>"
             f"<div class='ops-grid ops-grid--root-cause'>{root_cause_cards}</div>"
@@ -8834,6 +8864,7 @@ def _get_power_plan_editor() -> pn.Card:
 
 
 power_plan_editor_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
+enclosure_power_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
 
 mobile_custom_cl61_start = pn.widgets.DatetimePicker(
     name="Instrument start (UTC)",
@@ -9157,6 +9188,7 @@ def _sync_power_section_visibility() -> None:
     power_browser_guidance_container.visible = is_forecast
     interactive_content.visible = not is_forecast
     power_plan_editor_container.visible = is_forecast
+    enclosure_power_container.visible = is_power and not is_forecast
     if is_forecast:
         guidance = globals().get("_browser_power_briefing")
         if not power_browser_guidance_container.objects and callable(guidance):
@@ -9205,7 +9237,6 @@ interactive_tab = pn.Column(
     power_browser_guidance_container,
     interactive_content,
     power_plan_editor_container,
-    interactive_footer,
     sizing_mode="stretch_width",
 )
 science_quicklooks_tab = pn.Column(
@@ -10069,6 +10100,56 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
     )
 
 
+_enclosure_power_plot = pn.pane.Plotly(sizing_mode="stretch_width", config={"displayModeBar": False, "responsive": True})
+_enclosure_power_explanation = pn.pane.Markdown()
+_enclosure_power_card_container = pn.Column(
+    pn.pane.Markdown("### Enclosure conditions"),
+    _enclosure_power_explanation,
+    _enclosure_power_plot,
+    sizing_mode="stretch_width",
+)
+
+
+def _enclosure_power_card() -> pn.Column:
+    """Update a stable chart from canonical BLE data, independently of Power."""
+    panel = enclosure_sensors.power_panel()
+    figure = make_subplots(specs=[[{"secondary_y": True}]])
+    for trace in panel["traces"]:
+        times, values, previous_segment = [], [], None
+        for point in trace["points"]:
+            if previous_segment is not None and point["segment"] != previous_segment:
+                times.append(point["time"])
+                values.append(None)
+            times.append(point["time"])
+            values.append(point["value"])
+            previous_segment = point["segment"]
+        # A null-only trace keeps an unavailable sensor in the legend without
+        # inventing an observation or a timestamp.
+        figure.add_trace(go.Scatter(x=times or [None], y=values or [None], name=trace["label"], mode="lines", connectgaps=False, showlegend=True, line={"color": trace["color"]}), secondary_y=trace["axis"] == "right")
+    now = datetime.now(timezone.utc)
+    mobile = _mobile_view_requested()
+    legend = dict(orientation="v" if mobile else "h", y=1.08, yanchor="bottom", x=0, font=dict(size=12))
+    if not mobile:
+        legend.update(entrywidth=0.32, entrywidthmode="fraction")
+    figure.update_layout(height=560 if mobile else 460, margin=dict(l=55, r=70 if mobile else 55, t=170 if mobile else 100, b=80), legend=legend, paper_bgcolor="white", plot_bgcolor="white")
+    figure.update_xaxes(type="date", title_text="Receiver time (UTC)", title_standoff=15, nticks=3, tickfont=dict(size=11), tickformat="%d %b<br>%H:%M", range=[now - timedelta(hours=24), now])
+    if not any(trace["points"] for trace in panel["traces"]):
+        figure.add_annotation(text="No enclosure readings in the latest 24 hours", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+    figure.update_yaxes(title_text=panel["leftAxisLabel"], secondary_y=False)
+    figure.update_yaxes(title_text=panel["rightAxisLabel"], range=[0, 100], secondary_y=True)
+    _enclosure_power_explanation.object = panel["explanation"]
+    _enclosure_power_plot.object = figure
+    return _enclosure_power_card_container
+
+
+@pn.depends(power_view_select.param.value, range_end.param.value)
+def _enclosure_power_view(section, _live_refresh_anchor):
+    return _enclosure_power_card() if section == "current" else pn.Column()
+
+
+enclosure_power_container[:] = [pn.panel(_enclosure_power_view)]
+
+
 def _mobile_power_tab() -> pn.Column:
     return pn.Column(
         pn.pane.HTML(
@@ -10080,6 +10161,7 @@ def _mobile_power_tab() -> pn.Column:
         power_view_select,
         _power_section_intro,
         _mobile_power_section,
+        _enclosure_power_view,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell", "mobile-shell--power"],
     )
@@ -10258,11 +10340,17 @@ def _build_mobile_layout() -> pn.Column:
 
 interactive_tab_host = pn.Column(
     interactive_tab,
+    interactive_footer,
     sizing_mode="stretch_width",
     margin=0,
     name="Interactive Data Browser",
 )
+power_browser_content_host = pn.Column(sizing_mode="stretch_width", margin=0)
+power_browser_footer_host = pn.Column(sizing_mode="stretch_width", margin=0)
 power_tab_host = pn.Column(
+    power_browser_content_host,
+    enclosure_power_container,
+    power_browser_footer_host,
     sizing_mode="stretch_width",
     margin=0,
     name="Power",
@@ -10317,14 +10405,22 @@ def _sync_browser_tab_instrument(active: str) -> None:
             instrument_select.visible = False
             if instrument_select.value != "power":
                 instrument_select.value = "power"
-            interactive_tab_host.clear()
-            power_tab_host[:] = [interactive_tab]
+            if interactive_tab_host.objects:
+                interactive_tab_host.clear()
+            if power_browser_content_host.objects != [interactive_tab]:
+                power_browser_content_host[:] = [interactive_tab]
+            if power_browser_footer_host.objects != [interactive_footer]:
+                power_browser_footer_host[:] = [interactive_footer]
         elif active == "interactive":
             instrument_select.visible = True
             if instrument_select.value == "power":
                 instrument_select.value = "Ceilometer"
-            power_tab_host.clear()
-            interactive_tab_host[:] = [interactive_tab]
+            if power_browser_content_host.objects:
+                power_browser_content_host.clear()
+            if power_browser_footer_host.objects:
+                power_browser_footer_host.clear()
+            if interactive_tab_host.objects != [interactive_tab, interactive_footer]:
+                interactive_tab_host[:] = [interactive_tab, interactive_footer]
     finally:
         _browser_tab_syncing = False
 
@@ -10400,6 +10496,9 @@ def _prepare_initial_stable_tab_content(slug: str | None) -> None:
     active = _normalize_tab_slug(slug)
     if active == "overview":
         _refresh_browser_overview()
+    elif active == "power":
+        # Place the chart in its final host before the browser renders it.
+        _sync_browser_tab_instrument(active)
     elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
         _refresh_housekeeping_tab_content()
         _LOADED_TABS.add("housekeeping")
@@ -10476,7 +10575,7 @@ def _site_footer_pane() -> pn.pane.HTML:
     return pn.pane.HTML(SITE_FOOTER_HTML, sizing_mode="stretch_width", margin=0)
 
 
-interactive_tab.append(_site_footer_pane())
+interactive_footer.append(_site_footer_pane())
 browser_overview_tab.append(_site_footer_pane())
 science_quicklooks_tab.append(_site_footer_pane())
 housekeeping_quicklooks_tab.append(_site_footer_pane())

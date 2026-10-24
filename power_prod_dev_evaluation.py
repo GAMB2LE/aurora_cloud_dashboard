@@ -20,22 +20,19 @@ import xarray as xr
 
 from generate_power_soc_forecast import _write_state
 from power_v12_hybrid import LEAD_BUCKETS, stable_json_digest, utc_now_iso
+from power_observation_truth import (
+    POWER_OBSERVATION_FIELDS, TRUTH_CONTRACT_VERSION, bounded_observation_view,
+    electrical_observation_series, evaluate_power_observations, forecast_interval_starts,
+)
+from power_implementation_identity import semantic_code_key
 
 
 FORECAST_FIELDS = {
     "soc": "BatterySOCForecast",
     "solar": "ForecastSolarWatts",
     "load": "ForecastLoadWatts",
+    "solar_delivered": "ForecastPVDeliveredWatts",
 }
-
-POWER_OBSERVATION_FIELDS = (
-    "BatterySOC",
-    "SolarWatts_East",
-    "SolarWatts_South",
-    "SolarWatts_West",
-    "ACOutputWatts",
-    "DCInverterWatts",
-)
 OBSERVATION_MATCH_TOLERANCE = pd.Timedelta(minutes=10)
 
 
@@ -125,6 +122,10 @@ def _archive_rows(archive: xr.Dataset, *, label: str) -> pd.DataFrame:
     issue_values = pd.DatetimeIndex(archive["issue_time"].values)
     issues = pd.DatetimeIndex(np.repeat(issue_values.values, steps))
     valid = pd.DatetimeIndex(np.asarray(archive["ForecastValidTime"].values).reshape(-1))
+    interval_starts = np.concatenate([
+        forecast_interval_starts(archive["ForecastValidTime"].values[index], issue).values
+        for index, issue in enumerate(issue_values)
+    ])
     leads = np.asarray(archive["ForecastLeadHours"].values, dtype=np.float64).reshape(-1)
     if "ECMWFCycleTime" in archive:
         cycle_issue = pd.DatetimeIndex(archive["ECMWFCycleTime"].values)
@@ -147,6 +148,7 @@ def _archive_rows(archive: xr.Dataset, *, label: str) -> pd.DataFrame:
         "cycle_time": cycles,
         "source_cycle_set_id": source_cycles,
         "valid_time": valid,
+        "interval_start_time": interval_starts,
         "lead_hours": leads,
         "soc_anchor_pct": np.repeat(anchors, steps),
         "forecast_system_version": np.repeat(
@@ -164,7 +166,11 @@ def _archive_rows(archive: xr.Dataset, *, label: str) -> pd.DataFrame:
         "forecast_code_revision": np.repeat(
             _issue_text(archive, "ForecastCodeRevision", issue_count), steps
         ),
+        "forecast_implementation_digest": np.repeat(
+            _issue_text(archive, "ForecastImplementationDigest", issue_count), steps
+        ),
         "load_mode": np.repeat(_issue_text(archive, "LoadMode", issue_count), steps),
+        "solar_power_semantics": np.repeat(_issue_text(archive, "SolarPowerSemantics", issue_count), steps),
         "clearness_index": (
             np.asarray(archive["ECMWFClearnessIndex"].values, dtype=np.float64).reshape(-1)
             if "ECMWFClearnessIndex" in archive
@@ -177,6 +183,9 @@ def _archive_rows(archive: xr.Dataset, *, label: str) -> pd.DataFrame:
             if field in archive
             else np.full(issue_count * steps, np.nan, dtype=np.float64)
         )
+    available_solar = np.asarray(["available" in str(value).lower() for value in frame["solar_power_semantics"]])
+    if "ForecastPVDeliveredWatts" not in archive:
+        frame[f"{label}_solar_delivered"] = np.where(available_solar, np.nan, frame[f"{label}_solar"])
     out = pd.DataFrame(frame)
     return out.loc[
         ~out["issue_time"].isna()
@@ -189,27 +198,8 @@ def _archive_rows(archive: xr.Dataset, *, label: str) -> pd.DataFrame:
 def _observations(power: xr.Dataset | None) -> dict[str, pd.Series]:
     if power is None or "time" not in power.coords:
         return {}
-    index = pd.DatetimeIndex(power["time"].values)
-    values: dict[str, pd.Series] = {}
-    if "BatterySOC" in power:
-        values["soc"] = pd.Series(np.asarray(power["BatterySOC"].values, dtype=float), index=index)
-    solar_fields = [
-        name
-        for name in ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West")
-        if name in power
-    ]
-    if solar_fields:
-        values["solar"] = pd.DataFrame(
-            {name: np.asarray(power[name].values, dtype=float) for name in solar_fields},
-            index=index,
-        ).sum(axis=1, min_count=1)
-    load_fields = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in power]
-    if load_fields:
-        values["load"] = pd.DataFrame(
-            {name: np.asarray(power[name].values, dtype=float) for name in load_fields},
-            index=index,
-        ).sum(axis=1, min_count=1)
-    return values
+    truth = electrical_observation_series(power)
+    return {"soc": truth.soc, "solar": truth.solar_delivered_w, "load": truth.load_w}
 
 
 def paired_observation_view(
@@ -218,54 +208,10 @@ def paired_observation_view(
     *,
     tolerance: pd.Timedelta = OBSERVATION_MATCH_TOLERANCE,
 ) -> xr.Dataset:
-    """Return the lazy APS samples sufficient to score every paired row.
-
-    The raw APS store contains millions of one-second samples.  Paired scoring
-    needs only the nearest sample (within the evaluator tolerance) for each
-    exact valid time.  Resolve those positions from the time coordinate, then
-    retain only the six physical observation fields before any data variable
-    is loaded.  This is mathematically equivalent to reindexing the complete
-    history because every globally nearest in-tolerance sample is retained.
-    """
-
-    if "time" not in power.coords:
-        raise ValueError("APS power dataset has no time coordinate")
-    fields = [name for name in POWER_OBSERVATION_FIELDS if name in power]
-    source = power[fields]
-    if evidence.sizes.get("record", 0) == 0 or "valid_time" not in evidence:
-        return source.isel(time=slice(0, 0))
-    times = pd.DatetimeIndex(power["time"].values)
-    if times.hasnans:
-        raise ValueError("APS power time coordinate contains invalid timestamps")
-    if not times.is_monotonic_increasing or times.has_duplicates:
-        raise ValueError("APS power time coordinate must be unique and monotonic")
-    targets = pd.DatetimeIndex(evidence["valid_time"].values).dropna().unique().sort_values()
-    if not len(targets):
-        return source.isel(time=slice(0, 0))
-    tolerance = pd.Timedelta(tolerance)
-    if tolerance < pd.Timedelta(0):
-        raise ValueError("Observation matching tolerance cannot be negative")
-    positions = times.get_indexer(targets, method="nearest", tolerance=tolerance)
-    positions = np.unique(positions[positions >= 0])
-    selected = (
-        source.isel(time=positions)
-        if len(positions)
-        else source.isel(time=slice(0, 0))
-    )
-    selected.attrs = dict(selected.attrs)
-    selected.attrs.update(
-        {
-            "paired_observation_selection": "nearest_unique_valid_times",
-            "paired_observation_match_tolerance_seconds": float(
-                tolerance / pd.Timedelta(seconds=1)
-            ),
-            "paired_observation_target_start_utc": pd.Timestamp(targets.min()).isoformat(),
-            "paired_observation_target_end_utc": pd.Timestamp(targets.max()).isoformat(),
-            "paired_observation_target_count": int(len(targets)),
-            "paired_observation_sample_count": int(len(positions)),
-        }
-    )
-    return selected
+    """Keep bounded interval telemetry, including battery and MPPT mode truth."""
+    targets = evidence["valid_time"].values if "valid_time" in evidence else []
+    starts = evidence["interval_start_time"].values if "interval_start_time" in evidence else np.full(len(targets), np.datetime64("NaT"))
+    return bounded_observation_view(power, starts, targets, tolerance=tolerance)
 
 
 def attach_paired_observations(
@@ -273,6 +219,7 @@ def attach_paired_observations(
     power: xr.Dataset | None,
     *,
     tolerance: pd.Timedelta = OBSERVATION_MATCH_TOLERANCE,
+    operating_state: xr.Dataset | None = None,
 ) -> xr.Dataset:
     """Attach retrospective observations without changing the paired cohort."""
 
@@ -286,16 +233,27 @@ def attach_paired_observations(
             if name.startswith("paired_observation_")
         }
     )
+    from power_observation_truth import ObservationPolicy
     targets = pd.DatetimeIndex(paired["valid_time"].values)
-    for name, series in _observations(power).items():
-        paired[f"observed_{name}"] = (
-            ("record",),
-            series.reindex(
-                targets,
-                method="nearest",
-                tolerance=pd.Timedelta(tolerance),
-            ).to_numpy(dtype=np.float64),
-        )
+    starts = paired["interval_start_time"].values if "interval_start_time" in paired else np.full(len(targets), np.datetime64("NaT"))
+    truth = evaluate_power_observations(power, starts, targets,
+        expected_modes=paired["load_mode"].values if "load_mode" in paired else None,
+        operating_state=operating_state, policy=ObservationPolicy(point_tolerance=tolerance))
+    available = np.zeros(len(targets), dtype=bool)
+    for label in ("production", "development"):
+        field = f"solar_power_semantics_{label}"
+        if field in paired:
+            available |= np.asarray(["available" in str(value).lower() for value in paired[field].values])
+    truth["solar_w"] = np.where(available, truth.solar_available_w, truth.solar_delivered_w)
+    mapping = {"soc": "soc", "load": "load_w", "solar": "solar_w", "solar_delivered": "solar_delivered_w"}
+    for name, field in mapping.items():
+        paired[f"observed_{name}"] = (("record",), truth[field].to_numpy(dtype=float))
+    for name in truth.columns:
+        if name in {"interval_start", "valid_time", *mapping.values()}:
+            continue
+        values = truth[name]
+        paired[f"observation_{name}"] = (("record",), values.to_numpy(dtype=float) if pd.api.types.is_numeric_dtype(values) else values.astype(str).to_numpy(dtype="U128"))
+    paired.attrs["observation_truth_contract"] = TRUTH_CONTRACT_VERSION
     return paired
 
 
@@ -306,6 +264,7 @@ def build_exact_intersection_evidence(
     power: xr.Dataset | None = None,
     anchor_tolerance_pct: float = 0.05,
     lead_tolerance_hours: float = 1.0e-4,
+    operating_state: xr.Dataset | None = None,
 ) -> xr.Dataset:
     prod = _archive_rows(production, label="production")
     dev = _archive_rows(development, label="development")
@@ -344,13 +303,15 @@ def build_exact_intersection_evidence(
         atol=float(lead_tolerance_hours),
         rtol=0.0,
     )
+    interval_ok = paired["interval_start_time_production"].eq(paired["interval_start_time_development"]) | (
+        paired["interval_start_time_production"].isna() & paired["interval_start_time_development"].isna())
     prod_anchor = paired["soc_anchor_pct_production"].to_numpy(dtype=float)
     dev_anchor = paired["soc_anchor_pct_development"].to_numpy(dtype=float)
     anchor_known = np.isfinite(prod_anchor) & np.isfinite(dev_anchor)
     anchor_ok = anchor_known & np.isclose(
         prod_anchor, dev_anchor, atol=float(anchor_tolerance_pct), rtol=0.0
     )
-    accepted = source_ok.to_numpy(dtype=bool) & mode_ok.to_numpy(dtype=bool) & lead_ok & anchor_ok
+    accepted = source_ok.to_numpy(dtype=bool) & mode_ok.to_numpy(dtype=bool) & lead_ok & anchor_ok & interval_ok.to_numpy(dtype=bool)
     rejection_counts = {
         "source_cycle_missing": int((~source_known).sum()),
         "source_cycle_mismatch": int((source_known & ~source_ok).sum()),
@@ -359,6 +320,7 @@ def build_exact_intersection_evidence(
         "soc_anchor_unknown": int(np.count_nonzero(~anchor_known)),
         "soc_anchor_mismatch": int(np.count_nonzero(anchor_known & ~anchor_ok)),
         "lead_mismatch": int(np.count_nonzero(~lead_ok)),
+        "interval_bounds_mismatch": int((~interval_ok).sum()),
         "total": int(np.count_nonzero(~accepted)),
     }
     candidate_rows = int(len(paired))
@@ -371,6 +333,7 @@ def build_exact_intersection_evidence(
         )
     paired["source_cycle_set_id"] = source_production.loc[paired.index]
     paired["load_mode"] = mode_production.loc[paired.index]
+    paired["interval_start_time"] = paired["interval_start_time_production"]
     clearness_production = paired["clearness_index_production"].to_numpy(dtype=float)
     clearness_development = paired["clearness_index_development"].to_numpy(dtype=float)
     clearness_known = np.isfinite(clearness_production) & np.isfinite(clearness_development)
@@ -412,7 +375,13 @@ def build_exact_intersection_evidence(
     paired["evaluation_cohort_id"] = [
         "prod-dev-cohort-v1-"
         + stable_json_digest(
-            {column: str(row[column] or "") for column in cohort_columns}
+            {
+                column: semantic_code_key({
+                    "forecast_implementation_digest": row[f"forecast_implementation_digest_{column.removeprefix('forecast_code_revision_')}"],
+                    "forecast_code_revision": row[column],
+                }) if column.startswith("forecast_code_revision_") else str(row[column] or "")
+                for column in cohort_columns
+            }
         )[:20]
         for _, row in paired.iterrows()
     ]
@@ -421,6 +390,7 @@ def build_exact_intersection_evidence(
         "issue_time",
         "cycle_time",
         "valid_time",
+        "interval_start_time",
         "lead_hours",
         "soc_anchor_pct_production",
         "soc_anchor_pct_development",
@@ -437,10 +407,14 @@ def build_exact_intersection_evidence(
         "feature_set_version_development",
         "forecast_code_revision_production",
         "forecast_code_revision_development",
+        "forecast_implementation_digest_production",
+        "forecast_implementation_digest_development",
         "evaluation_cohort_id",
         "load_mode_production",
         "load_mode_development",
         "load_mode",
+        "solar_power_semantics_production",
+        "solar_power_semantics_development",
         "clearness_index_production",
         "clearness_index_development",
         "cloud_regime",
@@ -477,7 +451,7 @@ def build_exact_intersection_evidence(
             ),
         },
     )
-    return attach_paired_observations(evidence, power)
+    return attach_paired_observations(evidence, power, operating_state=operating_state)
 
 
 def _paired_metric(
@@ -694,6 +668,20 @@ def paired_score_surface(
         "activeCohortID": active_cohort,
         "cohorts": cohort_inventory,
         "campaignDiversity": _campaign_diversity(cohort_frame),
+        "observationTruthContract": str(evidence.attrs.get("observation_truth_contract", "legacy_point_truth")),
+        "truthDiagnostics": {
+            field: {str(value): int(count) for value, count in cohort_frame[field].value_counts(dropna=False).items()}
+            for field in ("observation_load_status", "observation_load_measurement", "observation_solar_available_status", "observation_operating_state_status")
+            if field in cohort_frame
+        },
+        "realizedStateStrata": {
+            str(value): {
+                "samples": int(len(rows)),
+                "soc": _paired_metric(rows, "soc", bootstrap_samples=0),
+                "load": _paired_metric(rows, "load", bootstrap_samples=0),
+            }
+            for value, rows in cohort_frame.groupby("observation_operating_state_status")
+        } if "observation_operating_state_status" in cohort_frame else {},
         "leadBuckets": lead_buckets,
         "pairKey": str(evidence.attrs.get("pair_key", "")),
         "mismatchedRowsRejected": int(evidence.attrs.get("mismatched_rows_rejected", 0)),

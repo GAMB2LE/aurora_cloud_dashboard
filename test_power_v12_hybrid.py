@@ -104,6 +104,15 @@ def _archive_with_load_history() -> xr.Dataset:
     )
 
 
+def _dense_load_truth(times: pd.DatetimeIndex, load: np.ndarray) -> xr.Dataset:
+    """Complete station-balance truth; complete PDU vector confirms DC-only."""
+    return xr.Dataset({
+        "BatteryWatts": (("time",), -np.asarray(load)),
+        **{f"SolarWatts_{direction}": (("time",), np.zeros(len(times))) for direction in ("East", "South", "West")},
+        **{f"PDUOutlet{outlet}State": (("time",), np.zeros(len(times))) for outlet in (4, 5, 6, 8)},
+    }, coords={"time": times})
+
+
 class HybridCandidateTests(unittest.TestCase):
     def test_candidate_history_retains_mpp_modes_for_physical_solar_evidence(self) -> None:
         self.assertTrue(
@@ -214,18 +223,12 @@ class HybridCandidateTests(unittest.TestCase):
 
     def test_load_residual_excludes_future_issue_and_observation_rows(self) -> None:
         archive = _archive_with_load_history()
-        times = pd.date_range("2026-06-01", periods=5 * 24, freq="1h")
+        times = pd.date_range("2026-06-01", periods=5 * 24 * 12, freq="5min")
         load = np.full(len(times), 200.0)
         # A radically different fourth issue/future observation must not leak
         # into a 4 June issue-time fit.
         load[times >= pd.Timestamp("2026-06-04")] = 0.0
-        power = xr.Dataset(
-            {
-                "ACOutputWatts": (("time",), load),
-                "DCInverterWatts": (("time",), np.zeros(len(times))),
-            },
-            coords={"time": times},
-        )
+        power = _dense_load_truth(times, load)
         fit = fit_bounded_load_residual(
             archive,
             power,
@@ -263,14 +266,8 @@ class HybridCandidateTests(unittest.TestCase):
 
     def test_load_residual_contract_is_stable_across_issue_operating_modes(self) -> None:
         archive = _archive_with_load_history()
-        times = pd.date_range("2026-06-01", periods=5 * 24, freq="1h")
-        power = xr.Dataset(
-            {
-                "ACOutputWatts": (("time",), np.full(len(times), 200.0)),
-                "DCInverterWatts": (("time",), np.zeros(len(times))),
-            },
-            coords={"time": times},
-        )
+        times = pd.date_range("2026-06-01", periods=5 * 24 * 12, freq="5min")
+        power = _dense_load_truth(times, np.full(len(times), 200.0))
         common = {
             "archive": archive,
             "power": power,
@@ -495,6 +492,13 @@ class HybridCandidateTests(unittest.TestCase):
                 baseline_digest = _tree_digest(baseline_issue_path)
                 archive_digest = _tree_digest(archive_path)
                 input_path.unlink()
+                # Mature observations arrive after the immutable issue was made.
+                future_power = power.isel(time=[-1] * 15).assign_coords(
+                    time=pd.date_range(power_times[-1] + pd.Timedelta(hours=1), periods=15, freq="1h")
+                )
+                xr.concat([power, future_power], dim="time").to_zarr(
+                    power_path, mode="w", consolidated=True
+                )
                 results = run_candidate(
                     baseline_issue_zarr=baseline_issue_path,
                     baseline_archive_zarr=archive_path,
@@ -518,6 +522,12 @@ class HybridCandidateTests(unittest.TestCase):
                 self.assertEqual(provider_open.call_count, 1)
             self.assertEqual(set(results), {"B_physical_solar", "C_load_residual", "D_physical_solar_load_residual"})
             self.assertEqual(results, repeated)
+            for result in results.values():
+                with xr.open_zarr(result.parent / "campaign_evidence.zarr", chunks={}) as evidence:
+                    evidence.load()
+                    scored = evidence.where(evidence.EvaluationAvailable, drop=True)
+                    self.assertGreater(scored.sizes["record"], 1)
+                    self.assertTrue(bool((scored.LeadHours > 0).all()))
             self.assertFalse(input_path.exists())
             self.assertEqual(_tree_digest(baseline_issue_path), baseline_digest)
             self.assertEqual(_tree_digest(archive_path), archive_digest)
@@ -709,7 +719,8 @@ class HybridCandidateTests(unittest.TestCase):
         np.testing.assert_array_equal(evidence["SOCAnchorTime"], evidence["IssueTime"])
         summary = campaign_score_surfaces(evidence)["campaign_evidence"]["lead_buckets"]["0_6h"]
         self.assertEqual(summary["cycles"], 1)
-        self.assertEqual(summary["samples"], 2)
+        self.assertEqual(summary["samples"], 1)
+        self.assertFalse(bool(evidence.EvaluationAvailable.where(evidence.LeadHours == 0, False).any()))
 
     def test_campaign_evidence_rejects_changed_pair_artifact_bytes(self) -> None:
         issue = pd.Timestamp("2026-06-01T00:00:00")
