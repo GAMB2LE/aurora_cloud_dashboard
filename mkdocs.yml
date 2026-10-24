@@ -52,6 +52,7 @@ nav:
       - Services and timers: runtime/services-and-timers.md
       - CL61 automation boundary: runtime/cl61-automation.md
       - Mobile API: runtime/mobile-api.md
+      - Production and app fallback: runtime/endpoint-contract.md
       - Performance logging: runtime/performance-logging.md
       - Display artifact manifest: runtime/display-artifacts.md
       - Running locally: runtime/running-locally.md
