@@ -33,6 +33,7 @@ from generate_power_soc_forecast import (
     integrate_soc_forecast,
     latest_finite,
     solar_irradiance_from_ssrd,
+    solar_calibration_contract_id,
 )
 from power_load_contract import (
     CONTROLLED_LOAD_CONTRACT,
@@ -51,6 +52,7 @@ from power_soc_thresholds import (
     SOC_BELOW_THRESHOLD_PROBABILITY_FIELD,
 )
 from power_battery_model import BatteryModel
+from power_archive_io import write_forecast_archive
 
 POWER_ZARR_PATH = Path(os.environ.get("POWER_ZARR_PATH", "/data/aurora/products/power/power.zarr"))
 POWER_SOC_FORECAST_ZARR_PATH = Path(
@@ -107,6 +109,9 @@ ENSEMBLE_FORECAST_PROVENANCE_ATTRS = (
     "feature_set_digest",
     "training_cutoff_utc",
     "forecast_code_revision",
+    "forecast_implementation_digest",
+    "load_exact_state_id",
+    "load_current_phase",
     "source_cycle_set_id",
     "source_manifest_digest",
     "degraded_mode_code",
@@ -124,6 +129,10 @@ ENSEMBLE_FORECAST_PROVENANCE_ATTRS = (
     "forecast_refresh_kind",
     "forecast_verification_eligible",
     "independent_cycle",
+    "solar_calibration_state",
+    "solar_calibration_status",
+    "solar_training_cutoff_utc",
+    "calibration_update_policy",
 )
 ENSEMBLE_SEMANTIC_IDENTITY_FIELDS = (
     "ForecastModelContractID",
@@ -490,6 +499,13 @@ def _ensemble_composite_source_identity(
         )
     cycle = _normalise_utc_timestamp(cycle_time, field="ensemble cycle_time")
     site_digest = _ensemble_site_forcing_sha256(solar)
+    independent_payload = {
+        "cycle_time": cycle.isoformat(), "provider": str(source),
+        "site_forcing_sha256": site_digest,
+    }
+    independent_id = "ensemble-source-cycle-v2-" + hashlib.sha256(
+        json.dumps(independent_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
     cycle_payload = {
         "schema": 1,
         "deterministic_source_cycle_set_id": deterministic_cycle,
@@ -519,7 +535,25 @@ def _ensemble_composite_source_identity(
         "ensemble_source_provider": str(source),
         "ensemble_site_forcing_sha256": f"sha256:{site_digest}",
         "ensemble_source_identity_contract": "deterministic-plus-ens-site-forcing-v1",
+        "ensemble_independent_cycle_id": independent_id,
     }
+
+
+def _set_ensemble_cycle_eligibility(forecast: xr.Dataset, archive: xr.Dataset | None) -> None:
+    """A new ENS source is independent even when DET was just re-anchored."""
+    key = str(forecast.attrs.get("ensemble_independent_cycle_id", ""))
+    if not key:
+        raise ValueError("Ensemble lacks its own immutable source-cycle identity")
+    already_seen = False
+    if archive is not None and "EnsembleIndependentCycleID" in archive:
+        matching = np.asarray(archive["EnsembleIndependentCycleID"].values, dtype=str) == key
+        if "ForecastModelContractID" in archive:
+            matching &= np.asarray(archive["ForecastModelContractID"].values, dtype=str) == str(forecast.attrs.get("forecast_model_contract_id", ""))
+        already_seen = bool(np.any(matching))
+    forecast.attrs["independent_cycle"] = str(not already_seen).lower()
+    forecast.attrs["forecast_verification_eligible"] = str(not already_seen).lower()
+    forecast.attrs["forecast_refresh_kind"] = "cached_reanchor" if already_seen else "ecmwf_cycle"
+    forecast.attrs["ensemble_independence_policy"] = "first_issue_per_ens_source_cycle_and_model_contract_v2"
 
 
 def _deterministic_controlled_load(
@@ -575,6 +609,26 @@ def apply_operational_soc_threshold(ds: xr.Dataset) -> xr.Dataset:
     return out
 
 
+def _clip_member_horizon(series: pd.Series, anchor: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
+    """Clip right-labelled interval means at the exact requested endpoint.
+
+    The partial final interval uses its source interval's mean, not a linear
+    interpolation or persistence extrapolation. A missing enclosing interval
+    fails closed instead of silently shortening the ensemble horizon.
+    """
+    if not series.index.is_monotonic_increasing or series.index.has_duplicates:
+        raise ValueError('Ensemble irradiance intervals must be ordered and unique')
+    if series.empty or series.index[-1] < end:
+        raise ValueError('Ensemble irradiance does not cover the exact horizon')
+    clipped = series.loc[(series.index >= anchor) & (series.index <= end)].copy()
+    if end not in clipped.index:
+        value = float(series.loc[series.index >= end].iloc[0])
+        if not np.isfinite(value):
+            raise ValueError('Missing irradiance in final ensemble interval')
+        clipped.loc[end] = value
+    return clipped
+
+
 def build_ensemble_dataset(
     power: xr.Dataset,
     deterministic: xr.Dataset,
@@ -584,10 +638,25 @@ def build_ensemble_dataset(
 ) -> xr.Dataset:
     soc_power = power[["BatterySOC"]] if "BatterySOC" in power else power
     frame = _power_frame(soc_power)
+    anchor = deterministic.attrs.get("initial_soc_time")
+    if anchor:
+        anchor_time = _normalise_utc_timestamp(anchor, field="deterministic SOC anchor")
+        frame = frame.loc[frame.index <= anchor_time]
     latest_time, latest_soc = latest_finite(frame["BatterySOC"])
+    if anchor and latest_time != anchor_time:
+        raise ValueError("Ensemble power data do not contain the exact deterministic SOC anchor")
+    if anchor and "initial_soc_pct" in deterministic.attrs and not np.isclose(latest_soc, float(deterministic.attrs["initial_soc_pct"]), atol=1e-4, rtol=0.0):
+        raise ValueError("Ensemble SOC anchor disagrees with deterministic observation")
     member_dim = _member_dimension(solar_ensemble)
     member_values = np.asarray(solar_ensemble[member_dim].values)
     solar_factor = float(deterministic.attrs.get("solar_calibration_factor_w_per_wm2", 1.0))
+    calibration_json = str(deterministic.attrs.get("solar_calibration_state", "{}"))
+    calibration = json.loads(calibration_json)
+    if calibration and deterministic.attrs.get("solar_forcing_mode") != "baseline_legacy_trace_replayed":
+        expected_id = solar_calibration_contract_id(float(calibration["base_factor"]), calibration["lead_mos"])
+        if expected_id != deterministic.attrs.get("solar_calibration_contract_id"):
+            raise ValueError("Deterministic solar calibration state checksum mismatch")
+        solar_factor = float(calibration["base_factor"])
     capacity_kwh = float(deterministic.attrs.get("battery_capacity_kwh", DEFAULT_BATTERY_CAPACITY_KWH))
     battery_model = (
         BatteryModel.from_attrs(deterministic.attrs, default_capacity_kwh=capacity_kwh)
@@ -605,7 +674,7 @@ def build_ensemble_dataset(
     member_irradiance: list[pd.Series] = []
     for member in member_values:
         series = solar_irradiance_from_ssrd(solar_ensemble.sel({member_dim: member}))
-        series = series[(series.index >= latest_time) & (series.index <= latest_time + pd.Timedelta(hours=horizon_hours))]
+        series = _clip_member_horizon(series, latest_time, latest_time + pd.Timedelta(hours=horizon_hours))
         if len(series) >= 2:
             member_irradiance.append(series)
     if not member_irradiance:
@@ -801,6 +870,13 @@ def build_ensemble_dataset(
         },
     )
     out = apply_operational_soc_threshold(out)
+    # This changes the forecast algorithm. Keep its evidence separate from
+    # older ensembles that silently omitted the last partial interval.
+    out.attrs['ensemble_interval_contract'] = 'right_labelled_exact_endpoint_v1'
+    out.attrs['feature_set_version'] = str(out.attrs.get('feature_set_version', '')) + '+ensemble_exact_endpoint_v1'
+    out.attrs['feature_set_digest'] = hashlib.sha256((
+        str(out.attrs.get('feature_set_digest', '')) + ':ensemble_exact_endpoint_v1'
+    ).encode()).hexdigest()
     for name in out.data_vars:
         out[name].attrs["units"] = "1" if name.endswith("Probability") else "%" if "SOC" in name else "W m-2" if "Irradiance" in name else "W"
     out["ForecastLoadPhaseCodeEnsemble"].attrs.update(
@@ -867,6 +943,9 @@ def _archive_row(forecast: xr.Dataset) -> xr.Dataset:
         "FeatureSetDigest": "feature_set_digest",
         "TrainingCutoffUTC": "training_cutoff_utc",
         "ForecastCodeRevision": "forecast_code_revision",
+        "ForecastImplementationDigest": "forecast_implementation_digest",
+        "ForecastOperatingLoadState": "load_exact_state_id",
+        "ForecastOperatingLoadPhase": "load_current_phase",
         "SourceCycleSetID": "source_cycle_set_id",
         "SourceManifestDigest": "source_manifest_digest",
         "DegradedModeCode": "degraded_mode_code",
@@ -882,13 +961,16 @@ def _archive_row(forecast: xr.Dataset) -> xr.Dataset:
         "InputSnapshotID": "input_snapshot_id",
         "BaselinePublicationSignature": "baseline_publication_signature",
         "ForecastRefreshKind": "forecast_refresh_kind",
+        "EnsembleIndependentCycleID": "ensemble_independent_cycle_id",
+        "SolarCalibrationState": "solar_calibration_state",
+        "SolarCalibrationContractID": "solar_calibration_contract_id",
         "LoadMode": "load_mode",
         "LoadModelVersion": "load_model_version",
     }
     for archive_name, attr_name in archive_fields.items():
         data_vars[archive_name] = (
             ("issue_time",),
-            np.asarray([str(forecast.attrs.get(attr_name, ""))], dtype="U512"),
+            np.asarray([str(forecast.attrs.get(attr_name, ""))], dtype=str),
         )
     default_independent = str(forecast.attrs.get("forecast_refresh_kind", "ecmwf_cycle")) != "cached_reanchor"
     verification_eligible = (
@@ -938,13 +1020,7 @@ def append_ensemble_archive(forecast: xr.Dataset, path: Path, *, retention_days:
     for name, variable in list(combined.variables.items()):
         if variable.dtype.kind == "O":
             combined[name] = variable.fillna("").astype(str).load()
-    tmp = path.with_name(f"{path.name}.tmp")
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    combined.chunk({"issue_time": 8, "member": 10, "forecast_step": 64}).to_zarr(tmp, mode="w", consolidated=True)
-    if path.exists():
-        shutil.rmtree(path)
-    tmp.rename(path)
+    write_forecast_archive(combined, path)
     return combined
 
 
@@ -1291,7 +1367,10 @@ def generate(
             solar = open_ensemble_site(input_forecast, latitude=latitude, longitude=longitude)
         assert solar is not None
         power = xr.open_zarr(power_zarr, chunks={})
-        deterministic = xr.open_zarr(deterministic_zarr, chunks={})
+        # Pin the complete compact deterministic input before any other live
+        # writer can publish a different anchor/calibration during this run.
+        with xr.open_zarr(deterministic_zarr, chunks={}) as opened_deterministic:
+            deterministic = opened_deterministic.load()
         _validate_power_cutoff_anchor(deterministic.attrs, cutoff)
         cutoff_power = _power_at_or_before_cutoff(
             power,
@@ -1319,6 +1398,11 @@ def generate(
         ]
         forecast.attrs["ecmwf_cycle_time"] = pd.Timestamp(cycle_time).isoformat()
         forecast.attrs.update(composite_source)
+        if archive_zarr.exists():
+            with xr.open_zarr(archive_zarr, chunks={}) as previous_archive:
+                _set_ensemble_cycle_eligibility(forecast, previous_archive)
+        else:
+            _set_ensemble_cycle_eligibility(forecast, None)
         forecast.attrs["forecast_identity_id"] = forecast_identity_id(forecast.attrs)
         _write_forecast(forecast, output_zarr)
         archive = append_ensemble_archive(forecast, archive_zarr)

@@ -1,13 +1,13 @@
 # AURORACam
 
-AURORACam is the dashboard view for the four MOBOTIX M24 cameras writing to the
-ASS Linux MX4 FTP ingest.
+AURORACam is the dashboard view for the active MOBOTIX M24 cameras writing to
+the ASS Linux MX4 FTP ingest. Three cameras are currently displayed.
 
 ## Tab behavior
 
 The top-level `AURORACam` tab is image-driven:
 
-- the selected day shows the latest frame from all four cameras
+- the selected day shows the latest frame from the three active cameras
 - the camera selector controls the large image viewer
 - the selected camera also shows a UTC hourly still strip for quick scanning
 - `Latest`, `Previous`, and `Next` move through available days
@@ -19,12 +19,19 @@ websocket.
 
 ## Cameras
 
-| Camera | IP |
-| --- | --- |
-| `end-south-array-cam` | `192.168.1.27` |
-| `fence-post-cam` | `192.168.1.28` |
-| `radar-cam` | `192.168.1.29` |
-| `mid-south-array-cam` | `192.168.1.30` |
+| Camera | IP | Display status |
+| --- | --- | --- |
+| `end-south-array-cam` | `192.168.1.27` | Active |
+| `fence-post-cam` | `192.168.1.28` | Active |
+| `radar-cam` | `192.168.1.29` | Active |
+| `mid-south-array-cam` | `192.168.1.30` | Offline; archive retained |
+
+Mid South Array is broken and was taken offline. It is excluded from the web
+dashboard and the iOS/Android camera listings, including historical date/time
+selectors. The full camera registry, JPEG files, metadata indexing and direct
+historical media paths are retained; no JASMIN archive data is deleted or
+excluded from archive processing. Installed native apps use the API listing and
+pick up this display change on their next successful camera refresh.
 
 ## Backing products
 

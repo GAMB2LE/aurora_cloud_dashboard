@@ -1478,6 +1478,15 @@ for _outlet in range(1, PDU_OUTLET_COUNT + 1):
     HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}Amps", "A")
     HUMAN_UNITS.setdefault(f"PDUOutlet{_outlet}State", "state")
 
+for _enclosure in ("APS", "ASS"):
+    HUMAN_LABELS.update({
+        f"{_enclosure}BLETemperature": f"{_enclosure} enclosure air temperature",
+        f"{_enclosure}BLEHumidity": f"{_enclosure} enclosure relative humidity",
+        f"{_enclosure}BLEDewPoint": f"{_enclosure} enclosure air dew point",
+        f"{_enclosure}BLEDewPointMargin": f"{_enclosure} enclosure air dew-point margin",
+    })
+    HUMAN_UNITS.update({f"{_enclosure}BLETemperature": "C", f"{_enclosure}BLEHumidity": "%", f"{_enclosure}BLEDewPoint": "C", f"{_enclosure}BLEDewPointMargin": "C"})
+
 DISPLAY_SCALE = {}
 
 SUMMARY_SOURCE_INSTRUMENTS = {
@@ -1487,6 +1496,21 @@ SUMMARY_SOURCE_INSTRUMENTS = {
     "power": ("power", "asfs-logger"),
     "ops-monitor": ("ops-monitor",),
 }
+
+# This panel is rendered independently so Power outages cannot hide BLE data.
+ENCLOSURE_CONDITIONS_PANEL = PanelSpec(
+    "enclosure_conditions", "Enclosure conditions", "Temperature [C]", "Relative humidity [%]",
+    (
+        TraceSpec("APSBLETemperature", "APS temperature", COLOR["red"]),
+        TraceSpec("ASSBLETemperature", "ASS temperature", COLOR["purple"]),
+        TraceSpec("APSBLEDewPoint", "APS dew point", COLOR["teal"]),
+        TraceSpec("ASSBLEDewPoint", "ASS dew point", COLOR["green"]),
+        TraceSpec("APSBLEHumidity", "APS relative humidity", COLOR["light_blue"], axis="right"),
+        TraceSpec("ASSBLEHumidity", "ASS relative humidity", COLOR["blue"], axis="right"),
+    ),
+    "Temperature, humidity and air dew point inside the APS and ASS enclosures.",
+)
+
 
 SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
     "vaisalamet": (
@@ -2905,6 +2929,22 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     return frame[~frame.index.duplicated(keep="last")]
 
 
+def _stored_system_as_is_fallback_source(ds: xr.Dataset) -> str:
+    """Identify a complete decision distribution independent of the planner.
+
+    Section display products retain the derived decision fields and provenance,
+    but omit the raw ensemble variables. Only those explicitly derived from a
+    forecast fallback can survive replacement of an unavailable operating plan.
+    """
+    source = str(ds.attrs.get("system_as_is_decision_source", ""))
+    if source in {"ensemble_fallback", "legacy_forecast_fallback"} and all(
+        name in ds and ds[name].dims == ("time",)
+        for name in SYSTEM_AS_IS_DECISION_FIELDS
+    ):
+        return source
+    return ""
+
+
 def _with_system_as_is_decision_fields(
     ds: xr.Dataset,
     *,
@@ -2943,7 +2983,13 @@ def _with_system_as_is_decision_fields(
             else "legacy_forecast_fallback"
         )
     else:
-        return ds, "unavailable"
+        stored_source = _stored_system_as_is_fallback_source(ds)
+        if stored_source:
+            return ds, stored_source
+        result = ds.copy()
+        result.attrs = dict(ds.attrs)
+        result.attrs["system_as_is_decision_source"] = "unavailable"
+        return result, "unavailable"
 
     result = ds.copy()
     result.attrs = dict(ds.attrs)
@@ -3201,11 +3247,15 @@ def merge_operating_scenarios_into_display_summary(
     """Merge the compact scenario contract into an existing display summary."""
     # Display summaries may contain an older pre-merged operating plan. The
     # standalone scenario product is authoritative, including its unavailable
-    # state, so never retain those stale traces.
+    # state, so never retain those stale traces. A complete forecast fallback
+    # is independent of that plan and may be the only SOC data retained by a
+    # compact section product; preserve it unless fresh source fields replace it.
+    stored_fallback = _stored_system_as_is_fallback_source(display_ds)
     stale_fields = [
         name
         for name in display_ds.data_vars
-        if name.startswith("Operating") or name in SYSTEM_AS_IS_DECISION_FIELDS
+        if name.startswith("Operating")
+        or (name in SYSTEM_AS_IS_DECISION_FIELDS and not stored_fallback)
     ]
     base_ds = display_ds.drop_vars(stale_fields) if stale_fields else display_ds
     aligned, alignment_reason = _operating_scenario_alignment(base_ds, operating_scenarios_ds)
@@ -3264,6 +3314,7 @@ def build_power_display_summary_dataset(
     ensemble_skill_ds: xr.Dataset | None = None,
     operating_scenarios_ds: xr.Dataset | None = None,
     freq: str = POWER_DISPLAY_SUMMARY_FREQ,
+    ble_ds: xr.Dataset | None = None,
 ) -> xr.Dataset:
     """Build one-minute APS traces for fast dashboard plotting.
 
@@ -3305,6 +3356,13 @@ def build_power_display_summary_dataset(
         pdu_frame = _resample_display_frame(pdu_frame, freq)
         if not pdu_frame.empty:
             frames.append(pdu_frame)
+
+    if ble_ds is not None:
+        from enclosure_sensors import display_dataset
+        ble_display = display_dataset(ble_ds, freq=freq)
+        if ble_display.sizes.get("time", 0):
+            # BLE observations keep their own time extent, even if APS power stops.
+            frames.append(ble_display.to_dataframe())
 
     if forecast_ds is not None:
         forecast_frame = _time_frame_from_dataset(forecast_ds.sortby("time"), POWER_SOC_FORECAST_FIELDS)
@@ -3375,7 +3433,7 @@ def build_power_display_summary_dataset(
     end = pd.Timestamp(display_frame.index.max()).isoformat()
     summary_attrs = {
         POWER_DISPLAY_SUMMARY_ATTR: "true",
-        "source": "derived from power.zarr plus optional ASS/PDU, SOC forecast verification, ensemble, and learned operating-scenario products",
+        "source": "derived from power.zarr plus optional ASS/PDU/BLE, SOC forecast verification, ensemble, and learned operating-scenario products",
         "frequency": freq,
         "time_coverage_start": start,
         "time_coverage_end": end,

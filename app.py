@@ -32,11 +32,18 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import param
+from dashboard_components import (
+    AuroracamCameraCard,
+    BrowserPerformanceProbe,
+    WxcamSelectionState,
+    WxcamVideoPlayer,
+)
 from bokeh.core.json_encoder import serialize_json
 from panel.io import hold
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import xarray as xr
+import enclosure_sensors
 from power_operating_scenarios import KIT_ORDER, MIN_RUN_HOURS, evaluate_custom_schedule
 from power_soc_thresholds import (
     MINIMUM_OPERATIONAL_SOC_PCT,
@@ -96,8 +103,8 @@ from extra_housekeeping import (
 from time_gap_breaks import insert_time_gap_breaks
 from radar_colormaps import radar_plotly_colorscale
 from auroracam_catalog import (
-    AURORACAM_CAMERAS,
-    available_days as auroracam_available_days,
+    ACTIVE_AURORACAM_CAMERAS as AURORACAM_CAMERAS,
+    active_available_days as auroracam_available_days,
     day_records as auroracam_day_records,
     latest_record as auroracam_latest_record,
 )
@@ -177,159 +184,6 @@ APS_INTERNAL_TEMP_HIGH_AMBER_C = float(os.environ.get("APS_INTERNAL_TEMP_HIGH_AM
 APS_INTERNAL_TEMP_HIGH_RED_C = float(os.environ.get("APS_INTERNAL_TEMP_HIGH_RED_C", "45"))
 APS_DEWPOINT_RED_MARGIN_C = float(os.environ.get("APS_DEWPOINT_RED_MARGIN_C", "0"))
 
-
-class WxcamVideoPlayer(pn.reactive.ReactiveHTML):
-    src = param.String(default="")
-    poster = param.String(default="")
-    title = param.String(default="")
-    subtitle = param.String(default="")
-    mode_class = param.String(default="wxcam-player--wide")
-
-    _template = """
-    <div id="player_shell" class="wxcam-player ${mode_class}">
-      <div id="meta_row" class="wxcam-player__meta">
-        <div id="meta_text" class="wxcam-player__meta-text">
-          <div id="title_text" class="wxcam-player__title">{{ title }}</div>
-          <div id="subtitle_text" class="wxcam-player__subtitle">{{ subtitle }}</div>
-        </div>
-      </div>
-      <div id="control_row" class="wxcam-player__controls">
-        <button id="play_btn" type="button" onclick="${script('toggle_play')}">Play</button>
-        <button id="back_btn" type="button" onclick="${script('jump_back')}">-0.5s</button>
-        <button id="forward_btn" type="button" onclick="${script('jump_forward')}">+0.5s</button>
-        <label id="speed_wrap" class="wxcam-player__inline-label">
-          <span>Speed</span>
-          <select id="speed_select" onchange="${script('change_speed')}">
-            <option value="0.5">0.5x</option>
-            <option value="1" selected>1x</option>
-            <option value="1.5">1.5x</option>
-            <option value="2">2x</option>
-            <option value="4">4x</option>
-          </select>
-        </label>
-        <label id="loop_wrap" class="wxcam-player__inline-label wxcam-player__checkbox">
-          <input id="loop_toggle" type="checkbox" onchange="${script('toggle_loop')}"></input>
-          <span>Loop</span>
-        </label>
-      </div>
-      <div id="seek_row" class="wxcam-player__seek">
-        <span id="current_time" class="wxcam-player__time">00:00</span>
-        <input id="seek_slider" type="range" min="0" max="1000" value="0" step="1" oninput="${script('seek')}"></input>
-        <span id="duration" class="wxcam-player__time">00:00</span>
-      </div>
-      <div id="video_frame" class="wxcam-player__frame">
-        <video
-          id="video_el"
-          src="${src}"
-          poster="${poster}"
-          controls
-          preload="metadata"
-          playsinline
-          onloadedmetadata="${script('sync_metadata')}"
-          ontimeupdate="${script('sync_time')}"
-          onplay="${script('sync_play_state')}"
-          onpause="${script('sync_play_state')}"
-          onended="${script('sync_play_state')}"
-          onratechange="${script('sync_speed_state')}"
-        ></video>
-      </div>
-    </div>
-    """
-
-    _scripts = {
-        "src": """
-          video_el.pause();
-          video_el.load();
-          seek_slider.value = 0;
-          current_time.textContent = "00:00";
-          duration.textContent = "00:00";
-          play_btn.textContent = "Play";
-          speed_select.value = "1";
-        """,
-        "toggle_play": """
-          if (video_el.paused) {
-            video_el.play();
-          } else {
-            video_el.pause();
-          }
-        """,
-        "jump_back": """
-          const nextTime = Math.max(0, (video_el.currentTime || 0) - 0.5);
-          video_el.currentTime = nextTime;
-          view.run_script('sync_time');
-        """,
-        "jump_forward": """
-          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
-          const candidateTime = (video_el.currentTime || 0) + 0.5;
-          const nextTime = durationSeconds > 0 ? Math.min(durationSeconds, candidateTime) : candidateTime;
-          video_el.currentTime = nextTime;
-          view.run_script('sync_time');
-        """,
-        "change_speed": """
-          video_el.playbackRate = Number(speed_select.value || 1);
-          view.run_script('sync_speed_state');
-        """,
-        "toggle_loop": """
-          video_el.loop = loop_toggle.checked;
-        """,
-        "seek": """
-          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
-          if (!durationSeconds) {
-            return;
-          }
-          video_el.currentTime = (Number(seek_slider.value || 0) / 1000) * durationSeconds;
-          view.run_script('sync_time');
-        """,
-        "sync_metadata": """
-          const formatTime = (seconds) => {
-            if (!Number.isFinite(seconds) || seconds < 0) {
-              return "00:00";
-            }
-            const total = Math.floor(seconds);
-            const hours = Math.floor(total / 3600);
-            const minutes = Math.floor((total % 3600) / 60);
-            const secs = total % 60;
-            if (hours > 0) {
-              return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-            }
-            return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-          };
-          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
-          current_time.textContent = formatTime(video_el.currentTime || 0);
-          duration.textContent = formatTime(durationSeconds);
-          seek_slider.value = 0;
-          video_el.loop = loop_toggle.checked;
-          video_el.playbackRate = Number(speed_select.value || 1);
-          view.run_script('sync_play_state');
-          view.run_script('sync_speed_state');
-        """,
-        "sync_time": """
-          const formatTime = (seconds) => {
-            if (!Number.isFinite(seconds) || seconds < 0) {
-              return "00:00";
-            }
-            const total = Math.floor(seconds);
-            const hours = Math.floor(total / 3600);
-            const minutes = Math.floor((total % 3600) / 60);
-            const secs = total % 60;
-            if (hours > 0) {
-              return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-            }
-            return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-          };
-          const durationSeconds = Number.isFinite(video_el.duration) ? video_el.duration : 0;
-          const currentSeconds = Number(video_el.currentTime || 0);
-          current_time.textContent = formatTime(currentSeconds);
-          duration.textContent = formatTime(durationSeconds);
-          seek_slider.value = durationSeconds > 0 ? Math.round((currentSeconds / durationSeconds) * 1000) : 0;
-        """,
-        "sync_play_state": """
-          play_btn.textContent = video_el.paused ? "Play" : "Pause";
-        """,
-        "sync_speed_state": """
-          speed_select.value = String(video_el.playbackRate || 1);
-        """,
-    }
 
 APP_DIR = Path(__file__).resolve().parent
 QUICKLOOK_ROOT = Path(os.environ.get("AURORA_QUICKLOOK_ROOT", APP_DIR / "quicklooks"))
@@ -431,13 +285,6 @@ def _perf_log(event: str, duration_ms: float | None = None, **fields) -> None:
         print(f"[perf] write failed for {event}: {exc}")
 
 
-_BROWSER_PERF_EVENTS = {
-    "browser_document_ready",
-    "browser_first_power_plot",
-    "browser_power_section_switch",
-}
-
-
 def _browser_rum_enabled() -> bool:
     """Return whether development browser measurements are enabled."""
     return os.environ.get("AURORA_BROWSER_RUM_ENABLED", "0").strip().lower() in {
@@ -448,174 +295,14 @@ def _browser_rum_enabled() -> bool:
     }
 
 
-class BrowserPerformanceProbe(pn.custom.JSComponent):
-    """Report real browser milestones to the development performance log."""
-
-    message = param.Dict(default={})
-
-    _esm = """
-    export function render({ model }) {
-      const marker = document.createElement("span");
-      marker.hidden = true;
-      marker.setAttribute("aria-hidden", "true");
-
-      const roots = () => {
-        const found = [document];
-        for (let index = 0; index < found.length; index += 1) {
-          const root = found[index];
-          for (const element of root.querySelectorAll("*")) {
-            if (element.shadowRoot && !found.includes(element.shadowRoot)) {
-              found.push(element.shadowRoot);
-            }
-          }
-        }
-        return found;
-      };
-      const plots = () => roots().flatMap(
-        (root) => Array.from(root.querySelectorAll(".js-plotly-plot"))
-      ).filter((node) => node.getClientRects().length > 0);
-      const plotSignature = () => {
-        const nodes = plots();
-        // Plotly stores trace metadata on the SVG renderer but not on the
-        // WebGL canvas renderer. Use the visible axis/title text as a stable
-        // render signature so Current and Forecast remain distinguishable.
-        const labels = nodes.map((node) => Array.from(node.querySelectorAll("text"))
-          .map((text) => text.textContent.trim())
-          .filter(Boolean)
-          .join("|"))
-          .join("||");
-        return `${nodes.length}:${labels}`;
-      };
-      const navigation = performance.getEntriesByType("navigation")[0] || {};
-      const emit = (event, duration, extra = {}) => {
-        const payload = {
-          event,
-          duration_ms: Math.round(Number(duration) * 1000) / 1000,
-          path: `${location.pathname}${location.search}`,
-          viewport_width: window.innerWidth,
-          viewport_height: window.innerHeight,
-          ...extra,
-        };
-        window.setTimeout(() => {
-          model.message = { ...payload, nonce: Date.now() };
-        }, 0);
-      };
-
-      // This component itself arrives with the first Bokeh document, so a
-      // paint frame is sufficient to observe the shell. The former one-second
-      // timeout inflated the reported shell latency without delaying the UI.
-      const reportDocumentReady = () => emit("browser_document_ready", performance.now(), {
-          response_start_ms: Number(navigation.responseStart || 0),
-          dom_interactive_ms: Number(navigation.domInteractive || 0),
-          load_event_end_ms: Number(navigation.loadEventEnd || 0),
-          navigation_type: String(navigation.type || "unknown"),
-        });
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(reportDocumentReady);
-      } else {
-        window.setTimeout(reportDocumentReady, 0);
-      }
-
-      let firstPlotSent = false;
-      let firstPlotTimer = null;
-      const checkFirstPlot = () => {
-        if (firstPlotSent) return;
-        if (firstPlotTimer === null) {
-          const started = performance.now();
-          firstPlotTimer = window.setInterval(() => {
-          const nodes = plots();
-          if (!nodes.length && performance.now() - started < 20000) return;
-          window.clearInterval(firstPlotTimer);
-          firstPlotTimer = null;
-          if (!nodes.length) return;
-          firstPlotSent = true;
-          emit("browser_first_power_plot", performance.now(), {
-            plot_count: nodes.length,
-            renderer: nodes.some((node) => node.querySelector("canvas")) ? "webgl" : "svg",
-          });
-          }, 100);
-        }
-      };
-
-      let switchTimer = null;
-      const onClick = (event) => {
-        // Panel's button group is rendered in a shadow root. ``closest`` on
-        // the retargeted event node cannot see that button, whereas the
-        // composed path preserves the original element for this measurement.
-        const button = event.composedPath().find(
-          (node) => node instanceof HTMLElement && node.matches("button")
-        );
-        if (!button) return;
-        const label = button.textContent.trim();
-        if (label !== "Current Conditions" && label !== "Forecast & Planning") return;
-        if (switchTimer !== null) window.clearInterval(switchTimer);
-        const started = performance.now();
-        const original = plotSignature();
-        switchTimer = window.setInterval(() => {
-          const elapsed = performance.now() - started;
-          const signature = plotSignature();
-          if (signature === original && elapsed < 20000) return;
-          window.clearInterval(switchTimer);
-          switchTimer = null;
-          emit("browser_power_section_switch", elapsed, {
-            section: label,
-            plot_signature_before: original,
-            plot_signature_after: signature,
-            timed_out: elapsed >= 20000,
-          });
-        }, 100);
-      };
-
-      document.addEventListener("click", onClick, true);
-      // Panel nests figures inside several shadow roots. Poll briefly while
-      // the initial document hydrates; a document-only MutationObserver does
-      // not observe mutations made inside those nested component roots.
-      checkFirstPlot();
-
-      marker.remove = (() => {
-        const remove = marker.remove.bind(marker);
-        return () => {
-          document.removeEventListener("click", onClick, true);
-          if (firstPlotTimer !== null) window.clearTimeout(firstPlotTimer);
-          if (switchTimer !== null) window.clearInterval(switchTimer);
-          remove();
-        };
-      })();
-      return marker;
-    }
-    """
-
-    def __init__(self, **params) -> None:
-        super().__init__(**params)
-        self.param.watch(self._handle_param_message, "message")
-
-    def _handle_param_message(self, event) -> None:
-        self._handle_msg(event.new)
-
-    def _handle_msg(self, data) -> None:
-        if not isinstance(data, dict):
-            return
-        event = str(data.get("event", ""))
-        if event not in _BROWSER_PERF_EVENTS:
-            return
-        try:
-            duration_ms = float(data.get("duration_ms"))
-        except (TypeError, ValueError):
-            return
-        fields = {
-            str(key): value
-            for key, value in data.items()
-            if key not in {"event", "duration_ms"}
-        }
-        _perf_log(event, duration_ms=duration_ms, instrument="power", **fields)
-
-
 def _browser_performance_probe() -> BrowserPerformanceProbe | None:
     if SITE_ENV != "development" or not _browser_rum_enabled():
         return None
     # A real 1 px box keeps Panel's global deferred loader from skipping the
     # probe while remaining visually imperceptible.
-    return BrowserPerformanceProbe(width=1, height=1, margin=0, sizing_mode="fixed")
+    return BrowserPerformanceProbe(
+        log_callback=_perf_log, width=1, height=1, margin=0, sizing_mode="fixed"
+    )
 
 
 @contextmanager
@@ -1021,6 +708,8 @@ def _prewarmed_interactive_dir() -> Path:
 def _prewarmed_interactive_path(inst: str) -> Path:
     if inst == "power":
         section = power_view_select.value if "power_view_select" in globals() else "current"
+        if section == "forecast" and mobile_catalog.power_forecast_only_publication_active():
+            return mobile_catalog.power_forecast_bundle_manifest_path().parent / ".forecast-prewarm-not-published.json"
         active_forecast = (
             mobile_catalog.power_forecast_active_display_path()
             if section == "forecast"
@@ -1221,16 +910,20 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
     return ds
 
 
-def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
+def _get_power_display_section_dataset(section: str, *, selection=None) -> xr.Dataset | None:
     """Open only the display variables required by a Power page section.
 
     The combined store is retained for existing scripts and old deployments, but
     normal browser renders must not open all observed and forecast fields.
     """
-    path = _power_display_section_path(section)
+    if section == "forecast" and selection is None:
+        selection = mobile_catalog.power_forecast_serving_selection()
+    path = (selection["forecastPath"] if selection else _power_display_section_path(section)).resolve()
     if section in {"current", "forecast"}:
-        publication = mobile_catalog.power_forecast_bundle_status(
-            _power_display_section_path("forecast")
+        publication = (
+            selection["publicationStatus"] if selection else mobile_catalog.power_forecast_bundle_status(
+                _power_display_section_path("forecast")
+            )
         )
         if publication.get("enabled") and publication.get("status") == "unavailable":
             return None
@@ -1263,15 +956,21 @@ def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
     return ds
 
 
-def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
+def _get_power_operating_scenarios_dataset(*, paths=None) -> xr.Dataset | None:
     """Open the compact learned operating-plan product when available."""
     global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
     global _POWER_OPERATING_SCENARIOS_SOURCE_PATH
     required = {"component", "SolarEnsembleWatts", "ComponentLoadWatts"}
-    paths = _power_operating_scenario_paths()
+    if paths is None:
+        selection = mobile_catalog.power_forecast_serving_selection()
+        if selection and selection["publicationStatus"].get("status") == "unavailable":
+            return None
+        paths = selection["scenarioPaths"] if selection else _power_operating_scenario_paths()
+    paths = tuple(path.resolve() for path in paths)
+    preferred = next((path for path in paths if path.exists()), None)
     if _POWER_OPERATING_SCENARIOS_DS is not None and required.issubset(
         set(_POWER_OPERATING_SCENARIOS_DS.variables)
-    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH in paths:
+    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH == preferred:
         return _POWER_OPERATING_SCENARIOS_DS
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
@@ -1371,12 +1070,22 @@ def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
 def _open_power_display_summary_window(start, end, section: str | None = None) -> xr.Dataset | None:
     """Open a bounded Power display window without scanning every forecast field."""
     section = section or (power_view_select.value if "power_view_select" in globals() else "current")
-    ds = _get_power_display_section_dataset(section)
+    selection = mobile_catalog.power_forecast_serving_selection() if section == "forecast" else None
+    if selection and selection["publicationStatus"].get("status") == "unavailable":
+        return None
+    ds = _get_power_display_section_dataset(section, selection=selection)
     legacy = ds is None
-    if ds is None:
+    if ds is None and selection is None:
         ds = _get_power_display_summary_dataset()
     if ds is None or "time" not in ds:
         return None
+    if section == "forecast" and selection:
+        # Pin both siblings to the same validated generation, even if active
+        # rotates during this render. Never merge a separately selected plan.
+        ds = merge_operating_scenarios_into_display_summary(
+            ds, _get_power_operating_scenarios_dataset(paths=selection["scenarioPaths"]),
+        )
+        mobile_catalog.apply_power_forecast_publication_metadata(ds, selection["publicationStatus"])
     start_dt = _as_naive_utc_datetime(start)
     end_dt = _as_naive_utc_datetime(end)
     if start_dt is None or end_dt is None:
@@ -1819,6 +1528,12 @@ OPS_STREAM_SPECS = (
         ),
     },
     {
+        "label": "ASFS Fast Gas",
+        "stream_prefix": "asfs_fast_gas",
+        "source_key": "asfs_fast_gas_source_sync_service_healthy_state",
+        "processing_keys": ("asfs_fast_gas_append_service_healthy_state",),
+    },
+    {
         "label": "Aurora Power Supply",
         "stream_prefix": "power",
         "source_key": "power_source_sync_service_healthy_state",
@@ -1992,6 +1707,12 @@ def _ops_level_from_battery_soc(value) -> str:
 
 
 def _ops_level_from_battery_depletion(snapshot: dict) -> str:
+    freshness = mobile_catalog.battery_display_freshness(snapshot)["depletion"]
+    level = mobile_catalog._freshness_guarded_level(_ops_battery_depletion_value_level(snapshot), freshness["level"])
+    return "gray" if level == "unknown" else level
+
+
+def _ops_battery_depletion_value_level(snapshot: dict) -> str:
     power_w = _ops_float(snapshot.get("aps_battery_power_w"))
     soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
     if power_w is None or soc is None:
@@ -2069,52 +1790,66 @@ def _ops_expected_paused_prefixes() -> set[str]:
 def _ops_source_health(snapshot: dict, paused_prefixes: set[str]) -> tuple[int, int, int]:
     """Return active recent, active stale, and intentionally paused stream counts."""
     active_specs = [spec for spec in OPS_STREAM_SPECS if spec["stream_prefix"] not in paused_prefixes]
-    recent = sum(_ops_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")) is True for spec in active_specs)
-    stale = sum(_ops_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")) is False for spec in active_specs)
+    levels = [_ops_collection_level(snapshot, spec["stream_prefix"]) for spec in active_specs]
+    recent = levels.count("green")
+    stale = levels.count("red")
     paused = sum(spec["stream_prefix"] in paused_prefixes for spec in OPS_STREAM_SPECS)
     return recent, stale, paused
 
 
+def _ops_collection_level(snapshot: dict, prefix: str) -> str:
+    state = mobile_catalog.collection_state(snapshot, prefix, datetime.now(timezone.utc))
+    return "amber" if state["level"] == "unknown" else state["level"]
+
+
+def _ops_collection_health_level(snapshot: dict, paused_prefixes: set[str]) -> str:
+    return _ops_worst_level([
+        _ops_collection_level(snapshot, spec["stream_prefix"])
+        for spec in OPS_STREAM_SPECS if spec["stream_prefix"] not in paused_prefixes
+    ])
+
+
 def _ops_source_freshness_text(snapshot: dict, prefix: str, *, intentionally_paused: bool = False) -> str:
-    recent = _ops_bool(snapshot.get(f"{prefix}_source_recent_state"))
-    age_min = _ops_float(snapshot.get(f"{prefix}_source_age_min"))
+    collection = mobile_catalog.collection_state(snapshot, prefix, datetime.now(timezone.utc))
+    age_min = collection["ageMinutes"]
     if intentionally_paused:
         if age_min is None:
             return "Paused - PDU outlet off"
         return f"Paused - PDU outlet off (last data {_format_duration(timedelta(minutes=age_min))} ago)"
-    if recent is None:
-        return "No source timestamp"
     if age_min is None:
-        return "Recent" if recent else "Stale"
+        return "Collection timestamp unavailable"
     age_text = _format_duration(timedelta(minutes=age_min))
-    return f"Recent ({age_text})" if recent else f"Stale ({age_text})"
+    return f"Delivered sample recent ({age_text})" if collection["level"] == "green" else f"Delivered sample stale ({age_text})"
+
+
+def _ops_battery_metric_level(snapshot: dict, metric: str, value_level: str) -> str:
+    freshness = mobile_catalog.battery_display_freshness(snapshot)[metric]
+    level = mobile_catalog._freshness_guarded_level(value_level, freshness["level"])
+    return "gray" if level == "unknown" else level
 
 
 def _ops_battery_text(snapshot: dict) -> tuple[str, str]:
     voltage = _ops_float(snapshot.get("aps_battery_voltage_v"))
-    age_min = _ops_float(snapshot.get("aps_battery_voltage_age_min"))
     if voltage is None:
         return "No data", "Aurora Power Supply DC inverter voltage unavailable"
     value = f"{voltage:.2f} V"
-    if age_min is None:
-        return value, "Aurora Power Supply DC inverter voltage"
-    age_text = _format_duration(timedelta(minutes=age_min))
-    return value, f"Aurora Power Supply DC inverter voltage, {age_text} old"
+    age_text = mobile_catalog.battery_display_freshness(snapshot)["voltage"]["detail"]
+    return value, f"Aurora Power Supply DC inverter voltage, {age_text}"
 
 
 def _ops_battery_soc_text(snapshot: dict) -> tuple[str, str]:
     soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
-    age_min = _ops_float(snapshot.get("aps_battery_soc_age_min"))
     if soc is None:
         return "No data", "Aurora Power Supply battery state of charge unavailable"
     value = f"{soc:.0f} %"
-    if age_min is None:
-        return value, "Aurora Power Supply battery state of charge"
-    age_text = _format_duration(timedelta(minutes=age_min))
-    return value, f"Aurora Power Supply battery state of charge, {age_text} old"
+    age_text = mobile_catalog.battery_display_freshness(snapshot)["soc"]["detail"]
+    return value, f"Aurora Power Supply battery state of charge, {age_text}"
 
 
 def _ops_battery_depletion_text(snapshot: dict) -> tuple[str, str]:
+    freshness = mobile_catalog.battery_display_freshness(snapshot)["depletion"]
+    if freshness["level"] in {"red", "unknown"}:
+        return "Unavailable", freshness["detail"]
     soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
     power_w = _ops_float(snapshot.get("aps_battery_power_w"))
     if soc is None or power_w is None:
@@ -2126,8 +1861,7 @@ def _ops_battery_depletion_text(snapshot: dict) -> tuple[str, str]:
     if remaining_kwh is None:
         remaining_kwh = max(soc, 0.0) / 100.0 * capacity_kwh
 
-    age_min = _ops_float(snapshot.get("aps_battery_power_age_min"))
-    age_text = "" if age_min is None else f", power sample {_format_duration(timedelta(minutes=age_min))} old"
+    age_text = f", power sample {mobile_catalog.battery_display_freshness(snapshot)['power']['detail']}"
     energy_text = f"{remaining_kwh:.1f} kWh remaining from {capacity_kwh:.0f} kWh"
 
     if power_w < -deadband_w:
@@ -2513,6 +2247,32 @@ def _ops_light_markup(level: str, text: str) -> str:
     )
 
 
+def _ops_enclosure_cards_markup() -> str:
+    cards = []
+    levels = {"ok": "green", "warning": "amber", "error": "red", "unknown": "gray"}
+    states = {"fresh": "Fresh", "delayed": "Delayed", "stale": "No recent reading", "unavailable": "Unavailable"}
+    for sensor in enclosure_sensors.load_enclosure_sensors():
+        temperature, humidity = sensor["temperatureC"], sensor["relativeHumidityPct"]
+        value = "No data" if temperature is None or humidity is None else f"{temperature:.1f} C / {humidity:.0f} % RH"
+        detail = [states[sensor["state"]]]
+        if sensor["observedAt"]:
+            detail.append(f"Received {sensor['observedAt']}")
+        if sensor["ageMinutes"] is not None:
+            detail.append(f"{sensor['ageMinutes']:.1f} min old")
+        for key, label, units in (("dewPointC", "Dew point", "C"), ("dewPointMarginC", "Air dew-point margin", "C"), ("batteryPct", "Battery", "%"), ("rssiDbm", "RSSI", "dBm")):
+            if sensor[key] is not None:
+                detail.append(f"{label} {sensor[key]:.1f} {units}")
+        if sensor["id"] == "ass":
+            detail.append("Inside ASS, below the top shelf, behind the fan")
+        detail.append(sensor["source"])
+        cards.append(_ops_card_markup(sensor["title"], levels[sensor["level"]], value, "; ".join(detail)))
+    return (
+        "<div class='ops-section'><div class='ops-section-title'>Enclosure sensors</div>"
+        f"<div class='ops-grid ops-grid--summary'>{''.join(cards)}</div>"
+        "<div class='ops-footnote'>Display-only sensor reception status. Dew point uses paired air measurements; surface condensation is not measured.</div></div>"
+    )
+
+
 def _ops_card_markup(title: str, level: str, value: str, meta: str = "") -> str:
     meta_markup = f"<div class='ops-card__meta'>{escape(meta)}</div>" if meta else ""
     return (
@@ -2614,6 +2374,26 @@ def _ops_trend_card_markup(title: str, level: str, value: str, meta: str, values
     )
 
 
+def _ops_battery_trend_status(ds: xr.Dataset, metric: str, values: np.ndarray | None, value_level: str) -> tuple[str, str]:
+    """Date a historical battery value using timing from its own finite row."""
+    indices = np.flatnonzero(np.isfinite(values)) if values is not None else np.array([], dtype=int)
+    if not indices.size or "time" not in ds:
+        return "gray", "Historical sample time unavailable"
+    index = int(indices[-1])
+    row = ds.isel(time=index)
+    snapshot = {"time_utc": str(row["time"].values)}
+    for key in (f"aps_battery_{metric}_time_utc", f"aps_battery_{metric}_age_min", "power_latest_time_utc"):
+        if key in row:
+            snapshot[key] = str(row[key].values) if key.endswith("_time_utc") else row[key].values.item()
+    freshness = mobile_catalog.battery_display_freshness(snapshot)[metric]
+    timestamp = _ops_timestamp(freshness["time"])
+    detail = (
+        f"Historical sample {timestamp.strftime('%d %b %H:%M UTC')}; {freshness['detail']}"
+        if timestamp else "Historical sample time unavailable"
+    )
+    return _ops_battery_metric_level(snapshot, metric, value_level), detail
+
+
 def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     """Return compact seven-day trend cards from the operations Zarr."""
     paused_prefixes = paused_prefixes or set()
@@ -2685,6 +2465,8 @@ def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     voltage_latest = _ops_value_from_series(voltage_series) if voltage_series is not None else None
     source_lag_latest = _ops_value_from_series(source_lag_series) if source_lag_series is not None else None
     gws_lag_latest = _ops_value_from_series(gws_lag_series) if gws_lag_series is not None else None
+    soc_level, soc_timing = _ops_battery_trend_status(ds, "soc", soc_series, _ops_level_from_battery_soc(soc_latest))
+    voltage_level, voltage_timing = _ops_battery_trend_status(ds, "voltage", voltage_series, _ops_level_from_battery_voltage(voltage_latest))
 
     cards = [
         _ops_trend_card_markup(
@@ -2696,16 +2478,16 @@ def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
         ),
         _ops_trend_card_markup(
             "Battery SOC",
-            _ops_level_from_battery_soc(soc_latest),
+            soc_level,
             "No data" if soc_latest is None else f"{soc_latest:.0f} %",
-            "Aurora Power Supply state of charge",
+            f"Aurora Power Supply state of charge; {soc_timing}",
             soc_series,
         ),
         _ops_trend_card_markup(
             "Battery voltage",
-            _ops_level_from_battery_voltage(voltage_latest),
+            voltage_level,
             "No data" if voltage_latest is None else f"{voltage_latest:.2f} V",
-            "Aurora Power Supply DC inverter voltage",
+            f"Aurora Power Supply DC inverter voltage; {voltage_timing}",
             voltage_series,
         ),
         _ops_trend_card_markup(
@@ -2756,7 +2538,7 @@ def _ops_root_cause_cards_markup(
             _ops_worst_level([source_level, source_freshness_level]),
             f"{source_probe_failures} host failures, {source_stale} active stale streams"
             + (f", {source_paused} paused" if source_paused else ""),
-            "Remote source reachability and whether each stream has produced data within 1.5 hours",
+            "Remote source reachability and instrument-specific delivered-sample freshness",
         ),
         _ops_card_markup(
             "Network and source sync",
@@ -2796,6 +2578,11 @@ def _ops_root_cause_cards_markup(
 
 def _ops_operations_markup() -> str:
     snapshot = _ops_read_snapshot()
+    infrastructure = mobile_catalog.infrastructure_status()
+    infrastructure_card = ""
+    if infrastructure is not None:
+        card = infrastructure["card"]
+        infrastructure_card = _ops_card_markup(card["title"], card["level"], card["value"], card["detail"])
     with _timed_perf("operations_dashboard_render", instrument="ops-monitor", snapshot_path=snapshot.get("_path")) as perf:
         if snapshot.get("_missing"):
             perf["status"] = "missing_snapshot"
@@ -2804,6 +2591,8 @@ def _ops_operations_markup() -> str:
                 "<div class='ops-shell'>"
                 "<div class='ops-section-title'>Operations Dashboard</div>"
                 f"{_ops_card_markup('Operations snapshot', 'red', 'Missing', missing_meta)}"
+                f"{_ops_enclosure_cards_markup()}"
+                f"{infrastructure_card}"
                 "</div>"
             )
         if snapshot.get("_error"):
@@ -2812,6 +2601,8 @@ def _ops_operations_markup() -> str:
                 "<div class='ops-shell'>"
                 "<div class='ops-section-title'>Operations Dashboard</div>"
                 f"{_ops_card_markup('Operations snapshot', 'red', 'Unreadable', snapshot.get('_error', 'Unknown error'))}"
+                f"{_ops_enclosure_cards_markup()}"
+                f"{infrastructure_card}"
                 "</div>"
             )
 
@@ -2828,9 +2619,11 @@ def _ops_operations_markup() -> str:
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
         paused_prefixes = _ops_expected_paused_prefixes()
         source_recent_count, source_stale_count, source_paused_count = _ops_source_health(snapshot, paused_prefixes)
-        source_freshness_level = _ops_level_from_count(source_stale_count, amber_at=0.0)
-        battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
-        battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
+        source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
+        logger_storage = mobile_catalog.storage_status(snapshot, datetime.now(timezone.utc))
+        logger_storage_level = logger_storage["level"] if logger_storage else "gray"
+        battery_level = _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))
+        battery_soc_level = _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         internal_temp_level = _ops_level_from_internal_temp(snapshot.get("aps_internal_temp_c"))
         dewpoint_level = _ops_level_from_dewpoint_margin(snapshot)
@@ -2863,6 +2656,7 @@ def _ops_operations_markup() -> str:
             snapshot_level,
             source_level,
             source_freshness_level,
+            logger_storage_level,
             battery_level,
             battery_soc_level,
             battery_depletion_level,
@@ -2874,6 +2668,8 @@ def _ops_operations_markup() -> str:
         ])
         if site_env == "development":
             overall_level = _ops_worst_level([overall_level, dev_mirror_level])
+        if infrastructure is not None:
+            overall_level = _ops_worst_level([overall_level, infrastructure["level"]])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -2908,6 +2704,8 @@ def _ops_operations_markup() -> str:
             source_paused_count,
         )
         trend_cards = _ops_trend_cards_markup(paused_prefixes)
+        if logger_storage:
+            root_cause_cards += _ops_card_markup("ASFS logger directory headroom", logger_storage_level, logger_storage["state"].capitalize(), logger_storage["detail"])
         failover_endpoint_levels = [
             _ops_worst_level(
                 [
@@ -2930,6 +2728,7 @@ def _ops_operations_markup() -> str:
         ]
 
         summary_cards = [
+            infrastructure_card,
             _ops_card_markup(
                 "Overall",
                 overall_level,
@@ -2949,14 +2748,14 @@ def _ops_operations_markup() -> str:
                 f"{int(_ops_float(snapshot.get('source_host_probe_fail_count')) or 0)} probe failures",
             ),
             _ops_card_markup(
-                "Source freshness",
+                "Collection freshness",
                 source_freshness_level,
                 (
                     f"{source_stale_count} active stale streams"
                     if source_stale_count
                     else f"{source_recent_count}/{len(OPS_STREAM_SPECS) - source_paused_count} active streams recent"
                 ),
-                "Source data seen within the last 1.5 hours"
+                "Delivered samples meet their instrument cadence; missing evidence needs attention"
                 + (f"; {source_paused_count} PDU stream(s) intentionally paused" if source_paused_count else ""),
             ),
             _ops_card_markup(
@@ -3242,7 +3041,7 @@ def _ops_operations_markup() -> str:
                 else _ops_worst_level(
                     [
                         _ops_level_from_bool(snapshot.get(spec["source_key"])),
-                        _ops_level_from_bool(snapshot.get(f"{spec['stream_prefix']}_source_recent_state")),
+                        _ops_collection_level(snapshot, spec["stream_prefix"]),
                     ]
                 )
             )
@@ -3294,6 +3093,7 @@ def _ops_operations_markup() -> str:
             "<div class='ops-section-title'>System summary</div>"
             f"<div class='ops-grid ops-grid--summary'>{''.join(summary_cards)}</div>"
             "</div>"
+            f"{_ops_enclosure_cards_markup()}"
             "<div class='ops-section'>"
             "<div class='ops-section-title'>Root-cause groups</div>"
             f"<div class='ops-grid ops-grid--root-cause'>{root_cause_cards}</div>"
@@ -5054,10 +4854,6 @@ wxcam_prev.on_click(lambda _e: _shift_wxcam_ql(-1))
 wxcam_next.on_click(lambda _e: _shift_wxcam_ql(1))
 
 
-class WxcamSelectionState(param.Parameterized):
-    selected_hour_path = param.String(default="")
-
-
 wxcam_calendar_state = WxcamSelectionState()
 
 
@@ -5118,38 +4914,6 @@ wxcam_interactive_browser = pn.Column(
 )
 
 wxcam_image_type.param.watch(_on_wxcam_image_type_change, "value")
-
-
-class AuroracamCameraCard(pn.reactive.ReactiveHTML):
-    camera_id = param.String(default="")
-    title = param.String(default="")
-    ip = param.String(default="")
-    image_url = param.String(default="")
-    image_class = param.String(default="auroracam-card__hidden")
-    placeholder = param.String(default="No image")
-    placeholder_class = param.String(default="")
-    meta = param.String(default="")
-    filename = param.String(default="")
-    selected_class = param.String(default="")
-    empty_class = param.String(default="auroracam-card--empty")
-    clicked = param.Event()
-
-    _template = """
-    <button id="card" type="button" class="auroracam-card auroracam-card--button {{ selected_class }} {{ empty_class }}" onclick="${script('select')}">
-      <div class="auroracam-card__head">
-        <div class="auroracam-card__title">{{ title }}</div>
-        <div class="auroracam-card__ip">{{ ip }}</div>
-      </div>
-      <img class="auroracam-card__img {{ image_class }}" src="{{ image_url }}" alt="{{ title }} selected image"></img>
-      <div class="auroracam-card__placeholder {{ placeholder_class }}">{{ placeholder }}</div>
-      <div class="auroracam-card__meta">{{ meta }}</div>
-      <div class="auroracam-card__file">{{ filename }}</div>
-    </button>
-    """
-
-    _scripts = {
-        "select": "data.clicked = true",
-    }
 
 
 def _auroracam_today_token() -> str:
@@ -6713,8 +6477,6 @@ _update_view(
     irr_ymax.value,
     instrument_select.value,
 )
-
-
 
 
 # -------- Science / housekeeping quicklooks --------
@@ -8834,6 +8596,7 @@ def _get_power_plan_editor() -> pn.Card:
 
 
 power_plan_editor_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
+enclosure_power_container = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
 
 mobile_custom_cl61_start = pn.widgets.DatetimePicker(
     name="Instrument start (UTC)",
@@ -8883,7 +8646,6 @@ def _get_mobile_power_plan_editor() -> pn.Card:
             css_classes=["operating-plan-card"],
         )
     return mobile_power_plan_editor
-
 
 
 # The desktop browser keeps the compact row layout used by the stable site.
@@ -8946,9 +8708,14 @@ def _site_env_banner_pane() -> pn.pane.HTML | None:
     if SITE_ENV != "development" or not SITE_ENV_EXPLICIT:
         return None
     domain = SITE_DOMAIN or "data-ocean.gamb2le.co.uk"
+    label = (
+        "Development site - direct field continuity; see Infrastructure for live status"
+        if mobile_catalog.direct_field_continuity_enabled()
+        else "Development site - live mirrored data"
+    )
     return pn.pane.HTML(
         "<div class='site-env-banner'>"
-        "<span>Development site - live mirrored data</span>"
+        f"<span>{escape(label)}</span>"
         f"<span class='site-env-banner__meta'>{escape(domain)}</span>"
         "</div>",
         sizing_mode="stretch_width",
@@ -9157,6 +8924,7 @@ def _sync_power_section_visibility() -> None:
     power_browser_guidance_container.visible = is_forecast
     interactive_content.visible = not is_forecast
     power_plan_editor_container.visible = is_forecast
+    enclosure_power_container.visible = is_power and not is_forecast
     if is_forecast:
         guidance = globals().get("_browser_power_briefing")
         if not power_browser_guidance_container.objects and callable(guidance):
@@ -9205,7 +8973,6 @@ interactive_tab = pn.Column(
     power_browser_guidance_container,
     interactive_content,
     power_plan_editor_container,
-    interactive_footer,
     sizing_mode="stretch_width",
 )
 science_quicklooks_tab = pn.Column(
@@ -9402,6 +9169,7 @@ def _mobile_power_latest_measured_time() -> datetime | None:
 
 def _mobile_overview_markup() -> str:
     snapshot = _ops_read_snapshot()
+    infrastructure = mobile_catalog.infrastructure_status()
     if snapshot.get("_missing") or snapshot.get("_error"):
         ops_level = "red"
         ops_value = "No ops snapshot"
@@ -9415,16 +9183,23 @@ def _mobile_overview_markup() -> str:
         source_level = _ops_level_from_source_probes(snapshot.get("source_host_probe_fail_count"))
         paused_prefixes = _ops_expected_paused_prefixes()
         _source_recent, source_stale_count, _source_paused = _ops_source_health(snapshot, paused_prefixes)
-        source_freshness_level = _ops_level_from_count(source_stale_count, amber_at=0.0)
-        battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
-        battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
+        source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
+        logger_storage = mobile_catalog.storage_status(snapshot, datetime.now(timezone.utc))
+        logger_storage_level = logger_storage["level"] if logger_storage else "gray"
+        battery_level = _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))
+        battery_soc_level = _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
-        ops_level = _ops_worst_level([source_level, source_freshness_level, battery_level, battery_soc_level, battery_depletion_level, processing_level])
+        ops_level = _ops_worst_level([source_level, source_freshness_level, logger_storage_level, battery_level, battery_soc_level, battery_depletion_level, processing_level])
         ops_value = "Healthy" if ops_level == "green" else "Attention" if ops_level == "amber" else "Action" if ops_level == "red" else "Waiting"
         failed = len(_ops_failed_service_names(snapshot))
         snapshot_age = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
         ops_meta = f"Snapshot {snapshot_age}; {failed} unhealthy services"
+
+    if infrastructure is not None:
+        ops_level = _ops_worst_level([ops_level, infrastructure["level"]])
+        if infrastructure["level"] in {"red", "amber"}:
+            ops_value = "Action" if ops_level == "red" else "Attention"
 
     battery_value, battery_meta = _ops_battery_text(snapshot)
     battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
@@ -9433,32 +9208,31 @@ def _mobile_overview_markup() -> str:
     # The operations snapshot already records the latest measured power
     # timestamp. Opening the 271-variable display Zarr here made every
     # Overview session wait several seconds before its first paint.
-    power_latest = next(
-        (
-            moment
-            for key in (
-                "power_latest_time_utc",
-                "aps_battery_power_time_utc",
-                "aps_battery_soc_time_utc",
-                "aps_battery_voltage_time_utc",
-            )
-            if (moment := _ops_timestamp(snapshot.get(key))) is not None
-        ),
-        None,
-    )
-    if power_latest is None:
+    power_time = mobile_catalog._snapshot_power_time(snapshot)
+    power_latest = _ops_timestamp(power_time)
+    has_power_time = any(key in snapshot for key in (
+        "power_latest_time_utc", "aps_battery_power_time_utc",
+        "aps_battery_soc_time_utc", "aps_battery_voltage_time_utc",
+    ))
+    if power_latest is None and not has_power_time:
         power_latest = _mobile_power_latest_measured_time()
-    power_latest_utc = power_latest.replace(tzinfo=timezone.utc) if power_latest and power_latest.tzinfo is None else power_latest
-    power_meta = _humanize_age(power_latest_utc)
-    power_level = _ops_level_from_age_minutes(max((datetime.now(timezone.utc) - power_latest_utc).total_seconds() / 60.0, 0.0) if power_latest_utc else None)
+    if power_latest is not None:
+        power_latest = power_latest.replace(tzinfo=timezone.utc) if power_latest.tzinfo is None else power_latest
+        if power_latest > datetime.now(timezone.utc):
+            power_latest = None
+    power_meta = _humanize_age(power_latest) if power_latest else "Measurement time unavailable"
+    power_level = _ops_level_from_age_minutes((datetime.now(timezone.utc) - power_latest).total_seconds() / 60.0 if power_latest else None)
     cards = [
         _mobile_status_card_markup("Operations", ops_value, ops_meta, ops_level),
-        _mobile_status_card_markup("State of Charge", battery_soc_value, battery_soc_meta, _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))),
-        _mobile_status_card_markup("Battery Voltage", battery_value, battery_meta, _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))),
+        _mobile_status_card_markup("State of Charge", battery_soc_value, battery_soc_meta, _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))),
+        _mobile_status_card_markup("Battery Voltage", battery_value, battery_meta, _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))),
         _mobile_status_card_markup("Time to Depleted", depletion_value, depletion_meta, _ops_level_from_battery_depletion(snapshot)),
         _mobile_status_card_markup("Power Data", power_latest.strftime("%H:%M UTC") if power_latest else "No data", power_meta, power_level),
         _mobile_status_card_markup("AURORACam", camera_value, camera_meta, camera_level),
     ]
+    if infrastructure is not None:
+        card = infrastructure["card"]
+        cards.insert(1, _mobile_status_card_markup(card["title"], card["value"], card["detail"], card["level"]))
     try:
         cards.extend(
             _mobile_status_card_markup(
@@ -10069,6 +9843,56 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
     )
 
 
+_enclosure_power_plot = pn.pane.Plotly(sizing_mode="stretch_width", config={"displayModeBar": False, "responsive": True})
+_enclosure_power_explanation = pn.pane.Markdown()
+_enclosure_power_card_container = pn.Column(
+    pn.pane.Markdown("### Enclosure conditions"),
+    _enclosure_power_explanation,
+    _enclosure_power_plot,
+    sizing_mode="stretch_width",
+)
+
+
+def _enclosure_power_card() -> pn.Column:
+    """Update a stable chart from canonical BLE data, independently of Power."""
+    panel = enclosure_sensors.power_panel()
+    figure = make_subplots(specs=[[{"secondary_y": True}]])
+    for trace in panel["traces"]:
+        times, values, previous_segment = [], [], None
+        for point in trace["points"]:
+            if previous_segment is not None and point["segment"] != previous_segment:
+                times.append(point["time"])
+                values.append(None)
+            times.append(point["time"])
+            values.append(point["value"])
+            previous_segment = point["segment"]
+        # A null-only trace keeps an unavailable sensor in the legend without
+        # inventing an observation or a timestamp.
+        figure.add_trace(go.Scatter(x=times or [None], y=values or [None], name=trace["label"], mode="lines", connectgaps=False, showlegend=True, line={"color": trace["color"]}), secondary_y=trace["axis"] == "right")
+    now = datetime.now(timezone.utc)
+    mobile = _mobile_view_requested()
+    legend = dict(orientation="v" if mobile else "h", y=1.08, yanchor="bottom", x=0, font=dict(size=12))
+    if not mobile:
+        legend.update(entrywidth=0.32, entrywidthmode="fraction")
+    figure.update_layout(height=560 if mobile else 460, margin=dict(l=55, r=70 if mobile else 55, t=170 if mobile else 100, b=80), legend=legend, paper_bgcolor="white", plot_bgcolor="white")
+    figure.update_xaxes(type="date", title_text="Receiver time (UTC)", title_standoff=15, nticks=3, tickfont=dict(size=11), tickformat="%d %b<br>%H:%M", range=[now - timedelta(hours=24), now])
+    if not any(trace["points"] for trace in panel["traces"]):
+        figure.add_annotation(text="No enclosure readings in the latest 24 hours", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+    figure.update_yaxes(title_text=panel["leftAxisLabel"], secondary_y=False)
+    figure.update_yaxes(title_text=panel["rightAxisLabel"], range=[0, 100], secondary_y=True)
+    _enclosure_power_explanation.object = panel["explanation"]
+    _enclosure_power_plot.object = figure
+    return _enclosure_power_card_container
+
+
+@pn.depends(power_view_select.param.value, range_end.param.value)
+def _enclosure_power_view(section, _live_refresh_anchor):
+    return _enclosure_power_card() if section == "current" else pn.Column()
+
+
+enclosure_power_container[:] = [pn.panel(_enclosure_power_view)]
+
+
 def _mobile_power_tab() -> pn.Column:
     return pn.Column(
         pn.pane.HTML(
@@ -10080,6 +9904,7 @@ def _mobile_power_tab() -> pn.Column:
         power_view_select,
         _power_section_intro,
         _mobile_power_section,
+        _enclosure_power_view,
         sizing_mode="stretch_width",
         css_classes=["mobile-shell", "mobile-shell--power"],
     )
@@ -10258,11 +10083,17 @@ def _build_mobile_layout() -> pn.Column:
 
 interactive_tab_host = pn.Column(
     interactive_tab,
+    interactive_footer,
     sizing_mode="stretch_width",
     margin=0,
     name="Interactive Data Browser",
 )
+power_browser_content_host = pn.Column(sizing_mode="stretch_width", margin=0)
+power_browser_footer_host = pn.Column(sizing_mode="stretch_width", margin=0)
 power_tab_host = pn.Column(
+    power_browser_content_host,
+    enclosure_power_container,
+    power_browser_footer_host,
     sizing_mode="stretch_width",
     margin=0,
     name="Power",
@@ -10317,14 +10148,22 @@ def _sync_browser_tab_instrument(active: str) -> None:
             instrument_select.visible = False
             if instrument_select.value != "power":
                 instrument_select.value = "power"
-            interactive_tab_host.clear()
-            power_tab_host[:] = [interactive_tab]
+            if interactive_tab_host.objects:
+                interactive_tab_host.clear()
+            if power_browser_content_host.objects != [interactive_tab]:
+                power_browser_content_host[:] = [interactive_tab]
+            if power_browser_footer_host.objects != [interactive_footer]:
+                power_browser_footer_host[:] = [interactive_footer]
         elif active == "interactive":
             instrument_select.visible = True
             if instrument_select.value == "power":
                 instrument_select.value = "Ceilometer"
-            power_tab_host.clear()
-            interactive_tab_host[:] = [interactive_tab]
+            if power_browser_content_host.objects:
+                power_browser_content_host.clear()
+            if power_browser_footer_host.objects:
+                power_browser_footer_host.clear()
+            if interactive_tab_host.objects != [interactive_tab, interactive_footer]:
+                interactive_tab_host[:] = [interactive_tab, interactive_footer]
     finally:
         _browser_tab_syncing = False
 
@@ -10400,6 +10239,9 @@ def _prepare_initial_stable_tab_content(slug: str | None) -> None:
     active = _normalize_tab_slug(slug)
     if active == "overview":
         _refresh_browser_overview()
+    elif active == "power":
+        # Place the chart in its final host before the browser renders it.
+        _sync_browser_tab_instrument(active)
     elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
         _refresh_housekeeping_tab_content()
         _LOADED_TABS.add("housekeeping")
@@ -10476,7 +10318,7 @@ def _site_footer_pane() -> pn.pane.HTML:
     return pn.pane.HTML(SITE_FOOTER_HTML, sizing_mode="stretch_width", margin=0)
 
 
-interactive_tab.append(_site_footer_pane())
+interactive_footer.append(_site_footer_pane())
 browser_overview_tab.append(_site_footer_pane())
 science_quicklooks_tab.append(_site_footer_pane())
 housekeeping_quicklooks_tab.append(_site_footer_pane())

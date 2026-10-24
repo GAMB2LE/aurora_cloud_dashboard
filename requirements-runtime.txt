@@ -20,7 +20,7 @@ numpy==2.2.6
 pandas==2.3.3
 panel==1.8.2
 param==2.4.1
-pillow==12.3.0
+pillow==13.0.0
 plotly==6.3.1
 scipy==1.15.3
 uvicorn[standard]==0.51.0

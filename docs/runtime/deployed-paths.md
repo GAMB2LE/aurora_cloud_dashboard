@@ -20,6 +20,16 @@ Development-only experiments must use:
 The development dashboard may read mirrored products from
 `/data/aurora/products`; it must not write experimental output there.
 
+During direct-field continuity, set `AURORA_DATA_MODE=direct-field-continuity`
+and point the existing product environment variables at the isolated recent
+field-data products. The development banner and mobile `dataRole` then identify
+the alternate source. `AURORA_CONTINUITY_STATUS_PATH` optionally points to a JSON
+status file read into the Operations API's `continuity.status` field. This is
+presentation only: it does not start collectors, alter freshness or alerts, or
+change the historical mirror. An unreadable status file is reported as an error,
+not as evidence of successful collection. Unset the mode to restore the normal
+presentation.
+
 ## Important deployed products
 
 - CL61 Zarr:

@@ -12,6 +12,7 @@ instrument data without changing raw mirrored inputs.
 - Local development: [running locally](docs/runtime/running-locally.md)
 - Product schemas and storage: [data products](docs/data-products/index.md)
 - Backup status shown by the app: [archive health](docs/runtime/archive-health.md)
+- Production, development and app fallback: [endpoint contract](docs/runtime/endpoint-contract.md)
 
 The published documentation is built from `docs/` with MkDocs.
 
@@ -25,8 +26,8 @@ This repository owns:
 - unit tests and dashboard documentation
 
 It does not own server configuration, timer ownership, deployment policy, or
-the native iOS application. Those live in `aurora-cloud-infra` and
-`aurora-dashboard-ios` respectively.
+the native applications. Those live in `aurora-cloud-infra`,
+`aurora-dashboard-ios` and `aurora-dashboard-android` respectively.
 
 It also does not own backup writers, GWS/object-store verification, repair, or
 retention. The app consumes the versioned archive-health result read-only; the
@@ -39,7 +40,7 @@ policy.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dashboard.txt -r requirements-mobile-api.txt
-python -m unittest discover -p 'test_*.py'
+python -m pytest -q
 python check_docs.py
 panel serve app.py --address 127.0.0.1 --port 5006 --allow-websocket-origin=localhost:5006
 ```
@@ -51,7 +52,9 @@ validate its UI and empty-data handling but cannot render real observations.
 
 Raw mirrors and derived products are separate by design. A browser or UI change
 must not rewrite raw data. Development is deployed and checked before an
-immutable production release tag is promoted. See the infrastructure
+immutable production release tag is promoted. Completed work is integrated into
+`main`; deployed releases use exact commits or immutable tags reachable from
+`main`, rather than following the latest branch tip. See the infrastructure
 repository's
 [production/development guide](https://github.com/GAMB2LE/aurora-cloud-infra/blob/main/docs/PRODUCTION_DEVELOPMENT.md)
 for role ownership, deployment, and rollback.
@@ -60,7 +63,7 @@ for role ownership, deployment, and rollback.
 
 ```bash
 python -m py_compile app.py mobile_api.py mobile_catalog.py
-python -m unittest discover -p 'test_*.py'
+python -m pytest -q
 python check_docs.py
 ```
 

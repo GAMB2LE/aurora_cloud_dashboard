@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +16,18 @@ import app
 
 
 class DashboardShellTests(TestCase):
+    def test_development_banner_labels_direct_field_continuity(self) -> None:
+        with (
+            patch.object(app, "SITE_ENV", "development"),
+            patch.object(app, "SITE_ENV_EXPLICIT", True),
+            patch.dict("os.environ", {"AURORA_DATA_MODE": ""}),
+        ):
+            normal = app._site_env_banner_pane()
+            with patch.dict("os.environ", {"AURORA_DATA_MODE": "direct-field-continuity"}):
+                continuity = app._site_env_banner_pane()
+        self.assertIn("Development site - live mirrored data", normal.object)
+        self.assertIn("Development site - direct field continuity; see Infrastructure for live status", continuity.object)
+
     def test_naive_utc_datetime_rejects_non_finite_timestamp(self) -> None:
         self.assertIsNone(app._as_naive_utc_datetime(pd.NaT))
         self.assertIsNone(app._as_naive_utc_datetime(np.datetime64("NaT")))
@@ -89,9 +101,9 @@ class DashboardShellTests(TestCase):
             self.assertIsNone(app._browser_performance_probe())
 
     def test_browser_performance_probe_rejects_unknown_events(self) -> None:
-        probe = app.BrowserPerformanceProbe()
         events = []
         with patch.object(app, "_perf_log", side_effect=lambda event, **fields: events.append((event, fields))):
+            probe = app.BrowserPerformanceProbe(log_callback=app._perf_log)
             probe._handle_msg({"event": "untrusted", "duration_ms": 1})
             probe._handle_msg({"event": "browser_document_ready", "duration_ms": 12.5, "path": "/app"})
 
@@ -579,11 +591,91 @@ class DashboardShellTests(TestCase):
 
         app._sync_browser_tab_instrument("power")
         self.assertEqual(app.interactive_tab_host.objects, [])
-        self.assertEqual(app.power_tab_host.objects, [app.interactive_tab])
+        self.assertEqual(app.power_browser_content_host.objects, [app.interactive_tab])
+        self.assertIn(app.enclosure_power_container, app.power_tab_host.objects)
+        self.assertNotIn(app.enclosure_power_container, app.interactive_tab.objects)
 
         app._sync_browser_tab_instrument("interactive")
-        self.assertEqual(app.interactive_tab_host.objects, [app.interactive_tab])
-        self.assertEqual(app.power_tab_host.objects, [])
+        self.assertEqual(app.interactive_tab_host.objects, [app.interactive_tab, app.interactive_footer])
+        self.assertEqual(app.power_browser_content_host.objects, [])
+        self.assertIn(app.enclosure_power_container, app.power_tab_host.objects)
+
+    def test_repeated_power_activation_keeps_rendered_chart_host(self) -> None:
+        app._sync_browser_tab_instrument("interactive")
+        app._prepare_initial_stable_tab_content("power")
+        self.assertEqual(app.power_browser_content_host.objects, [app.interactive_tab])
+        self.assertEqual(app.interactive_tab_host.objects, [])
+        changed = []
+        watcher = app.power_browser_content_host.param.watch(lambda event: changed.append(event), "objects")
+        try:
+            app._sync_browser_tab_instrument("power")
+            app._sync_browser_tab_instrument("power")
+            self.assertEqual(changed, [])
+        finally:
+            app.power_browser_content_host.param.unwatch(watcher)
+
+    def test_enclosure_chart_keeps_both_sensor_legends_without_inventing_ass_data(self) -> None:
+        labels = [
+            "APS temperature", "ASS temperature", "APS dew point", "ASS dew point",
+            "APS relative humidity", "ASS relative humidity",
+        ]
+        panel = {
+            "leftAxisLabel": "Temperature / dew point (C)",
+            "rightAxisLabel": "Relative humidity (%)",
+            "explanation": "ASS has no received readings.",
+            "traces": [
+                {
+                    "id": label.replace(" ", ""), "label": label, "color": "#123456",
+                    "axis": "right" if "humidity" in label else "left",
+                    "points": [] if label.startswith("ASS") else [
+                        {"time": "2026-10-23T10:00:00Z", "value": 10, "segment": 0},
+                        {"time": "2026-10-23T10:30:00Z", "value": 11, "segment": 1},
+                    ],
+                }
+                for label in labels
+            ],
+        }
+        original_plot = app._enclosure_power_plot.object
+        original_explanation = app._enclosure_power_explanation.object
+        try:
+            for mobile in (False, True):
+                with (
+                    self.subTest(mobile=mobile),
+                    patch.object(app.enclosure_sensors, "power_panel", return_value=panel),
+                    patch.object(app, "_mobile_view_requested", return_value=mobile),
+                ):
+                    card = app._enclosure_power_card()
+                    self.assertIs(card, app._enclosure_power_card_container)
+                    self.assertIs(card.objects[-1], app._enclosure_power_plot)
+                    self.assertEqual(card.objects[0].object, "### Enclosure conditions")
+                    figure = app._enclosure_power_plot.object
+                    self.assertEqual([trace.name for trace in figure.data], labels)
+                    self.assertGreater(figure.layout.legend.y, 1)
+                    self.assertEqual(figure.layout.legend.yanchor, "bottom")
+                    for trace in figure.data:
+                        self.assertTrue(trace.showlegend)
+                        self.assertFalse(trace.connectgaps)
+                        self.assertEqual(trace.yaxis, "y2" if "humidity" in trace.name else "y")
+                        if trace.name.startswith("ASS"):
+                            self.assertEqual(list(trace.x), [None])
+                            self.assertEqual(list(trace.y), [None])
+                        else:
+                            self.assertEqual(list(trace.y), [10, None, 11])
+                    if mobile:
+                        self.assertEqual(figure.layout.legend.orientation, "v")
+                        self.assertGreaterEqual(figure.layout.margin.t, 6 * 24)
+        finally:
+            app._enclosure_power_plot.object = original_plot
+            app._enclosure_power_explanation.object = original_explanation
+
+    def test_ass_operations_card_uses_documented_enclosure_location(self) -> None:
+        sensor = app.enclosure_sensors._card("ass", "ASS enclosure", {}, None, datetime.now(timezone.utc))
+        with patch.object(app.enclosure_sensors, "load_enclosure_sensors", return_value=[sensor]):
+            markup = app._ops_enclosure_cards_markup()
+        self.assertIn("Inside ASS, below the top shelf, behind the fan", markup)
+        self.assertIn("No data", markup)
+        self.assertIn("Unavailable", markup)
+        self.assertNotIn("Sensor location unspecified", markup)
 
     def test_desktop_tab_labels_scroll_without_abbreviating(self) -> None:
         stylesheet = Path(app.__file__).with_name("assets") / "dashboard.css"
@@ -816,7 +908,7 @@ class DashboardShellTests(TestCase):
 
     def test_operations_marks_stale_pdu_off_streams_as_paused(self) -> None:
         snapshot = {
-            "time_utc": "2026-07-19T12:00:00Z",
+            "time_utc": datetime.now(timezone.utc).isoformat(),
             "cl61_source_recent_state": 0,
             "cl61_source_age_min": 447,
             "radar_source_recent_state": 0,
@@ -830,13 +922,25 @@ class DashboardShellTests(TestCase):
             "wxcam_source_recent_state": 1,
             "source_host_probe_fail_count": 0,
         }
+        for prefix in ("vaisalamet", "asfs_logger", "asfs_fast_sonic", "asfs_fast_gas", "power", "wxcam"):
+            snapshot[f"{prefix}_product_sample_time_utc"] = datetime.now(timezone.utc).isoformat()
         with patch.object(app.mobile_catalog, "pdu_outlet_states", return_value={5: False, 6: True, 8: False}):
             paused = app._ops_expected_paused_prefixes()
             recent, stale, paused_count = app._ops_source_health(snapshot, paused)
 
         self.assertEqual(paused, {"cl61", "hatpro"})
-        self.assertEqual((recent, stale, paused_count), (5, 1, 2))
+        self.assertEqual((recent, stale, paused_count), (6, 1, 2))
         self.assertIn("Paused - PDU outlet off", app._ops_source_freshness_text(snapshot, "cl61", intentionally_paused=True))
+
+    def test_operations_collection_health_rejects_successful_noop_and_missing_evidence(self) -> None:
+        snapshot = {
+            "asfs_logger_source_sync_service_healthy_state": 1,
+            "asfs_logger_product_sample_time_utc": (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),
+        }
+        self.assertEqual(app._ops_collection_level(snapshot, "asfs_logger"), "red")
+        self.assertIn("Delivered sample stale", app._ops_source_freshness_text(snapshot, "asfs_logger"))
+        self.assertEqual(app._ops_collection_level({}, "asfs_logger"), "amber")
+        self.assertEqual(app._ops_source_freshness_text({}, "asfs_logger"), "Collection timestamp unavailable")
 
     def test_combined_operations_series_allows_all_missing_columns(self) -> None:
         dataset = xr.Dataset({"source_age": (("time",), np.array([np.nan, np.nan]))})

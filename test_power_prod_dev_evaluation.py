@@ -97,6 +97,7 @@ def test_sparse_paired_observations_preserve_full_history_scores() -> None:
             "SolarWatts_West": (("time",), np.full(len(times), 30.0)),
             "ACOutputWatts": (("time",), np.full(len(times), 80.0)),
             "DCInverterWatts": (("time",), np.full(len(times), 20.0)),
+            "BatteryWatts": (("time",), np.full(len(times), -40.0)),
             "UnusedDiagnostic": (("time",), np.arange(len(times), dtype=float)),
         },
         coords={"time": times},
@@ -113,7 +114,8 @@ def test_sparse_paired_observations_preserve_full_history_scores() -> None:
     view = paired_observation_view(power, paired)
     sparse = attach_paired_observations(paired, view.compute())
 
-    assert view.sizes["time"] == 2
+    assert 2 < view.sizes["time"] < len(times) // 100
+    assert "BatteryWatts" in view
     assert "UnusedDiagnostic" not in view
     for name in ("soc", "solar", "load"):
         np.testing.assert_allclose(
@@ -147,16 +149,16 @@ def test_paired_observation_view_remains_lazy_sparse_and_field_pruned() -> None:
     assert selected.sizes["time"] == 3
     assert set(selected.data_vars) == {"BatterySOC", "ACOutputWatts"}
     assert selected["BatterySOC"].chunks is not None
-    assert selected.attrs["paired_observation_selection"] == "nearest_unique_valid_times"
+    assert selected.attrs["paired_observation_selection"] == "bounded_interval_union_with_endpoint_neighbours"
     assert selected.attrs["paired_observation_target_count"] == 3
     assert selected.attrs["paired_observation_sample_count"] == 3
 
 
 def test_custom_observation_tolerance_is_preserved_through_attachment() -> None:
-    source_time = pd.DatetimeIndex(["2026-09-01T03:00:00"])
+    source_time = pd.DatetimeIndex(["2026-09-01T03:00:00", "2026-09-01T03:40:00"])
     target_time = pd.DatetimeIndex(["2026-09-01T03:15:00"])
     power = xr.Dataset(
-        {"BatterySOC": (("time",), [71.0])},
+        {"BatterySOC": (("time",), [71.0, 72.0])},
         coords={"time": source_time},
     ).chunk({"time": 1})
     evidence = xr.Dataset(
