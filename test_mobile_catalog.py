@@ -81,11 +81,11 @@ class MobileCatalogTests(unittest.TestCase):
             self.assertEqual(status_path.read_text(encoding="utf-8"), original)
         self.assertNotIn("continuity", normal)
         self.assertEqual(response["continuity"]["status"], status)
-        self.assertEqual(response["alerts"], normal["alerts"])
+        self.assertEqual([alert for alert in response["alerts"] if not alert["id"].startswith("infrastructure:")], normal["alerts"])
         self.assertIn("test:source-stale", [alert["id"] for alert in response["alerts"]])
         self.assertEqual(response["overallLevel"], normal["overallLevel"])
         self.assertEqual(response["streamStates"], normal["streamStates"])
-        self.assertEqual(response["summary"], "Recent direct field data; JASMIN mirror unavailable. " + normal["summary"])
+        self.assertTrue(response["summary"].endswith("Direct field continuity data. " + normal["summary"]))
 
     def test_continuity_reports_invalid_status_without_claiming_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,8 +137,10 @@ class MobileCatalogTests(unittest.TestCase):
                     self.assertEqual(normal["updatedAt"], archive_time)
                     self.assertEqual(continuity["updatedAt"], snapshot_time if timestamp_key else health_time)
                     self.assertEqual(continuity["overallLevel"], "red")
-                    for key in ("archiveStatus", "archiveDelivery", "alerts", "rootCauseGroups"):
+                    for key in ("archiveStatus", "archiveDelivery"):
                         self.assertEqual(continuity[key], normal[key])
+                    self.assertEqual([alert for alert in continuity["alerts"] if not alert["id"].startswith("infrastructure:")], normal["alerts"])
+                    self.assertEqual([group for group in continuity["rootCauseGroups"] if group["id"] != "infrastructure"], normal["rootCauseGroups"])
                     self.assertEqual(continuity["archiveStatus"]["verification"], archive_payload["verification"])
                     self.assertEqual(continuity["sources"]["archiveHealth"], normal["sources"]["archiveHealth"])
                     self.assertEqual(archive.read_text(encoding="utf-8"), original)
@@ -2105,7 +2107,7 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(cards["battery-soc"]["level"], "red")
         self.assertEqual(
             cards["battery-soc"]["updatedAt"],
-            "2026-08-17T18:29:31Z",
+            "2026-08-17T18:23:55+00:00",  # Snapshot time minus SOC-specific age.
         )
         self.assertEqual(cards["battery-voltage"]["level"], "red")
         self.assertEqual(cards["battery-depletion"]["level"], "red")

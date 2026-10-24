@@ -708,6 +708,8 @@ def _prewarmed_interactive_dir() -> Path:
 def _prewarmed_interactive_path(inst: str) -> Path:
     if inst == "power":
         section = power_view_select.value if "power_view_select" in globals() else "current"
+        if section == "forecast" and mobile_catalog.power_forecast_only_publication_active():
+            return mobile_catalog.power_forecast_bundle_manifest_path().parent / ".forecast-prewarm-not-published.json"
         active_forecast = (
             mobile_catalog.power_forecast_active_display_path()
             if section == "forecast"
@@ -908,16 +910,20 @@ def _get_power_display_summary_dataset() -> xr.Dataset | None:
     return ds
 
 
-def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
+def _get_power_display_section_dataset(section: str, *, selection=None) -> xr.Dataset | None:
     """Open only the display variables required by a Power page section.
 
     The combined store is retained for existing scripts and old deployments, but
     normal browser renders must not open all observed and forecast fields.
     """
-    path = _power_display_section_path(section)
+    if section == "forecast" and selection is None:
+        selection = mobile_catalog.power_forecast_serving_selection()
+    path = (selection["forecastPath"] if selection else _power_display_section_path(section)).resolve()
     if section in {"current", "forecast"}:
-        publication = mobile_catalog.power_forecast_bundle_status(
-            _power_display_section_path("forecast")
+        publication = (
+            selection["publicationStatus"] if selection else mobile_catalog.power_forecast_bundle_status(
+                _power_display_section_path("forecast")
+            )
         )
         if publication.get("enabled") and publication.get("status") == "unavailable":
             return None
@@ -950,15 +956,21 @@ def _get_power_display_section_dataset(section: str) -> xr.Dataset | None:
     return ds
 
 
-def _get_power_operating_scenarios_dataset() -> xr.Dataset | None:
+def _get_power_operating_scenarios_dataset(*, paths=None) -> xr.Dataset | None:
     """Open the compact learned operating-plan product when available."""
     global _POWER_OPERATING_SCENARIOS_DS, _POWER_OPERATING_SCENARIOS_REFRESHED_AT
     global _POWER_OPERATING_SCENARIOS_SOURCE_PATH
     required = {"component", "SolarEnsembleWatts", "ComponentLoadWatts"}
-    paths = _power_operating_scenario_paths()
+    if paths is None:
+        selection = mobile_catalog.power_forecast_serving_selection()
+        if selection and selection["publicationStatus"].get("status") == "unavailable":
+            return None
+        paths = selection["scenarioPaths"] if selection else _power_operating_scenario_paths()
+    paths = tuple(path.resolve() for path in paths)
+    preferred = next((path for path in paths if path.exists()), None)
     if _POWER_OPERATING_SCENARIOS_DS is not None and required.issubset(
         set(_POWER_OPERATING_SCENARIOS_DS.variables)
-    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH in paths:
+    ) and _POWER_OPERATING_SCENARIOS_SOURCE_PATH == preferred:
         return _POWER_OPERATING_SCENARIOS_DS
     if _POWER_OPERATING_SCENARIOS_DS is not None:
         try:
@@ -1058,12 +1070,22 @@ def _open_power_display_energy_window(start, end) -> xr.Dataset | None:
 def _open_power_display_summary_window(start, end, section: str | None = None) -> xr.Dataset | None:
     """Open a bounded Power display window without scanning every forecast field."""
     section = section or (power_view_select.value if "power_view_select" in globals() else "current")
-    ds = _get_power_display_section_dataset(section)
+    selection = mobile_catalog.power_forecast_serving_selection() if section == "forecast" else None
+    if selection and selection["publicationStatus"].get("status") == "unavailable":
+        return None
+    ds = _get_power_display_section_dataset(section, selection=selection)
     legacy = ds is None
-    if ds is None:
+    if ds is None and selection is None:
         ds = _get_power_display_summary_dataset()
     if ds is None or "time" not in ds:
         return None
+    if section == "forecast" and selection:
+        # Pin both siblings to the same validated generation, even if active
+        # rotates during this render. Never merge a separately selected plan.
+        ds = merge_operating_scenarios_into_display_summary(
+            ds, _get_power_operating_scenarios_dataset(paths=selection["scenarioPaths"]),
+        )
+        mobile_catalog.apply_power_forecast_publication_metadata(ds, selection["publicationStatus"])
     start_dt = _as_naive_utc_datetime(start)
     end_dt = _as_naive_utc_datetime(end)
     if start_dt is None or end_dt is None:
@@ -1685,6 +1707,12 @@ def _ops_level_from_battery_soc(value) -> str:
 
 
 def _ops_level_from_battery_depletion(snapshot: dict) -> str:
+    freshness = mobile_catalog.battery_display_freshness(snapshot)["depletion"]
+    level = mobile_catalog._freshness_guarded_level(_ops_battery_depletion_value_level(snapshot), freshness["level"])
+    return "gray" if level == "unknown" else level
+
+
+def _ops_battery_depletion_value_level(snapshot: dict) -> str:
     power_w = _ops_float(snapshot.get("aps_battery_power_w"))
     soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
     if power_w is None or soc is None:
@@ -1794,31 +1822,34 @@ def _ops_source_freshness_text(snapshot: dict, prefix: str, *, intentionally_pau
     return f"Delivered sample recent ({age_text})" if collection["level"] == "green" else f"Delivered sample stale ({age_text})"
 
 
+def _ops_battery_metric_level(snapshot: dict, metric: str, value_level: str) -> str:
+    freshness = mobile_catalog.battery_display_freshness(snapshot)[metric]
+    level = mobile_catalog._freshness_guarded_level(value_level, freshness["level"])
+    return "gray" if level == "unknown" else level
+
+
 def _ops_battery_text(snapshot: dict) -> tuple[str, str]:
     voltage = _ops_float(snapshot.get("aps_battery_voltage_v"))
-    age_min = _ops_float(snapshot.get("aps_battery_voltage_age_min"))
     if voltage is None:
         return "No data", "Aurora Power Supply DC inverter voltage unavailable"
     value = f"{voltage:.2f} V"
-    if age_min is None:
-        return value, "Aurora Power Supply DC inverter voltage"
-    age_text = _format_duration(timedelta(minutes=age_min))
-    return value, f"Aurora Power Supply DC inverter voltage, {age_text} old"
+    age_text = mobile_catalog.battery_display_freshness(snapshot)["voltage"]["detail"]
+    return value, f"Aurora Power Supply DC inverter voltage, {age_text}"
 
 
 def _ops_battery_soc_text(snapshot: dict) -> tuple[str, str]:
     soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
-    age_min = _ops_float(snapshot.get("aps_battery_soc_age_min"))
     if soc is None:
         return "No data", "Aurora Power Supply battery state of charge unavailable"
     value = f"{soc:.0f} %"
-    if age_min is None:
-        return value, "Aurora Power Supply battery state of charge"
-    age_text = _format_duration(timedelta(minutes=age_min))
-    return value, f"Aurora Power Supply battery state of charge, {age_text} old"
+    age_text = mobile_catalog.battery_display_freshness(snapshot)["soc"]["detail"]
+    return value, f"Aurora Power Supply battery state of charge, {age_text}"
 
 
 def _ops_battery_depletion_text(snapshot: dict) -> tuple[str, str]:
+    freshness = mobile_catalog.battery_display_freshness(snapshot)["depletion"]
+    if freshness["level"] in {"red", "unknown"}:
+        return "Unavailable", freshness["detail"]
     soc = _ops_float(snapshot.get("aps_battery_soc_pct"))
     power_w = _ops_float(snapshot.get("aps_battery_power_w"))
     if soc is None or power_w is None:
@@ -1830,8 +1861,7 @@ def _ops_battery_depletion_text(snapshot: dict) -> tuple[str, str]:
     if remaining_kwh is None:
         remaining_kwh = max(soc, 0.0) / 100.0 * capacity_kwh
 
-    age_min = _ops_float(snapshot.get("aps_battery_power_age_min"))
-    age_text = "" if age_min is None else f", power sample {_format_duration(timedelta(minutes=age_min))} old"
+    age_text = f", power sample {mobile_catalog.battery_display_freshness(snapshot)['power']['detail']}"
     energy_text = f"{remaining_kwh:.1f} kWh remaining from {capacity_kwh:.0f} kWh"
 
     if power_w < -deadband_w:
@@ -2344,6 +2374,26 @@ def _ops_trend_card_markup(title: str, level: str, value: str, meta: str, values
     )
 
 
+def _ops_battery_trend_status(ds: xr.Dataset, metric: str, values: np.ndarray | None, value_level: str) -> tuple[str, str]:
+    """Date a historical battery value using timing from its own finite row."""
+    indices = np.flatnonzero(np.isfinite(values)) if values is not None else np.array([], dtype=int)
+    if not indices.size or "time" not in ds:
+        return "gray", "Historical sample time unavailable"
+    index = int(indices[-1])
+    row = ds.isel(time=index)
+    snapshot = {"time_utc": str(row["time"].values)}
+    for key in (f"aps_battery_{metric}_time_utc", f"aps_battery_{metric}_age_min", "power_latest_time_utc"):
+        if key in row:
+            snapshot[key] = str(row[key].values) if key.endswith("_time_utc") else row[key].values.item()
+    freshness = mobile_catalog.battery_display_freshness(snapshot)[metric]
+    timestamp = _ops_timestamp(freshness["time"])
+    detail = (
+        f"Historical sample {timestamp.strftime('%d %b %H:%M UTC')}; {freshness['detail']}"
+        if timestamp else "Historical sample time unavailable"
+    )
+    return _ops_battery_metric_level(snapshot, metric, value_level), detail
+
+
 def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     """Return compact seven-day trend cards from the operations Zarr."""
     paused_prefixes = paused_prefixes or set()
@@ -2415,6 +2465,8 @@ def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
     voltage_latest = _ops_value_from_series(voltage_series) if voltage_series is not None else None
     source_lag_latest = _ops_value_from_series(source_lag_series) if source_lag_series is not None else None
     gws_lag_latest = _ops_value_from_series(gws_lag_series) if gws_lag_series is not None else None
+    soc_level, soc_timing = _ops_battery_trend_status(ds, "soc", soc_series, _ops_level_from_battery_soc(soc_latest))
+    voltage_level, voltage_timing = _ops_battery_trend_status(ds, "voltage", voltage_series, _ops_level_from_battery_voltage(voltage_latest))
 
     cards = [
         _ops_trend_card_markup(
@@ -2426,16 +2478,16 @@ def _ops_trend_cards_markup(paused_prefixes: set[str] | None = None) -> str:
         ),
         _ops_trend_card_markup(
             "Battery SOC",
-            _ops_level_from_battery_soc(soc_latest),
+            soc_level,
             "No data" if soc_latest is None else f"{soc_latest:.0f} %",
-            "Aurora Power Supply state of charge",
+            f"Aurora Power Supply state of charge; {soc_timing}",
             soc_series,
         ),
         _ops_trend_card_markup(
             "Battery voltage",
-            _ops_level_from_battery_voltage(voltage_latest),
+            voltage_level,
             "No data" if voltage_latest is None else f"{voltage_latest:.2f} V",
-            "Aurora Power Supply DC inverter voltage",
+            f"Aurora Power Supply DC inverter voltage; {voltage_timing}",
             voltage_series,
         ),
         _ops_trend_card_markup(
@@ -2526,6 +2578,11 @@ def _ops_root_cause_cards_markup(
 
 def _ops_operations_markup() -> str:
     snapshot = _ops_read_snapshot()
+    infrastructure = mobile_catalog.infrastructure_status()
+    infrastructure_card = ""
+    if infrastructure is not None:
+        card = infrastructure["card"]
+        infrastructure_card = _ops_card_markup(card["title"], card["level"], card["value"], card["detail"])
     with _timed_perf("operations_dashboard_render", instrument="ops-monitor", snapshot_path=snapshot.get("_path")) as perf:
         if snapshot.get("_missing"):
             perf["status"] = "missing_snapshot"
@@ -2535,6 +2592,7 @@ def _ops_operations_markup() -> str:
                 "<div class='ops-section-title'>Operations Dashboard</div>"
                 f"{_ops_card_markup('Operations snapshot', 'red', 'Missing', missing_meta)}"
                 f"{_ops_enclosure_cards_markup()}"
+                f"{infrastructure_card}"
                 "</div>"
             )
         if snapshot.get("_error"):
@@ -2544,6 +2602,7 @@ def _ops_operations_markup() -> str:
                 "<div class='ops-section-title'>Operations Dashboard</div>"
                 f"{_ops_card_markup('Operations snapshot', 'red', 'Unreadable', snapshot.get('_error', 'Unknown error'))}"
                 f"{_ops_enclosure_cards_markup()}"
+                f"{infrastructure_card}"
                 "</div>"
             )
 
@@ -2563,8 +2622,8 @@ def _ops_operations_markup() -> str:
         source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
         logger_storage = mobile_catalog.storage_status(snapshot, datetime.now(timezone.utc))
         logger_storage_level = logger_storage["level"] if logger_storage else "gray"
-        battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
-        battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
+        battery_level = _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))
+        battery_soc_level = _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         internal_temp_level = _ops_level_from_internal_temp(snapshot.get("aps_internal_temp_c"))
         dewpoint_level = _ops_level_from_dewpoint_margin(snapshot)
@@ -2609,6 +2668,8 @@ def _ops_operations_markup() -> str:
         ])
         if site_env == "development":
             overall_level = _ops_worst_level([overall_level, dev_mirror_level])
+        if infrastructure is not None:
+            overall_level = _ops_worst_level([overall_level, infrastructure["level"]])
 
         overall_value = "Healthy"
         if overall_level == "amber":
@@ -2667,6 +2728,7 @@ def _ops_operations_markup() -> str:
         ]
 
         summary_cards = [
+            infrastructure_card,
             _ops_card_markup(
                 "Overall",
                 overall_level,
@@ -8647,7 +8709,7 @@ def _site_env_banner_pane() -> pn.pane.HTML | None:
         return None
     domain = SITE_DOMAIN or "data-ocean.gamb2le.co.uk"
     label = (
-        "Development site - recent direct field data; JASMIN mirror unavailable"
+        "Development site - direct field continuity; see Infrastructure for live status"
         if mobile_catalog.direct_field_continuity_enabled()
         else "Development site - live mirrored data"
     )
@@ -9107,6 +9169,7 @@ def _mobile_power_latest_measured_time() -> datetime | None:
 
 def _mobile_overview_markup() -> str:
     snapshot = _ops_read_snapshot()
+    infrastructure = mobile_catalog.infrastructure_status()
     if snapshot.get("_missing") or snapshot.get("_error"):
         ops_level = "red"
         ops_value = "No ops snapshot"
@@ -9123,8 +9186,8 @@ def _mobile_overview_markup() -> str:
         source_freshness_level = _ops_collection_health_level(snapshot, paused_prefixes)
         logger_storage = mobile_catalog.storage_status(snapshot, datetime.now(timezone.utc))
         logger_storage_level = logger_storage["level"] if logger_storage else "gray"
-        battery_level = _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))
-        battery_soc_level = _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))
+        battery_level = _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))
+        battery_soc_level = _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))
         battery_depletion_level = _ops_level_from_battery_depletion(snapshot)
         processing_level = _ops_level_from_count(snapshot.get("failed_processing_unit_count"), amber_at=1.0)
         ops_level = _ops_worst_level([source_level, source_freshness_level, logger_storage_level, battery_level, battery_soc_level, battery_depletion_level, processing_level])
@@ -9133,6 +9196,11 @@ def _mobile_overview_markup() -> str:
         snapshot_age = f"{snapshot_age_min:.0f} min old" if snapshot_age_min is not None else "Age unknown"
         ops_meta = f"Snapshot {snapshot_age}; {failed} unhealthy services"
 
+    if infrastructure is not None:
+        ops_level = _ops_worst_level([ops_level, infrastructure["level"]])
+        if infrastructure["level"] in {"red", "amber"}:
+            ops_value = "Action" if ops_level == "red" else "Attention"
+
     battery_value, battery_meta = _ops_battery_text(snapshot)
     battery_soc_value, battery_soc_meta = _ops_battery_soc_text(snapshot)
     depletion_value, depletion_meta = _ops_battery_depletion_text(snapshot)
@@ -9140,32 +9208,31 @@ def _mobile_overview_markup() -> str:
     # The operations snapshot already records the latest measured power
     # timestamp. Opening the 271-variable display Zarr here made every
     # Overview session wait several seconds before its first paint.
-    power_latest = next(
-        (
-            moment
-            for key in (
-                "power_latest_time_utc",
-                "aps_battery_power_time_utc",
-                "aps_battery_soc_time_utc",
-                "aps_battery_voltage_time_utc",
-            )
-            if (moment := _ops_timestamp(snapshot.get(key))) is not None
-        ),
-        None,
-    )
-    if power_latest is None:
+    power_time = mobile_catalog._snapshot_power_time(snapshot)
+    power_latest = _ops_timestamp(power_time)
+    has_power_time = any(key in snapshot for key in (
+        "power_latest_time_utc", "aps_battery_power_time_utc",
+        "aps_battery_soc_time_utc", "aps_battery_voltage_time_utc",
+    ))
+    if power_latest is None and not has_power_time:
         power_latest = _mobile_power_latest_measured_time()
-    power_latest_utc = power_latest.replace(tzinfo=timezone.utc) if power_latest and power_latest.tzinfo is None else power_latest
-    power_meta = _humanize_age(power_latest_utc)
-    power_level = _ops_level_from_age_minutes(max((datetime.now(timezone.utc) - power_latest_utc).total_seconds() / 60.0, 0.0) if power_latest_utc else None)
+    if power_latest is not None:
+        power_latest = power_latest.replace(tzinfo=timezone.utc) if power_latest.tzinfo is None else power_latest
+        if power_latest > datetime.now(timezone.utc):
+            power_latest = None
+    power_meta = _humanize_age(power_latest) if power_latest else "Measurement time unavailable"
+    power_level = _ops_level_from_age_minutes((datetime.now(timezone.utc) - power_latest).total_seconds() / 60.0 if power_latest else None)
     cards = [
         _mobile_status_card_markup("Operations", ops_value, ops_meta, ops_level),
-        _mobile_status_card_markup("State of Charge", battery_soc_value, battery_soc_meta, _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct"))),
-        _mobile_status_card_markup("Battery Voltage", battery_value, battery_meta, _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v"))),
+        _mobile_status_card_markup("State of Charge", battery_soc_value, battery_soc_meta, _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))),
+        _mobile_status_card_markup("Battery Voltage", battery_value, battery_meta, _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))),
         _mobile_status_card_markup("Time to Depleted", depletion_value, depletion_meta, _ops_level_from_battery_depletion(snapshot)),
         _mobile_status_card_markup("Power Data", power_latest.strftime("%H:%M UTC") if power_latest else "No data", power_meta, power_level),
         _mobile_status_card_markup("AURORACam", camera_value, camera_meta, camera_level),
     ]
+    if infrastructure is not None:
+        card = infrastructure["card"]
+        cards.insert(1, _mobile_status_card_markup(card["title"], card["value"], card["detail"], card["level"]))
     try:
         cards.extend(
             _mobile_status_card_markup(

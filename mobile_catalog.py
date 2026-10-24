@@ -34,6 +34,7 @@ from instrument_registry import (
 from wxcam_catalog import parse_timestamp as parse_wxcam_timestamp
 from collection_freshness import collection_state
 from asfs_storage_health import storage_status
+from infrastructure_status import collect_infrastructure_status
 
 
 UTC = timezone.utc
@@ -274,6 +275,9 @@ def power_prewarm_path(section: str) -> Path | None:
     """Return the published Plotly JSON for one Power section, if valid."""
     if section not in {"current", "forecast"}:
         return None
+    if section == "forecast" and power_forecast_only_publication_active():
+        # Legacy Plotly caches are not members of the validated generation.
+        return power_forecast_bundle_manifest_path().parent / ".forecast-prewarm-not-published.json"
     root = env_path("AURORA_INTERACTIVE_PREWARM_DIR", "/data/aurora/products/dashboard/prewarm")
     return root / f"power_{section}_latest_interactive.json"
 
@@ -390,14 +394,21 @@ def _power_bundle_artifact_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def power_forecast_bundle_status(forecast_display_path: Path) -> dict[str, Any]:
+def power_forecast_bundle_status(
+    forecast_display_path: Path,
+    *,
+    manifest_path: Path | None = None,
+    forecast_only: bool = False,
+) -> dict[str, Any]:
     """Validate the atomic development bundle before exposing forecast cards."""
 
     if not power_forecast_orchestration_enabled():
         return {"enabled": False, "status": "not_enabled"}
-    if not power_forecast_publication_active():
+    if not power_forecast_publication_active() and not (
+        forecast_only and power_forecast_only_publication_active()
+    ):
         return {"enabled": False, "status": "shadow_unpublished"}
-    manifest_path = power_forecast_bundle_manifest_path()
+    manifest_path = manifest_path or power_forecast_bundle_manifest_path()
     external_path = power_forecast_bundle_status_path()
     external = read_json_file(external_path)
     if not manifest_path.exists():
@@ -550,6 +561,74 @@ def power_forecast_bundle_status(forecast_display_path: Path) -> dict[str, Any]:
     _POWER_BUNDLE_VALIDATION_CACHE.clear()
     _POWER_BUNDLE_VALIDATION_CACHE[cache_key] = dict(result)
     return result
+
+
+def power_forecast_only_publication_active() -> bool:
+    """Opt in to immutable forecasts while observed telemetry keeps its source."""
+    return power_forecast_orchestration_enabled() and (
+        os.environ.get("AURORA_POWER_FORECAST_ONLY_PUBLICATION_ACTIVE", "false")
+        .strip().lower() == "true"
+    )
+
+
+def power_forecast_serving_selection() -> dict[str, Any] | None:
+    """Pin and validate one complete generation for a forecast read."""
+    if not power_forecast_only_publication_active():
+        return None
+    configured_manifest = power_forecast_bundle_manifest_path()
+    unavailable = {
+        "forecastPath": configured_manifest.parent / ".forecast-unavailable.zarr",
+        "scenarioPaths": (),
+        "publicationStatus": {
+            "enabled": True, "status": "unavailable", "displaySource": "bundle",
+            "staleReason": "bundle_manifest_missing",
+        },
+    }
+    try:
+        manifest_path = configured_manifest.resolve(strict=True)
+    except OSError:
+        return unavailable
+    manifest = read_json_file(manifest_path)
+    products = manifest.get("products")
+    selected = {}
+    for name in ("forecastDisplay", "operatingScenarios"):
+        record = products.get(name) if isinstance(products, dict) else None
+        relative = str(record.get("relativePath") or "") if isinstance(record, dict) else ""
+        target = (manifest_path.parent / relative).resolve(strict=False)
+        if not relative or manifest_path.parent not in target.parents:
+            unavailable["publicationStatus"]["staleReason"] = f"bundle_product_path_invalid:{name}"
+            return unavailable
+        selected[name] = target
+    status = power_forecast_bundle_status(
+        selected["forecastDisplay"], manifest_path=manifest_path, forecast_only=True,
+    )
+    return {
+        "forecastPath": selected["forecastDisplay"],
+        "scenarioPaths": (selected["operatingScenarios"],),
+        "publicationStatus": status,
+    }
+
+
+def apply_power_forecast_publication_metadata(dataset: Any, status: dict[str, Any]) -> None:
+    """Attach the selected generation's provenance to its display dataset."""
+    if not status.get("enabled"):
+        return
+    dataset.attrs["api_bundle_status"] = str(status.get("status", ""))
+    dataset.attrs["api_bundle_stale_reason"] = str(status.get("staleReason", ""))
+    for source_name, target_name in (
+        ("dataUpdatedAt", "forecast_generated_at_utc"),
+        ("forecastIdentityID", "forecast_identity_id"),
+        ("sourceCycleSetID", "forecast_source_cycle_set_id"),
+        ("degradedModeCode", "forecast_degraded_mode_code"),
+        ("observationCutoffUTC", "forecast_observation_cutoff_utc"),
+        ("forecastCodeRevision", "forecast_code_revision"),
+        ("calibrationStateID", "forecast_adaptive_calibration_state_id"),
+        ("forecastRefreshKind", "forecast_refresh_kind"),
+        ("independentCycle", "forecast_independent_cycle"),
+    ):
+        value = status.get(source_name)
+        if value not in {None, ""}:
+            dataset.attrs[target_name] = bool(value) if source_name == "independentCycle" else str(value)
 
 
 def _power_physical_drivers(dataset: Any) -> dict[str, Any]:
@@ -846,15 +925,25 @@ def direct_field_continuity_enabled() -> bool:
 
 
 def continuity_status() -> dict[str, Any] | None:
-    """Describe the explicitly configured read-only field-data presentation."""
+    """Describe the configured data lane without inferring mirror availability."""
     if not direct_field_continuity_enabled():
         return None
     status_path = os.environ.get("AURORA_CONTINUITY_STATUS_PATH", "").strip()
     return {
         "mode": "direct-field-continuity",
-        "summary": "Recent direct field data; JASMIN mirror unavailable.",
+        "summary": "Direct field continuity data.",
         "status": read_json_file(Path(status_path)) if status_path else {},
     }
+
+
+def infrastructure_status() -> dict[str, Any] | None:
+    """Read current capacity and worker records, independent of Operations."""
+    if not direct_field_continuity_enabled():
+        return None
+    return collect_infrastructure_status(
+        env_path("AURORA_CONTINUITY_STATUS_PATH", "/data/aurora/dev-products/live-continuity/status.json"),
+        env_path("AURORA_SCIENCE_CONTINUITY_ROOT", "/data/aurora/dev-products/science-continuity"),
+    )
 
 
 def deployment_descriptor() -> dict[str, Any]:
@@ -1166,6 +1255,19 @@ def operations() -> dict[str, Any]:
     if continuity is not None:
         response["continuity"] = continuity
         response["summary"] = f"{continuity['summary']} {response['summary']}"
+    infrastructure = infrastructure_status()
+    if infrastructure is not None:
+        response["infrastructure"] = infrastructure
+        response["alerts"] = [*infrastructure["alerts"], *response["alerts"]]
+        response["overallLevel"] = _worst_level(response["overallLevel"], infrastructure["level"])
+        response["rootCauseGroups"].insert(0, {
+            "id": "infrastructure", "title": "Continuity infrastructure",
+            "level": infrastructure["level"], "detail": infrastructure["summary"],
+        })
+        for alert in infrastructure["alerts"]:
+            response["checkCounts"][alert["level"]] = response["checkCounts"].get(alert["level"], 0) + 1
+        if infrastructure["alerts"]:
+            response["summary"] = f"{infrastructure['alerts'][0]['title']}. {response['summary']}"
     return response
 
 
@@ -1628,6 +1730,14 @@ def overview() -> dict[str, Any]:
     # seconds to every Overview/API request. Keep the direct read only as a
     # compatibility fallback for older snapshots.
     latest_power_time = _snapshot_power_time(snapshot) or _latest_power_time()
+    battery_soc_time = _metric_sample_time(snapshot, "aps_battery_soc_age_min")
+    battery_voltage_time = _metric_sample_time(snapshot, "aps_battery_voltage_age_min")
+    battery_power_time = _metric_sample_time(snapshot, "aps_battery_power_age_min")
+    depletion_time = (
+        min((battery_soc_time, battery_power_time), key=_parse_utc)
+        if battery_soc_time is not None and battery_power_time is not None else None
+    )
+    depletion_level = _age_level(depletion_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)
     power_level = _age_level(
         latest_power_time,
         POWER_FRESH_MINUTES,
@@ -1635,8 +1745,8 @@ def overview() -> dict[str, Any]:
     )
     depletion_value, depletion_detail = _battery_depletion_text(
         snapshot,
-        power_level=power_level,
-        power_time=latest_power_time,
+        power_level=depletion_level,
+        power_time=depletion_time,
     )
     environmental_cards = _environmental_signal_cards()
     science_source_times = {
@@ -1655,13 +1765,15 @@ def overview() -> dict[str, Any]:
     }
     cards = [
         _overview_card("operations", "Operations", _operations_value(status["overallLevel"]), status["overallLevel"], status.get("updatedAt"), status["summary"]),
-        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _freshness_guarded_level(_trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
-        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), power_level), latest_power_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
-        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), power_level), latest_power_time, depletion_detail),
+        _overview_card("battery-soc", "State of Charge", _metric_text(snapshot, ("aps_battery_soc_pct", "BatterySOC"), "%"), _freshness_guarded_level(_trend_level("battery-soc", _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))), _age_level(battery_soc_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)), battery_soc_time, _metric_age_detail(snapshot, "aps_battery_soc_age_min")),
+        _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), _age_level(battery_voltage_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)), battery_voltage_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
+        _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), depletion_level), depletion_time, depletion_detail),
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), power_level, latest_power_time, _power_age_text(latest_power_time)),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
         *environmental_cards,
     ]
+    if status.get("infrastructure") is not None:
+        cards.insert(1, status["infrastructure"]["card"])
     return {
         "serverTime": utc_now_iso(),
         "cards": cards,
@@ -1965,12 +2077,25 @@ def _pdu_instrument_status(
             detail = collection_detail
         else:
             state = (automatic_labels or {}).get(instrument_id, state)
+    level = "green" if powered is True else "unknown" if powered is False else "amber"
+    if instrument_id == "hatpro" and powered is not False:
+        # A failed publisher must not look healthy because its last successful
+        # product is still fresh. Confirmed outlet Off remains the power state.
+        infrastructure = infrastructure_status()
+        worker = next(
+            (item for item in (infrastructure or {}).get("workers", [])
+             if item.get("id") == "hatpro"),
+            None,
+        )
+        if worker is not None and worker.get("state") == "failed":
+            state, level = "Publication failed", "red"
+            detail = worker["detail"]
     return {
         "id": instrument_id,
         "title": title,
         "systemImage": icon,
         "state": state,
-        "level": "green" if powered is True else "unknown" if powered is False else "amber",
+        "level": level,
         "detail": detail,
     }
 
@@ -1983,9 +2108,65 @@ def _operations_value(level: str) -> str:
     return {"green": "Healthy", "amber": "Attention", "red": "Action"}.get(level, "Waiting")
 
 
+def _metric_sample_time(snapshot: dict[str, Any], age_key: str) -> str | None:
+    """Resolve one measurement's time, including older age-only snapshots."""
+    now = datetime.now(UTC)
+    time_key = age_key.removesuffix("_age_min") + "_time_utc"
+    if time_key in snapshot:
+        value = str(snapshot[time_key])
+        moment = _parse_utc(value)
+        # Invalid or future measurements cannot establish current freshness.
+        return value if moment is not None and moment <= now else None
+
+    if age_key not in snapshot:
+        # The original snapshot contract supplied one shared power sample time.
+        # Use it only when no metric-specific timing evidence was supplied.
+        value = _snapshot_power_time(snapshot)
+        moment = _parse_utc(value)
+        return value if moment is not None and moment <= now else None
+
+    age = _metric_value(snapshot, (age_key,))
+    snapshot_time = _parse_utc(
+        str(snapshot.get("time_utc") or snapshot.get("snapshot_time_utc") or "")
+    )
+    if (
+        age is None or not math.isfinite(age) or age < 0
+        or snapshot_time is None or snapshot_time > now
+    ):
+        return None
+    try:
+        return (snapshot_time - timedelta(minutes=age)).isoformat()
+    except OverflowError:
+        return None
+
+
 def _metric_age_detail(snapshot: dict[str, Any], key: str) -> str:
-    age = _metric_value(snapshot, (key,))
-    return "Age unknown" if age is None else f"{_duration_text(age / 60)} old"
+    moment = _parse_utc(_metric_sample_time(snapshot, key))
+    if moment is None:
+        return "Age unknown"
+    age_hours = max((datetime.now(UTC) - moment).total_seconds(), 0) / 3600
+    return f"{_duration_text(age_hours)} old"
+
+
+def battery_display_freshness(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """One timestamp rule for battery cards in the browser and native API."""
+    result = {}
+    for metric in ("soc", "voltage", "power"):
+        key = f"aps_battery_{metric}_age_min"
+        timestamp = _metric_sample_time(snapshot, key)
+        result[metric] = {
+            "time": timestamp,
+            "level": _age_level(timestamp, POWER_FRESH_MINUTES, POWER_STALE_MINUTES),
+            "detail": _metric_age_detail(snapshot, key),
+        }
+    required = [result[key]["time"] for key in ("soc", "power")]
+    oldest = min(required, key=_parse_utc) if all(required) else None
+    result["depletion"] = {
+        "time": oldest,
+        "level": _age_level(oldest, POWER_FRESH_MINUTES, POWER_STALE_MINUTES),
+        "detail": _stale_power_detail(oldest, label="Required battery telemetry"),
+    }
+    return result
 
 
 def _power_time_text(value: Any) -> str:
@@ -2043,7 +2224,7 @@ def _battery_depletion_text(
     if normalize_level(power_level) in {"red", "unknown"}:
         return (
             "Unavailable",
-            _stale_power_detail(power_time),
+            _stale_power_detail(power_time, label="Required battery telemetry"),
         )
     soc = _metric_value(snapshot, ("aps_battery_soc_pct", "BatterySOC"))
     power_w = _metric_value(snapshot, ("aps_battery_power_w", "BatteryWatts"))
@@ -2064,7 +2245,7 @@ def _battery_depletion_text(
         return _duration_text(hours), f"{energy_text}; discharging at {abs(power_w):.0f} W"
     if power_w > deadband_w:
         return "Charging", f"{energy_text}; charging at {power_w:.0f} W"
-    return "Flat", f"{energy_text}; battery power {power_w:.0f} W"
+    return "Steady", f"{energy_text}; battery power {power_w:.0f} W within +/-{deadband_w:.0f} W"
 
 
 def _battery_depletion_level(snapshot: dict[str, Any]) -> str:
@@ -2121,7 +2302,7 @@ def _age_level(value: str | None, green_minutes: float, amber_minutes: float) ->
 
 
 def _snapshot_power_time(snapshot: dict[str, Any]) -> str | None:
-    return next(
+    value = next(
         (
             str(snapshot[key])
             for key in (
@@ -2134,6 +2315,8 @@ def _snapshot_power_time(snapshot: dict[str, Any]) -> str | None:
         ),
         None,
     )
+    moment = _parse_utc(value)
+    return value if moment is not None and moment <= datetime.now(UTC) else None
 
 
 def _worst_level(*levels: Any) -> str:
@@ -2145,18 +2328,22 @@ def _worst_level(*levels: Any) -> str:
 
 
 def _freshness_guarded_level(value_level: Any, freshness_level: Any) -> str:
-    if normalize_level(value_level) == "unknown":
+    if "unknown" in {normalize_level(value_level), normalize_level(freshness_level)}:
         return "unknown"
     return _worst_level(value_level, freshness_level)
 
 
-def _stale_power_detail(value: str | None) -> str:
+def _stale_power_detail(value: str | None, *, label: str = "APS power telemetry") -> str:
     moment = _parse_utc(value)
     if moment is None:
-        return "Latest APS power measurement is unavailable; depletion cannot be estimated"
+        unavailable = (
+            "Latest APS power measurement is unavailable"
+            if label == "APS power telemetry" else f"{label} is unavailable"
+        )
+        return f"{unavailable}; depletion cannot be estimated"
     age_minutes = max((datetime.now(UTC) - moment).total_seconds() / 60, 0)
     return (
-        f"APS power telemetry is {_duration_text(age_minutes / 60)} old; "
+        f"{label} is {_duration_text(age_minutes / 60)} old; "
         "depletion cannot be estimated from stale data"
     )
 
@@ -2321,14 +2508,23 @@ def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[st
     }
     if window not in {"24h", "96h"} or group not in supported_groups:
         raise KeyError("Unsupported Power window or group")
+    if group == "all" and power_forecast_only_publication_active():
+        # Keep live observations independent of forecast publication health.
+        observed = _power_without_enclosure(window=window, group="current")
+        forecast = _power_without_enclosure(window=window, group="forecast")
+        forecast["group"] = "all"
+        forecast["observedSource"] = observed.get("source", {})
+        forecast["panels"] = observed.get("panels", []) + forecast.get("panels", [])
+        return forecast
     if group in {"current", "observed"}:
         section = "current"
     elif group in {"forecast", "forecast_24h", "forecast_96h", "verification"}:
         section = "forecast"
     else:
         section = "all"
-    path = power_display_section_path(section)
-    if section != "all" and not path.exists():
+    selection = power_forecast_serving_selection() if section == "forecast" else None
+    path = selection["forecastPath"] if selection else power_display_section_path(section)
+    if selection is None and section != "all" and not path.exists():
         # A mixed-version deployment can temporarily lack the new product.
         # Retain the established combined store as a read-only fallback.
         path = power_display_summary_path()
@@ -2345,8 +2541,10 @@ def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[st
     # observed/current request so a corrupt active product cannot be mixed
     # with legacy siblings. Before first activation the explicit
     # ``activation_pending`` status keeps the legacy paths available.
-    bundle_status = power_forecast_bundle_status(
-        power_display_section_path("forecast")
+    bundle_status = (
+        selection["publicationStatus"] if selection else power_forecast_bundle_status(
+            power_display_section_path("forecast")
+        )
     )
     if bundle_status.get("enabled"):
         payload["publicationStatus"] = bundle_status
@@ -2401,33 +2599,14 @@ def _power_without_enclosure(window: str = "24h", group: str = "all") -> dict[st
         physical_drivers = _power_physical_drivers(dataset)
         if physical_drivers:
             payload["physicalDrivers"] = physical_drivers
-        if bundle_status.get("enabled"):
-            dataset.attrs["api_bundle_status"] = str(bundle_status.get("status", ""))
-            dataset.attrs["api_bundle_stale_reason"] = str(
-                bundle_status.get("staleReason", "")
-            )
-            for source_name, target_name in (
-                ("dataUpdatedAt", "forecast_generated_at_utc"),
-                ("forecastIdentityID", "forecast_identity_id"),
-                ("sourceCycleSetID", "forecast_source_cycle_set_id"),
-                ("degradedModeCode", "forecast_degraded_mode_code"),
-                ("observationCutoffUTC", "forecast_observation_cutoff_utc"),
-                ("forecastCodeRevision", "forecast_code_revision"),
-                ("calibrationStateID", "forecast_adaptive_calibration_state_id"),
-                ("forecastRefreshKind", "forecast_refresh_kind"),
-                ("independentCycle", "forecast_independent_cycle"),
-            ):
-                value = bundle_status.get(source_name)
-                if value not in {None, ""}:
-                    dataset.attrs[target_name] = (
-                        bool(value) if source_name == "independentCycle" else str(value)
-                    )
+        apply_power_forecast_publication_metadata(dataset, bundle_status)
         # The display summary can lag behind the fast planner.  Always replace
         # baked operating traces with the standalone contract, which rejects a
         # plan whose SOC anchor differs from the current ensemble forecast.
         scenarios = None
         if section in {"all", "forecast"}:
-            for scenario_path in power_operating_scenario_paths():
+            scenario_paths = selection["scenarioPaths"] if selection else power_operating_scenario_paths()
+            for scenario_path in scenario_paths:
                 if not scenario_path.exists():
                     continue
                 try:
