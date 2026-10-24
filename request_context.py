@@ -62,7 +62,12 @@ def request_query_args() -> dict[str, str]:
 def request_base_url() -> str:
     proto = request_header("X-Forwarded-Proto") or "http"
     host = request_header("Host") or "127.0.0.1:5006"
-    return f"{proto}://{host}{request_path() or '/app'}"
+    path = request_path() or "/app"
+    # Panel callbacks can expose the WebSocket request. Share the page URL,
+    # keeping any deployment prefix and removing only the final /ws segment.
+    if path.endswith("/ws"):
+        path = path[:-3] or "/"
+    return f"{proto}://{host}{path}"
 
 
 def client_ip() -> str | None:
