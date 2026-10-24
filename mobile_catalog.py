@@ -291,6 +291,10 @@ def power_candidate_evaluation_root() -> Path:
 
 
 def power_candidate_evaluation_enabled() -> bool:
+    # The app fallback process must never expose the development candidate,
+    # even if a shared configuration accidentally enables it.
+    if operational_mirror_enabled():
+        return False
     return os.environ.get("AURORA_POWER_CANDIDATE_API_ENABLED", "false").strip().lower() == "true"
 
 
@@ -946,6 +950,11 @@ def infrastructure_status() -> dict[str, Any] | None:
     )
 
 
+def operational_mirror_enabled() -> bool:
+    """Identify the separate API process that reads production replicas."""
+    return os.environ.get("AURORA_OPERATIONAL_MIRROR", "false").strip().lower() == "true"
+
+
 def deployment_descriptor() -> dict[str, Any]:
     domain = os.environ.get("AURORA_DOMAIN", "").strip() or "data-ocean.gamb2le.co.uk"
     environment = os.environ.get("AURORA_SITE_ENV", "").strip().lower()
@@ -954,11 +963,19 @@ def deployment_descriptor() -> dict[str, Any]:
     data_role = "live-mirror" if environment == "development" else "authoritative"
     if direct_field_continuity_enabled():
         data_role = "direct-field-continuity"
+    operational_mirror = (
+        operational_mirror_enabled()
+        and environment == "development"
+        and data_role == "live-mirror"
+    )
     return {
         "environment": environment,
         "domain": domain,
-        "dashboardURL": f"https://{domain}/app",
+        # The development browser can show experiments. Browser links from
+        # operational fallback retain the canonical production destination.
+        "dashboardURL": "https://data.gamb2le.co.uk/app" if operational_mirror else f"https://{domain}/app",
         "dataRole": data_role,
+        "operationalMirror": operational_mirror,
         "revision": dashboard_revision(),
     }
 
