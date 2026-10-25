@@ -29,6 +29,20 @@ from grouped_timeseries import (
 
 
 class PowerDisplaySummaryMetadataTests(unittest.TestCase):
+    def test_charger_temperature_survives_summary_and_appears_in_thermal_state(self) -> None:
+        times = pd.date_range("2026-10-23T12:00", periods=3, freq="min")
+        power = xr.Dataset(
+            {"ChargerTemperature": ("time", [np.nan, 41.0, -5.5]),
+             "BatterySOC": ("time", [70.0, 70.0, 70.0])},
+            coords={"time": times},
+        )
+        summary = build_power_display_summary_dataset(power)
+        current = _section_subset(summary, "current")
+        np.testing.assert_allclose(current.ChargerTemperature, [np.nan, 41.0, -5.5], equal_nan=True)
+        thermal = next(panel for panel in SUMMARY_LAYOUTS["power"] if panel.key == "thermal_state")
+        charger = next(trace for trace in thermal.traces if trace.var == "ChargerTemperature")
+        self.assertEqual(charger.label, "Charger Temperature")
+
     def test_metadata_records_time_bounds_and_dimensions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "power_display_summary.zarr"

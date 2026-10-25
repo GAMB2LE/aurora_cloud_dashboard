@@ -39,6 +39,8 @@ def synthetic_inputs() -> tuple[xr.Dataset, xr.Dataset]:
     power = xr.Dataset(
         {
             "BatterySOC": (("time",), np.linspace(72.0, 70.0, len(power_times))),
+            "BatteryWatts": (("time",), np.full(len(power_times), -30.0)),
+            "MultiPlusDCWatts": (("time",), np.zeros(len(power_times))),
             "SolarWatts_East": (("time",), np.zeros(len(power_times))),
             "SolarWatts_South": (("time",), np.zeros(len(power_times))),
             "SolarWatts_West": (("time",), np.zeros(len(power_times))),

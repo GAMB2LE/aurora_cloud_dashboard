@@ -142,6 +142,9 @@ POWER_DISPLAY_ENERGY_MAP = {
     "CumulativePowerUtilised": "PowerDisplayCumulativePowerUtilised",
 }
 POWER_DISPLAY_SUMMARY_FIELDS = (
+    "GridWatts",
+    "MultiPlusDCWatts",
+    "ChargerTemperature",
     "SolarWatts_East",
     "SolarWatts_South",
     "SolarWatts_West",
@@ -324,6 +327,7 @@ OPERATING_SCENARIO_DISPLAY_FIELDS = tuple(
     "OperatingSolarP10Watts",
     "OperatingSolarP50Watts",
     "OperatingSolarP90Watts",
+    "GridContinuesSOCP50",
 )
 POWER_FUTURE_DISPLAY_FIELDS = tuple(
     dict.fromkeys(
@@ -973,6 +977,10 @@ def build_power_forecast_info(panel_key: str, ds: xr.Dataset | None = None) -> d
     info = notes.get(panel_key)
     if info is None:
         return None
+    if panel_key in {"soc_24h_forecast", "soc_ecmwf_forecast"}:
+        info["implementation"] += " The baseline assumes no grid charging. The optional dashed comparison holds the recent measured DC charging rate constant; grid availability is not predicted. Operating recommendations use the no-grid baseline."
+        if ds is not None and "GridContinuesSOCP50" in ds:
+            info["metrics"].append({"label": "Continued DC charging", "detail": f"{ds.attrs.get('grid_charge_w', '')} W; median of the preceding 15 minutes."})
     if panel_key == "operating_plan_schedule" and ds is not None:
         presentation = cl61_schedule_presentation(ds)
         metrics = list(info["metrics"])
@@ -1195,6 +1203,9 @@ HUMAN_LABELS = {
     "ACOutputVolts": "AC Output Voltage",
     "DCInverterVolts": "DC Inverter Voltage",
     "BatteryWatts": "Battery Power",
+    "GridWatts": "Grid AC Input",
+    "MultiPlusDCWatts": "MultiPlus DC Charging",
+    "ChargerTemperature": "Charger Temperature",
     "BatteryAmps": "Battery Current",
     "BatterySOC": "State of Charge",
     "BatteryState": "Battery State",
@@ -1377,6 +1388,9 @@ HUMAN_UNITS = {
     "BatterySOC": "%",
     "BatteryState": "state",
     "BatteryWatts": "W",
+    "GridWatts": "W",
+    "MultiPlusDCWatts": "W",
+    "ChargerTemperature": "C",
     "BattsOnline": "state",
     "DCInverterAmps": "A",
     "DCInverterVolts": "V",
@@ -1762,6 +1776,8 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("BatteryAmps", "Current In/Out", COLOR["teal"], valid_min=-250.0, valid_max=250.0, smooth_minutes=30.0),
                 TraceSpec("BatteryWatts", "Power In/Out", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0, smooth_minutes=30.0),
+                TraceSpec("GridWatts", "Grid AC input", COLOR["purple"], axis="right"),
+                TraceSpec("MultiPlusDCWatts", "MultiPlus DC charging", COLOR["olive"], axis="right"),
             ),
         ),
         PanelSpec(
@@ -1832,6 +1848,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("InternalTemperature", "Internal Temperature", COLOR["red"], valid_min=-40.0, valid_max=100.0),
                 TraceSpec("HeatsinkTemperature", "Heatsink Temperature", COLOR["brown"], valid_min=-40.0, valid_max=120.0),
+                TraceSpec("ChargerTemperature", "Charger Temperature", COLOR["magenta"], valid_min=-40.0, valid_max=120.0),
                 TraceSpec("TempSensor1", "Temperature Sensor 1", COLOR["teal"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor2", "Temperature Sensor 2", COLOR["light_blue"], axis="right", valid_min=-40.0, valid_max=100.0),
                 TraceSpec("TempSensor3", "Temperature Sensor 3", COLOR["purple"], axis="right", valid_min=-40.0, valid_max=100.0),
@@ -1852,6 +1869,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                     valid_max=100.0,
                     display_horizon_hours=24.0,
                 ),
+                TraceSpec("GridContinuesSOCP50", "If grid charging continues", COLOR["olive"], dash="dash", valid_min=0.0, valid_max=100.0, display_horizon_hours=24.0),
             ),
         ),
         PanelSpec(
@@ -1864,6 +1882,7 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
                 TraceSpec("SystemAsIsDecisionSOCP90", "System as-is - P90", COLOR["light_blue"], dash="dot", valid_min=0.0, valid_max=100.0, line_width=2.2),
                 TraceSpec("SystemAsIsDecisionSOCP50", "System as-is - central", COLOR["green"], valid_min=0.0, valid_max=100.0, line_width=3.0),
                 TraceSpec("SystemAsIsDecisionBelow40Probability", f"Probability Below {MINIMUM_OPERATIONAL_SOC_LABEL}", COLOR["red"], axis="right", scale=100.0, valid_min=0.0, valid_max=1.0),
+                TraceSpec("GridContinuesSOCP50", "If grid charging continues", COLOR["olive"], dash="dash", valid_min=0.0, valid_max=100.0, display_horizon_hours=96.0),
             ),
             display_horizon_hours=POWER_FORECAST_DISPLAY_HOURS,
         ),
@@ -2865,6 +2884,8 @@ def _operating_scenario_frame(ds: xr.Dataset | None) -> pd.DataFrame:
     scenario_ids = [str(value) for value in ds["scenario"].values]
     times = pd.DatetimeIndex(ds["time"].values)
     values: dict[str, np.ndarray] = {}
+    if "GridContinuesSOCP50" in ds and ds.GridContinuesSOCP50.dims == ("time",):
+        values["GridContinuesSOCP50"] = np.asarray(ds.GridContinuesSOCP50.values, dtype=np.float64)
     for scenario_id, prefix in OPERATING_SCENARIO_PREFIXES.items():
         if scenario_id not in scenario_ids:
             continue
@@ -2972,6 +2993,8 @@ def _with_system_as_is_decision_fields(
         source in ds and ds[source].dims == ("time",)
         for source in operating_sources.values()
     )
+    if not use_operating and "GridContinuesSOCP50" in ds:
+        ds = ds.drop_vars("GridContinuesSOCP50")
     if use_operating:
         selected_sources = operating_sources
         source_kind = "operating_scenario"
@@ -3097,7 +3120,9 @@ def _operating_scenario_attrs(
 ) -> dict[str, str]:
     if ds is None:
         return {}
-    attrs: dict[str, str] = {}
+    attrs: dict[str, str] = {name: str(ds.attrs.get(name, "")) for name in (
+        "grid_contract", "grid_status", "grid_charge_w", "grid_observation_time"
+    )}
     status = status_override or str(ds.attrs.get("planning_status", "ready")).strip() or "ready"
     attrs["operating_planning_status"] = status
     reason = reason_override if reason_override is not None else str(ds.attrs.get("planning_status_reason", "")).strip()
@@ -3254,7 +3279,7 @@ def merge_operating_scenarios_into_display_summary(
     stale_fields = [
         name
         for name in display_ds.data_vars
-        if name.startswith("Operating")
+        if name.startswith("Operating") or name == "GridContinuesSOCP50"
         or (name in SYSTEM_AS_IS_DECISION_FIELDS and not stored_fallback)
     ]
     base_ds = display_ds.drop_vars(stale_fields) if stale_fields else display_ds

@@ -66,6 +66,7 @@ def _training_data() -> tuple[xr.Dataset, xr.Dataset]:
     power = xr.Dataset(
         {
             "BatterySOC": (("time",), np.linspace(90.0, 86.0, len(times))),
+            "MultiPlusDCWatts": (('time',), np.zeros_like(solar - load, dtype=float)),
             "BatteryWatts": (("time",), solar - load),
             "SolarWatts_East": (("time",), solar / 3.0),
             "SolarWatts_South": (("time",), solar / 3.0),
@@ -365,6 +366,7 @@ class OperatingScenarioTests(unittest.TestCase):
         power = xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(90.0, 86.0, len(times))),
+                "MultiPlusDCWatts": (('time',), np.zeros_like(-load, dtype=float)),
                 "BatteryWatts": (("time",), -load),
                 "SolarWatts_East": (("time",), np.zeros(len(times))),
                 "SolarWatts_South": (("time",), np.zeros(len(times))),
@@ -472,6 +474,7 @@ class OperatingScenarioTests(unittest.TestCase):
         later = xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(85.9, 85.5, len(later_times))),
+                "MultiPlusDCWatts": (('time',), np.zeros_like(np.full(len(later_times), -430.0), dtype=float)),
                 "BatteryWatts": (("time",), np.full(len(later_times), -430.0)),
                 "SolarWatts_East": (("time",), np.zeros(len(later_times))),
                 "SolarWatts_South": (("time",), np.zeros(len(later_times))),
@@ -847,6 +850,7 @@ class OperatingScenarioTests(unittest.TestCase):
         power = xr.Dataset(
             {
                 "BatterySOC": (("time",), np.linspace(96.0, 90.0, len(times))),
+                "MultiPlusDCWatts": (('time',), np.zeros_like(-low_high, dtype=float)),
                 "BatteryWatts": (("time",), -low_high),
                 "SolarWatts_East": (("time",), np.zeros(len(times))),
                 "SolarWatts_South": (("time",), np.zeros(len(times))),
@@ -1472,7 +1476,7 @@ class OperatingScenarioTests(unittest.TestCase):
             state = xr.open_zarr(paths["state"], chunks={})
             scenarios = xr.open_zarr(paths["scenarios"], chunks={})
             try:
-                self.assertEqual(state.attrs["model_version"], "11")
+                self.assertEqual(state.attrs["model_version"], "12")
                 self.assertEqual(scenarios.attrs["control_authority"], "advisory_only")
                 self.assertIn("optimized_cl61", set(str(value) for value in scenarios["scenario"].values))
                 instrument_hours = json.loads(

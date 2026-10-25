@@ -90,6 +90,8 @@ ENSEMBLE_POWER_HISTORY_DAYS = float(
     )
 )
 ENSEMBLE_POWER_SOURCE_FIELDS = (
+    "GridWatts",
+    "MultiPlusDCWatts",
     "BatterySOC",
     "SolarWatts_East",
     "SolarWatts_South",

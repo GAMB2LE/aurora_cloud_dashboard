@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from power_grid import station_load, continued_grid_rate, GRID_CONTRACT
+
 from power_soc_thresholds import MINIMUM_OPERATIONAL_SOC_PCT
 from power_load_contract import (
     CONTROLLED_LOAD_CONTRACT,
@@ -67,10 +69,10 @@ from power_state_catalog import (
 )
 from power_battery_model import BatteryModel
 
-MODEL_NAME = "hybrid_canonical_uas_cl61_states_v11"
-MODEL_VERSION = 11
+MODEL_NAME = "hybrid_canonical_uas_cl61_states_grid_v12"
+MODEL_VERSION = 12
 STATE_SCHEMA_VERSION = 7
-SCENARIO_SCHEMA_VERSION = 12
+SCENARIO_SCHEMA_VERSION = 13
 
 KIT_ORDER = ("CL61", "Radar", "HATPRO", "UAS")
 KIT_BITS = {name: 1 << index for index, name in enumerate(KIT_ORDER)}
@@ -438,6 +440,8 @@ def _power_frame(
 ) -> pd.DataFrame:
     fields = (
         "BatterySOC",
+        "GridWatts",
+        "MultiPlusDCWatts",
         "BatteryWatts",
         "SolarWatts_East",
         "SolarWatts_South",
@@ -462,19 +466,7 @@ def _power_frame(
 
 
 def observed_total_load(frame: pd.DataFrame) -> pd.Series:
-    solar_names = ("SolarWatts_East", "SolarWatts_South", "SolarWatts_West")
-    if "BatteryWatts" in frame and all(name in frame for name in solar_names):
-        solar = frame[list(solar_names)].sum(axis=1, min_count=len(solar_names))
-        balanced = (solar - frame["BatteryWatts"]).clip(lower=0.0)
-        if np.isfinite(balanced.to_numpy(dtype=np.float64)).any():
-            balanced.name = "ObservedLoadWatts"
-            return balanced
-    names = [name for name in ("ACOutputWatts", "DCInverterWatts") if name in frame]
-    if not names:
-        return pd.Series(dtype=np.float64, name="ObservedLoadWatts")
-    result = frame[names].sum(axis=1, min_count=1).clip(lower=0.0)
-    result.name = "ObservedLoadWatts"
-    return result
+    return station_load(frame)
 
 
 def _pdu_frame(
@@ -2112,7 +2104,10 @@ def integrate_soc_members(
     member_capacity_kwh: np.ndarray | None = None,
     member_charge_efficiency: np.ndarray | None = None,
     member_discharge_efficiency: np.ndarray | None = None,
+    external_charge_w: float = 0.0,
 ) -> np.ndarray:
+    if not np.isfinite(external_charge_w) or external_charge_w < 0:
+        raise ValueError("External charging power must be finite and nonnegative")
     solar = np.asarray(solar_members_w, dtype=np.float64)
     load = np.asarray(load_members_w, dtype=np.float64)
     if solar.ndim != 2 or load.ndim != 2 or solar.shape != load.shape:
@@ -2138,7 +2133,7 @@ def integrate_soc_members(
     for index in range(1, len(times)):
         hours = max(float((times[index] - times[index - 1]) / pd.Timedelta(hours=1)), 0.0)
         delta_soc = _member_soc_delta_percent(
-            solar[:, index] - load[:, index],
+            solar[:, index] + external_charge_w - load[:, index],
             hours,
             model,
             capacities,
@@ -3709,6 +3704,10 @@ def build_operating_scenarios(
         ensemble,
     )
     issue_time, initial_soc = _latest_soc(power)
+    grid_rate, grid_status = continued_grid_rate(
+        _power_frame(power, start=issue_time - pd.Timedelta(minutes=15), end=issue_time), issue_time, now=pd.Timestamp.now(tz="UTC").tz_localize(None)
+    )
+    grid_soc = None
     available_end = pd.Timestamp(deterministic["time"].values[-1]) if "time" in deterministic else issue_time
     available_hours = max(int((available_end - issue_time) / pd.Timedelta(hours=1)), 1)
     actual_horizon = min(int(horizon_hours), available_hours)
@@ -4067,6 +4066,15 @@ def build_operating_scenarios(
             # Reusing an older planning load here can otherwise leave the
             # current trace in CL61's low phase after its heater/blower starts.
             current_system_load = loads.copy()
+            if grid_rate is not None:
+                grid_soc = integrate_soc_members(
+                    initial_soc=initial_soc, times=times, solar_members_w=solar_members,
+                    load_members_w=loads, capacity_kwh=capacity, battery_model=battery_model,
+                    member_capacity_kwh=member_capacity,
+                    member_charge_efficiency=member_charge_efficiency,
+                    member_discharge_efficiency=member_discharge_efficiency,
+                    external_charge_w=grid_rate,
+                )
             current_system_load_source = (
                 "fresh_exact_state_phase_model"
                 if base_mode in model.mode_load_profiles
@@ -4485,6 +4493,14 @@ def build_operating_scenarios(
     output["ScenarioLoadPhaseEpoch"].attrs["description"] = (
         "increments whenever the operating state or any learned startup/fan phase changes"
     )
+    output.attrs.update({"grid_contract": GRID_CONTRACT, "grid_status": grid_status,
+                         "grid_charge_w": "" if grid_rate is None else str(grid_rate),
+                         "grid_observation_time": issue_time.isoformat()})
+    if grid_soc is not None:
+        median = np.nanmedian(grid_soc, axis=0)
+        median[times > issue_time + pd.Timedelta(hours=96)] = np.nan
+        output["GridContinuesSOCP50"] = (("time",), median.astype(np.float32))
+        output["GridContinuesSOCP50"].attrs.update(units="%", long_name="If grid charging continues")
     _validate_scenario_invariants(output)
     return output
 

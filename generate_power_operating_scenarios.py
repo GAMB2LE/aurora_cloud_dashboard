@@ -18,6 +18,8 @@ import xarray as xr
 
 from power_operating_scenarios import (
     DEFAULT_EVENTS_PATH,
+    _power_frame,
+    observed_total_load,
     build_operating_scenarios,
     fit_operating_model,
     load_operating_events,
@@ -309,6 +311,13 @@ def _archive_recommendation(
         )
     )
     record = {
+        "grid_comparison": {
+            "status": str(scenarios.attrs.get("grid_status", "")),
+            "charge_w": _json_float(scenarios.attrs.get("grid_charge_w")),
+            "observation_time": str(scenarios.attrs.get("grid_observation_time", "")),
+            "contract": str(scenarios.attrs.get("grid_contract", "")),
+            "soc_p50": [_json_float(value) for value in scenarios["GridContinuesSOCP50"].values[:decision_count]] if "GridContinuesSOCP50" in scenarios else [],
+        },
         "decision_id": hashlib.sha256(decision_key.encode("utf-8")).hexdigest()[:16],
         "issued_at_utc": _utc_now(),
         "decision_horizon_hours": decision_horizon_hours,
@@ -584,6 +593,9 @@ def scenario_publication_signature(scenarios: xr.Dataset) -> str:
         "mode_codes": quantized("ScenarioModeCode", 1.0),
         "load_p50_25w": quantized("ScenarioLoadP50Watts", 25.0),
         "soc_p50_1pct": quantized("ScenarioSOCP50", 1.0),
+        "grid_status": str(attrs.get("grid_status", "")),
+        "grid_charge_w": str(attrs.get("grid_charge_w", "")),
+        "grid_soc_p50": quantized("GridContinuesSOCP50", 1.0),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
 
@@ -671,6 +683,9 @@ def generate(
             minimum_horizon_hours=optimization_hours,
             max_power_age_minutes=max_power_age_minutes,
         )
+        recent = _power_frame(power, start=input_time - pd.Timedelta(minutes=20), end=input_time)
+        if observed_total_load(recent).dropna().empty:
+            raise ValueError("No qualified station load: measured MultiPlus DC telemetry is required")
     except ValueError as exc:
         # Do not retain a recommendation that no longer shares the current
         # system forecast and physical SOC anchor. This remains a successful

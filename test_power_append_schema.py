@@ -1,6 +1,7 @@
 """Regression fixtures for the canonical powerlogger daily CSV contract."""
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 import zarr
 
@@ -56,3 +57,35 @@ def test_append_retains_existing_store_time_encoding(tmp_path):
     with xr.open_zarr(store) as ds:
         np.testing.assert_array_equal(ds.time.values, pd.date_range("2026-09-08T12:00:00", periods=3, freq="s").values)
         np.testing.assert_array_equal(ds.BatterySOC.values, [62, 63, 64])
+
+
+@pytest.mark.parametrize("legacy_store", [False, True])
+@pytest.mark.parametrize("field,positive,negative", [
+    ("GridWatts", 1500, -50), ("MultiPlusDCWatts", 1500, -50),
+    ("ChargerTemperature", 41.0, -5.5),
+])
+def test_optional_fields_preserve_missing_zero_and_signed_values(tmp_path, legacy_store, field, positive, negative):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    store = tmp_path / "power.zarr"
+    if legacy_store:
+        (raw / "power_data_20260908.csv").write_text(
+            "aps_time,BatterySOC\n2026-09-08 23:59:59,62\n"
+        )
+        append_new(raw, store)
+    current = raw / "power_data_20260909.csv"
+    initial = f"aps_time,BatterySOC,{field}\n2026-09-09 00:00:00,63,\n"
+    current.write_text(initial)
+    append_new(raw, store)
+    with xr.open_zarr(store) as ds:
+        assert field in ds
+        assert np.isnan(ds[field].values).all()
+    current.write_text(initial + f"2026-09-09 00:00:01,64,0\n2026-09-09 00:00:02,65,{positive}\n2026-09-09 00:00:03,66,{negative}\n")
+    append_new(raw, store)
+    append_new(raw, store)
+    with xr.open_zarr(store) as ds:
+        prefix = [np.nan] if legacy_store else []
+        np.testing.assert_allclose(ds[field].values, prefix + [np.nan, 0, positive, negative], equal_nan=True)
+        np.testing.assert_array_equal(ds.BatterySOC.values, ([62] if legacy_store else []) + [63, 64, 65, 66])
+        assert ds.indexes["time"].is_unique
+        assert ds.indexes["time"].is_monotonic_increasing
