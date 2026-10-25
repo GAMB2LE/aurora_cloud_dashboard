@@ -75,9 +75,13 @@ panel. The conditional median appears on the existing 24 h and 96 h panels.
    and the DC read. Expect the new CSV columns at the next UTC boundary.
 3. Check raw CSV → Zarr values and missing-history semantics before activating
    the corrected forecast. Do not activate it before qualified DC samples exist.
-4. Use the normal clean development release, smoke test, annotated production
-   tag and exact-tag production release. Check both forecast cards and the
-   existing battery panel. No broad infrastructure convergence is required.
+4. Keep scientific writers and presentation releases separate. Stage the
+   tested main commit in an immutable presentation checkout, use the focused
+   `presentation_release.yml` playbook on development, then tag and release
+   the same revision on production. Preserve the existing runtime and data
+   routes. Check both forecast cards and the battery and Thermal State panels.
+   Activate corrected forecast writers only after isolated generation succeeds
+   with qualified new DC data; do not move all writers to the presentation pin.
 5. Confirm the current-state comparison shares the SOC anchor and that missing
    DC data hides it. Verify the archived charging rate and curve.
 
@@ -90,7 +94,10 @@ Pre-implementation checkpoint refs in both repositories:
 Logger checkpoint: `ba519f2f1cad21aa7fca96a850d320bca6d56b0a`.
 Dashboard checkpoint: `8f6b021b792cba9e076cf4c60044b52b94af9c3a`.
 
-As inspected on 2026-10-23, deployment is pending: the development checkout
-contains unrelated tracked edits and untracked enclosure/infrastructure files.
-The standard release refuses a dirty checkout; this change does not overwrite
-or package those files. Live reader, logger and forecast rollout has not begun.
+The initial deployment on 2026-10-25 uses the existing scientific writer base
+plus additive storage and observed-summary changes, tagged
+`power-storage-20261025.2`. The logger uses `5bc8387`. The existing daily CSV
+header means the first new columns are expected in `power_data_20261026.csv`.
+Until those measurements arrive and pass end-to-end checks, forecast activation
+remains pending. The unrelated development writer edits are preserved separately;
+the public dashboard uses its isolated presentation checkout.
