@@ -96,6 +96,7 @@ class ForecastMemoryTests(unittest.TestCase):
         power = xr.Dataset({
             "BatterySOC": ("time", 70 + 5 * np.sin(np.arange(len(times)) / 12)),
             "BatteryWatts": ("time", np.full(len(times), -150.)),
+            "MultiPlusDCWatts": ("time", np.zeros(len(times))),
             **{f"SolarWatts_{name}": ("time", np.full(len(times), 10.)) for name in ("East", "South", "West")},
             "ACOutputWatts": ("time", np.full(len(times), 100.)),
             "DCInverterWatts": ("time", np.full(len(times), 50.)),

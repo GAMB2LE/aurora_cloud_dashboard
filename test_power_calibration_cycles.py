@@ -11,6 +11,7 @@ import pytest
 
 from generate_power_soc_forecast import (
     LEAD_BUCKETS,
+    LOAD_MODEL_VERSION,
     _deterministic_source_cycle_status,
     apply_forecast_identity,
     _expected_cl61_phase_profile,
@@ -60,6 +61,9 @@ def _power(times, solar_w=1000.0):
     return xr.Dataset(
         {
             "BatterySOC": ("time", np.full(len(times), 70.0)),
+            # Known no-grid supply and battery balance preserve the 120 W load.
+            "MultiPlusDCWatts": ("time", np.zeros(len(times))),
+            "BatteryWatts": ("time", np.full(len(times), solar_w - 120.0)),
             "SolarWatts_East": ("time", np.full(len(times), solar_w / 3)),
             "SolarWatts_South": ("time", np.full(len(times), solar_w / 3)),
             "SolarWatts_West": ("time", np.full(len(times), solar_w / 3)),
@@ -117,6 +121,7 @@ def test_cached_reanchor_preserves_solar_battery_and_soc_calibration():
         "training_cutoff_utc": "2026-09-01T12:00:00",
     }
     state = {
+        "load_model_version": LOAD_MODEL_VERSION,
         "solar_calibration_state": calibration,
         "soc_bias_correction_pct_points_by_bucket": {"0_6h": 2.0},
         "battery_model": BatteryModel(usable_capacity_kwh=24.5).attrs(),
@@ -218,6 +223,7 @@ def test_repeated_full_build_does_not_learn_from_the_same_intervals_again():
     solar = _solar(pd.date_range(times[0], periods=21, freq="3h"))
     first = build_forecast_dataset(_power(times), solar, horizon_hours=12)
     state = {
+        "load_model_version": LOAD_MODEL_VERSION,
         "solar_calibration_state": json.loads(first.attrs["solar_calibration_state"]),
         "battery_model": BatteryModel.from_attrs(first.attrs).attrs(),
         "soc_bias_correction_pct_points_by_bucket": {"0_6h": 2.0},
