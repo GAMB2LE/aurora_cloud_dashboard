@@ -34,9 +34,9 @@ All three fields are optional in storage. Older records remain NaN. Daily CSV
 headers remain fixed: the fields first appear in the next UTC daily file after
 logger deployment. Do not rewrite the current or historical raw CSV files.
 
-## Mobile charging indicator
+## Overview charging indicator
 
-The Overview API places **MultiPlus Charger** immediately after **Power Data**.
+The web dashboard and Overview API place **MultiPlus Charger** immediately after **Power Data**.
 It uses `aps_multiplus_power_w` and `aps_multiplus_power_time_utc` from the normal
 cloud operations snapshot. The collector reads only the final `MultiPlusDCWatts`
 sample in the existing power Zarr; it never carries a previous finite reading
@@ -46,8 +46,10 @@ new service, or changes to collection and app-refresh schedules.
 Fresh positive output means **Charging**; zero or negative output means
 **Not charging**. Neither describes the configured enabled/off setting. Missing,
 invalid, future-dated, or older-than-30-minute measurements mean **Unknown**.
-The card includes measured power and sample age. iOS also ages cached cards
-locally, including while offline and on return to the foreground.
+The card includes measured power and sample age. The web dashboard, iOS and
+Android age cached cards locally, including while offline and on return to the
+foreground. The browser clock only changes the charger card text and colour;
+it makes no requests and does not refresh other products.
 
 Release the snapshot collector separately from the presentation/API checkout,
 using the existing isolated runtime and collector timer. Preserve scientific

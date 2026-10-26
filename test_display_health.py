@@ -81,6 +81,31 @@ def test_frozen_snapshot_ages_and_colors_keep_advancing():
     assert cards["Untouched environment"] == ("original", "original detail", "amber")
 
 
+@pytest.mark.parametrize("watts,minutes,state,level", [
+    (1780, 8, "Charging", "green"), (0, 8, "Not charging", "unknown"),
+    (-20, 8, "Not charging", "unknown"), (1780, 30, "Charging", "green"),
+    (1780, 31, "Unknown", "unknown"), (None, 8, "Unknown", "unknown"),
+    (1780, -1, "Unknown", "unknown"),
+])
+def test_web_charger_matches_api_and_follows_power(watts, minutes, state, level):
+    snapshot = battery_snapshot(
+        aps_multiplus_power_w=watts,
+        aps_multiplus_power_time_utc=(NOW - timedelta(minutes=minutes)).isoformat(),
+    )
+    cards = browser_cards(snapshot)
+    names = list(cards)
+    assert names[names.index("Power Data") + 1] == "MultiPlus Charger"
+    assert cards["MultiPlus Charger"][0] == state
+    assert cards["MultiPlus Charger"][2] == level
+    contract = mobile_catalog._multiplus_charger_card(snapshot, now=NOW)
+    assert cards["MultiPlus Charger"][1] == contract["detail"]
+
+
+def test_web_charger_sample_attribute_is_escaped():
+    markup = app._mobile_status_card_markup("MultiPlus Charger", "Unknown", charger_sample="'<unsafe>")
+    assert "data-charger-sample='&#x27;&lt;unsafe&gt;'" in markup
+
+
 @pytest.mark.parametrize("timestamp", [None, "not-a-date", "2026-10-23T07:00:00Z"])
 def test_invalid_or_future_metric_times_never_show_fresh_green(timestamp):
     snapshot = battery_snapshot(time_utc=NOW.isoformat(), power_latest_time_utc="2026-10-23T06:40:00Z")

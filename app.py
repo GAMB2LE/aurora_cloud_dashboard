@@ -35,6 +35,7 @@ import param
 from dashboard_components import (
     AuroracamCameraCard,
     BrowserPerformanceProbe,
+    OverviewSnapshotHTML,
     WxcamSelectionState,
     WxcamVideoPlayer,
 )
@@ -9086,10 +9087,11 @@ def _mobile_level(level: str | None) -> str:
     return "gray"
 
 
-def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: str | None = None) -> str:
+def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: str | None = None, *, charger_sample: str | None = None) -> str:
     level_class = f" mobile-status-card--{_mobile_level(level)}" if level else ""
+    sample_attr = f" data-charger-sample='{escape(charger_sample, quote=True)}'" if charger_sample is not None else ""
     return (
-        f"<div class='mobile-status-card{level_class}'>"
+        f"<div class='mobile-status-card{level_class}'{sample_attr}>"
         f"<div class='mobile-status-card__label'>{escape(label)}</div>"
         f"<div class='mobile-status-card__value'>{escape(value)}</div>"
         f"<div class='mobile-status-card__meta'>{escape(meta)}</div>"
@@ -9231,12 +9233,14 @@ def _mobile_overview_markup() -> str:
             power_latest = None
     power_meta = _humanize_age(power_latest) if power_latest else "Measurement time unavailable"
     power_level = _ops_level_from_age_minutes((datetime.now(timezone.utc) - power_latest).total_seconds() / 60.0 if power_latest else None)
+    charger = mobile_catalog._multiplus_charger_card(snapshot)
     cards = [
         _mobile_status_card_markup("Operations", ops_value, ops_meta, ops_level),
         _mobile_status_card_markup("State of Charge", battery_soc_value, battery_soc_meta, _ops_battery_metric_level(snapshot, "soc", _ops_level_from_battery_soc(snapshot.get("aps_battery_soc_pct")))),
         _mobile_status_card_markup("Battery Voltage", battery_value, battery_meta, _ops_battery_metric_level(snapshot, "voltage", _ops_level_from_battery_voltage(snapshot.get("aps_battery_voltage_v")))),
         _mobile_status_card_markup("Time to Depleted", depletion_value, depletion_meta, _ops_level_from_battery_depletion(snapshot)),
         _mobile_status_card_markup("Power Data", power_latest.strftime("%H:%M UTC") if power_latest else "No data", power_meta, power_level),
+        _mobile_status_card_markup(charger["title"], charger["value"], charger["detail"], charger["level"], charger_sample=charger["updatedAt"] or ""),
         _mobile_status_card_markup("AURORACam", camera_value, camera_meta, camera_level),
     ]
     if infrastructure is not None:
@@ -9264,12 +9268,12 @@ def _mobile_overview_markup() -> str:
 
 
 def _mobile_overview() -> pn.Column:
-    return pn.Column(pn.pane.HTML(_mobile_overview_markup(), sizing_mode="stretch_width", margin=0), sizing_mode="stretch_width", css_classes=["mobile-shell"])
+    return pn.Column(OverviewSnapshotHTML(object=_mobile_overview_markup(), sizing_mode="stretch_width", margin=0), sizing_mode="stretch_width", css_classes=["mobile-shell"])
 
 
 _BROWSER_OVERVIEW_LOADED = False
-browser_overview_summary_pane = pn.pane.HTML(
-    "<div class='mobile-section-note'>Open Overview to load the latest station snapshot.</div>",
+browser_overview_summary_pane = OverviewSnapshotHTML(
+    object="<div class='mobile-section-note'>Open Overview to load the latest station snapshot.</div>",
     sizing_mode="stretch_width",
     margin=0,
 )
