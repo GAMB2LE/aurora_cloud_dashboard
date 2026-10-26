@@ -12,7 +12,7 @@ import param
 
 
 class OverviewSnapshotHTML(pn.reactive.ReactiveHTML):
-    """Age the charger locally, even if the snapshot websocket disconnects."""
+    """Age cached power signals locally, even if the websocket disconnects."""
 
     object = param.String(default="", precedence=-1)
     markup = param.Dict(default={})
@@ -48,8 +48,9 @@ class OverviewSnapshotHTML(pn.reactive.ReactiveHTML):
         "markup": "view.run_script('object');",
         "age": """
           const now = Date.now();
-          content.querySelectorAll('[data-charger-sample]').forEach(card => {
-            const stamp = Date.parse(card.dataset.chargerSample);
+          content.querySelectorAll('[data-charger-sample], [data-grid-sample]').forEach(card => {
+            const grid = card.dataset.gridSample !== undefined;
+            const stamp = Date.parse(grid ? card.dataset.gridSample : card.dataset.chargerSample);
             const age = (now - stamp) / 60000;
             const value = card.querySelector('.mobile-status-card__value');
             const meta = card.querySelector('.mobile-status-card__meta');
@@ -58,7 +59,7 @@ class OverviewSnapshotHTML(pn.reactive.ReactiveHTML):
               card.classList.remove('mobile-status-card--green');
               card.classList.add('mobile-status-card--gray');
               meta.textContent = age > 30 ? `Last sample ${Math.floor(age)}m ago`
-                : 'Charging telemetry unavailable';
+                : (grid ? 'Grid telemetry unavailable' : 'Charging telemetry unavailable');
             } else if (value.textContent !== 'Unknown') {
               const power = meta.textContent.split(' · ')[0];
               meta.textContent = `${power} · Sample ${Math.floor(age)}m ago`;

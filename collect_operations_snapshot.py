@@ -632,34 +632,47 @@ def _latest_finite_zarr_value(
 
 
 def _collect_multiplus_metrics(record: dict[str, Any]) -> None:
-    """Read only the final stored sample; never carry charging across a gap.
+    """Read cached grid input and charging from the final stored sample.
 
     This runs on the existing cloud collector schedule, not on API requests.
     It makes no connection to the Cerbo or field acquisition host.
     """
-    record["aps_multiplus_power_w"] = None
-    record["aps_multiplus_power_time_utc"] = None
+    fields = {
+        "MultiPlusDCWatts": "aps_multiplus_power",
+        "GridWatts": "aps_grid_power",
+    }
+    for prefix in fields.values():
+        record[f"{prefix}_w"] = None
+        record[f"{prefix}_time_utc"] = None
     path = _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT)
     if not path.exists():
         return
     try:
         with xr.open_zarr(path, chunks={}) as ds:
-            if "MultiPlusDCWatts" not in ds or "time" not in ds:
-                return
-            data = ds["MultiPlusDCWatts"]
-            if data.dims != ("time",) or data.sizes["time"] == 0:
+            if "time" not in ds or ds.time.dims != ("time",) or ds.sizes["time"] == 0:
                 return
             stamp = pd.Timestamp(ds.time.isel(time=-1).values)
             if pd.isna(stamp):
                 return
             stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
-            record["aps_multiplus_power_time_utc"] = stamp.isoformat()
-            value = float(data.isel(time=-1).values)
-            if math.isfinite(value) and value != -9999:
-                record["aps_multiplus_power_w"] = value
+            for name, prefix in fields.items():
+                if name not in ds or ds[name].dims != ("time",):
+                    continue
+                record[f"{prefix}_time_utc"] = stamp.isoformat()
+                try:
+                    raw = ds[name].isel(time=-1).values.item()
+                    if isinstance(raw, (bool, str)):
+                        continue
+                    value = float(raw)
+                    if math.isfinite(value) and value != -9999:
+                        record[f"{prefix}_w"] = value
+                except Exception:
+                    # One optional field must not hide the other measurement.
+                    continue
     except Exception:
         # Optional indicator failure must not prevent the operations snapshot.
-        record["aps_multiplus_power_w"] = None
+        for prefix in fields.values():
+            record[f"{prefix}_w"] = None
 
 
 def _latest_finite_zarr_row(
