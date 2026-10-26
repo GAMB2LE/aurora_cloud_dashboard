@@ -9,18 +9,26 @@ from panel.models.reactive_html import ReactiveHTML
 from dashboard_components import OverviewSnapshotHTML
 
 
-def test_charger_browser_clock_and_cleanup():
+@pytest.mark.parametrize("sample_key,value,prefix,unavailable", [
+    ("chargerSample", "Charging", "1.78 kW", "Charging telemetry unavailable"),
+    ("gridSample", "1.93 kW", "Grid AC input", "Grid telemetry unavailable"),
+    ("gridSample", "0.0 W", "Grid AC input", "Grid telemetry unavailable"),
+    ("gridSample", "-20.0 W", "Grid AC input", "Grid telemetry unavailable"),
+])
+def test_power_signal_browser_clock_and_cleanup(sample_key, value, prefix, unavailable):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for the browser clock test")
-    script = "const scripts = " + json.dumps(OverviewSnapshotHTML._scripts) + ";\n" + r"""
+    config = {"sampleKey": sample_key, "value": value, "prefix": prefix, "unavailable": unavailable}
+    script = ("const scripts = " + json.dumps(OverviewSnapshotHTML._scripts) + ";\n"
+              + "const config = " + json.dumps(config) + ";\n") + r"""
     import assert from 'node:assert/strict';
     const now = Date.parse('2026-10-26T20:00:00Z');
     let currentTime = now;
     Date.now = () => currentTime;
     let cards = [];
     const content = {innerHTML: '', querySelectorAll: selector => {
-      assert.equal(selector, '[data-charger-sample]'); return cards;
+      assert.equal(selector, '[data-charger-sample], [data-grid-sample]'); return cards;
     }};
     const data = {markup: {html: '<div>snapshot</div>'}};
     const state = {};
@@ -35,23 +43,24 @@ def test_charger_browser_clock_and_cleanup():
       removeEventListener: (name, fn) => {assert.equal(events[name], fn); delete events[name];}
     };
     globalThis.window = document;
+    globalThis.fetch = () => {throw new Error('The local clock must not make network requests');};
     globalThis.setInterval = (fn, ms) => {
       assert.equal(ms, 60000); intervals.set(++nextInterval, fn); return nextInterval;
     };
     globalThis.clearInterval = id => {assert(intervals.delete(id));};
     const ageCharger = c => {cards = [c]; view.run_script('age');};
-    function card(minutes, state = 'Charging') {
-      const values = {value: {textContent: state}, meta: {textContent: '1.78 kW · Sample 0m ago'}};
+    function card(minutes, state = config.value) {
+      const values = {value: {textContent: state}, meta: {textContent: `${config.prefix} · Sample 0m ago`}};
       const classes = new Set(['mobile-status-card--green']);
-      return {dataset: {chargerSample: new Date(now - minutes * 60000).toISOString()}, values, classes,
+      return {dataset: {[config.sampleKey]: new Date(now - minutes * 60000).toISOString()}, values, classes,
         classList: {add: c => classes.add(c), remove: c => classes.delete(c)},
         querySelector: selector => values[selector.endsWith('__value') ? 'value' : 'meta']};
     }
     for (const minutes of [0, 8, 30]) {
       const c = card(minutes);
       ageCharger(c);
-      assert.equal(c.values.value.textContent, 'Charging');
-      assert.equal(c.values.meta.textContent, `1.78 kW · Sample ${minutes}m ago`);
+      assert.equal(c.values.value.textContent, config.value);
+      assert.equal(c.values.meta.textContent, `${config.prefix} · Sample ${minutes}m ago`);
     }
     for (const minutes of [30.01, 35, -1]) {
       const c = card(minutes);
@@ -62,14 +71,16 @@ def test_charger_browser_clock_and_cleanup():
     }
     const future = card(-1);
     ageCharger(future);
+    assert.equal(future.values.meta.textContent, config.unavailable);
     currentTime = now + 120000;
     ageCharger(future);
     assert.equal(future.values.value.textContent, 'Unknown');
     currentTime = now;
     for (const sample of ['', 'not-a-date']) {
-      const c = card(8); c.dataset.chargerSample = sample;
+      const c = card(8); c.dataset[config.sampleKey] = sample;
       ageCharger(c);
       assert.equal(c.values.value.textContent, 'Unknown');
+      assert.equal(c.values.meta.textContent, config.unavailable);
     }
     for (const state of ['Not charging', 'Unknown']) {
       const c = card(8, state);

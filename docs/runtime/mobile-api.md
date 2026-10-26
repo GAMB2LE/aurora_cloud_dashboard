@@ -95,6 +95,14 @@ token-protected, unknown mode values fail closed, and the legacy
   do not have to infer display units. The
   legacy `all`, `observed`, `forecast_24h`, `forecast_96h`, and `verification`
   groups remain supported.
+  The `current`, `observed` and `all` groups also include optional
+  `currentSignals`, an array with the same `id`, `title`, `value`, `level`,
+  `updatedAt` and `detail` fields as Overview cards. Its `grid-power` card
+  reports signed Grid AC input from the normal operations snapshot, not the
+  latest finite chart point. It includes its own sample time; missing,
+  invalid, future-dated and older-than-30-minute values show Unknown. Clients
+  age this cached card locally without changing request intervals. Forecast
+  groups omit the array, and older clients can safely ignore it.
 - `GET /power/cl61-automation` - development shadow-controller status only.
   It returns a bounded diagnostic product with `control_authority=observe_only`
   and `capability=false`; the endpoint accepts no command and has no PDU

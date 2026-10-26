@@ -2147,6 +2147,30 @@ def _multiplus_charger_card(snapshot: dict[str, Any], *, now: datetime | None = 
     return _overview_card("multiplus-charger", "MultiPlus Charger", state, level, updated_at, detail)
 
 
+def _grid_power_card(snapshot: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Show measured AC input without inferring grid availability from zero."""
+    now = now or datetime.now(UTC)
+    raw_time = snapshot.get("aps_grid_power_time_utc")
+    stamp = _parse_utc(raw_time) if isinstance(raw_time, str) else None
+    watts = snapshot.get("aps_grid_power_w")
+    valid = (
+        isinstance(watts, (int, float)) and not isinstance(watts, bool)
+        and math.isfinite(watts) and watts != -9999
+    )
+    value, level, detail = "Unknown", "unknown", "Grid telemetry unavailable"
+    updated_at = None
+    if stamp is not None and stamp <= now:
+        updated_at = stamp.isoformat()
+        age = (now - stamp).total_seconds() / 60
+        if age > POWER_FRESH_MINUTES:
+            detail = f"Last sample {int(age)}m ago"
+        elif valid:
+            value = f"{watts / 1000:.2f} kW" if abs(watts) >= 1000 else f"{watts:.1f} W"
+            level = "green" if watts > 0 else "unknown"
+            detail = f"Grid AC input · Sample {int(age)}m ago"
+    return _overview_card("grid-power", "Grid Power", value, level, updated_at, detail)
+
+
 def _operations_value(level: str) -> str:
     return {"green": "Healthy", "amber": "Attention", "red": "Action"}.get(level, "Waiting")
 
@@ -2532,6 +2556,10 @@ def power(window: str = "24h", group: str = "all") -> dict[str, Any]:
     """Add independently timed BLE observations even when Power is unavailable."""
     payload = _power_without_enclosure(window=window, group=group)
     if group in {"all", "current", "observed"}:
+        # The normal cloud collector publishes the final raw sample. Do not
+        # infer the current reading from the last finite chart point, which
+        # could precede a telemetry gap, or make an additional device request.
+        payload["currentSignals"] = [_grid_power_card(read_json_file(operations_snapshot_path()))]
         enclosure_panel = enclosure_power_panel(window, max_points=MOBILE_POWER_MAX_POINTS)
         if any(trace["points"] for trace in enclosure_panel["traces"]):
             payload["panels"].append(enclosure_panel)

@@ -8892,6 +8892,12 @@ power_browser_guidance_container = pn.Column(
     margin=0,
     visible=False,
 )
+browser_power_grid_pane = OverviewSnapshotHTML(
+    object="",
+    sizing_mode="stretch_width",
+    margin=0,
+    visible=False,
+)
 
 
 @pn.depends(power_view_select.param.value)
@@ -8931,6 +8937,7 @@ def _sync_power_section_visibility() -> None:
     is_forecast = is_power and power_view_select.value == "forecast"
     power_view_select_container.visible = is_power
     power_section_intro_container.visible = is_power
+    browser_power_grid_pane.visible = is_power and not is_forecast
     power_browser_guidance_container.visible = is_forecast
     interactive_content.visible = not is_forecast
     power_plan_editor_container.visible = is_forecast
@@ -8980,6 +8987,7 @@ interactive_tab = pn.Column(
     controls,
     power_view_select_container,
     power_section_intro_container,
+    browser_power_grid_pane,
     power_browser_guidance_container,
     interactive_content,
     power_plan_editor_container,
@@ -9087,9 +9095,11 @@ def _mobile_level(level: str | None) -> str:
     return "gray"
 
 
-def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: str | None = None, *, charger_sample: str | None = None) -> str:
+def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: str | None = None, *, charger_sample: str | None = None, grid_sample: str | None = None) -> str:
     level_class = f" mobile-status-card--{_mobile_level(level)}" if level else ""
     sample_attr = f" data-charger-sample='{escape(charger_sample, quote=True)}'" if charger_sample is not None else ""
+    if grid_sample is not None:
+        sample_attr += f" data-grid-sample='{escape(grid_sample, quote=True)}'"
     return (
         f"<div class='mobile-status-card{level_class}'{sample_attr}>"
         f"<div class='mobile-status-card__label'>{escape(label)}</div>"
@@ -9097,6 +9107,28 @@ def _mobile_status_card_markup(label: str, value: str, meta: str = "", level: st
         f"<div class='mobile-status-card__meta'>{escape(meta)}</div>"
         "</div>"
     )
+
+
+def _power_grid_markup() -> str:
+    """Read the shared grid card from the existing cached operations snapshot."""
+    snapshot = mobile_catalog.read_json_file(mobile_catalog.operations_snapshot_path())
+    card = mobile_catalog._grid_power_card(snapshot)
+    markup = _mobile_status_card_markup(
+        card["title"], card["value"], card["detail"], card["level"],
+        grid_sample=card["updatedAt"] or "",
+    )
+    return f"<div class='mobile-card-grid'>{markup}</div>"
+
+
+def _refresh_browser_power_grid(*_events) -> None:
+    # Reuse the Power view's existing refresh and navigation events. The
+    # browser clock handles expiry without any extra request or server timer.
+    if instrument_select.value == "power" and power_view_select.value == "current":
+        browser_power_grid_pane.object = _power_grid_markup()
+
+
+for _grid_refresh_widget in (instrument_select, power_view_select, range_end):
+    _grid_refresh_widget.param.watch(_refresh_browser_power_grid, "value")
 
 
 def _browser_overview_instrument_markup() -> str:
@@ -9810,6 +9842,9 @@ _sync_power_section_visibility()
 
 @pn.depends(power_view_select.param.value, range_end.param.value)
 def _mobile_power_section(section: str, _live_refresh_anchor):
+    current_signals = [
+        OverviewSnapshotHTML(object=_power_grid_markup(), sizing_mode="stretch_width", margin=0)
+    ] if section == "current" else []
     ds = _mobile_power_window()
     if ds is None or "time" not in ds:
         if section == "forecast":
@@ -9823,6 +9858,7 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
                 css_classes=["mobile-shell", "mobile-shell--power"],
             )
         return pn.Column(
+            *current_signals,
             pn.pane.HTML("<div class='mobile-plot-card__empty'>Power display data is not available.</div>", sizing_mode="stretch_width"),
             sizing_mode="stretch_width",
             css_classes=["mobile-shell"],
@@ -9849,6 +9885,7 @@ def _mobile_power_section(section: str, _live_refresh_anchor):
             _get_mobile_power_plan_editor(),
         ]
     return pn.Column(
+        *current_signals,
         *forecast_content,
         *cards,
         sizing_mode="stretch_width",
@@ -10215,6 +10252,8 @@ def _ensure_active_tab_loaded(slug: str | None = None) -> None:
         _refresh_browser_overview()
     elif active in {"interactive", "power"}:
         _sync_browser_tab_instrument(active)
+        if active == "power":
+            _refresh_browser_power_grid()
         if not _APP_BOOTSTRAPPING and not _INTERACTIVE_RENDER_ENABLED:
             _enable_browser_interactive_render()
     elif active == "science" and "science" not in _LOADED_TABS:
@@ -10255,6 +10294,7 @@ def _prepare_initial_stable_tab_content(slug: str | None) -> None:
     elif active == "power":
         # Place the chart in its final host before the browser renders it.
         _sync_browser_tab_instrument(active)
+        _refresh_browser_power_grid()
     elif active == "housekeeping" and "housekeeping" not in _LOADED_TABS:
         _refresh_housekeeping_tab_content()
         _LOADED_TABS.add("housekeeping")

@@ -58,6 +58,30 @@ card against the final stored measurement; do not trigger a field query to
 verify this display. Older snapshots safely display Unknown. Rollback restores
 the previous reader/collector pins and never changes observation data.
 
+## Current Grid Power card
+
+The Power tab's Current Conditions section places **Grid Power** above the
+charts on the web dashboard, iOS and Android. It displays signed AC input in W
+or kW and the measurement age. This is separate from the existing MultiPlus DC
+charging measurement and the historical Grid AC input chart.
+
+The existing cloud collector reads the final `GridWatts` and `MultiPlusDCWatts`
+row in one opening of the stored power product. It publishes
+`aps_grid_power_w` and `aps_grid_power_time_utc` in the normal operations
+snapshot. The card reads only that snapshot; it does not query the field,
+start collection, change the sampling interval or use the last finite chart
+point to fill a gap. The logger's existing AC-source validity checks remain
+authoritative; a valid zero is displayed as zero, never as proof of grid Off.
+
+The native Power response adds optional `currentSignals` in `current`,
+`observed` and `all` groups, using the established Overview-card shape. Forecast
+groups do not include it. Older clients can ignore this additive field; newer
+clients show Unknown when an older snapshot or API lacks the measurement.
+Missing, invalid, future-dated or older-than-30-minute readings show Unknown.
+Each client updates age locally, including offline and on foreground return,
+without adding requests. Release the collector separately and verify its next
+normal scheduled snapshot before claiming live card availability.
+
 ## Forecast meaning
 
 Qualified station demand is:
