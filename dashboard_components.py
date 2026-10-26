@@ -11,50 +11,72 @@ import panel as pn
 import param
 
 
-class OverviewSnapshotHTML(pn.custom.JSComponent):
+class OverviewSnapshotHTML(pn.reactive.ReactiveHTML):
     """Age the charger locally, even if the snapshot websocket disconnects."""
 
-    object = param.String(default="")
+    object = param.String(default="", precedence=-1)
+    markup = param.Dict(default={})
 
-    _esm = """
-    export function ageCharger(card, now = Date.now()) {
-      const stamp = Date.parse(card.dataset.chargerSample);
-      const age = (now - stamp) / 60000;
-      const value = card.querySelector('.mobile-status-card__value');
-      const meta = card.querySelector('.mobile-status-card__meta');
-      if (!Number.isFinite(age) || age < 0 || age > 30) {
-        value.textContent = 'Unknown';
-        card.classList.remove('mobile-status-card--green');
-        card.classList.add('mobile-status-card--gray');
-        meta.textContent = age > 30 ? `Last sample ${Math.floor(age)}m ago`
-          : 'Charging telemetry unavailable';
-      } else if (value.textContent !== 'Unknown') {
-        const power = meta.textContent.split(' · ')[0];
-        meta.textContent = `${power} · Sample ${Math.floor(age)}m ago`;
-      }
-    }
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.markup = {"html": self.object}
+        self.param.watch(self._update_markup, "object")
 
-    export function render({ model }) {
-      const content = document.createElement('div');
-      const age = () => content.querySelectorAll('[data-charger-sample]')
-        .forEach(card => ageCharger(card));
-      const update = () => {
-        content.innerHTML = model.object;
-        age();
-      };
-      update();
-      model.on('change:object', update);
-      const timer = setInterval(age, 60000);
-      document.addEventListener('visibilitychange', age);
-      window.addEventListener('pageshow', age);
-      model.on('remove', () => {
-        clearInterval(timer);
-        document.removeEventListener('visibilitychange', age);
-        window.removeEventListener('pageshow', age);
-      });
-      return content;
+    def _update_markup(self, event):
+        # The app has already escaped every data value. A structured payload
+        # preserves its trusted HTML; ReactiveHTML strips tags from plain
+        # string parameters before serializing them to the browser.
+        self.markup = {"html": event.new}
+
+    # ReactiveHTML uses the dashboard's existing script runtime. JSComponent
+    # imports an ESM blob, which the deployed dashboard cannot load.
+    _template = '<div id="content"></div>'
+
+    _scripts = {
+        "render": """
+          view.run_script('remove');
+          view.run_script('object');
+          state.ageCharger = () => view.run_script('age');
+          state.chargerTimer = setInterval(state.ageCharger, 60000);
+          document.addEventListener('visibilitychange', state.ageCharger);
+          window.addEventListener('pageshow', state.ageCharger);
+        """,
+        "object": """
+          content.innerHTML = data.markup.html;
+          view.run_script('age');
+        """,
+        "markup": "view.run_script('object');",
+        "age": """
+          const now = Date.now();
+          content.querySelectorAll('[data-charger-sample]').forEach(card => {
+            const stamp = Date.parse(card.dataset.chargerSample);
+            const age = (now - stamp) / 60000;
+            const value = card.querySelector('.mobile-status-card__value');
+            const meta = card.querySelector('.mobile-status-card__meta');
+            if (!Number.isFinite(age) || age < 0 || age > 30) {
+              value.textContent = 'Unknown';
+              card.classList.remove('mobile-status-card--green');
+              card.classList.add('mobile-status-card--gray');
+              meta.textContent = age > 30 ? `Last sample ${Math.floor(age)}m ago`
+                : 'Charging telemetry unavailable';
+            } else if (value.textContent !== 'Unknown') {
+              const power = meta.textContent.split(' · ')[0];
+              meta.textContent = `${power} · Sample ${Math.floor(age)}m ago`;
+            }
+          });
+        """,
+        "remove": """
+          if (state.chargerTimer != null) {
+            clearInterval(state.chargerTimer);
+            state.chargerTimer = null;
+          }
+          if (state.ageCharger) {
+            document.removeEventListener('visibilitychange', state.ageCharger);
+            window.removeEventListener('pageshow', state.ageCharger);
+            state.ageCharger = null;
+          }
+        """,
     }
-    """
 
 
 _BROWSER_PERF_EVENTS = {
