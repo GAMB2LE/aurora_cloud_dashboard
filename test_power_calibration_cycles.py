@@ -103,6 +103,21 @@ def test_fit_counts_complete_intervals_and_rejects_mppt_censoring():
     assert calibrate_solar_factor(frame, irradiance, end=times[-1], fallback_factor=7.0) == 7.0
 
 
+def test_mppt_calibration_rejects_missing_bins_without_dtype_error():
+    times = pd.date_range("2026-09-01T00:00", periods=97, freq="5min")
+    frame = _power(times).to_dataframe()
+    for side in ("East", "South", "West"):
+        frame[f"SolarMPPMode_{side}"] = 2.0
+    gap_start = times[0] + pd.Timedelta(hours=2)
+    frame = frame.loc[~((frame.index >= gap_start) &
+                        (frame.index < gap_start + pd.Timedelta(hours=1)))]
+    irradiance = pd.Series(200.0, index=pd.date_range(times[0], periods=9, freq="1h"))
+    paired = solar_calibration_intervals(frame, irradiance, end=times[-1])
+    assert len(paired) == 7
+    assert gap_start not in set(paired["start"])
+    np.testing.assert_allclose(paired["observed_w"], 1000.0)
+
+
 def test_incomplete_interval_is_not_rescued_by_dense_samples():
     times = pd.date_range("2026-09-01T00:00", periods=7200, freq="1s")
     frame = _power(times).to_dataframe()

@@ -3296,7 +3296,9 @@ def solar_calibration_intervals(
     # output is zero available PV. Every retained bin has equal time weight.
     bins = power.resample("5min").mean()
     if mppt_active is not None:
-        bins = bins.where(mppt_active.resample("5min").min().fillna(False))
+        # Empty bins produce NaN, so compare explicitly to retain a boolean
+        # mask and reject gaps even when pandas promotes the reduction dtype.
+        bins = bins.where(mppt_active.resample("5min").min().eq(True))
     candidates: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, float]] = []
 
     def add(series: pd.Series, issue: pd.Timestamp) -> None:
