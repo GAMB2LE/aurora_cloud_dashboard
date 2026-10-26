@@ -631,6 +631,37 @@ def _latest_finite_zarr_value(
             close()
 
 
+def _collect_multiplus_metrics(record: dict[str, Any]) -> None:
+    """Read only the final stored sample; never carry charging across a gap.
+
+    This runs on the existing cloud collector schedule, not on API requests.
+    It makes no connection to the Cerbo or field acquisition host.
+    """
+    record["aps_multiplus_power_w"] = None
+    record["aps_multiplus_power_time_utc"] = None
+    path = _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT)
+    if not path.exists():
+        return
+    try:
+        with xr.open_zarr(path, chunks={}) as ds:
+            if "MultiPlusDCWatts" not in ds or "time" not in ds:
+                return
+            data = ds["MultiPlusDCWatts"]
+            if data.dims != ("time",) or data.sizes["time"] == 0:
+                return
+            stamp = pd.Timestamp(ds.time.isel(time=-1).values)
+            if pd.isna(stamp):
+                return
+            stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+            record["aps_multiplus_power_time_utc"] = stamp.isoformat()
+            value = float(data.isel(time=-1).values)
+            if math.isfinite(value) and value != -9999:
+                record["aps_multiplus_power_w"] = value
+    except Exception:
+        # Optional indicator failure must not prevent the operations snapshot.
+        record["aps_multiplus_power_w"] = None
+
+
 def _latest_finite_zarr_row(
     zarr_path: Path,
     var_names: tuple[str, ...],
@@ -1144,6 +1175,7 @@ def build_snapshot(archive_health_path: Path = ARCHIVE_HEALTH_DEFAULT) -> dict[s
         record,
     )
 
+    _collect_multiplus_metrics(record)
     battery_voltage, battery_time = _latest_finite_zarr_value(
         _path_from_env("POWER_ZARR_PATH", POWER_ZARR_DEFAULT),
         "DCInverterVolts",

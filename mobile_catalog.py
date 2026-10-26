@@ -1786,6 +1786,7 @@ def overview() -> dict[str, Any]:
         _overview_card("battery-voltage", "Battery Voltage", _metric_text(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"), "V"), _freshness_guarded_level(_trend_level("battery-voltage", _metric_value(snapshot, ("aps_battery_voltage_v", "DCInverterVolts"))), _age_level(battery_voltage_time, POWER_FRESH_MINUTES, POWER_STALE_MINUTES)), battery_voltage_time, _metric_age_detail(snapshot, "aps_battery_voltage_age_min")),
         _overview_card("battery-depletion", "Time to Depleted", depletion_value, _freshness_guarded_level(_battery_depletion_level(snapshot), depletion_level), depletion_time, depletion_detail),
         _overview_card("power", "Power Data", _power_time_text(latest_power_time), power_level, latest_power_time, _power_age_text(latest_power_time)),
+        _multiplus_charger_card(snapshot),
         _overview_card("auroracam", "AURORACam", _age_text(latest_camera_time), _age_level(latest_camera_time, 30, 120), latest_camera_time, "Latest station camera frame"),
         *environmental_cards,
     ]
@@ -2119,6 +2120,31 @@ def _pdu_instrument_status(
 
 def _overview_card(card_id: str, title: str, value: str, level: str, updated_at: str | None, detail: str = "") -> dict[str, Any]:
     return {"id": card_id, "title": title, "value": value, "level": level, "updatedAt": updated_at, "detail": detail}
+
+
+def _multiplus_charger_card(snapshot: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Describe cached measured output, never infer the enabled/off setting."""
+    now = now or datetime.now(UTC)
+    raw_time = snapshot.get("aps_multiplus_power_time_utc")
+    stamp = _parse_utc(raw_time) if isinstance(raw_time, str) else None
+    value = snapshot.get("aps_multiplus_power_w")
+    valid = (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and math.isfinite(value) and value != -9999
+    )
+    state, level, detail = "Unknown", "unknown", "Charging telemetry unavailable"
+    updated_at = None
+    if stamp is not None and stamp <= now:
+        updated_at = stamp.isoformat()
+        age = (now - stamp).total_seconds() / 60
+        if age > POWER_FRESH_MINUTES:
+            detail = f"Last sample {int(age)}m ago"
+        elif valid:
+            state = "Charging" if value > 0 else "Not charging"
+            level = "green" if value > 0 else "unknown"
+            power = f"{value / 1000:.2f} kW" if abs(value) >= 1000 else f"{value:.1f} W"
+            detail = f"{power} · Sample {int(age)}m ago"
+    return _overview_card("multiplus-charger", "MultiPlus Charger", state, level, updated_at, detail)
 
 
 def _operations_value(level: str) -> str:
