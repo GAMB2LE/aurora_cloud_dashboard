@@ -11,6 +11,52 @@ import panel as pn
 import param
 
 
+class OverviewSnapshotHTML(pn.custom.JSComponent):
+    """Age the charger locally, even if the snapshot websocket disconnects."""
+
+    object = param.String(default="")
+
+    _esm = """
+    export function ageCharger(card, now = Date.now()) {
+      const stamp = Date.parse(card.dataset.chargerSample);
+      const age = (now - stamp) / 60000;
+      const value = card.querySelector('.mobile-status-card__value');
+      const meta = card.querySelector('.mobile-status-card__meta');
+      if (!Number.isFinite(age) || age < 0 || age > 30) {
+        value.textContent = 'Unknown';
+        card.classList.remove('mobile-status-card--green');
+        card.classList.add('mobile-status-card--gray');
+        meta.textContent = age > 30 ? `Last sample ${Math.floor(age)}m ago`
+          : 'Charging telemetry unavailable';
+      } else if (value.textContent !== 'Unknown') {
+        const power = meta.textContent.split(' · ')[0];
+        meta.textContent = `${power} · Sample ${Math.floor(age)}m ago`;
+      }
+    }
+
+    export function render({ model }) {
+      const content = document.createElement('div');
+      const age = () => content.querySelectorAll('[data-charger-sample]')
+        .forEach(card => ageCharger(card));
+      const update = () => {
+        content.innerHTML = model.object;
+        age();
+      };
+      update();
+      model.on('change:object', update);
+      const timer = setInterval(age, 60000);
+      document.addEventListener('visibilitychange', age);
+      window.addEventListener('pageshow', age);
+      model.on('remove', () => {
+        clearInterval(timer);
+        document.removeEventListener('visibilitychange', age);
+        window.removeEventListener('pageshow', age);
+      });
+      return content;
+    }
+    """
+
+
 _BROWSER_PERF_EVENTS = {
     "browser_document_ready",
     "browser_first_power_plot",

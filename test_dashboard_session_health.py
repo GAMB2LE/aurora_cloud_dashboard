@@ -14,7 +14,7 @@ import mobile_catalog
 def test_repeated_browser_sessions_do_not_register_new_component_classes():
     """Exercise the server's per-session script runner, retaining open sessions."""
     application = Application(ScriptHandler(filename=str(Path(__file__).with_name("app.py"))))
-    names = {"WxcamVideoPlayer", "AuroracamCameraCard", "BrowserPerformanceProbe"}
+    names = {"WxcamVideoPlayer", "AuroracamCameraCard", "BrowserPerformanceProbe", "OverviewSnapshotHTML"}
 
     def components():
         return {cls for cls in param.descendents(pn.reactive.ReactiveCustomBase)
