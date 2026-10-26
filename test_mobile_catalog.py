@@ -2047,7 +2047,7 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(
             [card["id"] for card in response["cards"]],
             [
-                "operations", "battery-soc", "battery-voltage", "battery-depletion", "power", "auroracam",
+                "operations", "battery-soc", "battery-voltage", "battery-depletion", "power", "multiplus-charger", "auroracam",
                 "shortwave-down", "wind-speed", "air-temperature", "kt15",
             ],
         )
