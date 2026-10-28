@@ -3,7 +3,7 @@
 Review date: 28 October 2026. Host: Rocinante-5.local.
 Document: https://docs.google.com/document/d/1RNK1-_voDKZ-L7ZU_Q3K_7FnMNIwUIEBe4U2Jch98Pc/edit
 
-The revised section is **857 words**, excluding title, citation markers and drafting sources. The original Google Doc text is retained alongside it. This record separates source implementation, deployment evidence, experimental results and proposals; it is supporting material, not part of the manuscript section.
+The initial evidence-led revision was 857 words. At the author's request, a subsequent style edit shortened it to **494 words**, using plainer language and a direct first-person plural voice. The factual distinctions are unchanged; implementation detail remains in this record. Counts exclude title, citation markers and drafting sources. The original Google Doc text is retained alongside it. This record separates source implementation, deployment evidence, experimental results and proposals; it is supporting material, not part of the manuscript section.
 
 ## Changes to the draft
 
