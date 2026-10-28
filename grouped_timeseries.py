@@ -76,6 +76,7 @@ POWER_PANEL_TIME_GROUPS = OrderedDict(
             "observed",
             (
                 "renewables",
+                "grid_power",
                 "battery_charging",
                 "output_power",
                 "ass_dc_power",
@@ -1769,6 +1770,17 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             ),
         ),
         PanelSpec(
+            "grid_power",
+            "Grid Power",
+            "Power [W]",
+            None,
+            (
+                TraceSpec("GridWatts", "Grid AC input", COLOR["purple"]),
+                TraceSpec("MultiPlusDCWatts", "MultiPlus DC charging", COLOR["olive"], dash="dash"),
+            ),
+            description="Measured grid AC input and MultiPlus DC charging output.",
+        ),
+        PanelSpec(
             "battery_charging",
             "Battery Charging",
             "Current In/Out [A]",
@@ -1776,8 +1788,6 @@ SUMMARY_LAYOUTS: dict[str, tuple[PanelSpec, ...]] = {
             (
                 TraceSpec("BatteryAmps", "Current In/Out", COLOR["teal"], valid_min=-250.0, valid_max=250.0, smooth_minutes=30.0),
                 TraceSpec("BatteryWatts", "Power In/Out", COLOR["light_blue"], axis="right", valid_min=-10000.0, valid_max=10000.0, smooth_minutes=30.0),
-                TraceSpec("GridWatts", "Grid AC input", COLOR["purple"], axis="right"),
-                TraceSpec("MultiPlusDCWatts", "MultiPlus DC charging", COLOR["olive"], axis="right"),
             ),
         ),
         PanelSpec(

@@ -82,6 +82,26 @@ Each client updates age locally, including offline and on foreground return,
 without adding requests. Release the collector separately and verify its next
 normal scheduled snapshot before claiming live card availability.
 
+## Grid Power history
+
+Current Conditions places a **Grid Power** chart immediately after **Renewables**
+on both dashboards and in the iOS and Android apps. It shows **Grid AC input**
+and **MultiPlus DC charging** as separate solid and dashed lines on one watts
+axis. These traces move from Battery Charging into this dedicated panel.
+Battery Charging continues to show net battery current and power.
+
+The chart uses the existing stored display product, time controls, point limits,
+measurement timestamps and gap handling. Signed readings and valid zeros remain
+measurements; missing history stays missing. If only one measurement is available,
+show that trace; if neither is available, omit the chart as for other unavailable
+panels. The current Grid Power card remains the authority for the latest sample
+and its freshness, independently of older chart points.
+
+Both native apps already render the server's current panels in order, so this
+addition requires no app binary release or extra request. Release only the
+presentation/API code; no collector, writer, forecast, equipment or schedule
+change is required.
+
 ## Forecast meaning
 
 Qualified station demand is:
@@ -112,8 +132,8 @@ are retained in the existing operating recommendation archive.
 
 No-grid SOC calibration rejects verification intervals with observed charging
 or insufficient DC telemetry, including charging between otherwise valid SOC
-endpoints. The two measured powers appear on the existing Battery Charging
-panel. The conditional median appears on the existing 24 h and 96 h panels.
+endpoints. The two measured powers appear on the Grid Power history panel.
+The conditional median appears on the existing 24 h and 96 h panels.
 
 ## Rollout and rollback
 
