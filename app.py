@@ -4193,7 +4193,7 @@ def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str)
         return None
     with _timed_perf("interactive_prewarm_load", instrument=inst, path=str(path)) as perf:
         try:
-            fig = _read_prewarmed_interactive_figure(path)
+            fig = _read_prewarmed_interactive_figure(path, inst == "power" and cache_key[1] == "current")
         except Exception as exc:
             perf["status"] = "error"
             perf["error"] = str(exc)
@@ -4203,9 +4203,121 @@ def _load_prewarmed_interactive_figure(cache_key: tuple[object, ...], inst: str)
         return fig
 
 
-def _read_prewarmed_interactive_figure(path: Path) -> go.Figure:
+def _separate_prewarmed_grid_power(fig: go.Figure) -> go.Figure:
+    """Move legacy cached grid traces into their own row without reading data.
+
+    Pinned quicklook writers still place these traces in Battery Charging.
+    Keep their exact samples and styling, and retain every existing axis ID so
+    matched time windows and secondary axes continue to work. Unknown layouts
+    pass through unchanged rather than triggering an expensive raw-data render.
+    """
+    payload = fig.to_plotly_json()
+    layout = payload["layout"]
+    annotations = layout.get("annotations", [])
+    if any(item.get("text") == "Grid Power" for item in annotations):
+        return fig
+    grid_names = {"Grid AC input", "MultiPlus DC charging"}
+    grid_traces = [trace for trace in payload["data"] if trace.get("name") in grid_names]
+    if not grid_traces or len({trace["name"] for trace in grid_traces}) != len(grid_traces):
+        return fig
+
+    def axis_key(reference):
+        return reference[0] + "axis" + reference[1:]
+
+    def next_reference(prefix):
+        indices = [int(key[len(prefix):] or "1") for key in layout
+                   if key.startswith(prefix) and (not key[len(prefix):] or key[len(prefix):].isdigit())]
+        return max(indices, default=0) + 1
+
+    try:
+        titles = {item["text"]: item for item in annotations
+                  if item.get("text") in {"Renewables", "Battery Charging"} and item.get("yref") == "paper"}
+        battery_title = titles["Battery Charging"]
+        renewables_title = titles["Renewables"]
+        source_x = grid_traces[0]["xaxis"]
+        source_legend = grid_traces[0]["legend"]
+        source_y = layout[axis_key(source_x)]["anchor"]
+        source_domain = layout[axis_key(source_y)]["domain"]
+        primary_domains = [axis["domain"] for key, axis in layout.items()
+                           if key.startswith("yaxis") and isinstance(axis, dict) and "domain" in axis]
+        renewables_domain = next(domain for domain in primary_domains
+                                 if abs(domain[1] - renewables_title["y"]) < 1e-8)
+        if (abs(source_domain[1] - battery_title["y"]) > 1e-8
+                or any(trace.get("xaxis") != source_x or trace.get("legend") != source_legend
+                       or trace.get("type") not in {"scatter", "scattergl"} for trace in grid_traces)
+                or any(source_domain[1] < domain[1] < renewables_domain[0] for domain in primary_domains)
+                or layout.get("images")):
+            return fig
+        panel_height = source_domain[1] - source_domain[0]
+        gap = renewables_domain[0] - source_domain[1]
+        if panel_height <= 0 or gap <= 0:
+            return fig
+        delta = panel_height + gap
+        scale = 1.0 / (1.0 + delta)
+        boundary = (renewables_domain[0] + source_domain[1]) / 2
+        new_domain = [renewables_domain[0] * scale, (renewables_domain[0] + panel_height) * scale]
+        new_x = f"x{next_reference('xaxis')}"
+        new_y = f"y{next_reference('yaxis')}"
+        new_legend = f"legend{next_reference('legend')}"
+        # Copy presentation templates before repositioning the existing rows.
+        new_xaxis = dict(layout[axis_key(source_x)], anchor=new_y,
+                         matches=layout[axis_key(source_x)].get("matches") or source_x)
+        new_yaxis = dict(layout[axis_key(source_y)], anchor=new_x, domain=new_domain,
+                         title=dict(text="Power [W]"), autorange=True)
+        for option in ("range", "tickvals", "ticktext", "tickmode", "tick0", "dtick",
+                       "matches", "overlaying", "scaleanchor", "scaleratio"):
+            new_yaxis.pop(option, None)
+        color = grid_traces[0].get("line", {}).get("color")
+        if color:
+            new_yaxis["tickfont"] = dict(new_yaxis.get("tickfont", {}), color=color)
+            new_yaxis["title"]["font"] = dict(size=11, color=color)
+        legend = dict(layout[source_legend])
+        legend["y"] = new_domain[1] + (legend["y"] - source_domain[1]) * scale
+        title = dict(battery_title, text="Grid Power", y=new_domain[1])
+        label_template = next(item for item in annotations
+                              if item.get("text") == layout[axis_key(source_y)]["title"]["text"]
+                              and item.get("yref") == "paper" and source_domain[0] <= item["y"] <= source_domain[1])
+        label = dict(label_template, text="Power [W]",
+                     y=new_domain[1] + (label_template["y"] - source_domain[1]) * scale)
+        if color:
+            label["font"] = dict(label.get("font", {}), color=color)
+
+        def move_y(value):
+            return (value + (delta if value > boundary else 0.0)) * scale
+
+        for key, axis in layout.items():
+            if key.startswith("yaxis") and isinstance(axis, dict) and "domain" in axis:
+                axis["domain"] = [move_y(value) for value in axis["domain"]]
+            elif key.startswith("legend") and isinstance(axis, dict) and "y" in axis:
+                if axis.get("yref", "paper") != "paper":
+                    return fig
+                axis["y"] = move_y(axis["y"])
+        for annotation in annotations:
+            if annotation.get("yref") == "paper":
+                annotation["y"] = move_y(annotation["y"])
+        for shape in layout.get("shapes", []):
+            if shape.get("yref") == "paper":
+                shape["y0"], shape["y1"] = move_y(shape["y0"]), move_y(shape["y1"])
+        margin = layout.get("margin", {})
+        outer_height = margin.get("t", 100) + margin.get("b", 80)
+        layout["height"] = round(outer_height + (layout["height"] - outer_height) / scale)
+        layout[axis_key(new_x)] = new_xaxis
+        layout[axis_key(new_y)] = new_yaxis
+        layout[new_legend] = legend
+        annotations.extend([title, label])
+        for trace in grid_traces:
+            trace.update(xaxis=new_x, yaxis=new_y, legend=new_legend)
+            if trace["name"] == "MultiPlus DC charging":
+                trace["line"] = dict(trace.get("line", {}), dash="dash")
+        return go.Figure(payload)
+    except (KeyError, TypeError, ValueError, StopIteration):
+        return fig
+
+
+def _read_prewarmed_interactive_figure(path: Path, current_power: bool = False) -> go.Figure:
     """Read immutable prewarmed JSON without touching a Panel document."""
-    return go.Figure(json.loads(path.read_text(encoding="utf-8")))
+    fig = go.Figure(json.loads(path.read_text(encoding="utf-8")))
+    return _separate_prewarmed_grid_power(fig) if current_power else fig
 
 
 async def _load_prewarmed_interactive_figure_async(
@@ -4224,6 +4336,7 @@ async def _load_prewarmed_interactive_figure_async(
                 _BACKGROUND_PREPARATION_EXECUTOR,
                 _read_prewarmed_interactive_figure,
                 path,
+                inst == "power" and cache_key[1] == "current",
             )
             perf["status"] = "ok"
             perf["trace_count"] = len(fig.data)
