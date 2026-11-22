@@ -84,6 +84,8 @@ POWERED_COLLECTION_PRODUCTS = {
         180.0,
     ),
 }
+# Half-hourly ASFS samples need time to pass through source sync and Zarr append.
+ASFS_OVERVIEW_FRESH_MINUTES = 45.0
 POWER_FRESH_MINUTES = 30.0
 POWER_STALE_MINUTES = 120.0
 OPERATIONS_TREND_WINDOW = timedelta(days=7)
@@ -1818,13 +1820,22 @@ def _environmental_signal_cards() -> list[dict[str, Any]]:
 
     cards: list[dict[str, Any]] = []
     if (sample := radiation.get("sr30_swd_Irr_Avg")) is not None:
-        cards.append(_environmental_overview_card("shortwave-down", "Shortwave radiation down", sample, radiation["time"], "W/m2", "SR30 downwelling"))
+        cards.append(_environmental_overview_card(
+            "shortwave-down", "Shortwave radiation down", sample, radiation["time"], "W/m2", "SR30 downwelling",
+            fresh_minutes=ASFS_OVERVIEW_FRESH_MINUTES,
+        ))
     if (sample := radiation.get("metek_x_out_Avg")) is not None and (other := radiation.get("metek_y_out_Avg")) is not None:
-        cards.append(_environmental_overview_card("wind-speed", "Wind speed", math.hypot(sample, other), radiation["time"], "m/s", "Metek horizontal wind"))
+        cards.append(_environmental_overview_card(
+            "wind-speed", "Wind speed", math.hypot(sample, other), radiation["time"], "m/s", "Metek horizontal wind",
+            fresh_minutes=ASFS_OVERVIEW_FRESH_MINUTES,
+        ))
     if (sample := meteorology.get("t2_t")) is not None:
         cards.append(_environmental_overview_card("air-temperature", "2 m temperature", sample, meteorology["time"], "C", "Vaisala MET"))
     if (sample := radiation.get("kt15_tem_Avg")) is not None:
-        cards.append(_environmental_overview_card("kt15", "KT15 surface temperature", sample, radiation["time"], "C", "KT15 surface sensor"))
+        cards.append(_environmental_overview_card(
+            "kt15", "KT15 surface temperature", sample, radiation["time"], "C", "KT15 surface sensor",
+            fresh_minutes=ASFS_OVERVIEW_FRESH_MINUTES,
+        ))
     return cards
 
 
@@ -1833,12 +1844,21 @@ def environmental_signal_cards() -> list[dict[str, Any]]:
     return _environmental_signal_cards()
 
 
-def _environmental_overview_card(card_id: str, title: str, value: float, sample_time: str, unit: str, source: str) -> dict[str, Any]:
+def _environmental_overview_card(
+    card_id: str,
+    title: str,
+    value: float,
+    sample_time: str,
+    unit: str,
+    source: str,
+    *,
+    fresh_minutes: float = 30,
+) -> dict[str, Any]:
     return _overview_card(
         card_id,
         title,
         f"{value:.1f} {unit}",
-        _age_level(sample_time, 30, 120),
+        _age_level(sample_time, fresh_minutes, 120),
         sample_time,
         f"{source}; {_power_age_text(sample_time).removeprefix('Updated ')}",
     )

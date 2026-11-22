@@ -2151,6 +2151,42 @@ class MobileCatalogTests(unittest.TestCase):
         self.assertEqual(by_id["kt15"]["value"], "11.0 C")
         self.assertEqual(by_id["kt15"]["updatedAt"], "2026-07-24T06:00:00Z")
 
+    def test_asfs_overview_freshness_allows_for_batch_arrival(self) -> None:
+        batch_time = datetime(2026, 11, 22, 2, 0, tzinfo=timezone.utc)
+        asfs_sample = {
+            "sr30_swd_Irr_Avg": 9.2,
+            "kt15_tem_Avg": 7.3,
+            "metek_x_out_Avg": 9.0,
+            "metek_y_out_Avg": 0.0,
+        }
+        for age, expected_asfs, expected_met in (
+            (29, "green", "green"),
+            (30, "green", "amber"),
+            (33, "green", "amber"),
+            (35, "green", "amber"),
+            (44, "green", "amber"),
+            (45, "amber", "amber"),
+            (119, "amber", "amber"),
+            (120, "red", "red"),
+            (123, "green", "green"),
+        ):
+            sample_time = (batch_time + timedelta(minutes=120 if age == 123 else 0)).isoformat()
+            with self.subTest(age=age), patch.object(
+                mobile_catalog, "datetime", wraps=datetime
+            ) as clock, patch.object(
+                mobile_catalog,
+                "_latest_zarr_sample",
+                side_effect=[{"time": sample_time, "t2_t": 7.8}, {**asfs_sample, "time": sample_time}],
+            ):
+                clock.now.return_value = batch_time + timedelta(minutes=age)
+                cards = {card["id"]: card for card in mobile_catalog.environmental_signal_cards()}
+                for card_id in ("shortwave-down", "wind-speed", "kt15"):
+                    self.assertEqual(cards[card_id]["level"], expected_asfs, card_id)
+                    self.assertEqual(cards[card_id]["updatedAt"], sample_time)
+                self.assertEqual(cards["air-temperature"]["level"], expected_met)
+                if age == 35:
+                    self.assertEqual(cards["shortwave-down"]["detail"], "SR30 downwelling; 35m ago")
+
     def test_overview_prefers_cached_measured_power_time_without_opening_display(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
